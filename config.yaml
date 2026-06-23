@@ -1,0 +1,85 @@
+server:
+  host: 127.0.0.1
+  port: 7842
+  log_level: info
+
+paths:
+  workspace_root: /Users/erreclaudea/erre-claudia
+
+sdk:
+  default_model: claude-opus-4-7
+  session_idle_timeout_seconds: 3600
+
+logging:
+  dir: logs
+
+kanbans:
+  pm_router:
+    enabled: true
+    agent: dispatcher
+    model: claude-haiku-4-5
+    timeout_s: 30
+
+  # Board Trello mostrate nella wallboard read-only /kanban della webui.
+  # `id` = id board Trello (24-char hex). Aggiungere/togliere una voce
+  # richiede solo il restart del server (no schema migration).
+  #
+  # `lane_skills` (opzionale) mappa il nome di una lane a una skill Claude
+  # Code necessaria per lavorarla. La skill appare come badge accanto al
+  # nome della lane nella wallboard. Le lane non mappate non hanno badge.
+  # Naming = identificatore della skill come compare nel catalogo Clodia
+  # (es. `acme-visual`, `acme-blog-publish`, `code-review`, `verify`,
+  # `frontend-dev`, ecc.).
+  #
+  # `notify_lanes` (opzionale): lista di nomi di lane "umane" su cui owner
+  # vuole essere notificato via Telegram quando ci approda una card. Tipicamente
+  # lane di approvazione (Da approvare), pre-deploy (Pronto al deploy) o terminali
+  # (Deployed, Done). NON includere Backlog: gli input umani li mette owner,
+  # non serve notificarsi. Idempotente via commento marker sulla card.
+  # Board legacy DISMESSE dall'esecuzione l'11 giu 2026 (decisione owner,
+  # remediation A5): "Acme Blog Pipeline" (6a19cb79…), "Acme Social"
+  # (6a231620…) e "Web Dev" (6a22ace1…) restano su Trello come archivio ma
+  # non vengono più pollate né mostrate. Le board attive arrivano SOLO dal
+  # Pipeline Registry CAP (pipeline ACTIVE → inject runtime al boot).
+  boards: []
+
+# Notifiche Telegram per le lane umane (config.yaml.kanbans.boards[].notify_lanes).
+# Token letto dal file (mai env, vedi feedback_env_secret_exposure).
+# chat_id del destinatario delle notifiche: configurare per la propria istanza.
+notifications:
+  telegram:
+    enabled: false
+    chat_id: 0
+    token_file: /clodia/secrets/telegram_bot_token
+
+# ── Colonia di Agenti (CAP) ──────────────────────────────────────────
+# Tutte le voci sono opzionali (default nel codice). Vedi COLONY.md.
+colony:
+  keystore:
+    # URL del keystore MCP visto dagli agenti (stesso container del server).
+    url: http://localhost:7842/keystore/mcp
+  approvals:
+    # Base URL dei link Approve/Deny (pagina effimera /approve/<token>).
+    # Tailscale del host: raggiungibile anche dal telefono di owner.
+    base_url: http://127.0.0.1:7842
+  # Membri umani invitati (admin) su ogni board provisionata dal Pipeline
+  # Registry. La board nasce private sull'account Trello dell'istanza.
+  # Configurare con gli username Trello della propria organizzazione.
+  board_members: []
+  strategy:
+    model: claude-sonnet-4-6     # modello dello Strategy Agent (SDK stateless)
+    timeout_s: 180
+  approval_gates:
+    # Token (substring, case-insensitive) che marcano un side-effect come
+    # sensibile → execution ESCALATED + notifica Telegram (spec §22).
+    sensitive_side_effects:
+      - deploy
+      - email
+      - payment
+      - pagamento
+      - delete
+      - cancellazion
+      - credential
+      - credenzial
+      - publish
+      - pubblicazion

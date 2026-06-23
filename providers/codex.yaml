@@ -1,0 +1,10 @@
+# Provider Codex / ChatGPT (abbonamento OpenAI) — pezzo di sistema CLONABILE.
+# Solo DEFINIZIONE (catalogo), MAI credenziali (→ vault del gateway). Il flusso
+# OAuth (codex login su auth.openai.com → bundle auth.json) è in
+# server/api/openai_oauth.py (campo `flow`). DPA consumer: NON adatto di default
+# ai dati confidenziali. Costo fisso da abbonamento ChatGPT.
+name: Codex / ChatGPT
+mechanism: subscription
+sdk: codex
+flow: openai
+priority: 20

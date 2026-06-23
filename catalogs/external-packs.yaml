@@ -1,0 +1,23 @@
+# Pack di skill ESTERNI caricati al setup iniziale dell'istanza.
+#
+# Al primo avvio l'installer (`server/setup/external_packs.py`) clona ogni repo
+# (shallow) e copia le skill nel catalogo DATA sotto:
+#     CLODIA_DATA/skills-catalog/<pack>/<skill>/
+# Il pack è determinato dal PATH (la sottocartella), quindi i SKILL.md originali
+# NON vengono modificati: contenuto e file LICENSE viaggiano intatti con la skill.
+#
+# Idempotente: un marker per pack in skills-catalog/.external-packs/ evita la
+# reinstallazione ai riavvii. Tollerante agli errori di rete (logga e prosegue).
+#
+# Campi: pack (label), repo (URL git), ref (branch/tag), subdir (root delle skill
+# nel repo). Le skill sono cartelle <skill>/ con SKILL.md sotto `subdir`.
+
+- pack: anthropic-pack
+  repo: https://github.com/anthropics/skills
+  ref: main
+  subdir: skills
+
+- pack: openai-curated-pack
+  repo: https://github.com/openai/skills
+  ref: main
+  subdir: skills/.curated

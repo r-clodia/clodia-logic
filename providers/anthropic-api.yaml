@@ -1,0 +1,12 @@
+# Provider Anthropic via API (pay-per-token) — pezzo di sistema CLONABILE.
+# Solo DEFINIZIONE (catalogo), MAI credenziali (→ vault del gateway).
+# DPA commerciale (zero-retention / no-training): adatto ai dati confidenziali.
+name: Anthropic API
+# Meccanismo: chiave API → env dedicata.
+mechanism: apikey
+apikey_env: ANTHROPIC_API_KEY
+# SDK di esecuzione servito da questo provider.
+sdk: claude
+# Ordine di preferenza entro l'SDK (più basso = preferito). L'API precede
+# l'abbonamento di default (DPA commerciale > consumer).
+priority: 10

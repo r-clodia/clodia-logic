@@ -1,0 +1,121 @@
+services:
+
+  # ── Build helpers ─────────────────────────────────────────────────────────
+  base:
+    build:
+      context: .
+      dockerfile: docker/base.Dockerfile
+    image: clodia-base
+    profiles: ["build-only"]
+    command: ["true"]
+
+  bundle:
+    build:
+      context: .
+      dockerfile: docker/bundle.Dockerfile
+    image: clodia-bundle
+    profiles: ["build-only"]
+    command: ["true"]
+
+  # ── Servizi ───────────────────────────────────────────────────────────────
+
+  agent-server:
+    build:
+      context: .
+      dockerfile: docker/agent-server.Dockerfile
+    image: clodia-agent-server
+    ports:
+      - "7842:7842"
+    volumes: &datadir-volumes
+      - ${CLODIA_DATA}/secrets:/clodia/secrets:ro
+      - ${CLODIA_DATA}/data:/clodia/data
+      - ${CLODIA_DATA}/topics:/clodia/topics
+      # Git server centrale dei topic: bare repo montati al PATH IDENTICO
+      # host=container, così l'origin (path locale) risolve sia da host che
+      # da dentro il container e gli agent possono pushare (skill
+      # topic-management). NB: path letterale, fuori da CLODIA_DATA.
+      - /opt/clodia/git-repos:/opt/clodia/git-repos
+      - ${CLODIA_DATA}/contacts.db:/clodia/contacts.db
+      - ${CLODIA_DATA}/boot/VIOLATION.md:/clodia/boot/VIOLATION.md
+      - ${CLODIA_DATA}/boot/retrospectives:/clodia/boot/retrospectives
+      # CAP: stato colony (colony.db) e pipeline registry persistiti su host.
+      # Senza questi mount /datadir root vive nel layer del container e
+      # pipes.yaml + colony.db si perdono al recreate (lezione 11 giu 2026).
+      # PKI colonia: CA + identità agenti (chiavi private, area runner)
+      # e certificati pubblici. Senza mount si perdono al recreate.
+      - ${CLODIA_DATA}/secrets:/datadir/secrets
+      - ${CLODIA_DATA}/pki:/datadir/pki
+      # Credenziali provider (OAuth anthropic/openai): elemento top-level del
+      # datadir clonabile, persistito a sé (non più sotto data/).
+      - ${CLODIA_DATA}/providers:/datadir/providers
+      - ${CLODIA_DATA}/data:/datadir/data
+      - ${CLODIA_DATA}/pipes.yaml:/datadir/pipes.yaml
+      - ${CLODIA_DATA}/keystore-policy.yaml:/datadir/keystore-policy.yaml
+      - ${CLODIA_DATA}/daemon-state:/datadir/daemon-state
+      - ${CLODIA_DATA}/dump:/clodia/dump
+      # ~/.claude/ persistito nella datadir: contiene token OAuth e sessioni claude
+      - ${CLODIA_DATA}/claude-home:/root/.claude
+      # ~/.codex/ persistito nella datadir: contiene config/auth Codex
+      - ${CLODIA_DATA}/codex-home:/root/.codex
+      # Agent registry (M2/M3): definizioni agenti, workspace effimeri, stato
+      # lane consumer. Mount a /datadir per coerenza con CLODIA_DATA env
+      # (data_path() li risolve come datadir-relative, non bundle-relative).
+      - ${CLODIA_DATA}/agents:/datadir/agents
+      - ${CLODIA_DATA}/agent-workspaces:/datadir/agent-workspaces
+      - ${CLODIA_DATA}/agent-state:/datadir/agent-state
+      # Catalog skill brand/owner-specific (es. acme-*) — non in git logic.
+      # skill_sync cerca prima qui poi in /clodia/skills-catalog (dual catalog).
+      - ${CLODIA_DATA}/skills-catalog:/datadir/skills-catalog
+      # Catalog rules brand/owner-specific (es. acme-blog-voice).
+      # rule_sync cerca prima qui poi in /clodia/rules-catalog (dual catalog).
+      - ${CLODIA_DATA}/rules-catalog:/datadir/rules-catalog
+      # Agency shared: handoff artefatti card-to-card tra agent. Ogni
+      # workspace agent ha `scratch/shared/` symlinkato a cards/<card_id>/.
+      # Persistente tra restart e recreate del container.
+      - ${CLODIA_DATA}/agency-shared:/datadir/agency-shared
+    environment: &common-env
+      CLODIA_DATA: /datadir
+      ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
+      CODEX_HOME: /root/.codex
+      GIT_BRANCH: ${GIT_BRANCH:-main}
+      GIT_REPO: ${GIT_REPO:-r-clodia/clodia-logic}
+      SERVER_HOST: "0.0.0.0"
+      LANGFUSE_CAPTURE_CONTENT: "true"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import httpx; httpx.get('http://localhost:7842/health', timeout=2)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # ── clodia-tools: gateway MCP come MICROSERVIZIO HTTP ─────────────────────
+  # Server MCP dei tool (trello/email/fs) servito via HTTP, multi-agente,
+  # con auth a chiave pubblica (token ckt1 verificati coi cert PUBBLICI).
+  # Riusa l'immagine bundle (entrypoint clona main + installa deps) ma lancia
+  # il transport HTTP. Spostabile su altra macchina: i consumatori puntano
+  # all'URL via env CLODIA_TOOLS_MCP_URL.
+  clodia-tools:
+    image: clodia-agent-server
+    command: ["python3", "/clodia/tools/system/mcp-tools-server/cli.py", "--http", "--port", "7849"]
+    ports:
+      - "7849:7849"
+    volumes: *datadir-volumes
+    environment:
+      <<: *common-env
+      # Cert PUBBLICI per verificare i token (nessuna chiave privata necessaria
+      # per la verifica; il microservizio non conia token).
+      CLODIA_CA_CRT: /datadir/secrets/ca/ca.crt
+      CLODIA_PKI_CERTS: /datadir/pki/certs
+      CLODIA_PKI_REVOKED: /datadir/pki/revoked.json
+      CLODIA_WORKSPACE_ROOT: /clodia
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD", "python3", "-c", "import socket; socket.create_connection(('localhost',7849),timeout=2).close()"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+
+  # I daemon (telegram, whatsapp) NON sono più servizi dedicati: girano come
+  # processi figli dell'agent-server, accesi/spenti dalla webui via
+  # start.sh/stop.sh. Nessun auto-avvio all'avvio del container.
+  # (check-mail dismesso — issue #91; sostituibile da un job schedulato.)

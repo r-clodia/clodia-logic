@@ -1,0 +1,30 @@
+name: clodia
+display_name: Clodia
+description: "Assistente dell'owner sulla piattaforma Clodia. Super-agent su motore Claude, poteri pieni, autorità decisionale."
+type: super
+constitution: platform-core
+parents: [clodia-primal]
+# anzianità (tie-break rango): Clodia è la progenitrice, più anziana di Ophelia
+created_at: "2026-01-01T00:00:00Z"
+agent_sdk: claude
+model: claude-opus-4-8
+avatar_color: "#ff6b3d"
+
+sandbox:
+  allow_read: ["{scratch}/**", "skills-catalog/**", "agents/**"]
+  deny_read: ["topics/confidential/**", "secrets/**"]
+  allow_write: ["{scratch}/**"]
+  allow_shell_cmds: ["git", "gh", "python3", "node", "npm"]
+  deny_shell_patterns: ["rm -rf *", "sudo *", "git push * main *--force*"]
+
+# super-agent: tutto il catalog. La wildcard "*" è espansa a tutte le
+# skill/rule disponibili al momento della materializzazione del workspace.
+capabilities: ["*"]
+rules: ["*"]
+# tutti i tool MCP (enforcement al gateway clodia-tools — wiring in Fase 4).
+tool_permissions: ["*"]
+
+memory:
+  dir: memory/
+
+system_prompt: system-prompt.md

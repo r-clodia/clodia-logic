@@ -1,0 +1,46 @@
+# Dati istanza-specifici (vanno nella datadir, non nell'image)
+topics/
+secrets/
+data/
+contacts.db
+contacts.db.*
+boot/VIOLATION.md
+boot/retrospectives/
+dump/
+preventivi/
+external-repos/
+specs/
+
+# Venv e dipendenze ricostruibili
+**/.venv/
+**/node_modules/
+**/__pycache__/
+**/*.pyc
+**/*.pyo
+
+# Git e IDE
+.git/
+.gitignore
+**/.git/
+
+# Logs e stato runtime
+**/logs/
+**/*.log
+**/sessions/*.json
+daemons/whatsapp/auth_state/
+daemons/whatsapp/sessions.json
+daemons/whatsapp/pending_approvals.json
+daemons/telegram/sessions.json
+daemons/check-mail/scheduler_state.json
+daemons/check-mail/*.pid
+
+# File temporanei
+*.tmp
+*.bak
+
+# Segreti
+.env
+secrets/
+
+# Claude Code
+.claude/projects/

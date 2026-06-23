@@ -1,0 +1,28 @@
+name: ophelia
+display_name: Ophelia
+description: "Gemella di Clodia su motore Codex (OpenAI). Super-agent, stessa identità e poteri di Clodia, motore diverso."
+type: super
+constitution: platform-core
+parents: [clodia-primal]
+# anzianità (tie-break rango): Ophelia nasce subito dopo Clodia
+created_at: "2026-01-01T00:00:01Z"
+agent_sdk: codex
+model: gpt-5-codex
+avatar_color: "#14b8a6"
+
+sandbox:
+  allow_read: ["{scratch}/**", "skills-catalog/**", "agents/**"]
+  deny_read: ["topics/confidential/**", "secrets/**"]
+  allow_write: ["{scratch}/**"]
+  allow_shell_cmds: ["git", "gh", "python3", "node", "npm"]
+  deny_shell_patterns: ["rm -rf *", "sudo *", "git push * main *--force*"]
+
+# super-agent: tutto il catalog (vedi clodia). Wildcard espansa al materialize.
+capabilities: ["*"]
+rules: ["*"]
+tool_permissions: ["*"]
+
+memory:
+  dir: memory/
+
+system_prompt: system-prompt.md

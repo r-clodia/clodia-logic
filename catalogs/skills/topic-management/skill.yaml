@@ -1,0 +1,32 @@
+# Topic System v2: i topic vivono dietro il gateway su uno storage astratto
+# (local-fs, Drive, …). L'agente NON tocca lo storage: usa i verbi topic.* del
+# gateway, che fa da reference monitor (identità ckt1, classe, privacy).
+# La applica QUALSIASI agent che legge/scrive un topic.
+version: "2.2.0"
+owner: owner
+status: APPROVED
+input_schema:
+  type: object
+  properties:
+    topic:
+      type: string
+      description: "identificatore del topic come '<classification>/<name>' (es. personal/clodia-agency)"
+  required: [topic]
+output_schema:
+  type: object
+  description: "stato del topic dopo il lavoro"
+  properties:
+    summary_version: {type: string}
+    tldr: {type: string}
+required_tools:
+  - topic.open
+  - topic.new
+  - topic.save_summary
+  - topic.add_minute
+  - topic.archive
+  - topic.list
+  - topic.search
+side_effects: [topic_write]
+idempotency_policy: at_most_once
+retry_policy:
+  on_conflict: escalate    # CONFLICT su save_summary → rileggi e riapplica, non sovrascrivere

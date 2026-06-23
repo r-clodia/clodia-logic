@@ -1,0 +1,95 @@
+# =============================================================================
+# Sistema clodia-agency — .gitignore
+# Strategia: whitelist sulle cartelle "dati", denylist sui pattern segreti.
+# Sotto data/, secrets/, dump/, agent-instances/, external-repos/, topics/*/
+# resta tracciato SOLO il README.md (descrittivo, mai dati reali).
+# =============================================================================
+
+# === Cartelle DATI (scaffold creati da init-datadir.sh, mai in git) ===
+data/
+dump/
+secrets/
+agent-instances/*
+!agent-instances/README.md
+boot/
+
+# === Agent-type reviews (personali al workspace owner) ===
+agent-types/*/reviews/
+
+# === Transcript delle chat Clodia (runtime, possono contenere info personali) ===
+# Post-refactor v4: il pacchetto server/ è alla root, sessions/ accanto.
+sessions/*.jsonl
+
+# === Topic: contenitore, ogni topic è un repo git indipendente ===
+topics/*
+!topics/personal/
+!topics/confidential/
+topics/personal/*
+!topics/personal/README.md
+topics/confidential/*
+!topics/confidential/README.md
+
+# === Cartelle ad-hoc che possono esistere ma non vanno versionate ===
+progetti/
+archivio/
+preventivi/
+temp/
+
+# === Claude Code: storia, transcript, memoria NON vanno in git ===
+.claude/projects/
+.claude/settings.local.json
+
+# === Stato/credenziali dei daemon (whatsapp, telegram, scheduler) ===
+auth_state/
+sessions.json
+trusted.json
+pending_approvals.json
+scheduler_state.json
+scheduler.pid
+
+# === Segreti (paranoia: anche fuori da secrets/) ===
+*.pem
+*.key
+*.p12
+*.token
+token.json
+credentials.json
+config.json
+app_password.txt
+.env
+.env.*
+
+# === Database (e relativi backup) ===
+*.db
+*.db.backup*
+
+# === Artefatti runtime ===
+.venv
+venv/
+env/
+*_cache.json
+
+# === Build output / cache ===
+.svelte-kit/
+**/frontend/build/
+node_modules/
+.next/
+*.pyc
+__pycache__/
+*$py.class
+*.so
+.Python
+.DS_Store
+*.log
+logs/
+*.pid
+
+# === IDE ===
+.vscode/
+.idea/
+*.swp
+*.swo
+
+agent-state/
+daemons/kanban/logs/
+daemons/kanban/kanban.pid

@@ -1,0 +1,8 @@
+# Provider OpenAI via API (pay-per-token) — pezzo di sistema CLONABILE.
+# Solo DEFINIZIONE (catalogo), MAI credenziali (→ vault del gateway).
+# DPA commerciale: adatto ai dati confidenziali.
+name: OpenAI API
+mechanism: apikey
+apikey_env: OPENAI_API_KEY
+sdk: codex
+priority: 10
