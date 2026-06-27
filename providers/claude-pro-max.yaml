@@ -10,3 +10,16 @@ sdk: claude
 flow: anthropic
 # Preferito dopo l'API per lo stesso SDK.
 priority: 20
+
+# ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) — SEAL eff = min(SOV-2/3/7)
+sovereignty:
+  seal: SEAL-1
+  assessment: { SOV-2: SEAL-1, SOV-3: SEAL-0, SOV-7: SEAL-1 }
+  dimensions:
+    jurisdiction: us
+    dpa: false                  # consumer: nessun DPA art. 28
+    no_training: default        # termini consumer (più deboli del commerciale)
+    data_residency: us
+    retention: standard
+    cloud_act_exposed: true
+  note: "Abbonamento consumer: niente DPA, controlli dato deboli (SOV-3=SEAL-0). NON adatto a dati con riservatezza; preferire l'API."

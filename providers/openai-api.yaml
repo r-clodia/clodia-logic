@@ -6,3 +6,16 @@ mechanism: apikey
 apikey_env: OPENAI_API_KEY
 sdk: codex
 priority: 10
+
+# ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) — SEAL eff = min(SOV-2/3/7)
+sovereignty:
+  seal: SEAL-1
+  assessment: { SOV-2: SEAL-1, SOV-3: SEAL-1, SOV-7: SEAL-1 }
+  dimensions:
+    jurisdiction: us            # OpenAI, legge US
+    dpa: true
+    no_training: true           # no-training su dati API di default
+    data_residency: us          # (EU data residency disponibile su alcuni piani — verificare)
+    retention: standard         # ~30g; ZDR per piani idonei
+    cloud_act_exposed: true
+  note: "Profilo analogo all'API Anthropic: DPA+no-train, ma legge/controllo US."

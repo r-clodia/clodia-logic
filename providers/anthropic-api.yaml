@@ -10,3 +10,20 @@ sdk: claude
 # Ordine di preferenza entro l'SDK (più basso = preferito). L'API precede
 # l'abbonamento di default (DPA commerciale > consumer).
 priority: 10
+
+# ── Sovranità (EC Cloud Sovereignty Framework v1.2.1, ott 2025) ──────────────
+# SEAL effettivo (gating Clodia) = min(SOV-2, SOV-3, SOV-7). Score pesato pieno
+# (8 SOV) = metrica accessoria. Valori contrattuali fine (retention/ZDR) DA
+# CONFERMARE nel DPA prima di uso in audit; il LIVELLO SEAL (guidato dalla
+# giurisdizione) è robusto.
+sovereignty:
+  seal: SEAL-1
+  assessment: { SOV-2: SEAL-1, SOV-3: SEAL-1, SOV-7: SEAL-1 }
+  dimensions:
+    jurisdiction: us            # Anthropic PBC, legge US
+    dpa: true                   # DPA commerciale (art. 28)
+    no_training: true           # no-training su input/output API
+    data_residency: us
+    retention: standard         # ~30g; zero-retention enterprise disponibile
+    cloud_act_exposed: true
+  note: "DPA + no-training, ma servizio sotto controllo non-UE e legge US (CLOUD Act) → giurisdizionale, non sovrano del dato."
