@@ -104,6 +104,25 @@ def _all_skill_names() -> list[str]:
     return names
 
 
+def _pack_skill_names(pack: str) -> list[str]:
+    """Espande `<pack>/*` nelle skill di quel pack.
+    `base-pack`/`logic` → skill del logic catalog (nomi bare); altri pack →
+    sotto-dir del data catalog, qualificate `<pack>/<skill>`."""
+    out: list[str] = []
+    if pack in ("base-pack", "logic"):
+        if LOGIC_CATALOG_DIR.is_dir():
+            for d in sorted(LOGIC_CATALOG_DIR.iterdir()):
+                if _is_skill_dir(d):
+                    out.append(d.name)
+        return out
+    packdir = DATA_CATALOG_DIR / pack
+    if packdir.is_dir():
+        for d in sorted(packdir.iterdir()):
+            if _is_skill_dir(d):
+                out.append(f"{pack}/{d.name}")
+    return out
+
+
 def materialize_capabilities(
     capabilities: list[str],
     target_skills_dir: Path,
@@ -121,10 +140,25 @@ def materialize_capabilities(
     if not capabilities:
         return 0, []
 
-    # Wildcard: `["*"]` (o **, **/*) = tutte le skill del catalog.
+    # Wildcard catalogo: `*`, `**`, `**/*` = tutte le skill del catalog.
     if any(c in WILDCARDS for c in capabilities):
         capabilities = _all_skill_names()
         LOG.info("capabilities wildcard → %d skill dal catalog", len(capabilities))
+    else:
+        # Pack-glob `<pack>/*` → tutte le skill di quel pack (grant granulare a pack).
+        expanded: list[str] = []
+        for cap in capabilities:
+            if cap.endswith("/*"):
+                pack = cap[:-2]
+                names = _pack_skill_names(pack)
+                if names:
+                    expanded.extend(names)
+                    LOG.info("capability pack-glob '%s' → %d skill", cap, len(names))
+                else:
+                    LOG.warning("capability pack-glob '%s' → pack vuoto/inesistente", cap)
+            else:
+                expanded.append(cap)
+        capabilities = expanded
 
     copied = 0
     unresolved: list[str] = []
