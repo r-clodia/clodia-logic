@@ -19,7 +19,7 @@ sandbox:
 
 # super-agent: tutto il catalog. La wildcard "*" è espansa a tutte le
 # skill/rule disponibili al momento della materializzazione del workspace.
-capabilities: ["*"]
+capabilities: ["anthropic-pack/*"]
 rules: ["*"]
 # tutti i tool MCP (enforcement al gateway clodia-tools — wiring in Fase 4).
 tool_permissions: ["*"]
