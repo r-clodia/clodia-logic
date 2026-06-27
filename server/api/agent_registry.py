@@ -20,6 +20,14 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
+_CLR_LEGACY = {"P0": "SEAL-0", "P1": "SEAL-1", "P2": "SEAL-2", "P3": "SEAL-3"}
+_CLR_VALID = ("SEAL-0", "SEAL-1", "SEAL-2", "SEAL-3", "SEAL-4")
+
+def _norm_clearance(c: str | None) -> str:
+    u = (c or "SEAL-0").strip().upper()
+    return _CLR_LEGACY.get(u, u)
+
+
 import yaml
 
 from fastapi import APIRouter, HTTPException, Request
@@ -287,8 +295,8 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
     spec = registry.get_by_name(name)
     if spec is None:
         raise HTTPException(404, f"agent '{name}' non trovato")
-    if patch.clearance is not None and patch.clearance and patch.clearance.upper() not in ("P0", "P1", "P2", "P3"):
-        raise HTTPException(400, f"clearance invalida: {patch.clearance} (P0–P3)")
+    if patch.clearance is not None and patch.clearance and _norm_clearance(patch.clearance) not in _CLR_VALID:
+        raise HTTPException(400, f"clearance invalida: {patch.clearance} (SEAL-0..4)")
     agent_dir = Path(spec.agent_dir)
 
     if patch.system_prompt is not None:
@@ -378,9 +386,9 @@ async def create_agent(body: AgentCreate) -> AgentSpec:
         # Il PRIMO human (claim) è superadmin; gli altri sono 'member' — utenti
         # umani che chattano con gli agent, NON amministratori. La clearance la
         # sceglie l'admin (default P0 = vede solo i topic pubblici).
-        clearance = (body.clearance or "P0").upper()
-        if clearance not in ("P0", "P1", "P2", "P3"):
-            raise HTTPException(400, f"clearance invalida: {clearance} (P0–P3)")
+        clearance = _norm_clearance(body.clearance)
+        if clearance not in _CLR_VALID:
+            raise HTTPException(400, f"clearance invalida: {clearance} (SEAL-0..4)")
         spec_yaml = {
             "name": name,
             "display_name": display,

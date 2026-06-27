@@ -41,14 +41,20 @@ async def _typing(tier: str, name: str, agent: str, state: str) -> None:
 # nomi ordinati) così "owner↔clodia" e "clodia↔owner" sono lo STESSO canale.
 # Tier P0: l'accesso è ristretto ai 2 membri dal gate _require_member, non dal
 # tier; P0 garantisce che l'AeI coinvolto possa sempre rispondere (clearance≥P0).
-_DM_TIER = "P0"
+_DM_TIER = "SEAL-0"
 
 
 def _dm_name(a: str, b: str) -> str:
     x, y = sorted([a.strip().lower(), b.strip().lower()])
     return f"dm-{x}--{y}"
 
-_CLEAR = {"P0": 0, "P1": 1, "P2": 2, "P3": 3}
+_CLEAR = {"SEAL-0": 0, "SEAL-1": 1, "SEAL-2": 2, "SEAL-3": 3, "SEAL-4": 4}
+_LEGACY_TIER = {"P0": "SEAL-0", "P1": "SEAL-1", "P2": "SEAL-2", "P3": "SEAL-3"}
+
+
+def _norm(level: str | None) -> str:
+    u = (level or "SEAL-0").strip().upper()
+    return _LEGACY_TIER.get(u, u)
 _TAG_RE = re.compile(r"@([a-z0-9][a-z0-9_-]{0,30})")
 
 
@@ -56,13 +62,13 @@ def _effective_clearance(spec) -> str:
     """I super-agent (clodia/ophelia) sono full-power → clearance massima (P3).
     Gli altri usano la clearance dichiarata (default P0)."""
     if getattr(spec, "type", None) == "super":
-        return "P3"
-    return (getattr(spec, "clearance", None) or "P0").upper()
+        return "SEAL-4"
+    return _norm(getattr(spec, "clearance", None))
 
 
 def _can_access(clearance: str | None, tier: str | None) -> bool:
     """T.privacy <= clearance: l'agente vede il canale se la sua clearance ≥ tier."""
-    return _CLEAR.get((clearance or "P0").upper(), 0) >= _CLEAR.get((tier or "P0").upper(), 0)
+    return _CLEAR.get(_norm(clearance), 0) >= _CLEAR.get(_norm(tier), 0)
 
 
 def _tagged(text: str) -> str | None:
@@ -197,7 +203,7 @@ async def channel_create(request: Request) -> dict:
         raise HTTPException(401, "login richiesto")
     body = await request.json()
     name = (body.get("name") or "").strip().lower()
-    tier = (body.get("tier") or "P0").upper()
+    tier = _norm(body.get("tier"))
     if not name:
         raise HTTPException(400, "nome richiesto")
     meta = {
