@@ -443,16 +443,17 @@ class ChatSession:
             "AGENT_CHAT_ID": self.chat_id,
             "AGENT_KIND": self.kind,
         }
-        # ANTHROPIC_API_KEY vuota nel container Docker impedisce il login OAuth:
-        # il CLI la vede e tenta la modalità API key ignorando ~/.claude/.
-        # La rimuoviamo se vuota così il subprocess usa il token OAuth salvato.
-        if not child_env.get("ANTHROPIC_API_KEY"):
-            child_env.pop("ANTHROPIC_API_KEY", None)
-        # Credenziali dei PROVIDER configurate da /api/providers (opzione B):
-        # Anthropic Max → CLAUDE_CODE_OAUTH_TOKEN, oppure ANTHROPIC_API_KEY.
-        # Applicate qui all'env del subprocess; il valore non transita dal modello.
+        # Mutua esclusione provider: rimuovi dall'env EREDITATO tutte le
+        # credenziali provider note (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN,
+        # OPENAI_API_KEY). Senza questo, una chiave globale/residua nel container
+        # (es. ANTHROPIC_API_KEY a consumo) oscura un agent assegnato a un altro
+        # provider (es. OAuth abbonamento): il CLI preferisce la API key e ignora
+        # ~/.claude/. Subito dopo iniettiamo SOLO la credenziale del provider
+        # EFFETTIVO dell'agent. Il valore non transita mai dal modello.
         try:
-            from ..api.providers import provider_env
+            from ..api.providers import provider_env, all_provider_env_keys
+            for _pk in all_provider_env_keys():
+                child_env.pop(_pk, None)
             # Inietta SOLO l'env del provider effettivo dell'agent (primo
             # compatibile collegato): con provider distinti per DPA/costo, due
             # credenziali dello stesso SDK collegate insieme non devono

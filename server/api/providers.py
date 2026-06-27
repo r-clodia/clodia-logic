@@ -376,3 +376,19 @@ def provider_env(pid: str | None = None) -> dict[str, str]:
         elif d.get("method") == "apikey" and d.get("api_key"):
             env[meta["apikey_env"]] = d["api_key"]
     return env
+
+
+def all_provider_env_keys() -> set[str]:
+    """Tutti i nomi di env-var che un provider POTREBBE iniettare nel subprocess:
+    le `apikey_env` del catalogo (es. ANTHROPIC_API_KEY, OPENAI_API_KEY) + l'env
+    delle subscription OAuth (CLAUDE_CODE_OAUTH_TOKEN). Usato dal runtime per
+    azzerare le credenziali dei provider NON effettivi prima di iniettare quella
+    scelta (mutua esclusione: una chiave globale/residua non deve oscurare un
+    agent assegnato a un altro provider)."""
+    keys: set[str] = set()
+    for meta in _CATALOG.values():
+        k = meta.get("apikey_env")
+        if k:
+            keys.add(k)
+    keys.add(anthropic_oauth.SUBSCRIPTION_ENV)
+    return keys
