@@ -1,0 +1,35 @@
+name: wainston
+display_name: Wainston
+description: "Agent dedicato al widget di assistenza in-app: risolve attriti operativi nella WebUI, gestisce variabili app non sensibili e scala a Clodia quando serve."
+type: normal
+constitution: platform-core
+parents: [clodia]
+created_at: "2026-06-28T00:00:00Z"
+agent_sdk: claude
+model: claude-sonnet-4-5
+avatar_color: "#38bdf8"
+mailbox_parent: clodia
+
+sandbox:
+  allow_read: ["{scratch}/**", "agents/**"]
+  deny_read: ["topics/confidential/**", "secrets/**"]
+  allow_write: ["{scratch}/**"]
+  allow_shell_cmds: []
+  deny_shell_patterns: ["*"]
+
+capabilities:
+  - "helpdesk"
+rules: []
+tool_permissions:
+  - "app_runtime.get"
+  - "app_runtime.set"
+  - "app_runtime.list"
+  - "app_runtime.reset"
+  - "app_runtime.health"
+priority: 20
+cost_profile: standard
+
+memory:
+  dir: memory/
+
+system_prompt: system-prompt.md

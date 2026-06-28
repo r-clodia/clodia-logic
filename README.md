@@ -8,7 +8,7 @@ Il **substrato** di Clodia Agency: pure logica, immutabile, versionata. È il bu
 - `docker/`, `docker-compose.yml` — build e deploy.
 - `daemons/` — definizioni daemon (lo *stato* va in `clodia-data`).
 - *(Nessun file-template per i nuovi agent: il flusso "crea agente" genera lo scaffold direttamente dallo schema `AgentSpec` in `api/agent_registry.create_agent`.)*
-- `templates/agents-seed/{clodia,ophelia}/` — i due **super-agent** canonici, istanziati in `clodia-data/agents/` al bootstrap. `clodia` su motore Claude, `ophelia` su Codex; entrambi `constitution: platform-core`. Eventuali agent aggiuntivi dell'istanza vivono solo in `clodia-data/agents/`, non nel repo.
+- `catalogs/agents-seed/{clodia,ophelia,wainston}/` — seed canonici istanziati in `clodia-data/agents/` al bootstrap. `clodia` e `ophelia` sono super-agent (`constitution: platform-core`); `wainston` è l'agent normal dedicato al widget di assistenza in-app. Eventuali agent aggiuntivi dell'istanza vivono solo in `clodia-data/agents/`, non nel repo.
 
 ## Agent SDK
 Gli agenti task-bound sono definiti in modo agnostico in `agent.yaml` tramite
