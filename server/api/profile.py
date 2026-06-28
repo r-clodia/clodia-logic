@@ -12,6 +12,7 @@ import os
 
 import requests
 from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import Response
 
 from ..colony import pki
 from .agents import _principal_from_request
@@ -81,4 +82,37 @@ async def grant_profile(name: str, request: Request):
     r = requests.post(f"{_base_url()}/{name}/grant",
                       json={"grantee": body.get("grantee"), "granted": body.get("granted", True)},
                       headers=_headers(p), timeout=_HTTP_TIMEOUT)
+    return _relay(r)
+
+
+@router.get("/clodia/agents/{name}/profile/files")
+def list_profile_files(name: str, request: Request):
+    p = _principal(request)
+    r = requests.get(f"{_base_url()}/{name}/files", headers=_headers(p), timeout=_HTTP_TIMEOUT)
+    return _relay(r)
+
+
+@router.post("/clodia/agents/{name}/profile/files")
+async def upload_profile_file(name: str, request: Request):
+    p = _principal(request)
+    body = await request.json()
+    r = requests.post(f"{_base_url()}/{name}/files", json=body, headers=_headers(p), timeout=60)
+    return _relay(r)
+
+
+@router.get("/clodia/agents/{name}/profile/files/{filename}")
+def download_profile_file(name: str, filename: str, request: Request):
+    p = _principal(request)
+    r = requests.get(f"{_base_url()}/{name}/files/{filename}", headers=_headers(p), timeout=60)
+    if r.status_code >= 400:
+        raise HTTPException(r.status_code, "download non riuscito")
+    from urllib.parse import quote
+    return Response(content=r.content, media_type="application/octet-stream",
+                    headers={"Content-Disposition": f"attachment; filename*=UTF-8\'\'{quote(filename)}"})
+
+
+@router.delete("/clodia/agents/{name}/profile/files/{filename}")
+def delete_profile_file(name: str, filename: str, request: Request):
+    p = _principal(request)
+    r = requests.delete(f"{_base_url()}/{name}/files/{filename}", headers=_headers(p), timeout=_HTTP_TIMEOUT)
     return _relay(r)
