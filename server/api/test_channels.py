@@ -57,6 +57,21 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(channels._tagged("ehi @worker puoi farlo?"), "worker")
         self.assertIsNone(channels._tagged("nessun tag qui"))
 
+    def test_channel_meta_defaults_to_clodia(self) -> None:
+        meta = channels._channel_meta({"title": "Aiuto"}, "owner", "support")
+        self.assertEqual(meta["contact_agent"], "clodia")
+        self.assertEqual(meta["participants"], ["owner", "clodia"])
+
+    def test_channel_meta_uses_requested_contact_agent(self) -> None:
+        meta = channels._channel_meta(
+            {"title": "Aiuto", "type": "infra", "contact_agent": "Helpdesk"},
+            "owner",
+            "support",
+        )
+        self.assertEqual(meta["contact_agent"], "helpdesk")
+        self.assertEqual(meta["participants"], ["owner", "helpdesk"])
+        self.assertEqual(meta["type"], "infra")
+
 
 if __name__ == "__main__":
     unittest.main()

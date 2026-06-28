@@ -77,6 +77,17 @@ def _tagged(text: str) -> str | None:
     return m[0] if m else None
 
 
+def _channel_meta(body: dict, principal: str, name: str) -> dict:
+    contact_agent = (body.get("contact_agent") or "clodia").strip().lower()
+    return {
+        "title": (body.get("title") or name),
+        "type": body.get("type") or "progetto",
+        "owner": principal,
+        "participants": list(dict.fromkeys([principal, contact_agent])),
+        "contact_agent": contact_agent,
+    }
+
+
 def _pick_responder(participants: list[str], tier: str, tagged: str | None):
     """AI partecipante taggato (se presente e con clearance), altrimenti il più
     alto di rango tra gli AI partecipanti con clearance sufficiente."""
@@ -199,7 +210,8 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
 @router.post("/clodia/channels")
 async def channel_create(request: Request) -> dict:
     """Crea un nuovo canale/topic: l'owner è l'utente connesso; come partecipante
-    iniziale si aggiunge anche `clodia` (così c'è un risponditore di default)."""
+    iniziale si aggiunge anche il contact agent richiesto, default `clodia`
+    (così c'è sempre un risponditore)."""
     principal = _principal_from_request(request)
     if not principal:
         raise HTTPException(401, "login richiesto")
@@ -208,13 +220,7 @@ async def channel_create(request: Request) -> dict:
     tier = _norm(body.get("tier"))
     if not name:
         raise HTTPException(400, "nome richiesto")
-    meta = {
-        "title": (body.get("title") or name),
-        "type": body.get("type") or "progetto",
-        "owner": principal,
-        "participants": list(dict.fromkeys([principal, "clodia"])),
-        "contact_agent": "clodia",
-    }
+    meta = _channel_meta(body, principal, name)
     try:
         created = topics_client.create_topic(tier, name, meta)
     except topics_client.TopicsClientError as e:
