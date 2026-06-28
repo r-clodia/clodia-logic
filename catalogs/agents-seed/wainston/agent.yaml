@@ -1,6 +1,6 @@
-name: helpdesk
-display_name: Helpdesk
-description: "Agent dedicato al widget di assistenza in-app: orienta l'utente nella WebUI, fa triage dei problemi e scala a Clodia quando serve."
+name: wainston
+display_name: Wainston
+description: "Agent dedicato al widget di assistenza in-app: risolve attriti operativi nella WebUI, gestisce variabili app non sensibili e scala a Clodia quando serve."
 type: normal
 constitution: platform-core
 parents: [clodia]
@@ -20,10 +20,16 @@ sandbox:
 capabilities:
   - "helpdesk/in-app-support"
   - "helpdesk/ui-navigation"
+  - "helpdesk/app-runtime"
   - "helpdesk/triage"
   - "helpdesk/escalation"
 rules: []
-tool_permissions: []
+tool_permissions:
+  - "app_runtime.get"
+  - "app_runtime.set"
+  - "app_runtime.list"
+  - "app_runtime.reset"
+  - "app_runtime.health"
 priority: 20
 cost_profile: standard
 
