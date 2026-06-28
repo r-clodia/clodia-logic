@@ -126,6 +126,22 @@ def list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
     return r.json().get("files", [])
 
 
+def read_file(tier: str, name: str, path: str) -> bytes:
+    """Byte grezzi di un file del topic (binario incluso). Usato dal proxy
+    file-per-l'agente per scaricare un deliverable in scratch senza farlo
+    transitare in base64 dal modello."""
+    url = f"{_base()}/{tier}/{name}/file"
+    try:
+        r = requests.get(url, headers=_headers(), params={"path": path}, timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway read_file irraggiungibile: {e}") from e
+    if r.status_code == 404:
+        raise TopicsClientError(f"file non trovato: {path}")
+    if r.status_code != 200:
+        raise TopicsClientError(f"gateway read_file → HTTP {r.status_code}: {r.text[:160]}")
+    return r.content
+
+
 def put_file(tier: str, name: str, filename: str, content_b64: str) -> dict:
     url = f"{_base()}/{tier}/{name}/files"
     try:
