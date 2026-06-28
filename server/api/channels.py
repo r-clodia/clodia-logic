@@ -19,6 +19,7 @@ from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import manager, ProviderNotConnected
 from . import topics_client
+from . import access_log
 from .agents import _principal_from_request
 
 router = APIRouter()
@@ -146,6 +147,7 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
 
     # 1. registra il messaggio umano nel canale
     topics_client.post_message(tier, name, principal, req.content, kind="human")
+    access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
     # log dell'azione umana nella sua tab Logs (gli umani non eseguono turni)
     activity_log.append(principal, "message_sent",
                         {"channel": f"{tier}/{name}",
@@ -277,6 +279,7 @@ async def channel_open(tier: str, name: str, request: Request) -> dict:
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_member(request, topic.get("meta", {}))
+    access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
     return topic
 
 

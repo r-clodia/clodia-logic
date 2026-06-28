@@ -22,6 +22,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, Response
 
 from ..config import workspace_path
 from . import admin, topics_client
+from . import access_log
 from .agents import _principal_from_request
 
 router = APIRouter()
@@ -560,6 +561,7 @@ async def list_topics(request: Request) -> list[dict]:
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"gateway topics non disponibile: {str(e)[:160]}")
     me = _principal_from_request(request)
+    access = access_log.all_times()
     items = [{
         "name": r.get("name"),
         "tier": r.get("tier"),
@@ -577,8 +579,14 @@ async def list_topics(request: Request) -> list[dict]:
         "recent_artifacts": r.get("recent_files", []),
         # v2 non usa git: il "last_commit" della card è l'ultimo aggiornamento.
         "last_commit": r.get("updated_at"),
+        # ultimo accesso dalla UI (apertura/scrittura del canale): ordina la lista.
+        "last_accessed": access.get(f"{r.get('tier')}/{r.get('name')}"),
     } for r in rows if _visible_to(me, r)]
-    items.sort(key=lambda x: (x.get("title") or x.get("name") or "").lower())
+    # Ordina dal più recentemente consultato al più vecchio: usa last_accessed se
+    # presente, altrimenti l'ultimo aggiornamento del contenuto. I topic mai
+    # aperti né aggiornati finiscono in fondo.
+    items.sort(key=lambda x: (x.get("last_accessed") or x.get("last_commit") or ""),
+               reverse=True)
     return items
 
 
