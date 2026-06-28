@@ -16,6 +16,7 @@ from unittest import mock
 from . import session as S
 from .session import ChatSession
 from ..core.models import ClodiaStatus
+from claude_agent_sdk.types import StreamEvent
 
 
 @contextmanager
@@ -168,6 +169,52 @@ class SendFailureUnblocksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered["n"], 1)             # recovery invocato
         self.assertEqual(sess.status, ClodiaStatus.IDLE)  # pronta, non THINKING
         self.assertFalse(sess._lock.locked())           # lock libero → niente deadlock
+
+
+class CollectResponseTests(unittest.IsolatedAsyncioTestCase):
+
+    async def test_text_deltas_are_returned_as_final_response(self):
+        """Il canale posta il valore ritornato da _collect_response(). Se lo
+        SDK streamma il testo via StreamEvent ma non lo ripete nel messaggio
+        finale, quei delta devono comunque diventare la risposta persistita."""
+        sess = _make_session()
+
+        class _Iter:
+            def __init__(self):
+                self.items = [
+                    StreamEvent(
+                        uuid="1",
+                        session_id="s",
+                        event={
+                            "type": "content_block_delta",
+                            "delta": {"type": "text_delta", "text": "Ciao "},
+                        },
+                    ),
+                    StreamEvent(
+                        uuid="2",
+                        session_id="s",
+                        event={
+                            "type": "content_block_delta",
+                            "delta": {"type": "text_delta", "text": "Davide"},
+                        },
+                    ),
+                ]
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.items:
+                    raise StopAsyncIteration
+                return self.items.pop(0)
+
+        class _Client:
+            def receive_response(self):
+                return _Iter()
+
+        sess._client = _Client()
+        with mock.patch.object(S.bus, "publish", new=mock.AsyncMock()):
+            self.assertEqual(await sess._collect_response(), "Ciao Davide")
 
 
 if __name__ == "__main__":

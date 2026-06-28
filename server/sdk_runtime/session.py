@@ -739,6 +739,7 @@ class ChatSession:
 
     async def _collect_response(self) -> str:
         parts: list[str] = []
+        saw_text_delta = False
         start = asyncio.get_event_loop().time()
         iterator = self._client.receive_response().__aiter__()
         while True:
@@ -765,6 +766,8 @@ class ChatSession:
                     delta = ev.get("delta") or {}
                     dtype = delta.get("type")
                     if dtype == "text_delta" and delta.get("text"):
+                        parts.append(delta["text"])
+                        saw_text_delta = True
                         await bus.publish(Event(
                             type="message_chunk",
                             payload={"chat_id": self.chat_id, "role": "assistant",
@@ -791,12 +794,14 @@ class ChatSession:
                             },
                             timestamp=datetime.now(timezone.utc),
                         ))
-                # Il testo (e il thinking) sono già stati streammati come delta
-                # dagli StreamEvent: accumuliamo solo `parts` per persistenza/
-                # return, senza ri-pubblicare message_chunk full-text (eviterebbe
-                # il REPLACE che cancella i blocchi precedenti).
+                # Se lo SDK ha già emesso text_delta, `parts` contiene il testo
+                # visibile in UI. Alcune versioni non ripetono quel testo nel
+                # messaggio finale: affidarsi solo ad AssistantMessage può
+                # produrre una risposta vuota nel canale pur avendo visto i
+                # chunk live. Se invece non abbiamo delta, usiamo il fallback
+                # testuale del messaggio completo.
                 text = _extract_text(message)
-                if text:
+                if text and not saw_text_delta:
                     parts.append(text)
                 continue
             elif isinstance(message, UserMessage):
