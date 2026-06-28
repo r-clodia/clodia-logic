@@ -547,6 +547,32 @@ class ChatSession:
         self._client = await self._client_ctx.__aenter__()
         await self._set_status(ClodiaStatus.IDLE)
 
+    def _refresh_provider_env(self) -> bool:
+        """Aggiorna in-place l'env del provider effettivo nelle opzioni del
+        client. `provider_env` rinnova il token OAuth se scaduto/in scadenza (e
+        lo persiste). Necessario perché il subprocess è long-lived ma il token
+        viene iniettato statico allo start: senza questo, dopo qualche ora il
+        token scade e ogni turno dà 401 finché non si riavvia. Ritorna True se
+        il token è cambiato (→ il client va riaperto per iniettarlo)."""
+        if self._opts_kwargs is None:
+            return False
+        try:
+            from ..api.providers import provider_env
+            eff = agent_effective_provider(self.kind)
+            if not eff:
+                return False
+            fresh = provider_env(eff)
+        except Exception as e:  # noqa: BLE001 — un refresh fallito non deve rompere il turno
+            LOG.warning("refresh provider env fallito per kind=%s: %s", self.kind, e)
+            return False
+        if not fresh:
+            return False  # provider scollegato: non azzerare l'env esistente
+        env = self._opts_kwargs.setdefault("env", {})
+        changed = any(env.get(k) != v for k, v in fresh.items())
+        if changed:
+            env.update(fresh)
+        return changed
+
     async def _recover_session(self) -> bool:
         """Dopo un fallimento del turno (errore, timeout o subprocess wedged)
         riporta la sessione a uno stato PRONTO: chiude il client SDK corrente
@@ -558,6 +584,8 @@ class ChatSession:
         dal chiamante (`async with self._lock`), quindi niente deadlock."""
         if self._opts_kwargs is None:
             return False
+        # un fallimento può essere un 401 da token scaduto: rinnova prima di riaprire
+        self._refresh_provider_env()
         try:
             if self._client_ctx is not None:
                 try:
@@ -596,6 +624,12 @@ class ChatSession:
         if self._client is None:
             raise RuntimeError("session not started")
         async with self._lock:
+            # Token OAuth long-lived: se è in scadenza, provider_env lo rinnova;
+            # se è cambiato riapro il client col token fresco PRIMA del turno —
+            # così un subprocess di vecchia data non dà 401 a metà sessione.
+            if self._refresh_provider_env():
+                LOG.info("token provider rinnovato → riapro il client per %s", self.chat_id)
+                await self._recover_session()
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
             activity_log.append(self.kind, "run_started",
