@@ -72,6 +72,13 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(meta["participants"], ["owner", "helpdesk"])
         self.assertEqual(meta["type"], "infra")
 
+    def test_channel_error_text_is_user_visible_and_bounded(self) -> None:
+        text = channels._channel_error_text("clodia", RuntimeError("x" * 500))
+        self.assertIn("@clodia", text)
+        self.assertIn("Dettaglio tecnico", text)
+        self.assertIn("scala a Clodia", text)
+        self.assertLess(len(text), 420)
+
 
 if __name__ == "__main__":
     unittest.main()

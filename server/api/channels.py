@@ -8,6 +8,7 @@ risposta viene postata nel canale (`.messages/`). Niente catene AI→AI automati
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -140,6 +141,54 @@ def _history_prompt(name: str, tier: str, messages: list[dict]) -> str:
             + "\n\nRispondi all'ultimo messaggio come parte della conversazione del canale.")
 
 
+def _channel_error_text(agent: str, err: BaseException | str) -> str:
+    msg = str(err).strip() or "errore sconosciuto"
+    msg = " ".join(msg.split())[:220]
+    return (
+        f"Non sono riuscito a completare il turno di @{agent}.\n\n"
+        f"Dettaglio tecnico: `{msg}`\n\n"
+        "Puoi riprovare tra poco. Se succede di nuovo, apri i log dell'agente "
+        "o scala a Clodia."
+    )
+
+
+async def _run_channel_responder(
+    *,
+    tier: str,
+    name: str,
+    responder_name: str,
+    chat,
+    prompt: str,
+) -> None:
+    """Esegue il turno AI fuori dalla richiesta HTTP e rende l'esito visibile
+    nel canale. In questo modo la POST del messaggio umano non resta appesa per
+    tutta la durata dell'inferenza e gli errori non spariscono in un 502."""
+    await _typing(tier, name, responder_name, "start")
+    try:
+        reply = await chat.send_user_message(prompt)
+        topics_client.post_message(tier, name, responder_name, reply, kind="ai")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning(
+            "turno canale fallito: channel=%s/%s responder=%s err=%s",
+            tier, name, responder_name, e,
+        )
+        try:
+            topics_client.post_message(
+                tier,
+                name,
+                responder_name,
+                _channel_error_text(responder_name, e),
+                kind="ai",
+            )
+        except Exception as post_err:  # noqa: BLE001
+            LOG.error(
+                "impossibile pubblicare errore canale: channel=%s/%s responder=%s err=%s",
+                tier, name, responder_name, post_err,
+            )
+    finally:
+        await _typing(tier, name, responder_name, "stop")
+
+
 @router.post("/clodia/channels/{tier}/{name}/post")
 async def channel_post(tier: str, name: str, req: MessageRequest, request: Request,
                        respond: bool = True) -> dict:
@@ -182,7 +231,19 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
             chat = await manager.create(chat_id=chat_id, kind=responder.name)
             created = True
         except ProviderNotConnected as e:
-            raise HTTPException(409, str(e))
+            topics_client.post_message(
+                tier,
+                name,
+                responder.name,
+                _channel_error_text(responder.name, e),
+                kind="ai",
+            )
+            return {
+                "posted": True,
+                "responder": responder.name,
+                "queued": False,
+                "error": str(e),
+            }
     chat.principal = principal
     # primo turno: dai il contesto del canale; poi solo il nuovo messaggio (l'SDK
     # mantiene il filo del risponditore).
@@ -193,18 +254,14 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
                   f"({_channel_files_hint(tier_real, name)} "
                   f"Per offrire scelte rapide usa <!-- choices=A,B,C --> o "
                   f"<!-- choices-multi=A,B,C -->.)")
-    # indicatore "sta scrivendo…" per la UI (via SSE /clodia/events)
-    await _typing(tier, name, responder.name, "start")
-    try:
-        reply = await chat.send_user_message(prompt)
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"errore del risponditore: {str(e)[:160]}")
-    finally:
-        await _typing(tier, name, responder.name, "stop")
-
-    # 4. posta la risposta nel canale
-    topics_client.post_message(tier, name, responder.name, reply, kind="ai")
-    return {"posted": True, "responder": responder.name, "reply": reply}
+    asyncio.create_task(_run_channel_responder(
+        tier=tier,
+        name=name,
+        responder_name=responder.name,
+        chat=chat,
+        prompt=prompt,
+    ))
+    return {"posted": True, "responder": responder.name, "queued": True}
 
 
 @router.post("/clodia/channels")
