@@ -18,11 +18,7 @@ sandbox:
   deny_shell_patterns: ["*"]
 
 capabilities:
-  - "helpdesk/in-app-support"
-  - "helpdesk/ui-navigation"
-  - "helpdesk/app-runtime"
-  - "helpdesk/triage"
-  - "helpdesk/escalation"
+  - "helpdesk"
 rules: []
 tool_permissions:
   - "app_runtime.get"

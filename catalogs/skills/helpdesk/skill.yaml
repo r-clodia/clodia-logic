@@ -1,0 +1,29 @@
+version: "1.0.0"
+owner: owner
+status: APPROVED
+input_schema:
+  type: object
+  properties:
+    section:
+      type: string
+      description: "Sezione WebUI in cui l'utente si trova o pensa di trovarsi"
+    symptom:
+      type: string
+      description: "Attrito, domanda o messaggio di errore riportato dall'utente"
+  required: [symptom]
+output_schema:
+  type: object
+  description: "Prossimo passo di supporto o escalation preparata"
+  properties:
+    next_step: {type: string}
+    escalation_needed: {type: boolean}
+required_tools:
+  - app_runtime.get
+  - app_runtime.set
+  - app_runtime.list
+  - app_runtime.reset
+  - app_runtime.health
+side_effects: [app_runtime_write]
+idempotency_policy: scoped_app_state_only
+retry_policy:
+  on_denied_scope: escalate
