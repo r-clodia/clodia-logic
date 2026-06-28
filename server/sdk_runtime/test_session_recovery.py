@@ -56,6 +56,37 @@ def _make_session() -> ChatSession:
     return sess
 
 
+class RefreshProviderEnvTests(unittest.IsolatedAsyncioTestCase):
+    """Il token OAuth long-lived va rinnovato a metà sessione: _refresh_provider_env
+    aggiorna l'env in-place e segnala se il token è cambiato (→ riaprire il client)."""
+
+    async def test_token_changed_updates_env_and_returns_true(self):
+        sess = _make_session()
+        sess._opts_kwargs = {"cwd": "/tmp", "env": {"CLAUDE_CODE_OAUTH_TOKEN": "old"}}
+        with mock.patch.object(S, "agent_effective_provider", return_value="claude-pro-max"), \
+             mock.patch("server.api.providers.provider_env",
+                               return_value={"CLAUDE_CODE_OAUTH_TOKEN": "new"}):
+            changed = sess._refresh_provider_env()
+        self.assertTrue(changed)
+        self.assertEqual(sess._opts_kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"], "new")
+
+    async def test_token_unchanged_returns_false(self):
+        sess = _make_session()
+        sess._opts_kwargs = {"cwd": "/tmp", "env": {"CLAUDE_CODE_OAUTH_TOKEN": "same"}}
+        with mock.patch.object(S, "agent_effective_provider", return_value="claude-pro-max"), \
+             mock.patch("server.api.providers.provider_env",
+                               return_value={"CLAUDE_CODE_OAUTH_TOKEN": "same"}):
+            self.assertFalse(sess._refresh_provider_env())
+
+    async def test_empty_env_does_not_wipe(self):
+        sess = _make_session()
+        sess._opts_kwargs = {"cwd": "/tmp", "env": {"CLAUDE_CODE_OAUTH_TOKEN": "keep"}}
+        with mock.patch.object(S, "agent_effective_provider", return_value="claude-pro-max"), \
+             mock.patch("server.api.providers.provider_env", return_value={}):
+            self.assertFalse(sess._refresh_provider_env())
+        self.assertEqual(sess._opts_kwargs["env"]["CLAUDE_CODE_OAUTH_TOKEN"], "keep")
+
+
 class RecoverSessionTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_recover_restarts_client_and_returns_ready(self):
@@ -126,6 +157,7 @@ class SendFailureUnblocksTests(unittest.IsolatedAsyncioTestCase):
         with _patch_seams(), \
              mock.patch.object(sess, "_record", new=mock.AsyncMock()), \
              mock.patch.object(sess, "_publish_error", new=mock.AsyncMock()), \
+             mock.patch.object(sess, "_refresh_provider_env", return_value=False), \
              mock.patch.object(sess, "_set_status",
                                new=mock.AsyncMock(side_effect=lambda s: setattr(sess, "status", s))), \
              mock.patch.object(sess, "_recover_session", side_effect=fake_recover), \
