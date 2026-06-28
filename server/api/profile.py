@@ -26,9 +26,19 @@ def _base_url() -> str:
     return f"{base}/internal/profile"
 
 
+# Identità di servizio dell'agent-server verso il gateway: ha chiave server-side
+# (i super-agent sono emessi da issue-all). Gli umani firmano client-side e NON
+# hanno chiave qui → non possiamo coniare a loro nome. Coniamo come servizio e
+# dichiariamo il principal reale via header; il gateway (che si fida del servizio)
+# applica l'ACL su quel principal.
+_SERVICE = os.environ.get("CLODIA_PROFILE_SERVICE", "clodia")
+
+
 def _headers(principal: str) -> dict[str, str]:
-    # token coniato PER il principal: il gateway applica l'ACL su questa identità.
-    return {"Authorization": f"Bearer {pki.mint_session_token(principal, ttl_seconds=300)}"}
+    return {
+        "Authorization": f"Bearer {pki.mint_session_token(_SERVICE, ttl_seconds=300)}",
+        "X-Clodia-Principal": principal,
+    }
 
 
 def _principal(request: Request) -> str:
