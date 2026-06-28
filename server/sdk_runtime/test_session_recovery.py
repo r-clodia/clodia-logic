@@ -48,6 +48,8 @@ def _make_session() -> ChatSession:
     sess._client_ctx = None
     sess._lock = asyncio.Lock()
     sess._current_turn_task = None
+    sess._last_event_at = 0.0
+    sess._watchdog_fired = False
     sess._last_usage = {}
     sess._total_tokens = {"input": 0, "output": 0, "runs": 0}
     sess._spawn = None
@@ -55,6 +57,40 @@ def _make_session() -> ChatSession:
     sess.principal = "davide"
     sess._token_principal = None
     return sess
+
+
+class TurnWatchdogTests(unittest.IsolatedAsyncioTestCase):
+    """Il watchdog deve uccidere il subprocess quando non arrivano eventi SDK,
+    indipendentemente da asyncio.timeout (che su certi hang non scatta)."""
+
+    async def test_watchdog_kills_client_on_silence(self):
+        sess = _make_session()
+        sess._client_ctx = mock.AsyncMock()
+        sess._client = object()
+        sess._last_event_at = 0.0  # silenzio "da sempre" → oltre soglia
+        turn = asyncio.create_task(asyncio.sleep(30))
+        with mock.patch.object(S, "WATCHDOG_TICK", 0.01), \
+             mock.patch.object(S, "WATCHDOG_SILENCE", 0.02):
+            await sess._turn_watchdog(turn)
+        # lascia propagare la cancellazione richiesta dal watchdog
+        try:
+            await turn
+        except asyncio.CancelledError:
+            pass
+        self.assertTrue(sess._watchdog_fired)
+        self.assertIsNone(sess._client)                    # client abbandonato
+        self.assertTrue(turn.cancelled() or turn.done())   # turno sbloccato
+
+    async def test_watchdog_quiet_when_progress(self):
+        sess = _make_session()
+        sess._client_ctx = mock.AsyncMock()
+        sess._last_event_at = asyncio.get_event_loop().time()  # progresso recente
+        turn = asyncio.create_task(asyncio.sleep(0.05))
+        with mock.patch.object(S, "WATCHDOG_TICK", 0.01), \
+             mock.patch.object(S, "WATCHDOG_SILENCE", 5):
+            await sess._turn_watchdog(turn)  # ritorna quando il turno finisce
+        self.assertFalse(sess._watchdog_fired)
+        sess._client_ctx.__aexit__.assert_not_called()
 
 
 class RefreshProviderEnvTests(unittest.IsolatedAsyncioTestCase):

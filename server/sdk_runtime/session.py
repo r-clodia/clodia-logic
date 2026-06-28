@@ -51,6 +51,12 @@ _STREAM_LIMIT = 32 * 1024 * 1024  # 32MB
 COLLECT_CHUNK_TIMEOUT = 5 * 60    # 5 min silenzio SDK → stallo reale
 COLLECT_MAX_SECONDS   = 4 * 60 * 60  # 4h hard cap assoluto
 QUERY_TIMEOUT         = 90         # invio prompt al subprocess: oltre = client wedged → recovery
+# Watchdog di turno: INDIPENDENTE da asyncio.timeout (che su certi hang del
+# subprocess non riesce a cancellare la __anext__). Se per WATCHDOG_SILENCE
+# secondi non arriva NESSUN evento SDK, chiude forzatamente il client → la
+# lettura appesa erra e il turno termina/recupera, invece di restare bloccato.
+WATCHDOG_SILENCE = int(os.environ.get("CLODIA_TURN_WATCHDOG_SILENCE", "180"))
+WATCHDOG_TICK    = 15
 DEFAULT_CHAT_ID = "default"
 
 # Tipi di agente supportati. Ogni kind ha un cwd dedicato (dove vive il
@@ -413,6 +419,8 @@ class ChatSession:
         self._client_ctx = None
         self._lock = asyncio.Lock()
         self._current_turn_task: Optional[asyncio.Task] = None
+        self._last_event_at: float = 0.0   # ts ultimo evento SDK del turno (per il watchdog)
+        self._watchdog_fired: bool = False  # il watchdog ha ucciso il subprocess di questo turno
         self._last_usage: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
         self._spawn = None  # EphemeralWorkspace dello spawn webchat (cleanup a stop)
@@ -635,6 +643,7 @@ class ChatSession:
             activity_log.append(self.kind, "run_started",
                                 {"prompt": _snippet(content), "principal": self.principal,
                                  "chat_id": self.chat_id})
+            LOG.info("turno START %s: %s", self.chat_id, _snippet(content, 80))
             self._last_usage = {}
             model_name = KIND_MODEL.get(self.kind) or "claude-cli-default"
             with langfuse_observation(
@@ -656,14 +665,19 @@ class ChatSession:
                         # il lock (e con esso ogni messaggio successivo) all'infinito.
                         async with asyncio.timeout(QUERY_TIMEOUT):
                             await self._client.query(content)
+                        LOG.info("turno %s: query inviata, raccolgo la risposta", self.chat_id)
                     except Exception as e:
+                        LOG.error("turno %s: query fallita/timeout: %s", self.chat_id, e)
                         activity_log.append(self.kind, "error",
                                             {"error": _snippet(str(e)), "chat_id": self.chat_id})
                         await self._publish_error(str(e))
                         if not await self._recover_session():
                             await self._set_status(ClodiaStatus.ERROR)
                         raise
+                    self._last_event_at = asyncio.get_event_loop().time()
+                    self._watchdog_fired = False
                     self._current_turn_task = asyncio.create_task(self._collect_response())
+                    _watchdog = asyncio.create_task(self._turn_watchdog(self._current_turn_task))
                     try:
                         full = await self._current_turn_task
                         update_kwargs = {
@@ -680,13 +694,19 @@ class ChatSession:
                         await self._set_status(ClodiaStatus.IDLE)
                         return full
                     except asyncio.CancelledError:
-                        note = "⏹ Inferenza interrotta dall'utente."
-                        generation.update(output=trace_io(note), metadata={"status": "interrupted"})
+                        # distingui interruzione utente da kill del watchdog
+                        wd = self._watchdog_fired
+                        note = ("⏱ Turno interrotto dal watchdog: il subprocess non rispondeva "
+                                "(nessun evento per troppo tempo). Riprova."
+                                if wd else "⏹ Inferenza interrotta dall'utente.")
+                        reason = "watchdog_kill" if wd else "user_interrupt"
+                        generation.update(output=trace_io(note),
+                                          metadata={"status": "watchdog" if wd else "interrupted"})
                         await self._set_status(ClodiaStatus.CANCELLING)
                         await self._record({"role": "system", "content": note})
                         await bus.publish(Event(
                             type="interrupted",
-                            payload={"chat_id": self.chat_id, "reason": "user_interrupt"},
+                            payload={"chat_id": self.chat_id, "reason": reason},
                             timestamp=datetime.now(timezone.utc),
                         ))
                         await self._set_status(ClodiaStatus.IDLE)
@@ -709,7 +729,12 @@ class ChatSession:
                             await self._set_status(ClodiaStatus.ERROR)
                         raise
                     finally:
+                        _watchdog.cancel()
                         self._current_turn_task = None
+                        # se il watchdog ha ucciso il client, rimetti su una
+                        # sessione PRONTA (altrimenti il turno dopo trova _client=None)
+                        if self._watchdog_fired and self._client is None:
+                            await self._recover_session()
 
     async def send_user_message_async(self, content: str) -> dict:
         """Fire-and-forget: enqueue il messaggio e ritorna subito. Il turno
@@ -737,6 +762,37 @@ class ChatSession:
         task.cancel()
         return True
 
+    async def _turn_watchdog(self, turn_task: "asyncio.Task") -> None:
+        """Watchdog del turno, indipendente da asyncio.timeout. Se per
+        WATCHDOG_SILENCE secondi non arriva NESSUN evento SDK, chiude
+        forzatamente il client (uccide il subprocess claude): la lettura appesa
+        erra → il turno termina e il chiamante recupera. Risolve gli hang in cui
+        il timeout async non scatta (la __anext__ non cede mai all'event loop)."""
+        try:
+            while not turn_task.done():
+                await asyncio.sleep(WATCHDOG_TICK)
+                if turn_task.done():
+                    return
+                silence = asyncio.get_event_loop().time() - self._last_event_at
+                if silence >= WATCHDOG_SILENCE:
+                    LOG.error("watchdog %s: nessun evento SDK da %.0fs → chiudo il subprocess",
+                              self.chat_id, silence)
+                    self._watchdog_fired = True
+                    ctx = self._client_ctx
+                    self._client = None
+                    self._client_ctx = None
+                    if ctx is not None:
+                        try:
+                            await asyncio.wait_for(ctx.__aexit__(None, None, None), timeout=15)
+                        except Exception:  # noqa: BLE001 — subprocess che ignora il terminate
+                            pass
+                    # se la chiusura del client non ha sbloccato la read, forza il cancel
+                    if not turn_task.done():
+                        turn_task.cancel()
+                    return
+        except asyncio.CancelledError:
+            pass
+
     async def _collect_response(self) -> str:
         parts: list[str] = []
         saw_text_delta = False
@@ -755,6 +811,7 @@ class ChatSession:
             except asyncio.TimeoutError:
                 raise
 
+            self._last_event_at = asyncio.get_event_loop().time()  # progresso → watchdog quieto
             if isinstance(message, StreamEvent):
                 # Delta token-by-token (include_partial_messages=True). L'evento
                 # raw dell'API è in message.event: content_block_delta porta
