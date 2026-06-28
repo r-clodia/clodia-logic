@@ -50,6 +50,7 @@ _STREAM_LIMIT = 32 * 1024 * 1024  # 32MB
 
 COLLECT_CHUNK_TIMEOUT = 5 * 60    # 5 min silenzio SDK → stallo reale
 COLLECT_MAX_SECONDS   = 4 * 60 * 60  # 4h hard cap assoluto
+QUERY_TIMEOUT         = 90         # invio prompt al subprocess: oltre = client wedged → recovery
 DEFAULT_CHAT_ID = "default"
 
 # Tipi di agente supportati. Ogni kind ha un cwd dedicato (dove vive il
@@ -415,6 +416,9 @@ class ChatSession:
         self._last_usage: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
         self._spawn = None  # EphemeralWorkspace dello spawn webchat (cleanup a stop)
+        # Opzioni del client SDK calcolate in start(): riusate dal recovery per
+        # ricreare il subprocess dopo un fallimento senza ricalcolare env/spawn.
+        self._opts_kwargs: Optional[dict] = None
         # Utente UMANO della chat (principal verificato dal token della webui).
         # Propagato al gateway nel token ckt1 → runtime.current_user.
         self.principal: Optional[str] = None
@@ -524,10 +528,8 @@ class ChatSession:
             }
         except Exception as e:
             LOG.warning("clodia-tools MCP HTTP non configurato per kind=%s: %s", self.kind, e)
-        options = ClaudeAgentOptions(**opts_kwargs)
-        self._client_ctx = ClaudeSDKClient(options=options)
-        self._client = await self._client_ctx.__aenter__()
-        await self._set_status(ClodiaStatus.IDLE)
+        self._opts_kwargs = opts_kwargs
+        await self._open_client()
         # Auto-intro fire-and-forget: se il kind ne ha uno definito, lo
         # consegnamo come primo messaggio user in background. Il caller di
         # start() ritorna subito; eventuali messaggi successivi dell'operatore
@@ -535,6 +537,42 @@ class ChatSession:
         intro = KIND_AUTO_INTRO.get(self.kind)
         if intro:
             asyncio.create_task(self._do_send_bg(intro))
+
+    async def _open_client(self) -> None:
+        """(Ri)apre il client SDK dalle opzioni già calcolate in start().
+        Usato sia all'avvio sia dal recovery: crea il subprocess claude e
+        riporta la sessione a IDLE (pronta)."""
+        options = ClaudeAgentOptions(**self._opts_kwargs)
+        self._client_ctx = ClaudeSDKClient(options=options)
+        self._client = await self._client_ctx.__aenter__()
+        await self._set_status(ClodiaStatus.IDLE)
+
+    async def _recover_session(self) -> bool:
+        """Dopo un fallimento del turno (errore, timeout o subprocess wedged)
+        riporta la sessione a uno stato PRONTO: chiude il client SDK corrente
+        — potenzialmente bloccato o morto — e lo ricrea. Così il messaggio
+        successivo parte su un client sano invece di accodarsi a uno appeso:
+        è quest'ultimo il vero motivo per cui un canale restava "bloccato"
+        finché non si ricreava il container. Best-effort: se il restart
+        fallisce lo status resta ERROR, ma il lock è comunque già rilasciato
+        dal chiamante (`async with self._lock`), quindi niente deadlock."""
+        if self._opts_kwargs is None:
+            return False
+        try:
+            if self._client_ctx is not None:
+                try:
+                    await asyncio.wait_for(
+                        self._client_ctx.__aexit__(None, None, None), timeout=10)
+                except (Exception, asyncio.TimeoutError):
+                    pass  # subprocess già morto/wedged: si procede comunque
+            self._client = None
+            self._client_ctx = None
+            await self._open_client()
+            LOG.info("sessione %s ripristinata e pronta dopo fallimento turno", self.chat_id)
+            return True
+        except Exception as e:  # noqa: BLE001
+            LOG.error("recovery sessione %s fallita: %s", self.chat_id, e)
+            return False
 
     async def stop(self) -> None:
         if self._client_ctx is not None:
@@ -580,12 +618,16 @@ class ChatSession:
                     metadata={"kind": self.kind},
                 ):
                     try:
-                        await self._client.query(content)
+                        # timeout sull'invio: un client wedged non deve appendere
+                        # il lock (e con esso ogni messaggio successivo) all'infinito.
+                        async with asyncio.timeout(QUERY_TIMEOUT):
+                            await self._client.query(content)
                     except Exception as e:
-                        await self._set_status(ClodiaStatus.ERROR)
                         activity_log.append(self.kind, "error",
                                             {"error": _snippet(str(e)), "chat_id": self.chat_id})
                         await self._publish_error(str(e))
+                        if not await self._recover_session():
+                            await self._set_status(ClodiaStatus.ERROR)
                         raise
                     self._current_turn_task = asyncio.create_task(self._collect_response())
                     try:
@@ -619,14 +661,18 @@ class ChatSession:
                         note = (f"⏱ Timeout: nessun evento SDK per {COLLECT_CHUNK_TIMEOUT // 60}min "
                                 f"(o superato il cap di {COLLECT_MAX_SECONDS // 3600}h).")
                         generation.update(output=trace_io(note), metadata={"status": "timeout"})
-                        await self._set_status(ClodiaStatus.ERROR)
                         await self._record({"role": "system", "content": note})
                         await self._publish_error(note, reason="collect_timeout")
+                        # client probabilmente wedged sul turno scaduto: ricrealo
+                        # così il prossimo messaggio non si appende.
+                        if not await self._recover_session():
+                            await self._set_status(ClodiaStatus.ERROR)
                         raise
                     except Exception as e:
                         generation.update(output=trace_io(str(e)), metadata={"status": "error"})
-                        await self._set_status(ClodiaStatus.ERROR)
                         await self._publish_error(str(e))
+                        if not await self._recover_session():
+                            await self._set_status(ClodiaStatus.ERROR)
                         raise
                     finally:
                         self._current_turn_task = None
