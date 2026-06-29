@@ -15,6 +15,7 @@ import logging
 import os
 import shutil
 import uuid
+import fcntl
 from pathlib import Path
 from typing import Optional
 
@@ -30,6 +31,7 @@ LOG = logging.getLogger("agent-server.agents.workspace")
 # come alias per backcompat (test/colonia).
 SPAWNS_ROOT = data_path("spawns")
 WORKSPACES_ROOT = SPAWNS_ROOT
+SPAWN_SERIALS_ROOT = data_path("agent-state") / "spawn-serials"
 
 # Shared dir persistente tra agent (handoff di artefatti card-to-card).
 # Mountata in ogni workspace come symlink `scratch/shared/`. L'agent scrive
@@ -39,18 +41,60 @@ AGENCY_SHARED_ROOT = data_path("agency-shared")
 AGENCY_SHARED_CARDS = AGENCY_SHARED_ROOT / "cards"
 
 
-def _next_spawn_index(name: str) -> int:
-    """Prossimo indice sequenziale per gli spawn di `name` (proc-like:
-    name-1, name-2, …). Scansiona SPAWNS_ROOT per le cartelle <name>-<int>."""
-    if not SPAWNS_ROOT.is_dir():
-        return 1
+def _max_live_spawn_index(name: str) -> int:
+    """Massimo indice visibile tra gli spawn ancora materializzati."""
+    if not WORKSPACES_ROOT.is_dir():
+        return 0
     mx = 0
     prefix = f"{name}-"
-    for d in SPAWNS_ROOT.iterdir():
+    for d in WORKSPACES_ROOT.iterdir():
         suffix = d.name[len(prefix):] if d.name.startswith(prefix) else ""
         if d.is_dir() and suffix.isdigit():
             mx = max(mx, int(suffix))
-    return mx + 1
+    return mx
+
+
+def _read_spawn_serial(path: Path) -> int:
+    try:
+        raw = path.read_text(encoding="utf-8").strip()
+    except OSError:
+        return 0
+    if not raw:
+        return 0
+    try:
+        data = json.loads(raw)
+    except json.JSONDecodeError:
+        return int(raw) if raw.isdigit() else 0
+    if isinstance(data, dict):
+        return int(data.get("last", 0) or 0)
+    if isinstance(data, int):
+        return data
+    return 0
+
+
+def _write_spawn_serial(path: Path, serial: int) -> None:
+    tmp = path.with_suffix(".tmp")
+    tmp.write_text(json.dumps({"last": serial}) + "\n", encoding="utf-8")
+    tmp.replace(path)
+
+
+def _next_spawn_index(name: str) -> int:
+    """Prossimo seriale persistente per gli spawn di `name`.
+
+    Il vecchio modello guardava solo le directory vive (`name-1`, `name-2`, ...),
+    quindi dopo il cleanup poteva riusare un numero. Il registro sotto
+    `agent-state/spawn-serials/` rende il seriale monotono per agent seed anche
+    tra cleanup e restart.
+    """
+    SPAWN_SERIALS_ROOT.mkdir(parents=True, exist_ok=True)
+    serial_path = SPAWN_SERIALS_ROOT / f"{name}.json"
+    lock_path = SPAWN_SERIALS_ROOT / f"{name}.lock"
+    with lock_path.open("a+") as lock:
+        fcntl.flock(lock.fileno(), fcntl.LOCK_EX)
+        last = max(_read_spawn_serial(serial_path), _max_live_spawn_index(name))
+        serial = last + 1
+        _write_spawn_serial(serial_path, serial)
+        return serial
 
 
 def _resolve_path(path_template: str, scratch_dir: Path) -> str:
