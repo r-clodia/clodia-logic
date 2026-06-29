@@ -61,6 +61,40 @@ class AgentSdkRuntimeTests(unittest.TestCase):
             finally:
                 workspace_mod.WORKSPACES_ROOT = old_root
 
+    def test_spawn_serial_is_persistent_after_cleanup(self) -> None:
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            old_workspaces = workspace_mod.WORKSPACES_ROOT
+            old_serials = workspace_mod.SPAWN_SERIALS_ROOT
+            workspace_mod.WORKSPACES_ROOT = root / "spawns"
+            workspace_mod.SPAWN_SERIALS_ROOT = root / "agent-state" / "spawn-serials"
+            try:
+                agent = _agent_dir(root)
+                spec = AgentSpec.model_validate({
+                    "name": "saim",
+                    "description": "claude agent",
+                    "model": "claude-sonnet-4-5",
+                    "display_name": "Saim",
+                    "system_prompt": "system-prompt.md",
+                })
+                spec.agent_dir = str(agent)
+
+                first = workspace_mod.EphemeralWorkspace(spec)
+                first.create()
+                self.assertEqual(first.task_id, "1")
+                first.cleanup()
+
+                second = workspace_mod.EphemeralWorkspace(spec)
+                second.create()
+                try:
+                    self.assertEqual(second.task_id, "2")
+                    self.assertEqual(second.dir.name, "saim-2")
+                finally:
+                    second.cleanup()
+            finally:
+                workspace_mod.WORKSPACES_ROOT = old_workspaces
+                workspace_mod.SPAWN_SERIALS_ROOT = old_serials
+
 
 if __name__ == "__main__":
     unittest.main()
