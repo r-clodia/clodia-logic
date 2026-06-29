@@ -14,7 +14,7 @@ from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__
-from .api import admin, agent_files, agent_registry, agents, auth, catalog, channels, connectors, files, health, human_auth, profile, providers, spawns, topics
+from .api import admin, agent_registry, agents, auth, catalog, channels, connectors, files, health, human_auth, profile, providers, spawns, topics
 from .config import HOST, PORT
 from .scheduler import api as jobs_api
 from .scheduler import (
@@ -138,7 +138,6 @@ def create_app() -> FastAPI:
     app.include_router(human_auth.router)
     app.include_router(agents.router)
     app.include_router(channels.router)
-    app.include_router(agent_files.router)
     app.include_router(connectors.router)
     app.include_router(agent_registry.router)
     app.include_router(files.router)
