@@ -76,6 +76,17 @@ def create_topic(tier: str, name: str, meta: dict) -> dict:
     return r.json().get("meta", {})
 
 
+
+def archive_topic(tier: str, name: str) -> dict:
+    url = f"{_base()}/{tier}/{name}/archive"
+    try:
+        r = requests.post(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway archive irraggiungibile: {e}") from e
+    if r.status_code >= 400:
+        raise TopicsClientError(f"gateway archive → HTTP {r.status_code}: {r.text[:160]}")
+    return r.json()
+
 def list_messages(tier: str, name: str, limit: int = 200) -> list[dict]:
     url = f"{_base()}/{tier}/{name}/messages"
     try:

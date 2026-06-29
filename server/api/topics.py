@@ -502,6 +502,15 @@ def _scan(classification: str) -> list[dict]:
     return items
 
 
+@router.post("/api/topics/{tier}/{name}/archive")
+def archive_topic(tier: str, name: str):
+    """Archivia un topic (status=archived) via il gateway."""
+    try:
+        return topics_client.archive_topic(tier, name)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
 @router.get("/api/topics/catalog")
 async def topics_catalog(request: Request) -> list[dict]:
     """Catalogo COMPLETO dei topic (tier/name/title/kind) per il picker di export.
