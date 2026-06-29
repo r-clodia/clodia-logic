@@ -140,6 +140,28 @@ def _history_prompt(name: str, tier: str, messages: list[dict]) -> str:
             + "\n\nRispondi all'ultimo messaggio come parte della conversazione del canale.")
 
 
+def _context_messages(messages: list[dict]) -> list[dict]:
+    """Solo i messaggi successivi all'ultimo reset contesto entrano nel prompt."""
+    for i in range(len(messages) - 1, -1, -1):
+        msg = messages[i] or {}
+        if msg.get("kind") == "system" and msg.get("text") == "__CLODIA_CONTEXT_RESET__":
+            return messages[i + 1:]
+    return messages
+
+
+async def _drop_channel_sessions(tier: str, name: str, participants: list[str]) -> list[str]:
+    """Dimentica le sessioni runtime dei responder di questo canale."""
+    deleted: list[str] = []
+    for agent in participants:
+        chat_id = f"chan:{tier}:{name}:{agent}"
+        try:
+            await manager.delete(chat_id)
+            deleted.append(chat_id)
+        except KeyError:
+            continue
+    return deleted
+
+
 @router.post("/clodia/channels/{tier}/{name}/post")
 async def channel_post(tier: str, name: str, req: MessageRequest, request: Request,
                        respond: bool = True) -> dict:
@@ -187,7 +209,7 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
     # primo turno: dai il contesto del canale; poi solo il nuovo messaggio (l'SDK
     # mantiene il filo del risponditore).
     if created:
-        prompt = _history_prompt(name, tier_real, topics_client.list_messages(tier, name, limit=15))
+        prompt = _history_prompt(name, tier_real, _context_messages(topics_client.list_messages(tier, name, limit=200)))
     else:
         prompt = (f"[Canale #{name} · {tier_real}] @{principal}: {req.content}\n"
                   f"({_channel_files_hint(tier_real, name)} "
@@ -275,6 +297,29 @@ async def channel_messages(tier: str, name: str, request: Request, limit: int = 
         raise HTTPException(404, "canale non trovato")
     _require_member(request, topic.get("meta", {}))
     return {"messages": topics_client.list_messages(tier, name, limit=limit)}
+
+
+@router.post("/clodia/channels/{tier}/{name}/reset-context")
+async def channel_reset_context(tier: str, name: str, request: Request) -> dict:
+    """Resetta il contesto conversazionale del canale.
+
+    Non elimina i file del topic né i partecipanti: registra un marker nella
+    storia e chiude le runtime session dei responder, così il prossimo turno
+    riparte senza memoria conversazionale precedente.
+    """
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "login richiesto")
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    meta = topic.get("meta", {})
+    _require_member(request, meta)
+    topics_client.post_message(tier, name, principal, "__CLODIA_CONTEXT_RESET__", kind="system")
+    deleted = await _drop_channel_sessions(tier, name, meta.get("participants", []))
+    access_log.touch(tier, name)
+    activity_log.append(principal, "channel_context_reset", {"channel": f"{tier}/{name}"})
+    return {"reset": True, "sessions_deleted": deleted}
 
 
 @router.get("/clodia/channels/{tier}/{name}")
