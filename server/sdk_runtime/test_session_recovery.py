@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from datetime import datetime, timedelta, timezone
 from contextlib import contextmanager
 from unittest import mock
 
@@ -215,6 +216,42 @@ class CollectResponseTests(unittest.IsolatedAsyncioTestCase):
         sess._client = _Client()
         with mock.patch.object(S.bus, "publish", new=mock.AsyncMock()):
             self.assertEqual(await sess._collect_response(), "Ciao Davide")
+
+    async def test_stream_events_refresh_last_activity(self):
+        sess = _make_session()
+        sess.last_activity = datetime.now(timezone.utc) - timedelta(minutes=10)
+        before = sess.last_activity
+
+        class _Iter:
+            def __init__(self):
+                self.items = [
+                    StreamEvent(
+                        uuid="1",
+                        session_id="s",
+                        event={
+                            "type": "content_block_delta",
+                            "delta": {"type": "thinking_delta", "thinking": "ragiono"},
+                        },
+                    )
+                ]
+
+            def __aiter__(self):
+                return self
+
+            async def __anext__(self):
+                if not self.items:
+                    raise StopAsyncIteration
+                return self.items.pop(0)
+
+        class _Client:
+            def receive_response(self):
+                return _Iter()
+
+        sess._client = _Client()
+        with mock.patch.object(S.bus, "publish", new=mock.AsyncMock()):
+            await sess._collect_response()
+
+        self.assertGreater(sess.last_activity, before)
 
 
 if __name__ == "__main__":

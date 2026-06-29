@@ -755,6 +755,7 @@ class ChatSession:
             except asyncio.TimeoutError:
                 raise
 
+            self.last_activity = datetime.now(timezone.utc)
             if isinstance(message, StreamEvent):
                 # Delta token-by-token (include_partial_messages=True). L'evento
                 # raw dell'API è in message.event: content_block_delta porta
@@ -1164,6 +1165,7 @@ class CodexChatSession:
         return full
 
     async def _handle_event(self, ev: dict, parts: list[str]) -> None:
+        self.last_activity = datetime.now(timezone.utc)
         t = ev.get("type")
         if t == "thread.started":
             tid = ev.get("thread_id")
