@@ -40,7 +40,7 @@ declinali sui tool disponibili nel contesto d'uso:
 | write | `gdrive.upload` (+`gdrive.mkdir` per il parent) | `topic.put` (dallo scratch) |
 | make_dir | `gdrive.mkdir` | implicito in `topic.put` |
 | trash | cestino di Drive (o, se non disponibile, **segnala** invece di rimuovere) | `topic.delete_file` (→ `.trash/`) |
-| same | `md5Checksum` di Drive | `md5` del contenuto |
+| same | campo `md5` di `gdrive.list` | campo `md5` di `topic.files` |
 
 *(Il trasporto dei byte passa per lo **scratch** dell'agent, non per il contesto:
 niente base64 di file grandi. Vedi skill [[topic-files]].)*
