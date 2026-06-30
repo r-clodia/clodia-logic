@@ -229,18 +229,23 @@ def candidate_providers(providers: list[str] | None, provider: str | None,
 def effective_provider(providers: list[str] | None, provider: str | None,
                        agent_sdk: str | None, connected: set[str],
                        model: str | None = None) -> str | None:
-    """Provider effettivo = quello con SEAL PIÙ ALTO fra i compatibili ATTIVI
-    (connessi E non in pausa) che SERVONO il modello dell'agent. A parità di SEAL
-    vince l'ordine di preferenza. None → agent disabilitato. Policy 30 giu 2026:
-    modello dell'agent non sindacabile → provider = max SEAL fra
-    [dichiarati] ∩ [supportano il modello] ∩ [attivi]."""
+    """Provider effettivo = il PRIMO ATTIVO (connesso E non in pausa) nell'ordine
+    di PREFERENZA dichiarato dall'agent, fra quelli che SERVONO il suo modello.
+    None → agent disabilitato (nessun provider attivo).
+
+    Policy 30 giu 2026 (rev. 1 lug 2026): modello dell'agent non sindacabile →
+    provider = scelta dell'agent (preferenza primario→fallback). Il SEAL NON
+    seleziona più il provider: governa solo l'ACCESSO ai topic (tier), via
+    l'enforcement in api.channels. Così agent diversi possono usare provider
+    diversi in contemporanea (es. Clodia su claude-pro-max, Saiul su aws-region-eu)
+    senza che un provider a SEAL più alto, ma connesso per un altro agent, dirotti
+    tutti su di sé."""
     cands = candidate_providers(providers, provider, agent_sdk, model)
     paused = _load_paused()
-    active = [p for p in cands if p in connected and p not in paused]
-    if not active:
-        return None
-    # max SEAL; tie-break = posizione nella lista candidati (preferenza dichiarata).
-    return max(active, key=lambda p: (_seal_rank(p), -cands.index(p)))
+    for p in cands:  # ordine = preferenza dichiarata; primo attivo vince
+        if p in connected and p not in paused:
+            return p
+    return None
 
 
 def resolve_provider(provider: str | None, agent_sdk: str | None) -> str | None:

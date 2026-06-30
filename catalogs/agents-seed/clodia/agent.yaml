@@ -8,6 +8,10 @@ parents: [clodia-primal]
 created_at: "2026-01-01T00:00:00Z"
 agent_sdk: claude
 model: claude-opus-4-8
+# Provider in ordine di PREFERENZA (primo attivo vince; il SEAL non seleziona,
+# governa solo l'accesso ai topic). Clodia preferisce l'abbonamento Pro/Max
+# (costo flat), ripiega sull'API commerciale (DPA).
+providers: [claude-pro-max, anthropic-api]
 avatar_color: "#ff6b3d"
 
 sandbox:
