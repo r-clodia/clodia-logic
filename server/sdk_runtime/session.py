@@ -945,7 +945,7 @@ class ChatSession:
         with self.session_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
         # Auto-title: primo user message diventa titolo (prefisso kind + snippet 60 char)
-        prefix = KIND_TITLE_PREFIX[self.kind]
+        prefix = _resolve_title_prefix(self.kind)
         default_titles = ("", "Nuova chat", f"{prefix} Nuova chat")
         if msg.get("role") == "user" and self.title in default_titles:
             content = (msg.get("content") or "").strip().splitlines()[0] if msg.get("content") else ""
@@ -1304,7 +1304,7 @@ class CodexChatSession:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         with self.session_file.open("a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
-        prefix = KIND_TITLE_PREFIX[self.kind]
+        prefix = _resolve_title_prefix(self.kind)
         default_titles = ("", "Nuova chat", f"{prefix} Nuova chat")
         if msg.get("role") == "user" and self.title in default_titles:
             content = (msg.get("content") or "").strip().splitlines()[0] if msg.get("content") else ""
