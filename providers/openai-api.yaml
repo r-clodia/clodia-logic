@@ -14,6 +14,7 @@ sovereignty:
   dimensions:
     jurisdiction: us            # OpenAI, legge US
     dpa: true
+    dpa_url: "https://openai.com/policies/data-processing-addendum"
     no_training: true           # no-training su dati API di default
     data_residency: us          # (EU data residency disponibile su alcuni piani — verificare)
     retention: standard         # ~30g; ZDR per piani idonei

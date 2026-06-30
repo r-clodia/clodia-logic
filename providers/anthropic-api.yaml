@@ -22,6 +22,7 @@ sovereignty:
   dimensions:
     jurisdiction: us            # Anthropic PBC, legge US
     dpa: true                   # DPA commerciale (art. 28)
+    dpa_url: "https://www.anthropic.com/legal/commercial-terms"
     no_training: true           # no-training su input/output API
     data_residency: us
     retention: standard         # ~30g; zero-retention enterprise disponibile

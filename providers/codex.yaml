@@ -16,6 +16,7 @@ sovereignty:
   dimensions:
     jurisdiction: us
     dpa: false                  # ChatGPT/codex consumer: nessun DPA
+    dpa_url: "https://openai.com/policies/privacy-policy"
     no_training: default
     data_residency: us
     retention: standard

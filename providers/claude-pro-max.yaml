@@ -18,6 +18,7 @@ sovereignty:
   dimensions:
     jurisdiction: us
     dpa: false                  # consumer: nessun DPA art. 28
+    dpa_url: "https://www.anthropic.com/legal/consumer-terms"
     no_training: default        # termini consumer (più deboli del commerciale)
     data_residency: us
     retention: standard

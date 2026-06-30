@@ -27,6 +27,7 @@ sovereignty:
   dimensions:
     jurisdiction: us            # AWS Inc., legge US (CLOUD Act) — possibile in teoria
     dpa: true                   # AWS GDPR DPA + SCC — verificato per eu-west-1
+    dpa_url: "https://aws.amazon.com/compliance/gdpr-center/"
     no_training: true           # Bedrock non usa input/output per addestramento
     data_residency: eu          # eu-west-1 (Irlanda, SEE)
     retention: none             # Bedrock non conserva i prompt (no logging di default)
