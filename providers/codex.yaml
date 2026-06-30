@@ -8,6 +8,7 @@ mechanism: subscription
 sdk: codex
 flow: openai
 priority: 20
+models: ["gpt-*", "o1*", "o3*", "o4*", "codex*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) — SEAL eff = min(SOV-2/3/7)
 sovereignty:

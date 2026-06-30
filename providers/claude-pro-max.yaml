@@ -10,6 +10,7 @@ sdk: claude
 flow: anthropic
 # Preferito dopo l'API per lo stesso SDK.
 priority: 20
+models: ["claude-*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) — SEAL eff = min(SOV-2/3/7)
 sovereignty:

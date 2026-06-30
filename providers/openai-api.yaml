@@ -6,6 +6,7 @@ mechanism: apikey
 apikey_env: OPENAI_API_KEY
 sdk: codex
 priority: 10
+models: ["gpt-*", "o1*", "o3*", "o4*", "chatgpt*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) — SEAL eff = min(SOV-2/3/7)
 sovereignty:

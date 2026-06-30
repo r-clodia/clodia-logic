@@ -75,11 +75,14 @@ def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
     # I principal `human` non sono eseguiti: nessun provider/motore.
     if spec.type == "human":
         return {"provider": None, "providers": [], "provider_connected": True}
+    # candidati filtrati per il MODELLO non sindacabile dell'agent.
     cands = candidate_providers(getattr(spec, "providers", None),
-                                getattr(spec, "provider", None), spec.agent_sdk)
-    # provider EFFETTIVO con la policy SEAL-max fra gli attivi (connessi e non in pausa).
+                                getattr(spec, "provider", None), spec.agent_sdk,
+                                getattr(spec, "model", None))
+    # provider EFFETTIVO = SEAL-max fra [dichiarati]∩[supportano il modello]∩[attivi].
     pid = effective_provider(getattr(spec, "providers", None),
-                             getattr(spec, "provider", None), spec.agent_sdk, connected)
+                             getattr(spec, "provider", None), spec.agent_sdk, connected,
+                             getattr(spec, "model", None))
     return {
         "provider": pid,
         # SEAL del provider a cui l'agent è ATTUALMENTE attribuito (per la card).

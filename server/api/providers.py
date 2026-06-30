@@ -16,6 +16,7 @@ Due meccanismi per provider:
 """
 from __future__ import annotations
 
+import fnmatch
 import json
 import logging
 import os
@@ -93,6 +94,11 @@ def _load_catalog() -> tuple[dict, dict]:
                 "sovereignty": dict(d.get("sovereignty") or {}),
                 # opt-in: se False non è candidato di default per il suo SDK.
                 "default": is_default,
+                # Modelli serviti dal provider (glob, es. 'claude-*', 'gpt-*',
+                # 'mistral*'). Vuoto = serve qualunque modello del suo SDK
+                # (back-compat). Usato per filtrare i candidati per il modello
+                # NON sindacabile dell'agent.
+                "models": [str(m) for m in (d.get("models") or [])],
             }
             # Solo i provider `default` entrano nella selezione automatica per-SDK.
             if d.get("sdk") and is_default:
@@ -184,36 +190,51 @@ def default_providers_for_sdk(agent_sdk: str | None) -> list[str]:
     return list(SDK_PROVIDERS.get(agent_sdk or "claude", []))
 
 
+def provider_supports_model(pid: str | None, model: str | None) -> bool:
+    """True se il provider può servire `model` (glob match su `models` del
+    catalogo). Provider senza `models` dichiarati → serve qualunque modello del
+    suo SDK (back-compat). model None → nessun vincolo."""
+    if not model:
+        return True
+    pats = (_CATALOG.get(_normalize(pid) or "") or {}).get("models") or []
+    if not pats:
+        return True
+    return any(fnmatch.fnmatch(model, pat) for pat in pats)
+
+
 def candidate_providers(providers: list[str] | None, provider: str | None,
-                        agent_sdk: str | None) -> list[str]:
+                        agent_sdk: str | None, model: str | None = None) -> list[str]:
     """Lista ordinata di provider compatibili per un agent (ordine = preferenza):
     - `providers` esplicito (lista nel seed) ha priorità;
     - back-compat: `provider` singolo → lista a un elemento;
     - fallback: default dell'SDK (API prima, abbonamento poi).
-    Gli id ignoti al catalogo sono scartati; gli alias legacy sono normalizzati."""
+    Filtra per il MODELLO (non sindacabile) dell'agent: restano solo i provider
+    che servono quel modello. Id ignoti scartati; alias legacy normalizzati."""
     if providers:
         cands = [_normalize(p) for p in providers]
     elif provider:
         cands = [_normalize(provider)]
     else:
         cands = default_providers_for_sdk(agent_sdk)
-    # dedup preservando l'ordine, solo id noti al catalogo
+    # dedup preservando l'ordine, solo id noti al catalogo + che servono il modello
     seen: set[str] = set()
     out: list[str] = []
     for p in cands:
-        if p and p in _CATALOG and p not in seen:
+        if p and p in _CATALOG and p not in seen and provider_supports_model(p, model):
             seen.add(p)
             out.append(p)
     return out
 
 
 def effective_provider(providers: list[str] | None, provider: str | None,
-                       agent_sdk: str | None, connected: set[str]) -> str | None:
+                       agent_sdk: str | None, connected: set[str],
+                       model: str | None = None) -> str | None:
     """Provider effettivo = quello con SEAL PIÙ ALTO fra i compatibili ATTIVI
-    (connessi E non in pausa). A parità di SEAL vince l'ordine di preferenza
-    dell'agent (lista `providers`/default SDK). None → agent disabilitato
-    (nessun compatibile attivo). Policy 30 giu 2026: preferisci il più sovrano."""
-    cands = candidate_providers(providers, provider, agent_sdk)
+    (connessi E non in pausa) che SERVONO il modello dell'agent. A parità di SEAL
+    vince l'ordine di preferenza. None → agent disabilitato. Policy 30 giu 2026:
+    modello dell'agent non sindacabile → provider = max SEAL fra
+    [dichiarati] ∩ [supportano il modello] ∩ [attivi]."""
+    cands = candidate_providers(providers, provider, agent_sdk, model)
     paused = _load_paused()
     active = [p for p in cands if p in connected and p not in paused]
     if not active:

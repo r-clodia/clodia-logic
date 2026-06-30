@@ -10,6 +10,7 @@ sdk: claude
 # Ordine di preferenza entro l'SDK (più basso = preferito). L'API precede
 # l'abbonamento di default (DPA commerciale > consumer).
 priority: 10
+models: ["claude-*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1, ott 2025) ──────────────
 # SEAL effettivo (gating Clodia) = min(SOV-2, SOV-3, SOV-7). Score pesato pieno

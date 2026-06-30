@@ -348,7 +348,8 @@ def agent_candidates(kind: str) -> list[str]:
         spec = _kind_spec(kind)
         if spec is not None:
             return candidate_providers(getattr(spec, "providers", None),
-                                       getattr(spec, "provider", None), spec.agent_sdk)
+                                       getattr(spec, "provider", None), spec.agent_sdk,
+                                       getattr(spec, "model", None))
         sdk = "codex" if kind in CODEX_KINDS else "claude"
         return default_providers_for_sdk(sdk)
     except Exception:  # noqa: BLE001
@@ -356,17 +357,21 @@ def agent_candidates(kind: str) -> list[str]:
 
 
 def agent_effective_provider(kind: str) -> Optional[str]:
-    """Provider EFFETTIVO del kind: primo compatibile collegato. None se nessun
-    candidato è collegato. Su errore infra fail-open al candidato preferito."""
-    cands = agent_candidates(kind)
-    if not cands:
-        return None
+    """Provider EFFETTIVO del kind con la policy unica: SEAL-max fra
+    [dichiarati] ∩ [supportano il modello dell'agent] ∩ [attivi (connessi e non
+    in pausa)]. None se nessuno. Fail-open al preferito su errore infra."""
     try:
-        from ..api.providers import connected_provider_ids
+        from ..api.providers import effective_provider, connected_provider_ids
         connected = connected_provider_ids()
     except Exception:  # noqa: BLE001 — fail-open su errore infra
-        return cands[0]
-    return next((c for c in cands if c in connected), None)
+        return (agent_candidates(kind) or [None])[0]
+    spec = _kind_spec(kind)
+    if spec is not None:
+        return effective_provider(getattr(spec, "providers", None),
+                                  getattr(spec, "provider", None), spec.agent_sdk,
+                                  connected, getattr(spec, "model", None))
+    sdk = "codex" if kind in CODEX_KINDS else "claude"
+    return effective_provider(None, None, sdk, connected, None)
 
 
 def agent_provider(kind: str) -> Optional[str]:

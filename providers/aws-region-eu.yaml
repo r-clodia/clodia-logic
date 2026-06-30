@@ -18,6 +18,7 @@ extra_env:
 # SDK di esecuzione: i modelli Claude via Bedrock.
 sdk: claude
 priority: 20
+models: ["claude-*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) ────────────────────────
 # SEAL effettivo (gating Clodia) = min(SOV-2 legale, SOV-3 dato/AI, SOV-7 sicurezza).
