@@ -2,6 +2,9 @@ name: wainston
 display_name: Wainston
 description: "Agent dedicato al widget di assistenza in-app: risolve attriti operativi nella WebUI, gestisce variabili app non sensibili e scala a Clodia quando serve."
 type: normal
+# Immutabile a runtime: Wainston è agent di sistema. Come i super, si modifica
+# solo via codice/rebuild del seed (no PATCH/PFP/agents.*). Vedi _is_immutable.
+immutable: true
 # Helpdesk del widget = canale "Internal" (SEAL-1): serve la clearance per poter
 # rispondere lì (senza, il default SEAL-0 lo escluderebbe da _pick_responder).
 clearance: SEAL-1
@@ -29,6 +32,8 @@ tool_permissions:
   - "app_runtime.list"
   - "app_runtime.reset"
   - "app_runtime.health"
+  # amministrazione capability degli ALTRI agent editabili (skill/tool/rules).
+  - "agents.*"
 priority: 20
 cost_profile: standard
 
