@@ -79,13 +79,21 @@ def _tagged(text: str) -> str | None:
 
 def _channel_meta(body: dict, principal: str, name: str) -> dict:
     contact_agent = (body.get("contact_agent") or "clodia").strip().lower()
-    return {
+    meta = {
         "title": (body.get("title") or name),
         "type": body.get("type") or "progetto",
         "owner": principal,
         "participants": list(dict.fromkeys([principal, contact_agent])),
         "contact_agent": contact_agent,
     }
+    # Storage backend dei FILE (scelto in UI): local (default) o drive.
+    # Il gateway (service.new) lo materializza: drive → lega/crea la cartella.
+    sc = body.get("storage_config")
+    if isinstance(sc, dict) and sc.get("type") == "drive":
+        meta["storage_config"] = {"type": "drive",
+                                  "folder": (sc.get("folder") or "").strip() or None,
+                                  "account": sc.get("account")}
+    return meta
 
 
 def _pick_responder(participants: list[str], tier: str, tagged: str | None):
