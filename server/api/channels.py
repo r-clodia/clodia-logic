@@ -96,12 +96,34 @@ def _channel_meta(body: dict, principal: str, name: str) -> dict:
     return meta
 
 
+def _provider_seal_ok(spec, tier: str | None) -> bool:
+    """True se il provider EFFETTIVO dell'agent ha SEAL ≥ tier del topic — cioè il
+    motore che tratterà i dati è adeguato al tier. Provider non determinato → non ok
+    (salvo tier SEAL-0)."""
+    from ..sdk_runtime.session import agent_effective_provider
+    from .providers import provider_seal
+    ps = provider_seal(agent_effective_provider(spec.name))
+    return _CLEAR.get(_norm(ps), 0) >= _CLEAR.get(_norm(tier), 0)
+
+
 def _pick_responder(participants: list[str], tier: str, tagged: str | None):
-    """AI partecipante taggato (se presente e con clearance), altrimenti il più
-    alto di rango tra gli AI partecipanti con clearance sufficiente."""
+    """AI partecipante taggato (se idoneo), altrimenti il più alto di rango fra gli
+    AI idonei. Idoneità (30 giu 2026): clearance ≥ tier SEMPRE; inoltre, per gli
+    agent NORMAL, anche provider.seal ≥ tier (enforcement duro). I super-agent
+    (clodia) bypassano il vincolo provider → rispondono comunque, ma chi chiama
+    riceve un warning se il provider è sotto il tier (vedi channel_post)."""
     specs = [registry.get_by_name(n) for n in participants]
-    ai = [s for s in specs if s and s.type in ("super", "normal")
-          and _can_access(_effective_clearance(s), tier)]
+
+    def eligible(s) -> bool:
+        if not s or s.type not in ("super", "normal"):
+            return False
+        if not _can_access(_effective_clearance(s), tier):
+            return False
+        if s.type == "normal" and not _provider_seal_ok(s, tier):
+            return False   # normal: provider DEVE essere ≥ tier
+        return True
+
+    ai = [s for s in specs if eligible(s)]
     if tagged:
         t = next((s for s in ai if s.name == tagged), None)
         if t:
@@ -200,7 +222,34 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
     responder = _pick_responder(participants, tier_real, _tagged(req.content))
     if responder is None:
         return {"posted": True, "responder": None,
-                "note": "nessun agente AI partecipante con clearance sufficiente"}
+                "note": "nessun agente AI partecipante con clearance e provider "
+                        f"adeguati al tier {tier_real} del topic"}
+
+    # Eccezione super-agent: clodia risponde anche se il suo provider è sotto il
+    # tier (per i normal sarebbe stato escluso da _pick_responder). In quel caso
+    # avvisiamo lo user — la UI mostra un popup che suggerisce di attivare un altro
+    # agente o un provider con SEAL ≥ tier.
+    warning = None
+    if responder.type == "super" and not _provider_seal_ok(responder, tier_real):
+        from ..sdk_runtime.session import agent_effective_provider
+        from .providers import provider_seal
+        pid = agent_effective_provider(responder.name)
+        warning = {
+            "kind": "provider_below_tier",
+            "tier": tier_real,
+            "responder": responder.name,
+            "provider": pid,
+            "provider_seal": provider_seal(pid),
+            "message": (f"Il provider in uso da {responder.name} "
+                        f"({pid or 'n/d'}, {provider_seal(pid) or 'SEAL n/d'}) è "
+                        f"sotto il tier {tier_real} di questo topic. I dati qui "
+                        f"trattati richiederebbero un provider con SEAL ≥ {tier_real}."),
+            "suggestions": [
+                "Attiva un provider con SEAL ≥ tier (es. aws-region-eu o scaleway) "
+                "nella sezione Providers",
+                "Coinvolgi un agente il cui provider effettivo soddisfi il tier",
+            ],
+        }
 
     # 3. turno: sessione persistente per (canale, responder), riuso del runtime
     chat_id = f"chan:{tier}:{name}:{responder.name}"
@@ -234,7 +283,8 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
 
     # 4. posta la risposta nel canale
     topics_client.post_message(tier, name, responder.name, reply, kind="ai")
-    return {"posted": True, "responder": responder.name, "reply": reply}
+    return {"posted": True, "responder": responder.name, "reply": reply,
+            "warning": warning}
 
 
 @router.post("/clodia/channels")
