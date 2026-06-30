@@ -144,6 +144,13 @@ class AgentSpec(BaseModel):
     # catalog rules). Elenco libero di stringhe.
     rules: list[str] = Field(default_factory=list)
 
+    # Immutabilità a runtime: se True (o se type=="super"), l'agent NON è
+    # modificabile da nessuna via applicativa (PATCH admin, PFP, tool agents.*).
+    # Si cambia SOLO via codice/rebuild del seed. Protegge il nucleo (super) e
+    # gli agent "di sistema" critici (es. Wainston) dall'auto-escalation e da
+    # riscritture indebite. Vedi api.agent_registry._is_immutable.
+    immutable: bool = False
+
     # ── Campi CAP (Colony Agent Platform, spec §3.1) ──────────────────
     # Versione della definizione agente (semver libero, default "0").
     version: str = "0"

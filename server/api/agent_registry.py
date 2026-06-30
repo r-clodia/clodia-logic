@@ -189,6 +189,9 @@ async def generate_agent_pfp(name: str, body: PfpGenerateBody) -> dict:
     spec = registry.get_by_name(name)
     if spec is None:
         raise HTTPException(404, f"agent '{name}' non trovato")
+    if _is_immutable(spec):
+        raise HTTPException(403, f"agent '{name}' è immutabile (super o protetto): "
+                                 "PFP modificabile solo via codice/rebuild del seed")
     prompt = (body.prompt or "").strip()
     if not prompt and not body.image_b64:
         raise HTTPException(400, "serve un prompt testuale o un'immagine")
@@ -276,6 +279,14 @@ class AgentPatch(BaseModel):
     mailbox_parent: Optional[str] = None    # super genitore per il subaddress (regular)
 
 
+def _is_immutable(spec) -> bool:
+    """Un agent è immutabile a runtime se è un super-agent (nucleo) o porta il
+    flag immutable:true (es. Wainston). Gli immutabili si modificano SOLO via
+    codice/rebuild del seed: nessuna via applicativa (PATCH, PFP, agents.*) può
+    toccarli."""
+    return getattr(spec, "type", None) == "super" or bool(getattr(spec, "immutable", False))
+
+
 def _set_yaml_scalar(text: str, key: str, value: str) -> str:
     """Sostituisce/aggiunge un campo scalare top-level in YAML preservando
     commenti e formattazione del resto."""
@@ -291,6 +302,137 @@ def _remove_yaml_scalar(text: str, key: str) -> str:
     return re.sub(rf"^{re.escape(key)}:.*$\n?", "", text, count=1, flags=re.MULTILINE)
 
 
+def _yaml_list_block(key: str, items: list[str]) -> str:
+    """Serializza una lista top-level in YAML block style (o `[]` se vuota)."""
+    if not items:
+        return f"{key}: []\n"
+    body = "".join(f"  - {json.dumps(it)}\n" for it in items)
+    return f"{key}:\n{body}"
+
+
+def _set_yaml_list(text: str, key: str, items: list[str]) -> str:
+    """Sostituisce/aggiunge una lista top-level (`key`) preservando il resto del
+    file. Gestisce sia la forma inline (`key: []` / `key: [a, b]`) sia quella a
+    blocco (`key:` + righe `  - ...`). Se `key` non esiste, la accoda."""
+    lines = text.split("\n")
+    out: list[str] = []
+    i, n = 0, len(lines)
+    replaced = False
+    pat = re.compile(rf"^{re.escape(key)}:(.*)$")
+    while i < n:
+        m = pat.match(lines[i])
+        if m and not replaced:
+            rest = m.group(1).strip()
+            i += 1
+            if rest == "":  # block style: consuma le righe figlie "  - ..."
+                while i < n and re.match(r"^\s+-\s", lines[i]):
+                    i += 1
+            out.append(_yaml_list_block(key, items).rstrip("\n"))
+            replaced = True
+            continue
+        out.append(lines[i])
+        i += 1
+    res = "\n".join(out)
+    if not replaced:
+        res = res.rstrip("\n") + "\n" + _yaml_list_block(key, items).rstrip("\n")
+    if not res.endswith("\n"):
+        res += "\n"
+    return res
+
+
+def _catalog_names(kind: str) -> set:
+    """Nomi disponibili nel catalogo skill/rule (per validare i riferimenti)."""
+    try:
+        from .catalog import _list_catalog
+        return {it.get("name") for it in _list_catalog(kind) if it.get("name")}
+    except Exception:  # noqa: BLE001 — catalogo non disponibile → validazione lasca
+        return set()
+
+
+def _validate_catalog_refs(items: list[str], kind: str) -> None:
+    """I riferimenti semplici (senza glob/pack) devono esistere nel catalogo.
+    I pattern (`*`, `pack/...`) sono ammessi senza verifica puntuale."""
+    valid = _catalog_names(kind)
+    if not valid:
+        return
+    for it in items:
+        if "*" in it or "/" in it:
+            continue
+        if it not in valid:
+            raise HTTPException(400, f"{kind} sconosciuta: '{it}' (non presente nel catalogo)")
+
+
+def _agent_can_admin(caller: str | None) -> bool:
+    """True se il principal (agent) può amministrare le capability di altri agent:
+    super-agent (poteri pieni) o agent con permesso `agents.*` (o `*`) in
+    tool_permissions. È l'authz lato backend, ridondante con la whitelist del
+    gateway (difesa in profondità)."""
+    if not caller:
+        return False
+    cs = registry.get_by_name(caller)
+    if cs is None:
+        return False
+    if getattr(cs, "type", None) == "super":
+        return True
+    perms = getattr(cs, "tool_permissions", []) or []
+    return "*" in perms or "agents.*" in perms or any(
+        p == "agents" or p.startswith("agents.") for p in perms)
+
+
+class AgentCapsPatch(BaseModel):
+    """Set COMPLETO (non incrementale) delle liste; None = campo invariato."""
+    capabilities: Optional[list[str]] = None
+    rules: Optional[list[str]] = None
+    tool_permissions: Optional[list[str]] = None
+
+
+@router.patch("/{name}/caps", response_model=AgentSpec)
+async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -> AgentSpec:
+    """Edita capabilities / rules / tool_permissions di un agent EDITABILE.
+    Autorizzazione per AGENT principal (token ckt1 inoltrato dal gateway): solo
+    super-agent o agent con `agents.*`. Target immutabile → 403 (super/protetti
+    si cambiano solo via codice/rebuild). Le liste sono set completi."""
+    caller = _principal_from_request(request)
+    if not _agent_can_admin(caller):
+        raise HTTPException(403, "richiede un super-agent o il permesso 'agents.*'")
+    spec = registry.get_by_name(name)
+    if spec is None:
+        raise HTTPException(404, f"agent '{name}' non trovato")
+    if _is_immutable(spec):
+        raise HTTPException(403, f"agent '{name}' è immutabile (super o protetto): "
+                                 "modificabile solo via codice/rebuild del seed")
+    if patch.capabilities is not None:
+        _validate_catalog_refs(patch.capabilities, "skill")
+    if patch.rules is not None:
+        _validate_catalog_refs(patch.rules, "rule")
+    if patch.tool_permissions is not None:
+        # Anti-escalation: il potere di amministrare gli agent (agents.*) e il
+        # wildcard totale (*) NON si conferiscono a runtime — solo via seed/codice.
+        # Altrimenti un admin potrebbe "fabbricare" nuovi admin assegnandolo.
+        for t in patch.tool_permissions:
+            if t in ("*", "agents") or t.startswith("agents."):
+                raise HTTPException(400, "non concedibile a runtime: il potere di "
+                                         "amministrazione agent ('agents.*') e il "
+                                         "wildcard totale ('*') si conferiscono solo "
+                                         "via codice/seed")
+
+    yaml_path = Path(spec.agent_dir) / "agent.yaml"
+    text = yaml_path.read_text()
+    for key, items in (("capabilities", patch.capabilities),
+                       ("rules", patch.rules),
+                       ("tool_permissions", patch.tool_permissions)):
+        if items is not None:
+            text = _set_yaml_list(text, key, items)
+    yaml_path.write_text(text)
+
+    registry.load()
+    updated = registry.get_by_name(name)
+    if updated is None:
+        raise HTTPException(500, f"dopo la modifica l'agent '{name}' non valida: "
+                                 f"{registry.errors().get(name)}")
+    return updated
+
+
 @router.patch("/{name}", response_model=AgentSpec)
 async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSpec:
     """Edita system prompt, meta, canali di contatto, model, sdk di un agent
@@ -300,6 +442,9 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
     spec = registry.get_by_name(name)
     if spec is None:
         raise HTTPException(404, f"agent '{name}' non trovato")
+    if _is_immutable(spec):
+        raise HTTPException(403, f"agent '{name}' è immutabile (super o protetto): "
+                                 "modificabile solo via codice/rebuild del seed")
     if patch.clearance is not None and patch.clearance and _norm_clearance(patch.clearance) not in _CLR_VALID:
         raise HTTPException(400, f"clearance invalida: {patch.clearance} (SEAL-0..4)")
     agent_dir = Path(spec.agent_dir)
