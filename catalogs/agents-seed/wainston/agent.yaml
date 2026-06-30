@@ -13,6 +13,9 @@ parents: [clodia]
 created_at: "2026-06-28T00:00:00Z"
 agent_sdk: claude
 model: claude-sonnet-4-5
+# Provider in ordine di preferenza (primo attivo vince): Wainston preferisce
+# l'abbonamento Pro/Max (costo flat) per il widget di assistenza, fallback API.
+providers: [claude-pro-max, anthropic-api]
 avatar_color: "#38bdf8"
 mailbox_parent: clodia
 
