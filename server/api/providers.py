@@ -81,6 +81,9 @@ def _load_catalog() -> tuple[dict, dict]:
                 "mechanism": d.get("mechanism") or ("subscription" if d.get("flow") else "apikey"),
                 "sdk": d.get("sdk"),
                 "priority": prio,
+                # Env STATICHE aggiuntive (es. Bedrock: CLAUDE_CODE_USE_BEDROCK, AWS_REGION,
+                # model id EU) iniettate quando il provider è effettivo, oltre alla apikey.
+                "extra_env": dict(d.get("extra_env") or {}),
             }
             if d.get("sdk"):
                 by_sdk.setdefault(d["sdk"], []).append((prio, pid))
@@ -375,6 +378,8 @@ def provider_env(pid: str | None = None) -> dict[str, str]:
             env.update(sub_env)
         elif d.get("method") == "apikey" and d.get("api_key"):
             env[meta["apikey_env"]] = d["api_key"]
+            # Env statiche del provider (es. Bedrock: flag + region + model id EU).
+            env.update(meta.get("extra_env") or {})
     return env
 
 
@@ -390,5 +395,9 @@ def all_provider_env_keys() -> set[str]:
         k = meta.get("apikey_env")
         if k:
             keys.add(k)
+        # Anche le env statiche (es. CLAUDE_CODE_USE_BEDROCK, AWS_REGION, model id):
+        # vanno azzerate quando l'agent usa un ALTRO provider, altrimenti un residuo
+        # Bedrock dirotterebbe un agent assegnato all'API diretta. Mutua esclusione.
+        keys.update((meta.get("extra_env") or {}).keys())
     keys.add(anthropic_oauth.SUBSCRIPTION_ENV)
     return keys

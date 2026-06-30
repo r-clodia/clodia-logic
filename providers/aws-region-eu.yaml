@@ -1,0 +1,40 @@
+# Provider AWS Bedrock (region EU) — pezzo di sistema CLONABILE.
+# Solo DEFINIZIONE (catalogo), MAI credenziali (→ vault del gateway).
+# Modelli Claude serviti via Amazon Bedrock, region EU (Irlanda). DPA verificato.
+# Già in uso su Clodia Primal (script `clodia`): una SOLA apikey (Bedrock API key)
+# → AWS_BEARER_TOKEN_BEDROCK, niente AWS access key/secret.
+name: AWS Bedrock (EU)
+# Meccanismo: apikey, ma l'env è il bearer token Bedrock (non ANTHROPIC_API_KEY).
+mechanism: apikey
+apikey_env: AWS_BEARER_TOKEN_BEDROCK
+# Env STATICHE aggiuntive da iniettare quando questo provider è effettivo:
+# attiva la modalità Bedrock dell'SDK + region EU + i model id EU.
+extra_env:
+  CLAUDE_CODE_USE_BEDROCK: "1"
+  AWS_REGION: eu-west-1
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-4-6-v1"
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-4-6"
+  ANTHROPIC_DEFAULT_HAIKU_MODEL: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+# SDK di esecuzione: i modelli Claude via Bedrock.
+sdk: claude
+priority: 20
+
+# ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) ────────────────────────
+# SEAL effettivo (gating Clodia) = min(SOV-2 legale, SOV-3 dato/AI, SOV-7 sicurezza).
+sovereignty:
+  seal: SEAL-2
+  assessment: { SOV-2: SEAL-2, SOV-3: SEAL-3, SOV-7: SEAL-3 }
+  dimensions:
+    jurisdiction: us            # AWS Inc., legge US (CLOUD Act) — possibile in teoria
+    dpa: true                   # AWS GDPR DPA + SCC — verificato per eu-west-1
+    no_training: true           # Bedrock non usa input/output per addestramento
+    data_residency: eu          # eu-west-1 (Irlanda, SEE)
+    retention: none             # Bedrock non conserva i prompt (no logging di default)
+    cloud_act_exposed: true
+  note: >
+    Un gradino SOPRA i provider US-residency (Anthropic/OpenAI API = SEAL-1): qui il
+    trattamento avviene fisicamente in SEE (eu-west-1) sotto DPA+SCC, con no-training
+    e no-retention → SOV-2 e SOV-3 più alti. Il CLOUD Act resta possibile in teoria
+    (controllo US) e impedisce il pieno SOVRANO (SEAL-3/4, riservati a giurisdizione/
+    controllo EU: AWS European Sovereign Cloud o provider EU). → SEAL effettivo = SEAL-2,
+    il miglior livello tra i provider a controllo US, ideale quando serve residenza EU.
