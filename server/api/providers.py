@@ -106,6 +106,71 @@ def _normalize(pid: str | None) -> str | None:
     return PROVIDER_ALIASES.get(pid, pid)
 
 
+# ── Pause/resume per-provider (kill-switch, come per gli agent) ───────────────
+# Un provider in pausa NON è "attivo": resta connesso (credenziale presente) ma
+# viene escluso dalla selezione, così gli agent ripiegano sul prossimo provider.
+_PAUSE_FILE = data_path("agent-state") / "paused-providers.json"
+
+
+def _load_paused() -> set[str]:
+    if not _PAUSE_FILE.is_file():
+        return set()
+    try:
+        return {_normalize(p) for p in (json.loads(_PAUSE_FILE.read_text()) or {}).get("paused", [])}
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("paused-providers.json corrotto, reset: %s", e)
+        return set()
+
+
+def _save_paused(paused: set[str]) -> None:
+    _PAUSE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _PAUSE_FILE.write_text(json.dumps({"paused": sorted(p for p in paused if p)}, indent=2))
+
+
+def provider_paused(pid: str | None) -> bool:
+    return _normalize(pid) in _load_paused()
+
+
+def list_paused_providers() -> list[str]:
+    return sorted(_load_paused())
+
+
+def pause_provider(pid: str) -> dict:
+    p = _normalize(pid)
+    paused = _load_paused()
+    was = p in paused
+    paused.add(p)
+    _save_paused(paused)
+    LOG.warning("Provider '%s' PAUSED (was_paused=%s)", p, was)
+    return {"paused": True, "was_paused": was}
+
+
+def resume_provider(pid: str) -> dict:
+    p = _normalize(pid)
+    paused = _load_paused()
+    was = p in paused
+    paused.discard(p)
+    _save_paused(paused)
+    LOG.info("Provider '%s' RESUMED (was_paused=%s)", p, was)
+    return {"paused": False, "was_paused": was}
+
+
+def provider_seal(pid: str | None) -> str | None:
+    """Livello SEAL dichiarato di un provider (es. 'SEAL-2'), o None."""
+    meta = _CATALOG.get(_normalize(pid) or "") or {}
+    return (meta.get("sovereignty") or {}).get("seal")
+
+
+# Rank numerico del livello SEAL (SEAL-0..4) per scegliere il più sovrano.
+def _seal_rank(pid: str | None) -> int:
+    meta = _CATALOG.get(_normalize(pid) or "") or {}
+    seal = (meta.get("sovereignty") or {}).get("seal") or ""
+    try:
+        return int(str(seal).replace("SEAL-", "").strip())
+    except ValueError:
+        return -1
+
+
 def default_providers_for_sdk(agent_sdk: str | None) -> list[str]:
     """Provider compatibili di default per un SDK, ordinati per preferenza."""
     return list(SDK_PROVIDERS.get(agent_sdk or "claude", []))
@@ -136,12 +201,17 @@ def candidate_providers(providers: list[str] | None, provider: str | None,
 
 def effective_provider(providers: list[str] | None, provider: str | None,
                        agent_sdk: str | None, connected: set[str]) -> str | None:
-    """Primo provider compatibile che risulta collegato, o None (→ agent
-    disabilitato: nessun provider compatibile è collegato)."""
-    for p in candidate_providers(providers, provider, agent_sdk):
-        if p in connected:
-            return p
-    return None
+    """Provider effettivo = quello con SEAL PIÙ ALTO fra i compatibili ATTIVI
+    (connessi E non in pausa). A parità di SEAL vince l'ordine di preferenza
+    dell'agent (lista `providers`/default SDK). None → agent disabilitato
+    (nessun compatibile attivo). Policy 30 giu 2026: preferisci il più sovrano."""
+    cands = candidate_providers(providers, provider, agent_sdk)
+    paused = _load_paused()
+    active = [p for p in cands if p in connected and p not in paused]
+    if not active:
+        return None
+    # max SEAL; tie-break = posizione nella lista candidati (preferenza dichiarata).
+    return max(active, key=lambda p: (_seal_rank(p), -cands.index(p)))
 
 
 def resolve_provider(provider: str | None, agent_sdk: str | None) -> str | None:
@@ -240,6 +310,8 @@ async def list_providers() -> dict:
             # sovranità: livello SEAL effettivo (+ dettaglio) per la UI / guard tier.
             "seal": (meta.get("sovereignty") or {}).get("seal"),
             "sovereignty": meta.get("sovereignty") or None,
+            # pausa per-provider: connesso ma escluso dalla selezione.
+            "paused": provider_paused(pid),
         })
     return {"providers": out}
 
@@ -329,6 +401,23 @@ async def disconnect(pid: str) -> dict:
         if ah.is_file():
             ah.unlink()
     return {"connected": False}
+
+
+@router.post("/api/providers/{pid}/pause")
+async def pause_provider_ep(pid: str) -> dict:
+    """Mette in pausa il provider: resta connesso ma escluso dalla selezione
+    (gli agent ripiegano sul prossimo provider attivo con SEAL più alto)."""
+    if _normalize(pid) not in _CATALOG:
+        raise HTTPException(404, f"provider sconosciuto: {pid}")
+    return pause_provider(pid)
+
+
+@router.post("/api/providers/{pid}/resume")
+async def resume_provider_ep(pid: str) -> dict:
+    """Riattiva un provider precedentemente messo in pausa."""
+    if _normalize(pid) not in _CATALOG:
+        raise HTTPException(404, f"provider sconosciuto: {pid}")
+    return resume_provider(pid)
 
 
 # CODEX_HOME materializzato dal bundle abbonamento OpenAI: ospita auth.json (e

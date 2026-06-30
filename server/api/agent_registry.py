@@ -36,7 +36,7 @@ from pydantic import BaseModel
 
 from ..agents import activity_log, pause as pause_mod, rank as rank_mod, registry
 from ..agents.models import AgentSpec
-from .providers import connected_provider_ids, candidate_providers
+from .providers import connected_provider_ids, candidate_providers, effective_provider, provider_seal
 from .provider_store import ProviderStoreError
 from . import admin, contacts, imagegen_client
 from .agents import _principal_from_request
@@ -77,14 +77,16 @@ def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
         return {"provider": None, "providers": [], "provider_connected": True}
     cands = candidate_providers(getattr(spec, "providers", None),
                                 getattr(spec, "provider", None), spec.agent_sdk)
-    pid = next((p for p in cands if p in connected), None)
+    # provider EFFETTIVO con la policy SEAL-max fra gli attivi (connessi e non in pausa).
+    pid = effective_provider(getattr(spec, "providers", None),
+                             getattr(spec, "provider", None), spec.agent_sdk, connected)
     return {
-        # provider EFFETTIVO (primo compatibile collegato) o None se nessuno.
         "provider": pid,
+        # SEAL del provider a cui l'agent è ATTUALMENTE attribuito (per la card).
+        "provider_seal": provider_seal(pid),
         # lista ordinata dei provider compatibili (per la UI).
         "providers": cands,
-        # se ci sono candidati ma nessuno collegato → agent disattivato.
-        # nessun candidato (non derivabile) → non si può dire scollegato.
+        # se ci sono candidati ma nessuno attivo → agent disattivato.
         "provider_connected": (pid is not None) if cands else True,
     }
 
