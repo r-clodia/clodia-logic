@@ -84,6 +84,8 @@ def _load_catalog() -> tuple[dict, dict]:
                 # Env STATICHE aggiuntive (es. Bedrock: CLAUDE_CODE_USE_BEDROCK, AWS_REGION,
                 # model id EU) iniettate quando il provider è effettivo, oltre alla apikey.
                 "extra_env": dict(d.get("extra_env") or {}),
+                # Classificazione di sovranità (SEAL + SOV) per la UI e i guard tier.
+                "sovereignty": dict(d.get("sovereignty") or {}),
             }
             if d.get("sdk"):
                 by_sdk.setdefault(d["sdk"], []).append((prio, pid))
@@ -235,6 +237,9 @@ async def list_providers() -> dict:
             "sdk": meta.get("sdk"),
             # capacità: il provider supporta il login-abbonamento OAuth-paste?
             "subscription": "oauth" if meta.get("oauth") else None,
+            # sovranità: livello SEAL effettivo (+ dettaglio) per la UI / guard tier.
+            "seal": (meta.get("sovereignty") or {}).get("seal"),
+            "sovereignty": meta.get("sovereignty") or None,
         })
     return {"providers": out}
 
