@@ -1,0 +1,42 @@
+# Provider Scaleway Generative APIs — pezzo di sistema CLONABILE.
+# Solo DEFINIZIONE (catalogo), MAI credenziali (→ vault del gateway).
+# Cloud SOVRANO EU (Scaleway SAS, Francia): modelli OPEN (Mistral, Llama, …)
+# serviti da datacenter EU (fr-par / nl-ams), API OpenAI-compatibile.
+name: Scaleway (EU sovereign)
+# Meccanismo: apikey OpenAI-compatibile. Condivide l'env OPENAI_API_KEY con
+# openai-api (provider_store tiene credenziali separate per id; la mutua
+# esclusione azzera le env non effettive) ma punta a un base_url diverso.
+mechanism: apikey
+apikey_env: OPENAI_API_KEY
+extra_env:
+  OPENAI_BASE_URL: "https://api.scaleway.ai/v1"   # endpoint OpenAI-compat (DA CONFERMARE: eventuale /{project_id}/v1)
+  # OPENAI_MODEL: "mistral-small-3.2-24b-instruct-2506"  # DA SCEGLIERE: modello open Scaleway
+# SDK di esecuzione: OpenAI-compatibile (codex exec).
+sdk: codex
+priority: 5
+
+# ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) ────────────────────────
+# SEAL effettivo (gating Clodia) = min(SOV-2 legale, SOV-3 dato/AI, SOV-7 sicurezza).
+sovereignty:
+  seal: SEAL-3
+  assessment: { SOV-2: SEAL-4, SOV-3: SEAL-4, SOV-7: SEAL-3 }
+  dimensions:
+    jurisdiction: eu            # Scaleway SAS (Francia) — giurisdizione UE, NO CLOUD Act
+    dpa: true                   # DPA GDPR (titolare/responsabile UE)
+    dpa_url: "https://www.scaleway.com/en/data-protection-agreement/"
+    no_training: true           # modelli open self-hosted: nessun training sui dati cliente
+    data_residency: eu          # fr-par (Parigi) / nl-ams (Amsterdam)
+    retention: none
+    cloud_act_exposed: false    # provider e controllo UE → non soggetto a CLOUD Act/FISA
+  note: >
+    Cloud SOVRANO EU: giurisdizione e controllo francesi/UE, niente esposizione CLOUD Act
+    → SOV-2/SOV-3 al massimo (SEAL-4). SOV-7 a SEAL-3 perché le Generative APIs non sono
+    (ancora) qualificate SecNumCloud; con quella qualifica salirebbe a SEAL-4 pieno.
+    → SEAL effettivo = SEAL-3, il più sovrano della lista (sopra AWS-EU SEAL-2, US-residency
+    SEAL-1). NB: i modelli sono OPEN (Mistral/Llama/…), non GPT/Claude → cambiano capacità.
+    Harness: l'inferenza va a Scaleway (EU) anche col codex CLI (client OpenAI/US eseguito
+    in locale) → il trattamento resta SEAL-3; disabilitare la TELEMETRIA del codex CLI per
+    non far uscire metadati d'uso verso US. SEAL-4 pieno richiederebbe harness e hardware
+    non-US (oltre a SecNumCloud) → fuori portata oggi.
+  # Attivazione: serve una API key Scaleway (→ vault), verificare l'endpoint (eventuale
+  # /{project_id}/v1) e scegliere il modello (OPENAI_MODEL, es. mistral-*/llama-*).
