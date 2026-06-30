@@ -14,6 +14,10 @@ extra_env:
 # SDK di esecuzione: OpenAI-compatibile (codex exec).
 sdk: codex
 priority: 5
+# OPT-IN: i modelli sono OPEN (non GPT) → NON deve essere scelto in automatico
+# (dirotterebbe un agent dal suo modello, es. ophelia da GPT-5.5). Solo gli agent
+# che lo dichiarano in `providers:` lo usano.
+default: false
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) ────────────────────────
 # SEAL effettivo (gating Clodia) = min(SOV-2 legale, SOV-3 dato/AI, SOV-7 sicurezza).

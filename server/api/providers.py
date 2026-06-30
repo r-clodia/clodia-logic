@@ -73,6 +73,11 @@ def _load_catalog() -> tuple[dict, dict]:
             d = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
             pid = f.stem
             prio = int(d.get("priority", 100))
+            # default=false → provider OPT-IN: NON entra nel default per-SDK (non
+            # viene scelto in automatico), ma resta nel catalogo per gli agent che
+            # lo dichiarano esplicitamente. Usato per provider che cambiano modello
+            # (es. scaleway: modelli open → non deve dirottare un agent da GPT).
+            is_default = bool(d.get("default", True))
             catalog[pid] = {
                 "name": d.get("name", pid.capitalize()),
                 "apikey_env": d.get("apikey_env"),
@@ -86,8 +91,11 @@ def _load_catalog() -> tuple[dict, dict]:
                 "extra_env": dict(d.get("extra_env") or {}),
                 # Classificazione di sovranità (SEAL + SOV) per la UI e i guard tier.
                 "sovereignty": dict(d.get("sovereignty") or {}),
+                # opt-in: se False non è candidato di default per il suo SDK.
+                "default": is_default,
             }
-            if d.get("sdk"):
+            # Solo i provider `default` entrano nella selezione automatica per-SDK.
+            if d.get("sdk") and is_default:
                 by_sdk.setdefault(d["sdk"], []).append((prio, pid))
     sdk_providers = {sdk: [pid for _, pid in sorted(lst)] for sdk, lst in by_sdk.items()}
     return catalog, sdk_providers
