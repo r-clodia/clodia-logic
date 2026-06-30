@@ -106,6 +106,21 @@ def _provider_seal_ok(spec, tier: str | None) -> bool:
     return _CLEAR.get(_norm(ps), 0) >= _CLEAR.get(_norm(tier), 0)
 
 
+def _eligibility(spec, tier: str | None) -> dict:
+    """Idoneità di un AeI al tier del topic, per la UI.
+    - umani: sempre idonei (non trattano dati via provider).
+    - normal: idoneo solo se clearance ≥ tier E provider.seal ≥ tier.
+    - super: sempre idoneo (eccezione clodia), ma `warn` se il provider è sotto
+      il tier → la UI lo mostra con ⚠️."""
+    if not spec or spec.type not in ("super", "normal"):
+        return {"eligible": True, "warn": False}
+    clr_ok = _can_access(_effective_clearance(spec), tier)
+    prov_ok = _provider_seal_ok(spec, tier)
+    if spec.type == "super":
+        return {"eligible": True, "warn": not prov_ok}
+    return {"eligible": bool(clr_ok and prov_ok), "warn": False}
+
+
 def _pick_responder(participants: list[str], tier: str, tagged: str | None):
     """AI partecipante taggato (se idoneo), altrimenti il più alto di rango fra gli
     AI idonei. Idoneità (30 giu 2026): clearance ≥ tier SEMPRE; inoltre, per gli
@@ -390,6 +405,24 @@ async def channel_open(tier: str, name: str, request: Request) -> dict:
     _require_member(request, topic.get("meta", {}))
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
     return topic
+
+
+@router.get("/clodia/channels/{tier}/{name}/eligibility")
+async def channel_eligibility(tier: str, name: str, request: Request) -> dict:
+    """Idoneità di ogni AeI registrato rispetto al tier del topic.
+    Usato dalla UI per (a) nascondere i partecipanti non idonei — tranne i super,
+    mostrati con ⚠️ — e (b) filtrare il dropdown «aggiungi agente»."""
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    meta = topic.get("meta", {})
+    _require_member(request, meta)
+    tier_real = meta.get("tier", tier)
+    agents = []
+    for spec in registry.list():
+        e = _eligibility(spec, tier_real)
+        agents.append({"name": spec.name, "type": spec.type, **e})
+    return {"tier": tier_real, "agents": agents}
 
 
 def _require_owner(request: Request, meta: dict) -> str:
