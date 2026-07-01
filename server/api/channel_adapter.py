@@ -72,14 +72,16 @@ async def _mirror_topic(tier: str, name: str, channel: dict) -> None:
     state = _load_state(tier, name)
     seen = set(state.get("seen", []))
 
-    # Auto-provisioning del responder confinato (clone per-topic) — una volta.
-    if not state.get("responder"):
-        try:
-            rn = channel_responder.ensure_responder(tier, name, tier)
+    # Auto-provisioning del responder confinato (clone per-topic). Idempotente e
+    # chiamato a ogni tick: clona se manca, e RI-registra sempre nel gateway (il
+    # config.yaml del gateway è baked → un rebuild lo azzera; così si auto-guarisce).
+    try:
+        rn = channel_responder.ensure_responder(tier, name, tier)
+        if state.get("responder") != rn:
             state["responder"] = rn
             _save_state(tier, name, state)
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("ensure_responder %s/%s: %s", tier, name, e)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("ensure_responder %s/%s: %s", tier, name, e)
 
     # 1) INBOUND
     try:

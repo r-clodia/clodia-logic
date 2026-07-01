@@ -51,10 +51,13 @@ def ensure_responder(tier: str, name: str, topic_tier: str) -> str:
             return rn
         _clone(rn, topic_tier)
         registry.load()
-        try:
-            gateway_admin.register_agent(rn, allowed_tools=[])
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("register_agent %s nel gateway fallita: %s", rn, e)
+    # Registrazione nel gateway SEMPRE (idempotente): il config.yaml del gateway
+    # è baked nell'immagine → un rebuild azzera le registrazioni runtime. Ripeterla
+    # a ogni tick rende il clone auto-guarente (torna dopo un rebuild del gateway).
+    try:
+        gateway_admin.register_agent(rn, allowed_tools=[])
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("register_agent %s nel gateway fallita: %s", rn, e)
     try:
         topics_client.set_participant(tier, name, rn, add=True)
     except Exception as e:  # noqa: BLE001
