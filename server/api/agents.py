@@ -14,6 +14,7 @@ from sse_starlette.sse import EventSourceResponse
 
 from ..core.events import bus
 from ..sdk_runtime.session import manager
+from ..agents.workspace import SPAWNS_ROOT
 
 router = APIRouter()
 LOG = logging.getLogger("agent-server.api.agents")
@@ -50,17 +51,55 @@ def _live_status(status: str, last_activity: str) -> str:
     return s or "unknown"
 
 
+def _spawn_rows() -> list[dict]:
+    rows: list[dict] = []
+    if not SPAWNS_ROOT.is_dir():
+        return rows
+    for d in sorted(SPAWNS_ROOT.iterdir()):
+        if not d.is_dir():
+            continue
+        agent, sep, instance = d.name.rpartition("-")
+        if not sep:
+            agent, instance = d.name, None
+        try:
+            last_activity = datetime.fromtimestamp(d.stat().st_mtime, timezone.utc).isoformat()
+        except OSError:
+            last_activity = None
+        rows.append({
+            "chat_id": f"spawn:{d.name}",
+            "agent": agent,
+            "spawn_id": d.name,
+            "spawn_instance": instance,
+            "runtime": None,
+            "principal": None,
+            "topic": None,
+            "context_kind": "spawn",
+            "state": "idle",
+            "last_activity": last_activity,
+            "created_at": last_activity,
+            "tokens_in": 0,
+            "tokens_out": 0,
+            "runs": 0,
+        })
+    return rows
+
+
 @router.get("/clodia/runtime/sessions")
 async def runtime_sessions() -> dict:
     """Vista 'top'/Activity Monitor: agenti spawnati con topic, token, stato."""
     rows = []
+    seen_spawns = set()
     for c in manager.list():
         d = c.to_dict()
         ctx = _topic_of(d["chat_id"])
         tot = d.get("total_tokens") or {}
+        if d.get("spawn_id"):
+            seen_spawns.add(d["spawn_id"])
         rows.append({
             "chat_id": d["chat_id"],
             "agent": d["kind"],
+            "spawn_id": d.get("spawn_id"),
+            "spawn_instance": d.get("spawn_instance"),
             "runtime": d.get("runtime"),
             "principal": d.get("principal"),
             "topic": ctx["topic"],
@@ -72,6 +111,9 @@ async def runtime_sessions() -> dict:
             "tokens_out": tot.get("output", 0),
             "runs": tot.get("runs", 0),
         })
+    for row in _spawn_rows():
+        if row["spawn_id"] not in seen_spawns:
+            rows.append(row)
     return {"sessions": rows}
 
 
