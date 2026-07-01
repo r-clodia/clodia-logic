@@ -1,3 +1,4 @@
+import asyncio
 import subprocess
 import time
 from datetime import datetime
@@ -37,9 +38,15 @@ def _resolve_commit_short() -> str:
 
 @router.get("/health")
 async def health():
+    # `_resolve_commit_short()` fa un `subprocess.run(git …)` bloccante: chiamarlo
+    # direttamente nell'event loop può appendere /health (interazione fra il
+    # waitpid di subprocess e il child-watcher asyncio, con molti subprocess
+    # figli). Lo eseguiamo in un thread → il loop non si blocca mai e
+    # l'healthcheck non va in timeout.
+    commit = await asyncio.to_thread(_resolve_commit_short)
     return {
         "status": "ok",
         "version": __version__,
-        "commit": _resolve_commit_short(),
+        "commit": commit,
         "timestamp": datetime.utcnow().isoformat(),
     }
