@@ -1416,6 +1416,49 @@ class ChatManager:
             timestamp=datetime.now(timezone.utc),
         ))
 
+    async def reap_idle(self, ttl_seconds: float,
+                        protect: frozenset[str] = frozenset()) -> list[str]:
+        """Evince le sessioni idle da più di ``ttl_seconds`` e non in mezzo a un
+        turno. ``stop()`` chiude il client (libera il subprocess claude/codex) e
+        fa la nice-termination dello spawn (memory symlink preservata, copia
+        effimera rimossa) → recupera RAM e disco. La history resta persistita:
+        ``create()`` rimaterializza la chat alla prossima apertura. NON emette
+        ``chat_deleted`` — la chat non sparisce, va solo "a freddo".
+
+        Senza questo reaping le sessioni lasciate aperte tengono vivo il loro
+        subprocess (~200 MB) e lo spawn su disco a tempo indefinito, fino a
+        esaurire la memoria della macchina. Ritorna gli id delle sessioni evinte.
+        """
+        now = datetime.now(timezone.utc)
+        victims: list[tuple[str, "ChatSession | CodexChatSession"]] = []
+        async with self._lock:
+            for cid, chat in list(self._chats.items()):
+                if cid in protect:
+                    continue
+                turn = getattr(chat, "_current_turn_task", None)
+                if turn is not None and not turn.done():
+                    continue  # turno in corso: non toccare
+                if (now - chat.last_activity).total_seconds() < ttl_seconds:
+                    continue
+                self._chats.pop(cid, None)
+                victims.append((cid, chat))
+        reaped: list[str] = []
+        for cid, chat in victims:
+            try:
+                await chat.stop()
+                reaped.append(cid)
+                await bus.publish(Event(
+                    type="chat_updated",
+                    payload=chat.to_dict(),
+                    timestamp=datetime.now(timezone.utc),
+                ))
+            except Exception:  # noqa: BLE001
+                LOG.warning("reap_idle: stop fallito per %s", cid, exc_info=True)
+        if reaped:
+            LOG.info("reap_idle: evinte %d sessioni idle (>%.0fs): %s",
+                     len(reaped), ttl_seconds, ", ".join(reaped))
+        return reaped
+
 
 def _new_chat_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]

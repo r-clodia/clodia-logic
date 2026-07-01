@@ -98,9 +98,30 @@ async def _lifespan(app: FastAPI):
             await asyncio.sleep(interval)
     channel_task = asyncio.create_task(_channel_adapter_loop())
 
+    # Idle reaper: evince periodicamente le sessioni chat idle (subprocess
+    # claude/codex ancora vivo + spawn su disco) per recuperare RAM e disco.
+    # Senza, le sessioni lasciate aperte si accumulano fino a saturare la
+    # memoria (swap → healthcheck in timeout → container unhealthy).
+    # Configurabile: TTL idle e cadenza tick via env; TTL<=0 disabilita.
+    async def _idle_reaper_loop():
+        ttl = float(os.environ.get("CLODIA_SESSION_IDLE_TTL_SEC", "1800"))       # 30 min
+        interval = float(os.environ.get("CLODIA_SESSION_REAP_TICK_SEC", "300"))  # 5 min
+        if ttl <= 0:
+            LOG.info("idle reaper disabilitato (CLODIA_SESSION_IDLE_TTL_SEC<=0)")
+            return
+        LOG.info("idle reaper attivo: ttl=%.0fs tick=%.0fs", ttl, interval)
+        while True:
+            await asyncio.sleep(interval)
+            try:
+                await manager.reap_idle(ttl, protect=frozenset({DEFAULT_CHAT_ID}))
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("idle reaper tick: %s", e)
+    reaper_task = asyncio.create_task(_idle_reaper_loop())
+
     yield
     # --- shutdown ---
     channel_task.cancel()
+    reaper_task.cancel()
     try:
         shutdown_scheduler()
     except Exception as e:  # pragma: no cover
