@@ -253,8 +253,9 @@ async def reload_agents() -> dict:
 
 @router.get("/activity/summary")
 async def activity_summary() -> dict:
-    """Per ogni agente: count run di oggi, status, ultimo evento."""
-    return {"agents": activity_log.summary()}
+    """Per ogni agent seed: leaderboard cumulativa all-time + ultimo evento."""
+    agent_seeds = [a.name for a in registry.list() if a.type != "human"]
+    return {"agents": activity_log.summary(agent_seeds)}
 
 
 @router.get("/{name}/activity")
