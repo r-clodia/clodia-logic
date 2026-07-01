@@ -21,7 +21,7 @@ import json
 import logging
 
 from ..config import data_path
-from . import telegram_client, topics_client
+from . import channel_responder, telegram_client, topics_client
 from .channels import run_topic_turn
 
 LOG = logging.getLogger("agent-server.channel_adapter")
@@ -71,6 +71,15 @@ async def _mirror_topic(tier: str, name: str, channel: dict) -> None:
         return
     state = _load_state(tier, name)
     seen = set(state.get("seen", []))
+
+    # Auto-provisioning del responder confinato (clone per-topic) — una volta.
+    if not state.get("responder"):
+        try:
+            rn = channel_responder.ensure_responder(tier, name, tier)
+            state["responder"] = rn
+            _save_state(tier, name, state)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("ensure_responder %s/%s: %s", tier, name, e)
 
     # 1) INBOUND
     try:
