@@ -8,6 +8,7 @@ risposta viene postata nel canale (`.messages/`). Niente catene AI→AI automati
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 from datetime import datetime, timezone
@@ -37,6 +38,42 @@ async def _typing(tier: str, name: str, agent: str, state: str) -> None:
         ))
     except Exception as e:  # noqa: BLE001
         LOG.debug("typing event non pubblicato: %s", e)
+
+
+async def _channel_message(tier: str, name: str, author: str, kind: str) -> None:
+    """Notifica best-effort che il canale ha nuovi messaggi persistiti."""
+    try:
+        await bus.publish(Event(
+            type="channel_message",
+            payload={"tier": tier, "name": name, "author": author, "kind": kind},
+            timestamp=datetime.now(timezone.utc),
+        ))
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("channel_message event non pubblicato: %s", e)
+
+
+async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str) -> str | None:
+    """Esegue il turno in background e posta la risposta nel canale.
+
+    La ChatSession serializza gia' i turni con il suo lock: se lo stesso agent
+    riceve piu' messaggi, questi restano in FIFO senza bloccare altri agent.
+    """
+    await _typing(tier, name, responder, "start")
+    try:
+        reply = await chat.send_user_message(prompt)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("errore del risponditore %s su %s/%s: %s", responder, tier, name, e)
+        return None
+    finally:
+        await _typing(tier, name, responder, "stop")
+
+    try:
+        topics_client.post_message(tier, name, responder, reply, kind="ai")
+        await _channel_message(tier, name, responder, "ai")
+        return reply
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("post risposta canale %s/%s da %s fallito: %s", tier, name, responder, e)
+        return None
 
 # I DM sono canali a 2 partecipanti (meta.kind="dm"): nome deterministico (i due
 # nomi ordinati) così "owner↔clodia" e "clodia↔owner" sono lo STESSO canale.
@@ -225,6 +262,7 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
 
     # 1. registra il messaggio umano nel canale
     topics_client.post_message(tier, name, principal, req.content, kind="human")
+    await _channel_message(tier, name, principal, "human")
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
     # log dell'azione umana nella sua tab Logs (gli umani non eseguono turni)
     activity_log.append(principal, "message_sent",
@@ -287,18 +325,8 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
                   f"({_channel_files_hint(tier_real, name)} "
                   f"Per offrire scelte rapide usa <!-- choices=A,B,C --> o "
                   f"<!-- choices-multi=A,B,C -->.)")
-    # indicatore "sta scrivendo…" per la UI (via SSE /clodia/events)
-    await _typing(tier, name, responder.name, "start")
-    try:
-        reply = await chat.send_user_message(prompt)
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"errore del risponditore: {str(e)[:160]}")
-    finally:
-        await _typing(tier, name, responder.name, "stop")
-
-    # 4. posta la risposta nel canale
-    topics_client.post_message(tier, name, responder.name, reply, kind="ai")
-    return {"posted": True, "responder": responder.name, "reply": reply,
+    asyncio.create_task(_run_and_post_response(tier, name, responder.name, chat, prompt))
+    return {"posted": True, "queued": True, "responder": responder.name,
             "warning": warning}
 
 
@@ -354,12 +382,7 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     else:
         prompt = (f"[Canale #{name} · {tier_real}] nuovo messaggio nel gruppo. "
                   f"{_channel_files_hint(tier_real, name)}")
-    await _typing(tier, name, responder.name, "start")
-    try:
-        reply = await chat.send_user_message(prompt)
-    finally:
-        await _typing(tier, name, responder.name, "stop")
-    topics_client.post_message(tier, name, responder.name, reply, kind="ai")
+    reply = await _run_and_post_response(tier, name, responder.name, chat, prompt)
     return responder.name, reply
 
 
