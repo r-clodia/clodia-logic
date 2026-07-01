@@ -491,6 +491,23 @@ async def channel_reset_context(tier: str, name: str, request: Request) -> dict:
     return {"reset": True, "sessions_deleted": deleted}
 
 
+def _active_responders(tier: str, name: str, participants: list[str]) -> list[str]:
+    """Responder con un turno ATTUALMENTE in corso su questo canale. Serve alla UI:
+    riaprendo il topic a metà turno, il box "ragionamento" (costruito dagli eventi
+    SSE, già passati al re-mount) sarebbe vuoto e l'agente sembrerebbe morto anche
+    se sta lavorando. Con questo la UI mostra subito l'indicatore di attività."""
+    active = []
+    for a in participants:
+        try:
+            chat = manager.get(f"chan:{tier}:{name}:{a}")
+        except KeyError:
+            continue
+        t = getattr(chat, "_current_turn_task", None)
+        if t is not None and not t.done():
+            active.append(a)
+    return active
+
+
 @router.get("/clodia/channels/{tier}/{name}")
 async def channel_open(tier: str, name: str, request: Request) -> dict:
     """Meta del canale (owner, participants, tier, summary/tldr) per la UI.
@@ -500,6 +517,8 @@ async def channel_open(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(404, "canale non trovato")
     _require_member(request, topic.get("meta", {}))
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
+    topic["active_responders"] = _active_responders(
+        tier, name, topic.get("meta", {}).get("participants", []))
     return topic
 
 
