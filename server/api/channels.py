@@ -302,6 +302,27 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
             "warning": warning}
 
 
+@router.post("/clodia/channels/{tier}/{name}/interrupt")
+async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
+    """Interrompe il turno in corso del/i responder di questo canale — lo user
+    riprende il controllo dell'input. Cancella il task del turno (SDK); il
+    messaggio umano già registrato resta. Solo partecipanti/owner."""
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    _require_member(request, topic.get("meta", {}))
+    prefix = f"chan:{tier}:{name}:"
+    interrupted = []
+    for chat in manager.list():
+        if getattr(chat, "chat_id", "").startswith(prefix):
+            try:
+                if await chat.interrupt_current_turn():
+                    interrupted.append(chat.chat_id)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("interrupt %s: %s", chat.chat_id, e)
+    return {"interrupted": interrupted}
+
+
 async def run_topic_turn(tier: str, name: str, meta: dict,
                          trigger_text: str = "", principal_hint: str | None = None):
     """Esegue UN turno del responder del topic sul contesto corrente e posta la
