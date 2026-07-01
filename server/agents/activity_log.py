@@ -119,41 +119,58 @@ def tail(agent: str, limit: int = 200, date: Optional[str] = None) -> list[dict]
     return out[-limit:]
 
 
-def summary() -> list[dict]:
-    """Per ogni agente con almeno un file di log: { agent, today_runs,
-    last_run, status }."""
+def _usage_totals(usage: dict | None) -> tuple[int, int]:
+    usage = usage or {}
+    tokens_in = int(usage.get("input_tokens", 0) or 0)
+    tokens_out = int(usage.get("output_tokens", 0) or 0)
+    return tokens_in, tokens_out
+
+
+def summary(agent_names: list[str] | None = None) -> list[dict]:
+    """Leaderboard per agent seed con contatori cumulativi all-time.
+
+    `agent_names` permette alla registry di includere anche seed senza log,
+    restituendoli con contatori a zero.
+    """
+    names = set(agent_names or [])
+    if ACTIVITY_DIR.is_dir():
+        names.update(child.name for child in ACTIVITY_DIR.iterdir() if child.is_dir())
     out = []
-    if not ACTIVITY_DIR.is_dir():
-        return out
-    for child in sorted(ACTIVITY_DIR.iterdir()):
-        if not child.is_dir():
-            continue
-        agent = child.name
+    for agent in sorted(names):
+        today_runs = 0
         runs = 0
+        tokens_in = 0
+        tokens_out = 0
         status = "idle"
         last_run_ts = None
         last_event = None
-        # today_runs = run di oggi; status/last_event dall'ultimo file con eventi
-        # (così non si azzerano al cambio data / dopo un riavvio).
+
         for e in _read_jsonl(_file_for(agent)):
             if e.get("type") == "run_started":
-                runs += 1
-        files = _agent_log_files(agent)
-        for f in reversed(files):
-            evs = _read_jsonl(f)
-            if not evs:
-                continue
-            for e in evs:
-                if e.get("type") == "run_started":
-                    status = "running"
+                today_runs += 1
+
+        for f in _agent_log_files(agent):
+            for e in _read_jsonl(f):
+                typ = e.get("type")
+                if typ == "run_started":
                     last_run_ts = e.get("ts")
-                elif e.get("type") in ("run_done", "run_error"):
-                    status = "idle" if e.get("type") == "run_done" else "error"
-            last_event = evs[-1]
-            break
+                    status = "running"
+                elif typ == "run_done":
+                    runs += 1
+                    tin, tout = _usage_totals((e.get("payload") or {}).get("usage"))
+                    tokens_in += tin
+                    tokens_out += tout
+                    status = "idle"
+                elif typ == "run_error":
+                    status = "error"
+                last_event = e
+
         out.append({
             "agent": agent,
-            "today_runs": runs,
+            "today_runs": today_runs,
+            "runs": runs,
+            "tokens_in": tokens_in,
+            "tokens_out": tokens_out,
             "status": status,
             "last_run_ts": last_run_ts,
             "last_event_ts": last_event.get("ts") if last_event else None,
