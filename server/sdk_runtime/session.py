@@ -251,6 +251,13 @@ def _kind_spec(kind: str):
         return None
 
 
+def _kind_clearance(kind: str) -> Optional[str]:
+    """Clearance (SEAL-N) dell'agent, per il claim nel token verso il gateway
+    (enforcement clearance≥tier). None se non dichiarata."""
+    spec = _kind_spec(kind)
+    return getattr(spec, "clearance", None) if spec else None
+
+
 def known_kind(kind: str) -> bool:
     """True se `kind` è uno statico (KIND_CWD) o un agent del registry.
     Usato dalle guardie di validazione (session + api/agents)."""
@@ -528,7 +535,8 @@ class ChatSession:
         # mint fallisce → si salta senza rompere.
         try:
             ct_token = pki.mint_session_token(self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
-                                              principal=self.principal)
+                                              principal=self.principal,
+                                              clearance=_kind_clearance(self.kind))
             # principal "cotto" nel token MCP di questo client: se cambia (l'utente
             # connesso cambia, o la sessione era partita anonima) va ri-coniato.
             self._token_principal = self.principal
@@ -1183,7 +1191,8 @@ class CodexChatSession:
         # → runtime.current_user resta sempre allineato senza restart.
         try:
             env["CLODIA_TOOLS_TOKEN"] = pki.mint_session_token(
-                self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL, principal=self.principal)
+                self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL, principal=self.principal,
+                clearance=_kind_clearance(self.kind))
         except Exception as e:  # noqa: BLE001
             LOG.warning("token clodia-tools (codex) non coniato per %s: %s", self.kind, e)
         run_cwd = str(self._spawn_dir or self.cwd)

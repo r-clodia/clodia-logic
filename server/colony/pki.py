@@ -261,13 +261,18 @@ def _verify_cert(agent: str) -> Ed25519PublicKey:
 
 def mint_session_token(agent: str, execution_id: str = "",
                        ttl_seconds: int = SESSION_TTL_SECONDS,
-                       principal: str | None = None) -> str:
+                       principal: str | None = None,
+                       clearance: str | None = None) -> str:
     """Firmato dal RUNNER con la chiave privata dell'agente (mai esposta
     al workspace). Nel workspace entra solo il token risultante.
 
     `principal` (opz.): l'utente UMANO della sessione per conto del quale l'agent
     opera — propagato al gateway così `runtime.current_user` sa con chi l'agent
-    sta parlando. Verificato a monte dal runner (token umano della webui)."""
+    sta parlando. Verificato a monte dal runner (token umano della webui).
+
+    `clearance` (opz.): la clearance dell'agent (SEAL-N) — propagata al gateway
+    così può far rispettare clearance≥tier sull'accesso ai topic (difesa in
+    profondità, asse livello). Firmata → non falsificabile dall'agent."""
     key_path = agent_key_path(agent)
     if not key_path.is_file():
         raise PermissionError(f"agent '{agent}' senza identità (eseguire pki issue)")
@@ -279,6 +284,8 @@ def mint_session_token(agent: str, execution_id: str = "",
     }
     if principal:
         payload["principal"] = principal
+    if clearance:
+        payload["clearance"] = clearance
     body = _b64e(json.dumps(payload, separators=(",", ":")).encode())
     sig = _b64e(key.sign(body.encode()))
     return f"{TOKEN_PREFIX}.{body}.{sig}"
