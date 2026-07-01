@@ -180,12 +180,19 @@ class PfpGenerateBody(BaseModel):
     image_b64: Optional[str] = None     # immagine caricata (data URL o base64) → restyle
 
 
+# Stato della generazione PFP per-agent (in-memory): la generazione via gpt-image
+# dura 10-30s → NON deve bloccare l'event loop né la richiesta. La lanciamo in
+# background (thread, così la requests.post sincrona del client non blocca il
+# loop) e la UI ne segue lo stato via /pfp/status.
+_pfp_status: dict[str, dict] = {}
+
+
 @router.post("/{name}/pfp/generate")
 async def generate_agent_pfp(name: str, body: PfpGenerateBody) -> dict:
-    """Genera la PFP dell'agent via gpt-image-2 (sul gateway) e la salva in
-    `agent_dir/pfp.png`. Accetta un prompt testuale OPPURE un'immagine caricata
-    (che viene ri-renderizzata nello stile): in entrambi i casi lo stile manga/
-    ghibli è applicato. La OpenAI key vive solo nel gateway (vault)."""
+    """Avvia (async) la generazione della PFP via gpt-image-2 (sul gateway) e
+    ritorna subito {status: generating}. Il salvataggio in `agent_dir/pfp.png`
+    avviene in background; la UI segue /pfp/status. La OpenAI key vive solo nel
+    gateway (vault)."""
     spec = registry.get_by_name(name)
     if spec is None:
         raise HTTPException(404, f"agent '{name}' non trovato")
@@ -195,6 +202,8 @@ async def generate_agent_pfp(name: str, body: PfpGenerateBody) -> dict:
     prompt = (body.prompt or "").strip()
     if not prompt and not body.image_b64:
         raise HTTPException(400, "serve un prompt testuale o un'immagine")
+    if _pfp_status.get(name, {}).get("state") == "generating":
+        return {"status": "generating", "name": name}  # già in corso: no doppioni
     # Base del prompt: l'utente, o un default sensato sull'identità dell'agent.
     if prompt:
         base = prompt
@@ -203,18 +212,31 @@ async def generate_agent_pfp(name: str, body: PfpGenerateBody) -> dict:
     else:
         base = f"ritratto avatar di {spec.display_name or name}"
     styled = f"{base}, {_PFP_STYLE}"
-    try:
-        png = imagegen_client.generate(styled, image_b64=body.image_b64)
-    except imagegen_client.ImageGenUnavailable as e:
-        raise HTTPException(409, str(e))
-    except imagegen_client.ImageGenError as e:
-        raise HTTPException(502, f"generazione immagine fallita: {str(e)[:200]}")
-    pfp = Path(spec.agent_dir) / "pfp.png"
-    try:
-        pfp.write_bytes(png)
-    except OSError as e:
-        raise HTTPException(500, f"salvataggio pfp fallito: {e}")
-    return {"ok": True, "name": name, "bytes": len(png)}
+    pfp_path = Path(spec.agent_dir) / "pfp.png"
+    image_b64 = body.image_b64
+    _pfp_status[name] = {"state": "generating"}
+
+    async def _run() -> None:
+        try:
+            # to_thread: il client fa una requests.post sincrona → in un thread non
+            # blocca l'event loop del server.
+            png = await asyncio.to_thread(imagegen_client.generate, styled,
+                                          image_b64=image_b64)
+            pfp_path.write_bytes(png)
+            _pfp_status[name] = {"state": "done", "bytes": len(png)}
+        except imagegen_client.ImageGenUnavailable as e:
+            _pfp_status[name] = {"state": "error", "error": str(e)[:200]}
+        except Exception as e:  # noqa: BLE001
+            _pfp_status[name] = {"state": "error", "error": str(e)[:200]}
+
+    asyncio.create_task(_run())
+    return {"status": "generating", "name": name}
+
+
+@router.get("/{name}/pfp/status")
+async def agent_pfp_status(name: str) -> dict:
+    """Stato della generazione PFP: idle | generating | done | error."""
+    return {"name": name, **(_pfp_status.get(name) or {"state": "idle"})}
 
 
 @router.post("/reload")
