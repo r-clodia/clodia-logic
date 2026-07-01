@@ -234,6 +234,16 @@ def _materialize_spawn(kind: str):
         return None, None
 
 
+def _spawn_identity(spawn) -> dict:
+    if spawn is None:
+        return {"spawn_id": None, "spawn_instance": None}
+    name = getattr(getattr(spawn, "dir", None), "name", None)
+    if not name:
+        return {"spawn_id": None, "spawn_instance": None}
+    _agent, sep, instance = name.rpartition("-")
+    return {"spawn_id": name, "spawn_instance": instance if sep else None}
+
+
 # ── Risoluzione dinamica dei kind (job-agent dinamico, 19 giu 2026) ──────────
 # Oltre ai kind statici (clodia/ada/looper/ophelia, sopra) un kind può essere
 # QUALUNQUE agent del registry (clodia-data/agents/<name>/agent.yaml). I helper
@@ -991,6 +1001,7 @@ class ChatSession:
             "last_usage": self._last_usage or {},
             "total_tokens": self._total_tokens,
             "runtime": "claude",
+            **_spawn_identity(self._spawn),
         }
 
 
@@ -1351,6 +1362,7 @@ class CodexChatSession:
             "last_usage": self._last_usage or {},
             "total_tokens": self._total_tokens,
             "runtime": "codex",
+            **_spawn_identity(self._spawn),
         }
 
 
