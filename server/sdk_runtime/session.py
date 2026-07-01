@@ -1416,8 +1416,7 @@ class ChatManager:
             timestamp=datetime.now(timezone.utc),
         ))
 
-    async def reap_idle(self, ttl_seconds: float,
-                        protect: frozenset[str] = frozenset()) -> list[str]:
+    async def reap_idle(self, ttl_seconds, protect=None):
         """Evince le sessioni idle da più di ``ttl_seconds`` e non in mezzo a un
         turno. ``stop()`` chiude il client (libera il subprocess claude/codex) e
         fa la nice-termination dello spawn (memory symlink preservata, copia
@@ -1430,7 +1429,8 @@ class ChatManager:
         esaurire la memoria della macchina. Ritorna gli id delle sessioni evinte.
         """
         now = datetime.now(timezone.utc)
-        victims: list[tuple[str, "ChatSession | CodexChatSession"]] = []
+        protect = set(protect) if protect else set()
+        victims = []
         async with self._lock:
             for cid, chat in list(self._chats.items()):
                 if cid in protect:

@@ -113,7 +113,7 @@ async def _lifespan(app: FastAPI):
         while True:
             await asyncio.sleep(interval)
             try:
-                await manager.reap_idle(ttl, protect=frozenset({DEFAULT_CHAT_ID}))
+                await manager.reap_idle(ttl, protect={DEFAULT_CHAT_ID})
             except Exception as e:  # noqa: BLE001
                 LOG.warning("idle reaper tick: %s", e)
     reaper_task = asyncio.create_task(_idle_reaper_loop())
