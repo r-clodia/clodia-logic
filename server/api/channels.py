@@ -52,6 +52,18 @@ async def _channel_message(tier: str, name: str, author: str, kind: str) -> None
         LOG.debug("channel_message event non pubblicato: %s", e)
 
 
+# Riferimenti FORTI ai task dei turni in background: senza, l'event loop NON
+# trattiene il task e il GC può cancellarlo a metà (drop silenzioso del turno →
+# "il topic non risponde" intermittente). Li teniamo finché non finiscono.
+_BG_TASKS: set = set()
+
+
+def _spawn_bg(coro) -> None:
+    t = asyncio.create_task(coro)
+    _BG_TASKS.add(t)
+    t.add_done_callback(_BG_TASKS.discard)
+
+
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
 
@@ -325,7 +337,7 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
                   f"({_channel_files_hint(tier_real, name)} "
                   f"Per offrire scelte rapide usa <!-- choices=A,B,C --> o "
                   f"<!-- choices-multi=A,B,C -->.)")
-    asyncio.create_task(_run_and_post_response(tier, name, responder.name, chat, prompt))
+    _spawn_bg(_run_and_post_response(tier, name, responder.name, chat, prompt))
     return {"posted": True, "queued": True, "responder": responder.name,
             "warning": warning}
 
