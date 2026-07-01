@@ -85,8 +85,22 @@ async def _lifespan(app: FastAPI):
         # proseguiamo — le API /clodia/jobs risponderanno con errori se
         # invocate, e l'operatore vedrà il problema nei log.
         LOG.exception("Errore di avvio dello scheduler: %s", e)
+    # Channel-adapter Telegram: loop periodico server-side (trasporto in codice,
+    # nessuna logica AI). Non deve mai impedire l'avvio: gira in background.
+    async def _channel_adapter_loop():
+        from .api import channel_adapter
+        interval = int(os.environ.get("CLODIA_CHANNEL_TICK_SEC", "45"))
+        while True:
+            try:
+                await channel_adapter.tick_once()
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("channel adapter tick: %s", e)
+            await asyncio.sleep(interval)
+    channel_task = asyncio.create_task(_channel_adapter_loop())
+
     yield
     # --- shutdown ---
+    channel_task.cancel()
     try:
         shutdown_scheduler()
     except Exception as e:  # pragma: no cover

@@ -302,6 +302,46 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
             "warning": warning}
 
 
+async def run_topic_turn(tier: str, name: str, meta: dict,
+                         trigger_text: str = "", principal_hint: str | None = None):
+    """Esegue UN turno del responder del topic sul contesto corrente e posta la
+    risposta (kind=ai). Ritorna (responder_name, reply) o (None, None).
+
+    Usato dall'adapter dei channel esterni (Telegram): non c'è un principal umano
+    → la sessione riceve un principal-hint NON privilegiato (proxy), così un
+    messaggio arrivato dal canale non eredita autorità (barriera azioni, spec §5).
+    Il responder è comunque scelto con le stesse regole SEAL/clearance della webui."""
+    tier_real = meta.get("tier", tier)
+    participants = meta.get("participants", [])
+    responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""))
+    if responder is None:
+        return None, None
+    chat_id = f"chan:{tier}:{name}:{responder.name}"
+    created = False
+    try:
+        chat = manager.get(chat_id)
+    except KeyError:
+        try:
+            chat = await manager.create(chat_id=chat_id, kind=responder.name)
+            created = True
+        except ProviderNotConnected:
+            return None, None
+    chat.principal = principal_hint or "channel"  # proxy: nessuna autorità
+    if created:
+        prompt = _history_prompt(name, tier_real,
+                                 _context_messages(topics_client.list_messages(tier, name, limit=200)))
+    else:
+        prompt = (f"[Canale #{name} · {tier_real}] nuovo messaggio nel gruppo. "
+                  f"{_channel_files_hint(tier_real, name)}")
+    await _typing(tier, name, responder.name, "start")
+    try:
+        reply = await chat.send_user_message(prompt)
+    finally:
+        await _typing(tier, name, responder.name, "stop")
+    topics_client.post_message(tier, name, responder.name, reply, kind="ai")
+    return responder.name, reply
+
+
 @router.post("/clodia/channels")
 async def channel_create(request: Request) -> dict:
     """Crea un nuovo canale/topic: l'owner è l'utente connesso; come partecipante
