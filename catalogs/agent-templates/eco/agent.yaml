@@ -3,7 +3,7 @@
 # piattaforma ne CLONA un'identità confinata per ogni topic-con-channel
 # (name→eco-<topic>, clearance→tier del topic, participant SOLO di quel topic).
 # Vedi api/channel_responder.py e project_topic_access_two_axis.
-# NB: distinto da Hermia (agents-seed/hermia), che è l'hub comunicazioni con i
+# NB: distinto da Mercuria (agents-seed/mercuria), l'agente messaggero con i
 # tool email/telegram; Eco è il responder-nel-canale senza portata esterna.
 name: eco
 display_name: Eco

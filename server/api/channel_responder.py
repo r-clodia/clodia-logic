@@ -6,8 +6,8 @@ SOLO di quel topic. Combinata con l'ACL participants del gateway
 (project_topic_access_two_axis), dà il confinamento per-topic reale: anche se in
 futuro il responder avrà tool `topic.*`, potrà toccare solo il suo topic.
 
-NB: Eco (responder-nel-canale, senza portata esterna) è distinto da Hermia
-(agents-seed/hermia), l'hub comunicazioni con i tool email/telegram.
+NB: Eco (responder-nel-canale, senza portata esterna) è distinto da Mercuria
+(agents-seed/mercuria), l'agente messaggero con i tool email/telegram.
 """
 from __future__ import annotations
 

@@ -1,14 +1,14 @@
-# Seed "Hermia" — hub delle comunicazioni della colonia.
+# Seed "Mercuria" — agente MESSAGGERO della colonia (hub comunicazioni).
 # Auto-istanziata (agents-seed/): agente dedicato a email e Telegram (in
 # prospettiva anche WhatsApp). Le comunicazioni trasportano documenti e
 # informazioni provenienti da più topic → clearance minima SEAL-2.
 # NB: distinta da Eco (agent-templates/eco), il responder-nel-canale confinato
 # per-topic e senza portata esterna.
-# Roadmap: in futuro un'istanza di Hermia per topic svolgerà le funzioni di
+# Roadmap: in futuro un'istanza di Mercuria per topic svolgerà le funzioni di
 # messaggero locale; per ora è un'unica istanza con i tool comms a disposizione.
-name: hermia
-display_name: Hermia
-description: "Hub comunicazioni: email e Telegram per conto della colonia. Clearance SEAL-2 (le comunicazioni attraversano documenti di più topic)."
+name: mercuria
+display_name: Mercuria
+description: "Agente messaggero: email e Telegram per conto della colonia. Clearance SEAL-2 (le comunicazioni attraversano documenti di più topic)."
 type: normal
 clearance: SEAL-2
 constitution: platform-core
@@ -25,7 +25,7 @@ sandbox:
 capabilities: []
 rules: []
 # Tool comms (la fruizione degli account/token resta gated dai grant del vault:
-# email account + telegram_bot_token vanno delegati a Hermia dalla sezione
+# email account + telegram_bot_token delegati a Mercuria dalla sezione
 # Connettori/Integrations). Enforcement effettivo nel gateway (config.yaml).
 tool_permissions: [email.*, telegram.*]
 memory:
