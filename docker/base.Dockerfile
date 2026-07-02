@@ -1,6 +1,7 @@
 FROM python:3.12-slim
 
 ARG OPENAI_CODEX_NPM_VERSION=0.137.0
+ARG OPENCODE_NPM_VERSION=1.15.13
 
 # Node.js 20 LTS
 RUN apt-get update && apt-get install -y --no-install-recommends \
@@ -12,11 +13,13 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # CLI agentici spawnabili dai bot Node e dai tool Python.
 # Codex e' pinnato: gli agent `agent_sdk=codex` girano dentro il worker
 # agent-server e devono trovare un binario stabile a build-time.
-RUN npm install -g @anthropic-ai/claude-code @openai/codex@${OPENAI_CODEX_NPM_VERSION}
+RUN npm install -g @anthropic-ai/claude-code @openai/codex@${OPENAI_CODEX_NPM_VERSION} \
+    opencode-ai@${OPENCODE_NPM_VERSION}
 
 # Verifica installazione
 RUN claude --version
 RUN codex --version
+RUN opencode --version
 
 ENV CLODIA_DATA=/datadir
 WORKDIR /clodia

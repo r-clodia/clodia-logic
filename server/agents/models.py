@@ -103,6 +103,15 @@ class AgentSpec(BaseModel):
     # (DPA commerciale), ripiega sull'abbonamento. Vuoto = default dell'SDK.
     providers: list[str] = Field(default_factory=list)
 
+    # Override del MODELLO per-provider: consente una catena di fallback con
+    # provider che servono modelli (e SDK) diversi. Chiave = id provider, valore =
+    # modello da usare con quel provider. L'SDK del runtime segue quello del
+    # provider (catalog), NON questo campo. Es. {"aws-region-eu": "claude-haiku-4-5"}
+    # su un agent con model top-level "gpt-oss-120b" (scaleway/opencode): primario
+    # gpt-oss su scaleway, fallback haiku su Bedrock. I provider NON elencati usano
+    # il `model` top-level. Vuoto = un solo model per tutti i provider (back-compat).
+    provider_models: dict[str, str] = Field(default_factory=dict)
+
     # Timestamp di creazione (ISO 8601). Usato come tie-break di ANZIANITÀ nel
     # rango (a parità di tier, parla il più anziano: es. Clodia prima di Ophelia).
     created_at: Optional[str] = None

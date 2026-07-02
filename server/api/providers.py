@@ -250,6 +250,13 @@ def is_bedrock_provider(pid: str | None) -> bool:
     return "CLAUDE_CODE_USE_BEDROCK" in provider_extra_env(pid)
 
 
+def provider_sdk(pid: str | None) -> str | None:
+    """SDK di esecuzione dichiarato dal provider (claude | codex | opencode).
+    È l'SDK a determinare il RUNTIME dell'agent quando questo provider è effettivo
+    (permette catene di fallback cross-SDK: scaleway→opencode, aws-region-eu→claude)."""
+    return (_CATALOG.get(_normalize(pid) or "") or {}).get("sdk")
+
+
 def bedrock_model_id(pid: str | None, model: str | None) -> str | None:
     """Su un provider Bedrock, traduce il modello dichiarato dall'agent
     (`claude-{opus,sonnet,haiku}-*`) nell'inference-profile EU dichiarato dal
@@ -288,24 +295,29 @@ def provider_supports_model(pid: str | None, model: str | None) -> bool:
 
 
 def candidate_providers(providers: list[str] | None, provider: str | None,
-                        agent_sdk: str | None, model: str | None = None) -> list[str]:
+                        agent_sdk: str | None, model: str | None = None,
+                        provider_models: dict | None = None) -> list[str]:
     """Lista ordinata di provider compatibili per un agent (ordine = preferenza):
     - `providers` esplicito (lista nel seed) ha priorità;
     - back-compat: `provider` singolo → lista a un elemento;
     - fallback: default dell'SDK (API prima, abbonamento poi).
-    Filtra per il MODELLO (non sindacabile) dell'agent: restano solo i provider
-    che servono quel modello. Id ignoti scartati; alias legacy normalizzati."""
+    Filtra per il MODELLO che quel provider userà: l'override per-provider
+    (`provider_models[p]`) se presente, altrimenti il `model` top-level. Così un
+    provider che serve un modello diverso (es. scaleway/gpt-oss vs Bedrock/haiku)
+    resta candidato. Id ignoti scartati; alias legacy normalizzati."""
     if providers:
         cands = [_normalize(p) for p in providers]
     elif provider:
         cands = [_normalize(provider)]
     else:
         cands = default_providers_for_sdk(agent_sdk)
+    pm = provider_models or {}
     # dedup preservando l'ordine, solo id noti al catalogo + che servono il modello
     seen: set[str] = set()
     out: list[str] = []
     for p in cands:
-        if p and p in _CATALOG and p not in seen and provider_supports_model(p, model):
+        eff_model = pm.get(p) or model  # modello che QUESTO provider userà
+        if p and p in _CATALOG and p not in seen and provider_supports_model(p, eff_model):
             seen.add(p)
             out.append(p)
     return out
@@ -314,7 +326,8 @@ def candidate_providers(providers: list[str] | None, provider: str | None,
 def effective_provider(providers: list[str] | None, provider: str | None,
                        agent_sdk: str | None, connected: set[str],
                        model: str | None = None,
-                       override: str | None = None) -> str | None:
+                       override: str | None = None,
+                       provider_models: dict | None = None) -> str | None:
     """Provider effettivo dell'agent, fra quelli che SERVONO il suo modello.
     None → agent disabilitato (nessun provider attivo).
 
@@ -330,7 +343,7 @@ def effective_provider(providers: list[str] | None, provider: str | None,
     (tier), via l'enforcement in api.channels. Così agent diversi possono usare
     provider diversi in contemporanea (es. Clodia su claude-pro-max, Saiul su
     aws-region-eu) senza che un provider a SEAL più alto dirotti tutti su di sé."""
-    cands = candidate_providers(providers, provider, agent_sdk, model)
+    cands = candidate_providers(providers, provider, agent_sdk, model, provider_models)
     paused = _load_paused()
     ov = _normalize(override)
     if ov and ov in cands and ov in connected and ov not in paused:
