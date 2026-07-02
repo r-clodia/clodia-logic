@@ -14,7 +14,7 @@ extra_env:
 # SDK di esecuzione: OpenAI-compatibile (codex exec).
 sdk: codex
 priority: 5
-models: ["mistral*", "llama*", "deepseek*", "qwen*", "pixtral*", "gemma*"]
+models: ["mistral*", "llama*", "deepseek*", "qwen*", "pixtral*", "gemma*", "gpt-oss*", "glm*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) ────────────────────────
 # SEAL effettivo (gating Clodia) = min(SOV-2 legale, SOV-3 dato/AI, SOV-7 sicurezza).

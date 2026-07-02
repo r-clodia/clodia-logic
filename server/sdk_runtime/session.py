@@ -366,7 +366,8 @@ def agent_candidates(kind: str) -> list[str]:
         if spec is not None:
             return candidate_providers(getattr(spec, "providers", None),
                                        getattr(spec, "provider", None), spec.agent_sdk,
-                                       getattr(spec, "model", None))
+                                       getattr(spec, "model", None),
+                                       getattr(spec, "provider_models", None))
         sdk = "codex" if kind in CODEX_KINDS else "claude"
         return default_providers_for_sdk(sdk)
     except Exception:  # noqa: BLE001
@@ -388,7 +389,8 @@ def agent_effective_provider(kind: str) -> Optional[str]:
     if spec is not None:
         return effective_provider(getattr(spec, "providers", None),
                                   getattr(spec, "provider", None), spec.agent_sdk,
-                                  connected, getattr(spec, "model", None), override=ov)
+                                  connected, getattr(spec, "model", None), override=ov,
+                                  provider_models=getattr(spec, "provider_models", None))
     sdk = "codex" if kind in CODEX_KINDS else "claude"
     return effective_provider(None, None, sdk, connected, None, override=ov)
 
@@ -396,6 +398,46 @@ def agent_effective_provider(kind: str) -> Optional[str]:
 def agent_provider(kind: str) -> Optional[str]:
     """Compat: provider effettivo, o (se nessuno collegato) il preferito."""
     return agent_effective_provider(kind) or (agent_candidates(kind) or [None])[0]
+
+
+def agent_effective_model(kind: str) -> Optional[str]:
+    """Modello che l'agent userà EFFETTIVAMENTE, coerente col provider effettivo:
+    override per-provider (`provider_models[provider]`) se presente, altrimenti il
+    `model` dichiarato; poi tradotto in inference-profile se il provider è Bedrock.
+    Usato dai runtime (claude/opencode) per passare il model id giusto."""
+    model = _resolve_model(kind)
+    prov = agent_effective_provider(kind)
+    spec = _kind_spec(kind)
+    pm = getattr(spec, "provider_models", None) or {} if spec else {}
+    if prov and prov in pm:
+        model = pm[prov]
+    try:
+        from ..api.providers import bedrock_model_id
+        bid = bedrock_model_id(prov, model)
+        if bid:
+            model = bid
+    except Exception:  # noqa: BLE001
+        pass
+    return model
+
+
+def agent_runtime_sdk(kind: str) -> str:
+    """SDK del RUNTIME per il kind = SDK del provider EFFETTIVO (permette catene
+    di fallback cross-SDK: scaleway→opencode, aws-region-eu→claude). Fallback:
+    CODEX_KINDS statici → codex, altrimenti l'`agent_sdk` dichiarato, altrimenti
+    claude. Robusto: se il provider non risolve, usa la dichiarazione dell'agent."""
+    if kind in CODEX_KINDS:
+        return "codex"
+    try:
+        from ..api.providers import provider_sdk
+        prov = agent_effective_provider(kind)
+        sdk = provider_sdk(prov)
+        if sdk:
+            return sdk
+    except Exception:  # noqa: BLE001
+        pass
+    spec = _kind_spec(kind)
+    return (getattr(spec, "agent_sdk", None) or "claude") if spec else "claude"
 
 
 def provider_connected_for(kind: str) -> bool:
@@ -528,19 +570,12 @@ class ChatSession:
             if seed_prompt:
                 opts_kwargs["system_prompt"] = seed_prompt
                 opts_kwargs["setting_sources"] = []
-        model_override = _resolve_model(self.kind)
+        # Modello EFFETTIVO: override per-provider (provider_models) se presente,
+        # altrimenti quello dichiarato; su Bedrock tradotto nell'inference-profile
+        # EU (claude-sonnet-4-5 → eu.anthropic.claude-sonnet-4-6). No-op sui
+        # provider non-Bedrock / senza override.
+        model_override = agent_effective_model(self.kind)
         if model_override:
-            # Su un provider Bedrock, l'id modello Anthropic "puro" (es.
-            # claude-sonnet-4-5) è rifiutato: serve l'inference-profile EU
-            # (es. eu.anthropic.claude-sonnet-4-6). Traduci in base al provider
-            # effettivo dell'agent (no-op sui provider non-Bedrock).
-            try:
-                from ..api.providers import bedrock_model_id
-                bid = bedrock_model_id(agent_effective_provider(self.kind), model_override)
-                if bid:
-                    model_override = bid
-            except Exception:  # noqa: BLE001 — fail-open: usa il modello dichiarato
-                pass
             opts_kwargs["model"] = model_override
         permission_mode_override = _resolve_permission_mode(self.kind)
         if permission_mode_override == "bypassPermissions" and _IS_ROOT:
@@ -1379,11 +1414,366 @@ class CodexChatSession:
         }
 
 
+OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
+
+
+class OpenCodeChatSession:
+    """Chat servita dal runtime **OpenCode** (agent multi-provider, es. Mercuria
+    su gpt-oss-120b/scaleway). Stessa interfaccia di ChatSession/CodexChatSession
+    (start/send_user_message/stop/…): stesso event-bus e stessa history JSONL.
+
+    Trasporto: un `opencode serve` per-sessione (porta effimera) + HTTP API.
+    Ogni turno = POST /session/{ocid}/message (sincrono → `parts`), tradotti negli
+    stessi Event. Provider e MCP (gateway clodia-tools) sono cablati in un
+    `opencode.json` scritto nella cwd dello spawn; le credenziali passano via env
+    (`{env:…}`) così non finiscono su disco. Vedi project_opencode_runtime_spike.
+    """
+
+    def __init__(self, chat_id: str, kind: str = "mercuria", title: str = "") -> None:
+        if not known_kind(kind):
+            raise ValueError(f"unknown agent kind: {kind}")
+        self.chat_id = chat_id
+        self.kind = kind
+        self.title = title or f"{_resolve_title_prefix(kind)} Nuova chat"
+        self.status = ClodiaStatus.STOPPED
+        self.created_at = datetime.now(timezone.utc)
+        self.last_activity = self.created_at
+        self._client = None            # sentinella "avviata"
+        self._lock = asyncio.Lock()
+        self._current_turn_task: Optional[asyncio.Task] = None
+        self._proc: Optional[asyncio.subprocess.Process] = None
+        self._port: Optional[int] = None
+        self._base_url: Optional[str] = None
+        self._oc_session: Optional[str] = None   # id sessione OpenCode (per il resume)
+        self._provider: Optional[str] = None
+        self._model: Optional[str] = None
+        self._last_usage: dict[str, int] = {}
+        self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
+        self._spawn = None
+        self._spawn_dir: Optional[Path] = None
+        self.principal: Optional[str] = None
+
+    @property
+    def cwd(self) -> Path:
+        return _resolve_cwd(self.kind)
+
+    @property
+    def sessions_dir(self) -> Path:
+        return _resolve_sessions_dir(self.kind)
+
+    @property
+    def session_file(self) -> Path:
+        return self.sessions_dir / f"chat-{self.chat_id}.jsonl"
+
+    @property
+    def _ocsession_file(self) -> Path:
+        return self.sessions_dir / f"chat-{self.chat_id}.ocsession"
+
+    def _free_port(self) -> int:
+        import socket
+        s = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+        s.bind(("127.0.0.1", 0))
+        p = s.getsockname()[1]
+        s.close()
+        return p
+
+    def _write_config(self, cwd: Path) -> dict:
+        """Scrive <cwd>/opencode.json (provider + MCP gateway) e ritorna l'env con
+        le credenziali (referenziate via {env:…} nel config, così non su disco)."""
+        self._provider = agent_effective_provider(self.kind)
+        self._model = agent_effective_model(self.kind)
+        env = {**os.environ}
+        cfg: dict = {"$schema": "https://opencode.ai/config.json", "provider": {}, "mcp": {}}
+        # credenziale del provider effettivo (apikey provider, es. scaleway)
+        try:
+            from ..api.providers import _read, provider_extra_env
+            bundle = _read(self._provider) or {}
+            key = bundle.get("api_key")
+            opts: dict = {}
+            if key:
+                env["OPENCODE_PROVIDER_KEY"] = key
+                opts["apiKey"] = "{env:OPENCODE_PROVIDER_KEY}"
+            base = (provider_extra_env(self._provider) or {}).get("OPENAI_BASE_URL")
+            if base:
+                opts["baseURL"] = base
+            if opts:
+                cfg["provider"][self._provider] = {"options": opts}
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("opencode: credenziale provider %s non risolta: %s", self._provider, e)
+        # gateway clodia-tools come MCP remote (token col principal, via env)
+        try:
+            tok = pki.mint_session_token(self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
+                                         principal=self.principal,
+                                         clearance=_kind_clearance(self.kind))
+            env["CLODIA_MCP_AUTH"] = f"Bearer {tok}"
+            cfg["mcp"]["clodia-tools"] = {
+                "type": "remote", "url": CLODIA_TOOLS_MCP_URL,
+                "headers": {"Authorization": "{env:CLODIA_MCP_AUTH}"}, "enabled": True}
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("opencode: MCP clodia-tools non cablato per %s: %s", self.kind, e)
+        cwd.mkdir(parents=True, exist_ok=True)
+        (cwd / "opencode.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+        return env
+
+    async def _http(self):
+        import httpx
+        return httpx.AsyncClient(base_url=self._base_url, timeout=httpx.Timeout(600.0))
+
+    async def _wait_ready(self) -> None:
+        import httpx
+        for _ in range(60):  # ~30s
+            try:
+                async with httpx.AsyncClient(timeout=2.0) as c:
+                    r = await c.get(f"{self._base_url}/doc")
+                    if r.status_code == 200:
+                        return
+            except Exception:  # noqa: BLE001
+                pass
+            await asyncio.sleep(0.5)
+        raise RuntimeError("opencode serve non pronto entro il timeout")
+
+    async def start(self) -> None:
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        self._spawn, self._spawn_dir = _materialize_spawn(self.kind)
+        run_cwd = Path(self._spawn_dir or self.cwd)
+        if self._spawn_dir is None:
+            run_cwd.mkdir(parents=True, exist_ok=True)
+        env = self._write_config(run_cwd)
+        self._port = self._free_port()
+        self._base_url = f"http://127.0.0.1:{self._port}"
+        self._proc = await asyncio.create_subprocess_exec(
+            OPENCODE_BIN, "serve", "--port", str(self._port), "--hostname", "127.0.0.1",
+            env=env, cwd=str(run_cwd),
+            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, limit=_STREAM_LIMIT)
+        await self._wait_ready()
+        # resume sessione OpenCode se la chat è ripresa da disco, altrimenti creane una
+        if self._ocsession_file.is_file():
+            self._oc_session = self._ocsession_file.read_text().strip() or None
+        if not self._oc_session:
+            import httpx
+            async with httpx.AsyncClient(timeout=30.0) as c:
+                r = await c.post(f"{self._base_url}/session", json={})
+                self._oc_session = (r.json() or {}).get("id")
+            if self._oc_session:
+                try:
+                    self._ocsession_file.write_text(self._oc_session)
+                except OSError:
+                    pass
+        self._client = object()   # marca avviata
+        await self._set_status(ClodiaStatus.IDLE)
+        intro = KIND_AUTO_INTRO.get(self.kind)
+        if intro:
+            asyncio.create_task(self._do_send_bg(intro))
+
+    async def stop(self) -> None:
+        proc = self._proc
+        if proc is not None and proc.returncode is None:
+            try:
+                proc.kill()
+            except ProcessLookupError:
+                pass
+        self._proc = None
+        self._client = None
+        if self._spawn is not None:
+            try:
+                self._spawn.cleanup()
+            except Exception:  # noqa: BLE001
+                pass
+            self._spawn = None
+            self._spawn_dir = None
+        await self._set_status(ClodiaStatus.STOPPED)
+
+    async def send_user_message(self, content: str) -> str:
+        if self._client is None:
+            raise RuntimeError("session not started")
+        async with self._lock:
+            await self._record({"role": "user", "content": content})
+            await self._set_status(ClodiaStatus.THINKING)
+            self._last_usage = {}
+            self._current_turn_task = asyncio.create_task(self._run_turn(content))
+            try:
+                full = await self._current_turn_task
+                await self._record({"role": "assistant", "content": full})
+                await self._set_status(ClodiaStatus.IDLE)
+                return full
+            except asyncio.CancelledError:
+                note = "⏹ Inferenza interrotta dall'utente."
+                await self._set_status(ClodiaStatus.CANCELLING)
+                await self._record({"role": "system", "content": note})
+                await bus.publish(Event(type="interrupted",
+                                        payload={"chat_id": self.chat_id, "reason": "user_interrupt"},
+                                        timestamp=datetime.now(timezone.utc)))
+                await self._set_status(ClodiaStatus.IDLE)
+                return note
+            except Exception as e:
+                await self._set_status(ClodiaStatus.ERROR)
+                await self._record({"role": "system", "content": f"⚠ Errore opencode: {e}"})
+                await self._publish_error(str(e))
+                raise
+            finally:
+                self._current_turn_task = None
+
+    async def send_user_message_async(self, content: str) -> dict:
+        if self._client is None:
+            raise RuntimeError("session not started")
+        asyncio.create_task(self._do_send_bg(content))
+        return {"chat_id": self.chat_id, "queued": True}
+
+    async def _do_send_bg(self, content: str) -> None:
+        try:
+            await self.send_user_message(content)
+        except Exception:
+            pass
+
+    async def interrupt_current_turn(self) -> bool:
+        task = self._current_turn_task
+        if task is None or task.done():
+            return False
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                await c.post(f"{self._base_url}/session/{self._oc_session}/abort")
+        except Exception:  # noqa: BLE001
+            pass
+        task.cancel()
+        return True
+
+    async def _run_turn(self, content: str) -> str:
+        activity_log.append(self.kind, "run_started",
+                            {"prompt": _snippet(content), "principal": self.principal,
+                             "chat_id": self.chat_id})
+        import httpx
+        body = {
+            "model": {"providerID": self._provider, "modelID": self._model},
+            "agent": "build",
+            "parts": [{"type": "text", "text": content}],
+        }
+        async with await self._http() as c:
+            r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
+            if r.status_code >= 400:
+                activity_log.append(self.kind, "error",
+                                    {"error": f"opencode {r.status_code}", "chat_id": self.chat_id})
+                raise RuntimeError(f"opencode HTTP {r.status_code}: {r.text[:300]}")
+            data = r.json() or {}
+        full = await self._handle_parts(data)
+        activity_log.append(self.kind, "run_done",
+                            {"reply": _snippet(full), "chat_id": self.chat_id,
+                             "usage": self._last_usage or None})
+        return full
+
+    async def _handle_parts(self, data: dict) -> str:
+        parts_out: list[str] = []
+        for p in data.get("parts", []) or []:
+            t = p.get("type")
+            if t == "text" and p.get("text"):
+                parts_out.append(p["text"])
+                await bus.publish(Event(type="message_chunk",
+                                        payload={"chat_id": self.chat_id, "role": "assistant",
+                                                 "delta": p["text"]},
+                                        timestamp=datetime.now(timezone.utc)))
+            elif t == "reasoning" and p.get("text"):
+                await bus.publish(Event(type="thinking_chunk",
+                                        payload={"chat_id": self.chat_id, "delta": p["text"]},
+                                        timestamp=datetime.now(timezone.utc)))
+            elif t == "tool":
+                st = p.get("state") or {}
+                await bus.publish(Event(type="tool_use",
+                                        payload={"chat_id": self.chat_id, "tool": p.get("tool") or "tool",
+                                                 "input_summary": str(st.get("input"))[:200]},
+                                        timestamp=datetime.now(timezone.utc)))
+        info = data.get("info") or {}
+        tok = info.get("tokens") or {}
+        if tok:
+            cache = tok.get("cache") or {}
+            self._last_usage = {
+                "input_tokens": int(tok.get("input", 0) or 0),
+                "output_tokens": int(tok.get("output", 0) or 0),
+                "cache_read_input_tokens": int((cache.get("read") if isinstance(cache, dict) else 0) or 0),
+            }
+            self._total_tokens["input"] += self._last_usage["input_tokens"]
+            self._total_tokens["output"] += self._last_usage["output_tokens"]
+            self._total_tokens["runs"] += 1
+            await bus.publish(Event(type="usage",
+                                    payload={"chat_id": self.chat_id, **self._last_usage},
+                                    timestamp=datetime.now(timezone.utc)))
+        return "".join(parts_out)
+
+    async def _set_status(self, status: ClodiaStatus) -> None:
+        self.status = status
+        await bus.publish(Event(type="status",
+                                payload={"chat_id": self.chat_id, "status": status.value},
+                                timestamp=datetime.now(timezone.utc)))
+
+    async def _publish_error(self, message: str, reason: str = "") -> None:
+        payload = {"chat_id": self.chat_id, "message": message}
+        if reason:
+            payload["reason"] = reason
+        await bus.publish(Event(type="error", payload=payload,
+                               timestamp=datetime.now(timezone.utc)))
+
+    async def _record(self, msg: dict) -> None:
+        self.last_activity = datetime.now(timezone.utc)
+        entry = {**msg, "id": str(uuid.uuid4()), "timestamp": self.last_activity.isoformat()}
+        self.sessions_dir.mkdir(parents=True, exist_ok=True)
+        with self.session_file.open("a", encoding="utf-8") as f:
+            f.write(json.dumps(entry, ensure_ascii=False) + "\n")
+        prefix = _resolve_title_prefix(self.kind)
+        default_titles = ("", "Nuova chat", f"{prefix} Nuova chat")
+        if msg.get("role") == "user" and self.title in default_titles:
+            content = (msg.get("content") or "").strip().splitlines()[0] if msg.get("content") else ""
+            snippet = content[:60] if content else "Nuova chat"
+            self.title = f"{prefix} {snippet}"
+        await bus.publish(Event(type="message",
+                                payload={"chat_id": self.chat_id, **entry},
+                                timestamp=datetime.now(timezone.utc)))
+
+    def read_history(self) -> list[dict]:
+        if not self.session_file.is_file():
+            return []
+        out: list[dict] = []
+        for line in self.session_file.read_text(encoding="utf-8").splitlines():
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                out.append(json.loads(line))
+            except json.JSONDecodeError:
+                continue
+        return out
+
+    def to_dict(self) -> dict:
+        return {
+            "chat_id": self.chat_id,
+            "kind": self.kind,
+            "title": self.title,
+            "status": self.status.value,
+            "created_at": self.created_at.isoformat(),
+            "last_activity": self.last_activity.isoformat(),
+            "principal": getattr(self, "principal", None),
+            "last_usage": self._last_usage or {},
+            "total_tokens": self._total_tokens,
+            "runtime": "opencode",
+            **_spawn_identity(self._spawn),
+        }
+
+
+def _runtime_class(kind: str):
+    """Classe di runtime per il kind = SDK del provider EFFETTIVO (fallback
+    cross-SDK): opencode → OpenCodeChatSession, codex → CodexChatSession,
+    altrimenti ChatSession (claude)."""
+    sdk = agent_runtime_sdk(kind)
+    if sdk == "opencode":
+        return OpenCodeChatSession
+    if sdk == "codex":
+        return CodexChatSession
+    return ChatSession
+
+
 class ChatManager:
     """Multi-chat: dict {chat_id → ChatSession}. Una chat 'default' al boot."""
 
     def __init__(self) -> None:
-        self._chats: dict[str, "ChatSession | CodexChatSession"] = {}
+        self._chats: dict[str, "ChatSession | CodexChatSession | OpenCodeChatSession"] = {}
         self._lock = asyncio.Lock()
 
     def list(self) -> list[ChatSession]:
@@ -1403,7 +1793,7 @@ class ChatManager:
             cid = chat_id or _new_chat_id()
             if cid in self._chats:
                 raise ValueError(f"chat '{cid}' already exists")
-            cls = CodexChatSession if _is_codex_kind(kind) else ChatSession
+            cls = _runtime_class(kind)
             chat = cls(cid, kind=kind)
             # Pre-popola titolo dalla history se esiste su disco
             existing = chat.read_history()
