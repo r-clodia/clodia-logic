@@ -120,9 +120,24 @@ def tail(agent: str, limit: int = 200, date: Optional[str] = None) -> list[dict]
 
 
 def _usage_totals(usage: dict | None) -> tuple[int, int]:
+    """Total input/output tokens da un usage, normalizzato tra provider.
+
+    I provider contano l'input in modo DIVERSO:
+    - Anthropic (Claude): `input_tokens` è SOLO il non-cachato; i token di cache
+      (`cache_creation_input_tokens` + `cache_read_input_tokens`) sono ADDITIVI →
+      vanno sommati, altrimenti l'input è sotto-contato di ordini di grandezza.
+    - OpenAI/codex: `input_tokens` è GIÀ il totale (il cached è un sottoinsieme
+      informativo) → NON sommare i cache o si raddoppia.
+    Discriminante: la presenza di `cache_creation_input_tokens` = stile-Anthropic.
+    """
     usage = usage or {}
-    tokens_in = int(usage.get("input_tokens", 0) or 0)
     tokens_out = int(usage.get("output_tokens", 0) or 0)
+    if usage.get("cache_creation_input_tokens") is not None:
+        tokens_in = (int(usage.get("input_tokens", 0) or 0)
+                     + int(usage.get("cache_creation_input_tokens", 0) or 0)
+                     + int(usage.get("cache_read_input_tokens", 0) or 0))
+    else:
+        tokens_in = int(usage.get("input_tokens", 0) or 0)
     return tokens_in, tokens_out
 
 
