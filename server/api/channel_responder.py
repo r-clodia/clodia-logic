@@ -1,10 +1,13 @@
 """Auto-provisioning del responder confinato di un canale (clone per-topic).
 
-Per ogni topic-con-channel si clona dall'archetipo `catalogs/agent-templates/hermia`
-un'identità confinata `hermia-<topic>`, con `clearance = tier del topic`, partecipe
+Per ogni topic-con-channel si clona dall'archetipo `catalogs/agent-templates/eco`
+un'identità confinata `eco-<topic>`, con `clearance = tier del topic`, partecipe
 SOLO di quel topic. Combinata con l'ACL participants del gateway
 (project_topic_access_two_axis), dà il confinamento per-topic reale: anche se in
 futuro il responder avrà tool `topic.*`, potrà toccare solo il suo topic.
+
+NB: Eco (responder-nel-canale, senza portata esterna) è distinto da Hermia
+(agents-seed/hermia), l'hub comunicazioni con i tool email/telegram.
 """
 from __future__ import annotations
 
@@ -20,11 +23,11 @@ from . import gateway_admin, topics_client
 
 LOG = logging.getLogger("agent-server.channel_responder")
 
-_ARCHETYPE = WORKSPACE_ROOT / "catalogs" / "agent-templates" / "hermia"
+_ARCHETYPE = WORKSPACE_ROOT / "catalogs" / "agent-templates" / "eco"
 
 
 def responder_name(topic_name: str) -> str:
-    return f"hermia-{topic_name}"
+    return f"eco-{topic_name}"
 
 
 def _clone(rn: str, clearance: str) -> None:
@@ -33,7 +36,7 @@ def _clone(rn: str, clearance: str) -> None:
     (dst / "memory").mkdir(exist_ok=True)
     spec = yaml.safe_load((_ARCHETYPE / "agent.yaml").read_text(encoding="utf-8"))
     spec["name"] = rn
-    spec["display_name"] = "Hermia"
+    spec["display_name"] = "Eco"
     spec["clearance"] = clearance  # = tier del topic → clearance ≥ tier per costruzione
     (dst / "agent.yaml").write_text(
         yaml.safe_dump(spec, sort_keys=False, allow_unicode=True), encoding="utf-8")
@@ -47,7 +50,7 @@ def ensure_responder(tier: str, name: str, topic_tier: str) -> str:
     rn = responder_name(name)
     if registry.get_by_name(rn) is None:
         if not (_ARCHETYPE / "agent.yaml").is_file():
-            LOG.warning("archetipo hermia assente in %s", _ARCHETYPE)
+            LOG.warning("archetipo eco assente in %s", _ARCHETYPE)
             return rn
         _clone(rn, topic_tier)
         registry.load()
