@@ -14,7 +14,12 @@ clearance: SEAL-2
 constitution: platform-core
 agent_sdk: claude
 model: claude-sonnet-4-5
-providers: [claude-pro-max, anthropic-api]
+# Provider: SOLO SEAL≥2 (= clearance di Mercuria). Le comunicazioni trasportano
+# documenti cross-topic fino a SEAL-2: NON deve ripiegare su provider SEAL-1
+# (claude-pro-max/anthropic-api = US-residency). aws-region-eu (Bedrock EU) è
+# l'unico provider SEAL-2 che serve Claude → nessun fallback SEAL-1 by design
+# (se Bedrock EU è giù, Mercuria resta disabilitata anziché usare un provider inadeguato).
+providers: [aws-region-eu]
 avatar_color: "#0ea5e9"
 sandbox:
   allow_read: ["{scratch}/**"]
