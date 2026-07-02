@@ -125,6 +125,19 @@ def set_participant(tier: str, name: str, agent: str, add: bool = True) -> dict:
     return r.json()
 
 
+def remote_action(tier: str, name: str, action: str, **params) -> dict:
+    """Verbi Remote del topic (status/enable/disable/add/commit/push/pull) → gateway."""
+    url = f"{_base()}/{tier}/{name}/remote"
+    try:
+        r = requests.post(url, headers=_headers(), json={"action": action, **params},
+                          timeout=60)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway remote irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise TopicsClientError(f"gateway remote → HTTP {r.status_code}: {r.text[:200]}")
+    return r.json()
+
+
 def list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
     url = f"{_base()}/{tier}/{name}/files"
     try:

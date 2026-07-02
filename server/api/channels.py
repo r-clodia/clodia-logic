@@ -363,6 +363,25 @@ async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
     return {"interrupted": interrupted}
 
 
+@router.post("/clodia/channels/{tier}/{name}/remote")
+async def channel_remote(tier: str, name: str, request: Request) -> dict:
+    """Verbi Remote (git/drive) del topic dalla webui: status/enable/disable/
+    add/commit/push/pull. Solo partecipanti/owner. Proxy al gateway."""
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    _require_member(request, topic.get("meta", {}))
+    body = await request.json()
+    action = (body.get("action") or "").strip()
+    if not action:
+        raise HTTPException(400, "action richiesta")
+    try:
+        return topics_client.remote_action(
+            tier, name, action, **{k: v for k, v in body.items() if k != "action"})
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e)[:200])
+
+
 async def run_topic_turn(tier: str, name: str, meta: dict,
                          trigger_text: str = "", principal_hint: str | None = None):
     """Esegue UN turno del responder del topic sul contesto corrente e posta la
