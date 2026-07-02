@@ -240,6 +240,41 @@ def default_providers_for_sdk(agent_sdk: str | None) -> list[str]:
     return list(SDK_PROVIDERS.get(agent_sdk or "claude", []))
 
 
+def provider_extra_env(pid: str | None) -> dict:
+    """Env statiche del provider (es. Bedrock: flag + region + model id EU)."""
+    return dict((_CATALOG.get(_normalize(pid) or "") or {}).get("extra_env") or {})
+
+
+def is_bedrock_provider(pid: str | None) -> bool:
+    """True se il provider usa Amazon Bedrock (attiva la modalità Bedrock dell'SDK)."""
+    return "CLAUDE_CODE_USE_BEDROCK" in provider_extra_env(pid)
+
+
+def bedrock_model_id(pid: str | None, model: str | None) -> str | None:
+    """Su un provider Bedrock, traduce il modello dichiarato dall'agent
+    (`claude-{opus,sonnet,haiku}-*`) nell'inference-profile EU dichiarato dal
+    provider in extra_env (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`).
+
+    Serve perché Bedrock rifiuta gli id modello Anthropic "puri" (es.
+    `claude-sonnet-4-5` → 400 invalid): vuole l'inference-profile (es.
+    `eu.anthropic.claude-sonnet-4-6`). L'env DEFAULT_* mappa solo l'ALIAS di
+    tier, non un id esplicito → qui facciamo la traduzione noi.
+
+    Ritorna None se il provider NON è Bedrock o il tier non è riconosciuto
+    (→ il chiamante lascia il modello invariato)."""
+    env = provider_extra_env(pid)
+    if "CLAUDE_CODE_USE_BEDROCK" not in env:
+        return None
+    m = (model or "").lower()
+    if "opus" in m:
+        return env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+    if "sonnet" in m:
+        return env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+    if "haiku" in m:
+        return env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+    return None
+
+
 def provider_supports_model(pid: str | None, model: str | None) -> bool:
     """True se il provider può servire `model` (glob match su `models` del
     catalogo). Provider senza `models` dichiarati → serve qualunque modello del
