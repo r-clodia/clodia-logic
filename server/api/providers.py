@@ -169,6 +169,56 @@ def resume_provider(pid: str) -> dict:
     return {"paused": False, "was_paused": was}
 
 
+# ── Override provider per-agent (selezione manuale dal profilo agent) ─────────
+# Sopra la lista di PREFERENZA dichiarata nel seed, l'admin può SELEZIONARE dal
+# profilo dell'agent quale provider della sua lista usare adesso (es. Clodia:
+# [claude-pro-max*, aws-region-eu] → attiva aws-region-eu). È STATO OPERATIVO,
+# non identità: vive fuori dall'agent.yaml, così vale ANCHE sui super immutabili
+# (clodia/wainston) senza violarne l'immutabilità. Se l'override non è più usabile
+# (disconnesso/in pausa/uscito dalla lista) si ripiega sulla preferenza.
+_OVERRIDE_FILE = data_path("agent-state") / "provider-override.json"
+
+
+def _load_overrides() -> dict[str, str]:
+    if not _OVERRIDE_FILE.is_file():
+        return {}
+    try:
+        raw = (json.loads(_OVERRIDE_FILE.read_text()) or {}).get("overrides") or {}
+        return {str(k): _normalize(v) for k, v in raw.items() if v}
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("provider-override.json corrotto, reset: %s", e)
+        return {}
+
+
+def _save_overrides(ov: dict[str, str]) -> None:
+    _OVERRIDE_FILE.parent.mkdir(parents=True, exist_ok=True)
+    _OVERRIDE_FILE.write_text(json.dumps(
+        {"overrides": {k: v for k, v in sorted(ov.items()) if v}}, indent=2))
+
+
+def provider_override(agent: str | None) -> str | None:
+    """Provider selezionato manualmente per `agent`, o None (usa la preferenza)."""
+    if not agent:
+        return None
+    return _load_overrides().get(agent)
+
+
+def list_provider_overrides() -> dict[str, str]:
+    return _load_overrides()
+
+
+def set_provider_override(agent: str, pid: str | None) -> dict:
+    """Fissa (o azzera con pid=None) il provider manuale dell'agent."""
+    ov = _load_overrides()
+    if pid is None:
+        ov.pop(agent, None)
+    else:
+        ov[agent] = _normalize(pid)
+    _save_overrides(ov)
+    LOG.info("Provider override agent '%s' → %s", agent, ov.get(agent))
+    return {"agent": agent, "override": ov.get(agent)}
+
+
 def provider_seal(pid: str | None) -> str | None:
     """Livello SEAL dichiarato di un provider (es. 'SEAL-2'), o None."""
     meta = _CATALOG.get(_normalize(pid) or "") or {}
@@ -228,20 +278,28 @@ def candidate_providers(providers: list[str] | None, provider: str | None,
 
 def effective_provider(providers: list[str] | None, provider: str | None,
                        agent_sdk: str | None, connected: set[str],
-                       model: str | None = None) -> str | None:
-    """Provider effettivo = il PRIMO ATTIVO (connesso E non in pausa) nell'ordine
-    di PREFERENZA dichiarato dall'agent, fra quelli che SERVONO il suo modello.
+                       model: str | None = None,
+                       override: str | None = None) -> str | None:
+    """Provider effettivo dell'agent, fra quelli che SERVONO il suo modello.
     None → agent disabilitato (nessun provider attivo).
 
-    Policy 30 giu 2026 (rev. 1 lug 2026): modello dell'agent non sindacabile →
-    provider = scelta dell'agent (preferenza primario→fallback). Il SEAL NON
-    seleziona più il provider: governa solo l'ACCESSO ai topic (tier), via
-    l'enforcement in api.channels. Così agent diversi possono usare provider
-    diversi in contemporanea (es. Clodia su claude-pro-max, Saiul su aws-region-eu)
-    senza che un provider a SEAL più alto, ma connesso per un altro agent, dirotti
-    tutti su di sé."""
+    Precedenza:
+      1. OVERRIDE manuale (selezione dal profilo agent), se è nella lista
+         dichiarata ED è attivo (connesso e non in pausa);
+      2. altrimenti il PRIMO ATTIVO nell'ordine di PREFERENZA dichiarato.
+    Se l'override non è più usabile si ripiega sulla preferenza (resiliente).
+
+    Policy 30 giu 2026 (rev. 2 lug 2026): modello dell'agent non sindacabile →
+    provider = scelta dell'agent (override manuale, poi preferenza primario→
+    fallback). Il SEAL NON seleziona il provider: governa solo l'ACCESSO ai topic
+    (tier), via l'enforcement in api.channels. Così agent diversi possono usare
+    provider diversi in contemporanea (es. Clodia su claude-pro-max, Saiul su
+    aws-region-eu) senza che un provider a SEAL più alto dirotti tutti su di sé."""
     cands = candidate_providers(providers, provider, agent_sdk, model)
     paused = _load_paused()
+    ov = _normalize(override)
+    if ov and ov in cands and ov in connected and ov not in paused:
+        return ov  # selezione manuale, onorata perché usabile
     for p in cands:  # ordine = preferenza dichiarata; primo attivo vince
         if p in connected and p not in paused:
             return p

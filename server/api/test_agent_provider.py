@@ -84,6 +84,26 @@ class EffectiveTests(unittest.TestCase):
         eff = P.effective_provider(["anthropic-api", "claude-pro-max"], None, "claude", set())
         self.assertIsNone(eff)
 
+    def test_override_wins_when_usable(self) -> None:
+        # override manuale su un provider in lista e attivo → vince sulla preferenza
+        eff = P.effective_provider(["claude-pro-max", "anthropic-api"], None, "claude",
+                                   {"claude-pro-max", "anthropic-api"},
+                                   override="anthropic-api")
+        self.assertEqual(eff, "anthropic-api")
+
+    def test_override_ignored_when_not_active(self) -> None:
+        # override su provider non connesso → si ripiega sulla preferenza
+        eff = P.effective_provider(["claude-pro-max", "anthropic-api"], None, "claude",
+                                   {"anthropic-api"}, override="claude-pro-max")
+        self.assertEqual(eff, "anthropic-api")
+
+    def test_override_ignored_when_not_in_list(self) -> None:
+        # override su provider non dichiarato dall'agent → ignorato
+        eff = P.effective_provider(["claude-pro-max", "anthropic-api"], None, "claude",
+                                   {"claude-pro-max", "aws-region-eu"},
+                                   override="aws-region-eu")
+        self.assertEqual(eff, "claude-pro-max")
+
 
 class ProviderFieldsTests(unittest.TestCase):
     def test_effective_and_list_exposed(self) -> None:

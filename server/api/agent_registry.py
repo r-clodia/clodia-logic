@@ -36,7 +36,9 @@ from pydantic import BaseModel
 
 from ..agents import activity_log, pause as pause_mod, rank as rank_mod, registry
 from ..agents.models import AgentSpec
-from .providers import connected_provider_ids, candidate_providers, effective_provider, provider_seal
+from .providers import (connected_provider_ids, candidate_providers, effective_provider,
+                        provider_seal, provider_override, set_provider_override,
+                        provider_paused)
 from .provider_store import ProviderStoreError
 from . import admin, contacts, imagegen_client
 from .agents import _principal_from_request
@@ -79,16 +81,32 @@ def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
     cands = candidate_providers(getattr(spec, "providers", None),
                                 getattr(spec, "provider", None), spec.agent_sdk,
                                 getattr(spec, "model", None))
-    # provider EFFETTIVO = SEAL-max fra [dichiarati]∩[supportano il modello]∩[attivi].
+    ov = provider_override(spec.name)  # selezione manuale dal profilo (o None)
+    # provider EFFETTIVO = override manuale (se usabile), altrimenti il primo attivo
+    # nell'ordine di preferenza dichiarato.
     pid = effective_provider(getattr(spec, "providers", None),
                              getattr(spec, "provider", None), spec.agent_sdk, connected,
-                             getattr(spec, "model", None))
+                             getattr(spec, "model", None), override=ov)
+    # opzioni per il selettore nel profilo agent: id + stato di ciascun candidato.
+    options = [{
+        "id": c,
+        "seal": provider_seal(c),
+        "connected": c in connected,
+        "paused": provider_paused(c),
+        "default": bool(cands) and c == cands[0],  # il primo in lista è il default (*)
+        "selected": c == ov,                        # override manuale attivo
+        "effective": c == pid,                      # provider realmente in uso ora
+    } for c in cands]
     return {
         "provider": pid,
         # SEAL del provider a cui l'agent è ATTUALMENTE attribuito (per la card).
         "provider_seal": provider_seal(pid),
         # lista ordinata dei provider compatibili (per la UI).
         "providers": cands,
+        # override manuale attualmente impostato (None = segue la preferenza).
+        "provider_override": ov,
+        # opzioni ricche per il selettore nel profilo agent.
+        "provider_options": options,
         # se ci sono candidati ma nessuno attivo → agent disattivato.
         "provider_connected": (pid is not None) if cands else True,
     }
@@ -500,6 +518,46 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
     if updated is None:
         raise HTTPException(500, f"dopo la modifica l'agent '{name}' non valida: {registry.errors().get(name)}")
     return updated
+
+
+class ProviderSelect(BaseModel):
+    """Selezione manuale del provider per l'agent. provider=None azzera l'override
+    (torna alla preferenza dichiarata)."""
+    provider: Optional[str] = None
+
+
+@router.post("/{name}/provider", response_model=None)
+async def select_provider(name: str, body: ProviderSelect, request: Request) -> dict:
+    """Fissa il provider da usare per l'agent, scelto dalla sua lista dichiarata.
+
+    È STATO OPERATIVO (routing), non identità: consentito ANCHE sui super/immutabili
+    (clodia/wainston) — non tocca l'agent.yaml, quindi non viola l'immutabilità.
+    Solo admin. Il provider deve appartenere alla lista di preferenza dell'agent
+    (non si può assegnare un provider che l'agent non dichiara)."""
+    if not admin.is_admin(_principal_from_request(request)):
+        raise HTTPException(403, "solo un admin può selezionare il provider di un agent")
+    spec = registry.get_by_name(name)
+    if spec is None:
+        raise HTTPException(404, f"agent '{name}' non trovato")
+    pid = (body.provider or "").strip() or None
+    if pid is not None:
+        cands = candidate_providers(getattr(spec, "providers", None),
+                                    getattr(spec, "provider", None), spec.agent_sdk,
+                                    getattr(spec, "model", None))
+        # normalizza e verifica l'appartenenza alla lista dichiarata
+        from .providers import _normalize
+        if _normalize(pid) not in cands:
+            raise HTTPException(400, f"provider '{pid}' non è nella lista dichiarata "
+                                     f"dell'agent '{name}' ({', '.join(cands) or 'nessuno'})")
+        pid = _normalize(pid)
+    result = set_provider_override(name, pid)
+    # ricalcola il provider effettivo per restituirlo alla UI
+    connected = connected_provider_ids()
+    eff = effective_provider(getattr(spec, "providers", None),
+                             getattr(spec, "provider", None), spec.agent_sdk, connected,
+                             getattr(spec, "model", None), override=pid)
+    return {"agent": name, "provider_override": result["override"], "provider": eff,
+            "provider_connected": eff is not None}
 
 
 class AgentCreate(BaseModel):
