@@ -374,21 +374,23 @@ def agent_candidates(kind: str) -> list[str]:
 
 
 def agent_effective_provider(kind: str) -> Optional[str]:
-    """Provider EFFETTIVO del kind con la policy unica: SEAL-max fra
-    [dichiarati] ∩ [supportano il modello dell'agent] ∩ [attivi (connessi e non
-    in pausa)]. None se nessuno. Fail-open al preferito su errore infra."""
+    """Provider EFFETTIVO del kind: override manuale (selezione dal profilo, se
+    usabile) altrimenti il primo attivo (connesso e non in pausa) nell'ordine di
+    preferenza dichiarato, fra quelli che servono il modello dell'agent. None se
+    nessuno. Fail-open al preferito su errore infra."""
     try:
-        from ..api.providers import effective_provider, connected_provider_ids
+        from ..api.providers import effective_provider, connected_provider_ids, provider_override
         connected = connected_provider_ids()
     except Exception:  # noqa: BLE001 — fail-open su errore infra
         return (agent_candidates(kind) or [None])[0]
+    ov = provider_override(kind)  # selezione manuale dal profilo agent (o None)
     spec = _kind_spec(kind)
     if spec is not None:
         return effective_provider(getattr(spec, "providers", None),
                                   getattr(spec, "provider", None), spec.agent_sdk,
-                                  connected, getattr(spec, "model", None))
+                                  connected, getattr(spec, "model", None), override=ov)
     sdk = "codex" if kind in CODEX_KINDS else "claude"
-    return effective_provider(None, None, sdk, connected, None)
+    return effective_provider(None, None, sdk, connected, None, override=ov)
 
 
 def agent_provider(kind: str) -> Optional[str]:
