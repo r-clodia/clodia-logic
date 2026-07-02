@@ -1500,15 +1500,21 @@ class OpenCodeChatSession:
                 cfg["provider"][self._provider] = {"options": opts}
         except Exception as e:  # noqa: BLE001
             LOG.warning("opencode: credenziale provider %s non risolta: %s", self._provider, e)
-        # gateway clodia-tools come MCP remote (token col principal, via env)
+        # gateway clodia-tools come MCP via bridge stdio `mcp-remote`. NB: il tipo
+        # `remote` nativo di opencode si appende contro lo StreamableHTTP stateless
+        # del gateway; `mcp-remote` (stdio↔HTTP) invece funziona. Serve --allow-http
+        # perché l'endpoint interno è http:// (rete docker, non esposto). Il token
+        # (col principal + clearance) va nell'header del bridge.
         try:
             tok = pki.mint_session_token(self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
                                          principal=self.principal,
                                          clearance=_kind_clearance(self.kind))
-            env["CLODIA_MCP_AUTH"] = f"Bearer {tok}"
             cfg["mcp"]["clodia-tools"] = {
-                "type": "remote", "url": CLODIA_TOOLS_MCP_URL,
-                "headers": {"Authorization": "{env:CLODIA_MCP_AUTH}"}, "enabled": True}
+                "type": "local",
+                "command": ["npx", "-y", "mcp-remote", CLODIA_TOOLS_MCP_URL,
+                            "--header", f"Authorization: Bearer {tok}",
+                            "--transport", "http-only", "--allow-http"],
+                "enabled": True}
         except Exception as e:  # noqa: BLE001
             LOG.warning("opencode: MCP clodia-tools non cablato per %s: %s", self.kind, e)
         cwd.mkdir(parents=True, exist_ok=True)

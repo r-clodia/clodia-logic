@@ -12,18 +12,18 @@ description: "Agente messaggero: email e Telegram per conto della colonia. Clear
 type: normal
 clearance: SEAL-2
 constitution: platform-core
-agent_sdk: claude
-# Mercuria è un dispacciatore di messaggi: non serve un modello di ragionamento
-# pesante, basta buona affidabilità nel tool-use. Haiku (Bedrock EU) è leggero,
-# veloce ed economico. (Interim: quando il runtime OpenCode sarà pronto potrà
-# passare a un modello open sovrano, es. gpt-oss-120b su scaleway, SEAL-3.)
-model: claude-haiku-4-5
-# Provider: SOLO SEAL≥2 (= clearance di Mercuria). Le comunicazioni trasportano
-# documenti cross-topic fino a SEAL-2: NON deve ripiegare su provider SEAL-1
-# (claude-pro-max/anthropic-api = US-residency). aws-region-eu (Bedrock EU) è
-# l'unico provider SEAL-2 che serve Claude → nessun fallback SEAL-1 by design
-# (se Bedrock EU è giù, Mercuria resta disabilitata anziché usare un provider inadeguato).
-providers: [aws-region-eu]
+# Runtime segue il provider effettivo: scaleway→opencode, aws-region-eu→claude.
+# agent_sdk è il default/fallback quando nessun provider risolve.
+agent_sdk: opencode
+# Mercuria è un dispacciatore: non serve ragionamento pesante, basta affidabilità
+# nel tool-use. Primario: gpt-oss-120b (open, sovrano) su scaleway via OpenCode.
+model: gpt-oss-120b
+# Provider: SOLO SEAL≥2 (= clearance di Mercuria); le comunicazioni trasportano
+# documenti cross-topic fino a SEAL-2, mai su provider SEAL-1. Catena di fallback
+# cross-SDK: scaleway (SEAL-3, gpt-oss via OpenCode) → aws-region-eu (SEAL-2,
+# haiku via Bedrock/claude, override in provider_models). Nessun SEAL-1.
+providers: [scaleway, aws-region-eu]
+provider_models: {aws-region-eu: claude-haiku-4-5}
 avatar_color: "#0ea5e9"
 sandbox:
   allow_read: ["{scratch}/**"]
