@@ -13,7 +13,11 @@ type: normal
 clearance: SEAL-2
 constitution: platform-core
 agent_sdk: claude
-model: claude-sonnet-4-5
+# Mercuria è un dispacciatore di messaggi: non serve un modello di ragionamento
+# pesante, basta buona affidabilità nel tool-use. Haiku (Bedrock EU) è leggero,
+# veloce ed economico. (Interim: quando il runtime OpenCode sarà pronto potrà
+# passare a un modello open sovrano, es. gpt-oss-120b su scaleway, SEAL-3.)
+model: claude-haiku-4-5
 # Provider: SOLO SEAL≥2 (= clearance di Mercuria). Le comunicazioni trasportano
 # documenti cross-topic fino a SEAL-2: NON deve ripiegare su provider SEAL-1
 # (claude-pro-max/anthropic-api = US-residency). aws-region-eu (Bedrock EU) è
