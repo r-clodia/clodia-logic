@@ -138,5 +138,43 @@ class ProviderFieldsTests(unittest.TestCase):
         self.assertTrue(f["provider_connected"])
 
 
+class BedrockModelTests(unittest.TestCase):
+    """Traduzione del modello dichiarato → inference-profile EU su Bedrock."""
+    _EU = {
+        "extra_env": {
+            "CLAUDE_CODE_USE_BEDROCK": "1",
+            "ANTHROPIC_DEFAULT_SONNET_MODEL": "eu.anthropic.claude-sonnet-4-6",
+            "ANTHROPIC_DEFAULT_OPUS_MODEL": "eu.anthropic.claude-opus-4-6-v1",
+            "ANTHROPIC_DEFAULT_HAIKU_MODEL": "eu.anthropic.claude-haiku-4-5-20251001-v1:0",
+        }
+    }
+
+    def setUp(self) -> None:
+        self._saved = P._CATALOG.get("aws-region-eu"), P._CATALOG.get("anthropic-api")
+        P._CATALOG["aws-region-eu"] = dict(self._EU)
+        P._CATALOG["anthropic-api"] = {"extra_env": {}}
+
+    def tearDown(self) -> None:
+        aws, api = self._saved
+        if aws is None: P._CATALOG.pop("aws-region-eu", None)
+        else: P._CATALOG["aws-region-eu"] = aws
+        if api is None: P._CATALOG.pop("anthropic-api", None)
+        else: P._CATALOG["anthropic-api"] = api
+
+    def test_bedrock_maps_tier(self) -> None:
+        self.assertEqual(P.bedrock_model_id("aws-region-eu", "claude-sonnet-4-5"),
+                         "eu.anthropic.claude-sonnet-4-6")
+        self.assertEqual(P.bedrock_model_id("aws-region-eu", "claude-opus-4-8"),
+                         "eu.anthropic.claude-opus-4-6-v1")
+        self.assertEqual(P.bedrock_model_id("aws-region-eu", "claude-haiku-4-5"),
+                         "eu.anthropic.claude-haiku-4-5-20251001-v1:0")
+
+    def test_non_bedrock_returns_none(self) -> None:
+        self.assertIsNone(P.bedrock_model_id("anthropic-api", "claude-sonnet-4-5"))
+
+    def test_unknown_tier_returns_none(self) -> None:
+        self.assertIsNone(P.bedrock_model_id("aws-region-eu", "gpt-4o"))
+
+
 if __name__ == "__main__":
     unittest.main()

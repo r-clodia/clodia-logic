@@ -530,6 +530,17 @@ class ChatSession:
                 opts_kwargs["setting_sources"] = []
         model_override = _resolve_model(self.kind)
         if model_override:
+            # Su un provider Bedrock, l'id modello Anthropic "puro" (es.
+            # claude-sonnet-4-5) è rifiutato: serve l'inference-profile EU
+            # (es. eu.anthropic.claude-sonnet-4-6). Traduci in base al provider
+            # effettivo dell'agent (no-op sui provider non-Bedrock).
+            try:
+                from ..api.providers import bedrock_model_id
+                bid = bedrock_model_id(agent_effective_provider(self.kind), model_override)
+                if bid:
+                    model_override = bid
+            except Exception:  # noqa: BLE001 — fail-open: usa il modello dichiarato
+                pass
             opts_kwargs["model"] = model_override
         permission_mode_override = _resolve_permission_mode(self.kind)
         if permission_mode_override == "bypassPermissions" and _IS_ROOT:
