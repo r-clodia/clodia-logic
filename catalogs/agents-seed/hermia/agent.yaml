@@ -1,0 +1,33 @@
+# Seed "Hermia" — hub delle comunicazioni della colonia.
+# Auto-istanziata (agents-seed/): agente dedicato a email e Telegram (in
+# prospettiva anche WhatsApp). Le comunicazioni trasportano documenti e
+# informazioni provenienti da più topic → clearance minima SEAL-2.
+# NB: distinta da Eco (agent-templates/eco), il responder-nel-canale confinato
+# per-topic e senza portata esterna.
+# Roadmap: in futuro un'istanza di Hermia per topic svolgerà le funzioni di
+# messaggero locale; per ora è un'unica istanza con i tool comms a disposizione.
+name: hermia
+display_name: Hermia
+description: "Hub comunicazioni: email e Telegram per conto della colonia. Clearance SEAL-2 (le comunicazioni attraversano documenti di più topic)."
+type: normal
+clearance: SEAL-2
+constitution: platform-core
+agent_sdk: claude
+model: claude-sonnet-4-5
+providers: [claude-pro-max, anthropic-api]
+avatar_color: "#0ea5e9"
+sandbox:
+  allow_read: ["{scratch}/**"]
+  deny_read: ["secrets/**"]
+  allow_write: ["{scratch}/**"]
+  allow_shell_cmds: []
+  deny_shell_patterns: ["*"]
+capabilities: []
+rules: []
+# Tool comms (la fruizione degli account/token resta gated dai grant del vault:
+# email account + telegram_bot_token vanno delegati a Hermia dalla sezione
+# Connettori/Integrations). Enforcement effettivo nel gateway (config.yaml).
+tool_permissions: [email.*, telegram.*]
+memory:
+  dir: memory/
+system_prompt: system-prompt.md
