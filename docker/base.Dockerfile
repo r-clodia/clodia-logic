@@ -14,7 +14,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # Codex e' pinnato: gli agent `agent_sdk=codex` girano dentro il worker
 # agent-server e devono trovare un binario stabile a build-time.
 RUN npm install -g @anthropic-ai/claude-code @openai/codex@${OPENAI_CODEX_NPM_VERSION} \
-    opencode-ai@${OPENCODE_NPM_VERSION}
+    opencode-ai@${OPENCODE_NPM_VERSION} mcp-remote
 
 # Verifica installazione
 RUN claude --version
