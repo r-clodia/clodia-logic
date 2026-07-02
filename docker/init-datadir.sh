@@ -38,10 +38,11 @@ touch "$DATADIR/boot/VIOLATION.md"
 mkdir -p "$DATADIR/secrets/keystore"
 [ -f "$DATADIR/keystore-policy.yaml" ] || printf 'credentials: {}\n' > "$DATADIR/keystore-policy.yaml"
 
-# Seed agent: installa i due super-agent canonici della piattaforma
-# (clodia su Claude, ophelia su Codex). Eventuali agent aggiuntivi dell'istanza
-# vivono in CLODIA_DATA/agents/ e non stanno nel repo logic. Copia solo se
-# manca, per non sovrascrivere editing locale.
+# Seed agent: installa gli agent NATIVI della piattaforma da catalogs/agents-seed
+# (clodia, ophelia — super; wainston — admin; mercuria — messaggero). Sono il
+# genoma clonato con ogni istanza. Eventuali agent aggiuntivi dell'istanza vivono
+# in CLODIA_DATA/agents/ e non stanno nel repo. Copia solo se manca, per non
+# sovrascrivere editing locale.
 for seed in "$BUNDLE_ROOT"/catalogs/agents-seed/*; do
     [ -d "$seed" ] || continue
     name="$(basename "$seed")"
