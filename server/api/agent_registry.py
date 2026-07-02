@@ -588,19 +588,22 @@ class AgentCreate(BaseModel):
 
 
 # Nomi riservati ai super-agent nativi (seed nel repo, non ricreabili via API).
-_NATIVE_AGENTS = {"clodia", "ophelia"}
+# Agenti NATIVI della piattaforma: seed nel repo (catalogs/agents-seed), clonati
+# con ogni istanza. Nome riservato → non ricreabili via API. clodia/ophelia sono
+# anche super; mercuria (agente messaggero) è nativa ma normal.
+_NATIVE_AGENTS = {"clodia", "ophelia", "mercuria"}
 
 
 @router.post("", status_code=201, response_model=AgentSpec)
 async def create_agent(body: AgentCreate) -> AgentSpec:
     """Crea un nuovo agente USER-DEFINED generando lo scaffold direttamente dallo
     schema (single source of truth — niente file-template da tenere allineato),
-    poi reload. Solo clodia/ophelia sono nativi (seed nel repo)."""
+    poi reload. Gli agent nativi (clodia/ophelia/mercuria) sono seed nel repo."""
     name = body.name.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,30}", name):
         raise HTTPException(400, "nome invalido (usa [a-z0-9_-], inizia con alfanumerico)")
     if name in _NATIVE_AGENTS:
-        raise HTTPException(409, f"'{name}' è un super-agent nativo, non ricreabile da qui")
+        raise HTTPException(409, f"'{name}' è un agent nativo della piattaforma, non ricreabile da qui")
     target = registry.base_dir / name
     if target.exists():
         raise HTTPException(409, f"agent '{name}' esiste già")
