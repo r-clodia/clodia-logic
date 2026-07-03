@@ -64,11 +64,22 @@ def _spawn_bg(coro) -> None:
     t.add_done_callback(_BG_TASKS.discard)
 
 
-async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str) -> str | None:
+# Catena di delega (modello capitano→incaricato): quando un responder tagga un
+# ALTRO agente AI partecipante, quel messaggio è un ORDINE che innesca il turno
+# dell'incaricato. Bounded per evitare loop di ping-pong tra agenti.
+_MAX_DELEGATION_HOPS = 2
+
+
+async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
+                                 principal: str | None = None, hop: int = 0) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
 
     La ChatSession serializza gia' i turni con il suo lock: se lo stesso agent
     riceve piu' messaggi, questi restano in FIFO senza bloccare altri agent.
+
+    Se la risposta TAGGA un altro agente AI partecipante (delega/ordine), si
+    innesca il turno dell'incaricato (catena capitano→incaricato), fino a
+    `_MAX_DELEGATION_HOPS` salti per evitare loop.
     """
     await _typing(tier, name, responder, "start")
     try:
@@ -82,10 +93,55 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     try:
         topics_client.post_message(tier, name, responder, reply, kind="ai")
         await _channel_message(tier, name, responder, "ai")
-        return reply
     except Exception as e:  # noqa: BLE001
         LOG.warning("post risposta canale %s/%s da %s fallito: %s", tier, name, responder, e)
         return None
+    if hop < _MAX_DELEGATION_HOPS:
+        try:
+            await _maybe_delegate(tier, name, responder, reply, principal, hop)
+        except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
+            LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
+    return reply
+
+
+async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str,
+                          principal: str | None, hop: int) -> None:
+    """Se `reply_text` tagga un ALTRO agente AI partecipante IDONEO, ne innesca il
+    turno per eseguire l'ordine (nostromo → membro incaricato). Niente catena se
+    il tag è assente, è l'agente stesso, o non è un partecipante idoneo al tier."""
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        return
+    meta = topic.get("meta", {})
+    tier_real = meta.get("tier", tier)
+    participants = meta.get("participants", [])
+    # Primo @tag che è un PARTECIPANTE diverso dal mittente (evita falsi positivi
+    # come gli indirizzi email `x@dominio` che _tagged prenderebbe per primi).
+    tag = next((t for t in _TAG_RE.findall(reply_text or "")
+                if t in participants and t != from_agent), None)
+    if not tag:
+        return
+    # idoneità: _pick_responder col tag ritorna il delegato SOLO se idoneo al tier
+    delegate = _pick_responder(participants, tier_real, tag)
+    if delegate is None or delegate.name != tag:
+        return
+    chat_id = f"chan:{tier}:{name}:{delegate.name}"
+    try:
+        chat = manager.get(chat_id)
+    except KeyError:
+        try:
+            chat = await manager.create(chat_id=chat_id, kind=delegate.name)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("delega: impossibile creare la sessione di %s: %s", delegate.name, e)
+            return
+    chat.principal = principal
+    order = (f"[Canale #{name} · {tier_real}] @{from_agent} ti ha taggato per ESEGUIRE "
+             f"un ordine (sei l'agente incaricato). Il suo messaggio:\n\n{reply_text}\n\n"
+             f"Esegui l'ordine con i tuoi strumenti e riferisci l'esito nel canale. "
+             f"{_channel_files_hint(tier_real, name)}")
+    LOG.info("delega a catena: %s → @%s (hop %d) su %s/%s", from_agent, delegate.name, hop + 1, tier, name)
+    await _run_and_post_response(tier, name, delegate.name, chat, order,
+                                 principal=principal, hop=hop + 1)
 
 # I DM sono canali a 2 partecipanti (meta.kind="dm"): nome deterministico (i due
 # nomi ordinati) così "owner↔clodia" e "clodia↔owner" sono lo STESSO canale.
@@ -337,7 +393,8 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
                   f"({_channel_files_hint(tier_real, name)} "
                   f"Per offrire scelte rapide usa <!-- choices=A,B,C --> o "
                   f"<!-- choices-multi=A,B,C -->.)")
-    _spawn_bg(_run_and_post_response(tier, name, responder.name, chat, prompt))
+    _spawn_bg(_run_and_post_response(tier, name, responder.name, chat, prompt,
+                                     principal=principal, hop=0))
     return {"posted": True, "queued": True, "responder": responder.name,
             "warning": warning}
 
