@@ -192,3 +192,49 @@ def summary(agent_names: list[str] | None = None) -> list[dict]:
             "last_event_type": last_event.get("type") if last_event else None,
         })
     return out
+
+
+def provider_summary(agent_provider_map: dict[str, str | None] | None = None,
+                     agent_names: list[str] | None = None) -> list[dict]:
+    """Leaderboard cumulativa per PROVIDER di inferenza: token consumati da ogni
+    servizio (i prezzi differiscono molto → utile vedere il consumo per provider).
+
+    Il provider di ogni run è quello registrato nell'evento `run_done`
+    (`payload.provider`); per gli eventi storici che non lo riportano si ricade
+    sul provider EFFETTIVO corrente dell'agente (`agent_provider_map`), o
+    "sconosciuto". Il conteggio token riusa `_usage_totals` (normalizza le
+    differenze di conteggio input fra Anthropic e OpenAI)."""
+    prov_map = agent_provider_map or {}
+    names = set(agent_names or [])
+    if ACTIVITY_DIR.is_dir():
+        names.update(child.name for child in ACTIVITY_DIR.iterdir() if child.is_dir())
+
+    acc: dict[str, dict] = {}
+    for agent in sorted(names):
+        for f in _agent_log_files(agent):
+            for e in _read_jsonl(f):
+                if e.get("type") != "run_done":
+                    continue
+                payload = e.get("payload") or {}
+                provider = payload.get("provider") or prov_map.get(agent) or "sconosciuto"
+                tin, tout = _usage_totals(payload.get("usage"))
+                row = acc.setdefault(provider, {
+                    "provider": provider, "runs": 0, "tokens_in": 0, "tokens_out": 0,
+                    "agents": set(), "last_event_ts": None,
+                })
+                row["runs"] += 1
+                row["tokens_in"] += tin
+                row["tokens_out"] += tout
+                row["agents"].add(agent)
+                ts = e.get("ts")
+                if ts and (row["last_event_ts"] is None or ts > row["last_event_ts"]):
+                    row["last_event_ts"] = ts
+
+    out = []
+    for row in acc.values():
+        row = dict(row)
+        row["agents"] = sorted(row.pop("agents"))
+        row["agents_count"] = len(row["agents"])
+        out.append(row)
+    out.sort(key=lambda r: (r["tokens_in"] + r["tokens_out"], r["runs"]), reverse=True)
+    return out
