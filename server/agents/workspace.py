@@ -39,6 +39,57 @@ AGENCY_SHARED_ROOT = data_path("agency-shared")
 AGENCY_SHARED_CARDS = AGENCY_SHARED_ROOT / "cards"
 
 
+def sweep_orphan_spawns(live_dirs: Optional[set] = None,
+                        min_age_seconds: float = 0.0) -> list:
+    """Rimuove le cartelle spawn ORFANE sotto SPAWNS_ROOT.
+
+    Uno spawn è orfano se NON è la dir di lavoro di una sessione viva (non in
+    `live_dirs`). Gli spawn sono effimeri: una sessione ne materializza uno NUOVO
+    a ogni start (non riusa i vecchi), quindi un restart/crash del container
+    lascia tutte le cartelle precedenti orfane — è il "garbage nella datadir" che
+    si accumula e appare come spawn zombie in Activity.
+
+    `min_age_seconds` > 0 salta gli spawn modificati di recente (protezione extra
+    per lo sweep periodico: non toccare uno spawn appena creato / di un job in
+    corso non tracciato dal manager). Ritorna i nomi rimossi. Rimozione
+    memory-symlink-safe (come EphemeralWorkspace.cleanup)."""
+    import time
+    live = set()
+    for d in (live_dirs or set()):
+        try:
+            live.add(str(Path(d).resolve()))
+        except OSError:
+            pass
+    removed: list = []
+    if not SPAWNS_ROOT.is_dir():
+        return removed
+    now = time.time()
+    for d in SPAWNS_ROOT.iterdir():
+        if not d.is_dir():
+            continue
+        try:
+            if str(d.resolve()) in live:
+                continue
+            if min_age_seconds > 0 and (now - d.stat().st_mtime) < min_age_seconds:
+                continue
+        except OSError:
+            continue
+        # NON seguire il symlink memory: cancellerebbe i file reali sotto
+        # agents/<name>/memory/. Lo si rimuove prima del rmtree.
+        mem_link = d / ".agent" / "memory"
+        try:
+            if mem_link.is_symlink():
+                mem_link.unlink()
+        except OSError:
+            pass
+        shutil.rmtree(d, ignore_errors=True)
+        removed.append(d.name)
+    if removed:
+        LOG.info("sweep spawn orfani: rimossi %d (%s%s)", len(removed),
+                 ", ".join(removed[:15]), "…" if len(removed) > 15 else "")
+    return removed
+
+
 def _next_spawn_index(name: str) -> int:
     """Prossimo indice sequenziale per gli spawn di `name` (proc-like:
     name-1, name-2, …). Scansiona SPAWNS_ROOT per le cartelle <name>-<int>."""
