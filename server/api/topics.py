@@ -511,6 +511,19 @@ def archive_topic(tier: str, name: str):
         raise HTTPException(502, str(e))
 
 
+@router.post("/api/topics/{tier}/{name}/status")
+async def set_topic_status(tier: str, name: str, request: Request):
+    """Imposta lo status del topic (await|active|archived|urgent) via il gateway."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    try:
+        return topics_client.set_status(tier, name, (body or {}).get("status", ""))
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
 @router.get("/api/topics/catalog")
 async def topics_catalog(request: Request) -> list[dict]:
     """Catalogo COMPLETO dei topic (tier/name/title/kind) per il picker di export.
@@ -583,6 +596,8 @@ async def list_topics(request: Request) -> list[dict]:
         "owner": r.get("owner"),
         "participants": r.get("participants", []),
         "status": r.get("status", "active"),
+        # scadenza più vicina fra i todo (action_points) con data → badge in card
+        "next_deadline": r.get("next_deadline"),
         "storage": r.get("storage"),
         "summary_url": f"/topics/{r.get('tier')}/{r.get('name')}/summary",
         "recent_artifacts": r.get("recent_files", []),
