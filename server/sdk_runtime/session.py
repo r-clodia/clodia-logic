@@ -1791,6 +1791,20 @@ class ChatManager:
             raise KeyError(chat_id)
         return self._chats[chat_id]
 
+    def live_spawn_dirs(self) -> set:
+        """Dir di lavoro (spawn) delle sessioni VIVE — per proteggerle dallo
+        sweep degli spawn orfani."""
+        out: set = set()
+        for c in self._chats.values():
+            sp = getattr(c, "_spawn", None)
+            d = getattr(sp, "dir", None) if sp is not None else None
+            if d:
+                out.add(str(d))
+            sd = getattr(c, "_spawn_dir", None)
+            if sd:
+                out.add(str(sd))
+        return out
+
     async def create(self, chat_id: Optional[str] = None, kind: str = DEFAULT_KIND) -> ChatSession:
         async with self._lock:
             # Enforcement: un agent col provider scollegato non è disponibile —

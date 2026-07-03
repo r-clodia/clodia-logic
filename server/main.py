@@ -48,6 +48,17 @@ logging.getLogger("httpcore").setLevel(logging.WARNING)
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # --- startup ---
+    # Sweep degli spawn ORFANI: al boot nessuna sessione è viva, quindi tutte le
+    # cartelle spawn rimaste da prima del restart/crash sono garbage (le sessioni
+    # ne materializzano di nuove on-demand, non riusano le vecchie). Le rimuove
+    # PRIMA di ricreare la chat di default, così non tocca uno spawn fresco.
+    try:
+        from .agents.workspace import sweep_orphan_spawns
+        n = await asyncio.to_thread(sweep_orphan_spawns, set(), 0.0)
+        if n:
+            LOG.info("boot: rimossi %d spawn orfani dalla datadir", len(n))
+    except Exception as e:  # noqa: BLE001 — non deve mai impedire l'avvio
+        LOG.warning("sweep spawn orfani al boot fallito: %s", e)
     # Bootstrap: se l'istanza non è reclamata, logga il bootstrap token (serve
     # all'owner per l'enroll del primo admin) e NON creare la chat di default.
     try:
@@ -110,12 +121,21 @@ async def _lifespan(app: FastAPI):
             LOG.info("idle reaper disabilitato (CLODIA_SESSION_IDLE_TTL_SEC<=0)")
             return
         LOG.info("idle reaper attivo: ttl=%.0fs tick=%.0fs", ttl, interval)
+        from .agents.workspace import sweep_orphan_spawns
         while True:
             await asyncio.sleep(interval)
             try:
                 await manager.reap_idle(ttl, protect={DEFAULT_CHAT_ID})
             except Exception as e:  # noqa: BLE001
                 LOG.warning("idle reaper tick: %s", e)
+            # Sweep degli spawn orfani a runtime (crash/sessione evinta senza
+            # cleanup): rimuove solo dir NON di sessioni vive e vecchie almeno
+            # `ttl` (protegge spawn recenti/di job non tracciati dal manager).
+            try:
+                live = manager.live_spawn_dirs()
+                await asyncio.to_thread(sweep_orphan_spawns, live, ttl)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("sweep spawn orfani (reaper): %s", e)
     reaper_task = asyncio.create_task(_idle_reaper_loop())
 
     yield
