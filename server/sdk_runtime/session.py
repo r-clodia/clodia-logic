@@ -761,7 +761,8 @@ class ChatSession:
                         await self._record({"role": "assistant", "content": full})
                         activity_log.append(self.kind, "run_done",
                                             {"reply": _snippet(full), "chat_id": self.chat_id,
-                                             "usage": self._last_usage or None})
+                                             "usage": self._last_usage or None,
+                             "provider": agent_effective_provider(self.kind)})
                         await self._set_status(ClodiaStatus.IDLE)
                         return full
                     except asyncio.CancelledError:
@@ -1290,7 +1291,8 @@ class CodexChatSession:
         full = "".join(parts)
         activity_log.append(self.kind, "run_done",
                             {"reply": _snippet(full), "chat_id": self.chat_id,
-                             "usage": self._last_usage or None})
+                             "usage": self._last_usage or None,
+                             "provider": agent_effective_provider(self.kind)})
         return full
 
     async def _handle_event(self, ev: dict, parts: list[str]) -> None:
@@ -1664,7 +1666,8 @@ class OpenCodeChatSession:
         full = await self._handle_parts(data)
         activity_log.append(self.kind, "run_done",
                             {"reply": _snippet(full), "chat_id": self.chat_id,
-                             "usage": self._last_usage or None})
+                             "usage": self._last_usage or None,
+                             "provider": agent_effective_provider(self.kind)})
         return full
 
     async def _handle_parts(self, data: dict) -> str:
