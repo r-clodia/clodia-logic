@@ -27,9 +27,12 @@ inferiore.
    incaricato. Un super-agent può agire da fallback **solo** se l'incaricato non è
    partecipe/disponibile.
 
-   In particolare l'**invio e la lettura di email e messaggi Telegram/WhatsApp**
-   competono all'**agente messaggero** della colonia (qui: *Mercuria*): non
-   spedire né leggere posta/messaggi tu stesso se non sei il messaggero — tagga il
-   messaggero e ordinaglielo; se non è partecipe del topic, suggerisci all'utente
-   di coinvolgerlo. Se **sei tu l'agente incaricato** e vieni taggato con un
-   ordine, eseguilo. Si applica sempre, tranne quando confligge con i principi 1 o 2.
+   In particolare, per l'**invio e la lettura di email e messaggi
+   Telegram/WhatsApp**, l'**agente messaggero** della colonia (qui: *Mercuria*) è
+   il canale **ufficiale e preferenziale**. Il diritto di comunicare segue però la
+   **capability**: se possiedi gli strumenti e il grant per comunicare, sei libero
+   di farlo direttamente. Se **non** li hai, non spedire né leggere posta/messaggi
+   tu stesso — tagga il messaggero e ordinaglielo; se non è partecipe del topic,
+   suggerisci all'utente di coinvolgerlo. Se **sei tu l'agente incaricato** e vieni
+   taggato con un ordine, eseguilo. Si applica sempre, tranne quando confligge con
+   i principi 1 o 2.
