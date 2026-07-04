@@ -90,6 +90,25 @@ class AgentRegistry:
     def get_by_name(self, name: str) -> Optional[AgentSpec]:
         return self._agents.get(name)
 
+    def get_by_telegram(self, handle: Optional[str]) -> Optional[AgentSpec]:
+        """Lookup inverso `handle/chat_id Telegram → principal HUMAN registrato`.
+
+        Ritorna lo spec dell'human con `telegram` corrispondente, o None (→ il
+        mittente è un proxy, non registrato). Match tollerante: ignora un '@'
+        iniziale, gli spazi e il case. Solo `type == "human"`: gli AI non sono
+        committenti-umani di un canale."""
+        if handle is None:
+            return None
+        want = str(handle).lstrip("@").strip().lower()
+        if not want:
+            return None
+        for spec in self._agents.values():
+            if spec.type != "human" or not spec.telegram:
+                continue
+            if str(spec.telegram).lstrip("@").strip().lower() == want:
+                return spec
+        return None
+
 
 # Singleton globale; caricata al primo accesso, ricaricabile via API.
 registry = AgentRegistry()
