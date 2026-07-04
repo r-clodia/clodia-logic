@@ -228,6 +228,42 @@ class PacksApiTest(unittest.TestCase):
         with self.assertRaises(pack_import.PackImportError):
             pack_import.import_pack_zip(data)
 
+    def test_import_directory_of_packs(self) -> None:
+        """Repo stile clodia-packs: packs/<n>/pack.yaml → ogni pack importato
+        a sé; precedenza sul marketplace.json presente alla stessa root."""
+        data = _zip_bytes({
+            # marketplace.json presente ma NON deve vincere sulla directory di pack
+            "repo-main/.claude-plugin/marketplace.json": json.dumps({
+                "name": "clodia-packs",
+                "plugins": [{"name": "plug-a",
+                             "source": "./packs/pack-a/plugins/plug-a"}],
+            }),
+            "repo-main/packs/pack-a/pack.yaml":
+                "name: pack-a\ndescription: Pack A\nversion: 0.2.0\n",
+            "repo-main/packs/pack-a/agents/bota/agent.yaml": _agent_yaml("bota"),
+            "repo-main/packs/pack-a/agents/bota/system-prompt.md": "# Bota\n",
+            "repo-main/packs/pack-a/plugins/plug-a/.claude-plugin/plugin.json":
+                '{"name": "plug-a"}',
+            "repo-main/packs/pack-a/plugins/plug-a/skills/sa/SKILL.md": _skill_md("sa"),
+            "repo-main/packs/pack-b/pack.yaml":
+                "name: pack-b\ndescription: Pack B\nversion: 0.2.0\n",
+            "repo-main/packs/pack-b/plugins/plug-b/.claude-plugin/plugin.json":
+                '{"name": "plug-b"}',
+            "repo-main/packs/pack-b/plugins/plug-b/skills/sb/SKILL.md": _skill_md("sb"),
+        })
+        result = pack_import.import_pack_zip(data, source="clodia-packs.zip")
+        self.assertEqual(result["kind"], "packs")
+        self.assertEqual(result["imported"], ["pack-a", "pack-b"])
+        by_name = {r["pack"]: r for r in result["packs"]}
+        self.assertEqual(by_name["pack-a"]["agents"],
+                         [{"name": "bota", "status": "installed"}])
+        self.assertEqual({p["plugin"] for p in by_name["pack-b"]["plugins"]}, {"plug-b"})
+        # entrambi i pack hanno manifest runtime proprio
+        for pack in ("pack-a", "pack-b"):
+            self.assertTrue((self.packs_meta / pack / "pack.yaml").is_file())
+        self.assertTrue((self.data_skills / "plug-a" / "sa" / "SKILL.md").is_file())
+        self.assertTrue((self.data_skills / "plug-b" / "sb" / "SKILL.md").is_file())
+
     def test_marketplace_unsafe_source_errors(self) -> None:
         data = self._marketplace_zip(plugins_entry=[
             {"name": "evil", "source": "../../fuori"},

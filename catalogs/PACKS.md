@@ -53,6 +53,11 @@ version, source, agents, plugins).
 pack installa plugin e seed; altrimenti delega all'import plugin
 (`kind: "pack" | "plugin"` nella risposta).
 
+**Directory di pack**: un repo con `packs/<n>/pack.yaml` (es. `clodia-packs`)
+importa ogni `packs/<n>/` come pack autonomo — un solo import dell'URL del repo
+installa tutti i pack, ciascuno con i propri seed e plugin (`kind: "packs"`).
+Ha precedenza sul riconoscimento marketplace.
+
 **Claude marketplace**: un repo con `.claude-plugin/marketplace.json` (lo
 standard con cui Claude Code distribuisce più plugin, es. `clodia-plugins`) è
 riconosciuto come pack: nome/descrizione dal marketplace, plugin dalle `source`

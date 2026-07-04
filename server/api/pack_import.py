@@ -15,6 +15,11 @@ sotto) accompagnato da directory `agents/` (alias `seeds/`) o `plugins/`, o da
 chiavi `agents`/`plugins` nel manifest. Un semplice `pack.yaml` con skill
 (formato v6.57) resta un manifest di plugin legacy.
 
+È riconosciuta anche una **directory di pack** (es. repo clodia-packs):
+`packs/<n>/pack.yaml` alla root o un livello sotto → ogni `packs/<n>/` viene
+importato come pack autonomo (`kind: "packs"` nella risposta). Ha precedenza
+sul riconoscimento marketplace (un repo può avere entrambi i manifest).
+
 È inoltre riconosciuto come pack un **Claude marketplace** —
 `.claude-plugin/marketplace.json` alla root (o un livello sotto), lo standard
 con cui Claude Code distribuisce più plugin in un repo (es. clodia-plugins):
@@ -124,6 +129,31 @@ def find_pack_root(root: Path) -> tuple[Path, dict[str, Any]] | None:
         if has_dirs or has_keys:
             return cand, manifest
     return None
+
+
+def find_packs_directory(root: Path) -> list[Path]:
+    """Riconosce una DIRECTORY DI PACK (es. repo clodia-packs): una cartella
+    `packs/` — alla root o un livello sotto — le cui sottodirectory hanno un
+    `pack.yaml` proprio. Ritorna le dir dei singoli pack ([] se non è una
+    directory di pack)."""
+    candidates = [root]
+    try:
+        candidates += sorted(
+            c for c in root.iterdir() if c.is_dir() and c.name != ".git"
+        )
+    except OSError:
+        pass
+    for cand in candidates:
+        base = cand / "packs"
+        if not base.is_dir():
+            continue
+        out = sorted(
+            c for c in base.iterdir()
+            if c.is_dir() and (c / "pack.yaml").is_file()
+        )
+        if out:
+            return out
+    return []
 
 
 def find_marketplace_root(root: Path) -> tuple[Path, dict[str, Any]] | None:
@@ -240,6 +270,13 @@ def install_pack_from_root(root: Path, *, source: str) -> dict[str, Any]:
     marketplace = None
     found = find_pack_root(root)
     if found is None:
+        # directory di pack (repo clodia-packs): ogni packs/<n>/ è un pack a sé
+        pack_dirs = find_packs_directory(root)
+        if pack_dirs:
+            results = [install_pack_from_root(p, source=source) for p in pack_dirs]
+            return {"kind": "packs",
+                    "packs": results,
+                    "imported": [r.get("pack") or r.get("plugin") for r in results]}
         marketplace = find_marketplace_root(root)
         if marketplace is not None:
             found = marketplace
