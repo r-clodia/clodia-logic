@@ -6,7 +6,7 @@ Lo schema riflette esattamente i 4 prototipi validati nel topic
 from __future__ import annotations
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, ConfigDict
+from pydantic import BaseModel, Field, ConfigDict, field_validator
 
 
 class Sandbox(BaseModel):
@@ -48,6 +48,18 @@ class OutputsConfig(BaseModel):
 
     artifacts: list[str] = Field(default_factory=list)
     on_complete: list[OnCompleteAction] = Field(default_factory=list)
+
+
+class PluginRequirement(BaseModel):
+    """Prerequisito di un agent seed verso un plugin del catalogo.
+
+    Soft (`hard: false`, default): l'agente parte anche senza il plugin, in
+    modalità degradata; l'API packs espone il warning. `hard: true` è solo
+    dichiarativo per ora (nessun enforcement al boot)."""
+    model_config = ConfigDict(extra="forbid")
+
+    name: str
+    hard: bool = False
 
 
 class AgentSpec(BaseModel):
@@ -153,6 +165,20 @@ class AgentSpec(BaseModel):
     # catalog rules). Elenco libero di stringhe.
     rules: list[str] = Field(default_factory=list)
 
+    # Prerequisiti verso plugin del catalogo (plugin = [skills]+[rules]+[mcp]).
+    # Soft di default: l'agente boota anche senza il plugin (modalità
+    # degradata + warning esposto dall'API packs); `hard: true` è dichiarativo
+    # e riservato a future policy di enforcement. Accetta anche stringhe
+    # semplici ("<plugin>") coerse a {name: <plugin>, hard: false}.
+    requires_plugins: list["PluginRequirement"] = Field(default_factory=list)
+
+    @field_validator("requires_plugins", mode="before")
+    @classmethod
+    def _coerce_requires_plugins(cls, v):
+        if isinstance(v, list):
+            return [{"name": item} if isinstance(item, str) else item for item in v]
+        return v
+
     # Immutabilità a runtime: se True (o se type=="super"), l'agent NON è
     # modificabile da nessuna via applicativa (PATCH admin, PFP, tool agents.*).
     # Si cambia SOLO via codice/rebuild del seed. Protegge il nucleo (super) e
@@ -172,6 +198,11 @@ class AgentSpec(BaseModel):
     # Permessi tool MCP granulari (es. ["trello.*", "email.send"]).
     # Enforcement nel gateway MCP; qui dichiarativo per validator/selection.
     tool_permissions: list[str] = Field(default_factory=list)
+    # Grant dichiarativi sulle collection RAG della capacità di piattaforma
+    # (es. ["eu-normativa"]). Enforcement nel gateway, come tool_permissions.
+    # Usati dai seed dei pack (es. aitiero in clodia-packs).
+    rag_read: list[str] = Field(default_factory=list)
+    rag_write: list[str] = Field(default_factory=list)
     # Volume montabili dichiarati (id da CLODIA_DATA/volumes.yaml, spec §3.4).
     # Tradotti in regole sandbox alla creazione del workspace effimero.
     volumes: list[str] = Field(default_factory=list)

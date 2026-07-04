@@ -1,33 +1,32 @@
 """Import di PACK da archivio .zip o da URL (git repo o .zip remoto).
 
-Un pack = [skills] + [rules] + [mcp_servers], nessuno obbligatorio. Formati
-riconosciuti (in ordine di precedenza):
+Un pack = [agent seeds] + [plugins], nessuno obbligatorio. Il plugin (standard
+Claude Code) resta installabile anche "sciolto": l'import è UNIFICATO — se
+l'archivio non è un pack, viene delegato a `plugin_import`.
 
-1. **Claude plugin** — `.claude-plugin/plugin.json` alla root (o un livello
-   sotto, per gli zip che incapsulano una cartella). Skills = ogni cartella
-   con SKILL.md; mcp = `mcpServers` in plugin.json oppure `.mcp.json`.
-2. **Clodia pack** — `pack.yaml` alla root con `name`, `description`,
-   `version`, `mcp_servers`. Skills = cartelle con SKILL.md; rules =
-   `rules/*.md`.
-3. **Bare skills** — nessun manifest: fallback al comportamento storico,
-   tutte le skill trovate finiscono nel pack `user-pack`.
+Formato pack (formato Clodia, non esiste uno standard Claude a questo livello):
 
-Destinazioni:
-- skills  → `CLODIA_DATA/skills-catalog/<pack>/<skill>/`
-- rules   → `CLODIA_DATA/rules-catalog/<pack>/<rule>.md`
-- manifest (metadata + mcp_servers) → `CLODIA_DATA/packs/<pack>/pack.yaml`
+    pack.yaml                 # name, description, version (+ opz. agents/plugins)
+    agents/<seed>/agent.yaml  # seed formato Clodia (+ system-prompt.md, memory/, pfp.png)
+    plugins/<plugin>/…        # ciascuno un plugin (plugin.json/plugin.yaml o bare)
 
-Gli MCP server dichiarati dal pack NON vengono montati automaticamente sul
-gateway (Prima Legge: nessun processo/endpoint arbitrario attivato da uno zip
-importato): sono esposti dal catalogo e il mount resta un'azione esplicita
-dell'owner dalla sezione Tools.
+È riconosciuto come pack un archivio con `pack.yaml` alla root (o un livello
+sotto) accompagnato da directory `agents/` (alias `seeds/`) o `plugins/`, o da
+chiavi `agents`/`plugins` nel manifest. Un semplice `pack.yaml` con skill
+(formato v6.57) resta un manifest di plugin legacy.
 
-Sicurezza: riusa le guardie di skill_import (zip-slip, limiti dimensione,
-clone shallow con timeout).
+Install dei seed (decisione 4 lug 2026): l'agente viene installato E
+registrato — copia in `CLODIA_DATA/agents/<name>/`, emissione cert PKI
+(gli agenti creati a mano senza cert non si autenticano al gateway e vedono
+zero tool), `registry.load()`, whitelist sul gateway. PKI e whitelist sono
+best-effort: un errore non blocca l'import (l'entrypoint fa `issue-all` a
+ogni boot come rete di sicurezza).
+
+I `requires_plugins` dei seed sono SOFT: plugin mancante → warning esposto
+dall'API packs, mai un errore.
 """
 from __future__ import annotations
 
-import json
 import logging
 import re
 import shutil
@@ -37,14 +36,14 @@ from typing import Any
 
 import yaml
 
+from ..agents.loader import registry
 from ..config import data_path
-from . import catalog
+from . import catalog, plugin_import
+from .plugin_import import PluginImportError
 from .skill_import import (
     SkillImportError,
-    _discover_skill_dirs,
     _download,
     _git_clone,
-    _install_from_root,
     _safe_extract_zip,
 )
 
@@ -52,9 +51,11 @@ LOG = logging.getLogger("agent-server.api.pack_import")
 
 PACKS_META_DIR = data_path("packs")
 
-# Pack riservati: base-pack è il catalogo logic (git), local-pack è la label
-# implicita delle entry flat del data catalog. Nessuno dei due è importabile.
-RESERVED_PACK_NAMES = {"base-pack", "local-pack", "logic"}
+_AGENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,30}")
+# Nomi nativi non installabili da pack (allineato ad agent_registry._NATIVE_AGENTS).
+_NATIVE_AGENTS = {"clodia", "ophelia", "mercuria"}
+
+RESERVED_PACK_NAMES = plugin_import.RESERVED_PLUGIN_NAMES
 
 
 class PackImportError(SkillImportError):
@@ -62,7 +63,6 @@ class PackImportError(SkillImportError):
 
 
 def _sanitize_pack_name(raw: Any) -> str:
-    """Normalizza il nome pack (lower, separatori → '-') e lo valida."""
     name = re.sub(r"[^a-z0-9_-]+", "-", str(raw or "").strip().lower()).strip("-")
     if not name or not catalog._NAME_RE.fullmatch(name):
         raise PackImportError(f"nome pack non valido: '{raw}'")
@@ -71,10 +71,29 @@ def _sanitize_pack_name(raw: Any) -> str:
     return name
 
 
-def _find_manifest(root: Path) -> tuple[Path, dict[str, Any], str] | None:
-    """Cerca un manifest pack alla root o un livello sotto (zip incapsulati).
+def _seed_dirs(pack_root: Path) -> list[Path]:
+    """Directory seed del pack: `agents/<n>/agent.yaml` (alias `seeds/`)."""
+    out: list[Path] = []
+    for dirname in ("agents", "seeds"):
+        base = pack_root / dirname
+        if not base.is_dir():
+            continue
+        for child in sorted(base.iterdir()):
+            if child.is_dir() and (child / "agent.yaml").is_file():
+                out.append(child)
+    return out
 
-    Ritorna (pack_root, manifest, kind) con kind in {"plugin", "pack"}."""
+
+def _plugin_dirs(pack_root: Path) -> list[Path]:
+    base = pack_root / "plugins"
+    if not base.is_dir():
+        return []
+    return sorted(c for c in base.iterdir() if c.is_dir() and not c.name.startswith("."))
+
+
+def find_pack_root(root: Path) -> tuple[Path, dict[str, Any]] | None:
+    """Riconosce un PACK: pack.yaml + (dir agents/seeds/plugins o chiavi nel
+    manifest). Ritorna (pack_root, manifest) oppure None (→ non è un pack)."""
     candidates = [root]
     try:
         candidates += sorted(
@@ -83,179 +102,175 @@ def _find_manifest(root: Path) -> tuple[Path, dict[str, Any], str] | None:
     except OSError:
         pass
     for cand in candidates:
-        plugin_json = cand / ".claude-plugin" / "plugin.json"
-        if plugin_json.is_file():
-            try:
-                manifest = json.loads(plugin_json.read_text(encoding="utf-8"))
-            except Exception as e:
-                raise PackImportError(f"plugin.json non valido: {str(e)[:120]}")
-            if not isinstance(manifest, dict):
-                raise PackImportError("plugin.json non valido: atteso un oggetto")
-            return cand, manifest, "plugin"
         pack_yaml = cand / "pack.yaml"
-        if pack_yaml.is_file():
-            try:
-                manifest = yaml.safe_load(pack_yaml.read_text(encoding="utf-8")) or {}
-            except Exception as e:
-                raise PackImportError(f"pack.yaml non valido: {str(e)[:120]}")
-            if not isinstance(manifest, dict):
-                raise PackImportError("pack.yaml non valido: atteso un mapping")
-            return cand, manifest, "pack"
+        if not pack_yaml.is_file():
+            continue
+        try:
+            manifest = yaml.safe_load(pack_yaml.read_text(encoding="utf-8")) or {}
+        except Exception as e:
+            raise PackImportError(f"pack.yaml non valido: {str(e)[:120]}")
+        if not isinstance(manifest, dict):
+            raise PackImportError("pack.yaml non valido: atteso un mapping")
+        has_dirs = bool(_seed_dirs(cand) or _plugin_dirs(cand))
+        has_keys = "agents" in manifest or "plugins" in manifest or "seeds" in manifest
+        if has_dirs or has_keys:
+            return cand, manifest
     return None
 
 
-def _manifest_mcp_servers(pack_root: Path, manifest: dict[str, Any], kind: str) -> dict[str, Any]:
-    """Estrae la mappa name→config degli MCP server del pack.
+def _install_seed(sdir: Path) -> dict[str, Any]:
+    """Installa e registra un agent seed. Ritorna {name, status, detail?}.
 
-    Claude plugin: `mcpServers` in plugin.json (inline) oppure `.mcp.json`
-    alla root del plugin. Clodia pack: `mcp_servers` (o `mcpServers`) in
-    pack.yaml."""
-    servers: Any = None
-    if kind == "plugin":
-        servers = manifest.get("mcpServers")
-        if servers is None:
-            mcp_json = pack_root / ".mcp.json"
-            if mcp_json.is_file():
-                try:
-                    parsed = json.loads(mcp_json.read_text(encoding="utf-8"))
-                except Exception as e:
-                    raise PackImportError(f".mcp.json non valido: {str(e)[:120]}")
-                if isinstance(parsed, dict):
-                    servers = parsed.get("mcpServers", parsed)
-    else:
-        servers = manifest.get("mcp_servers") or manifest.get("mcpServers")
-    if servers is None:
-        return {}
-    if not isinstance(servers, dict):
-        raise PackImportError("mcp servers del pack non validi: attesa mappa name→config")
-    out: dict[str, Any] = {}
-    for name, config in servers.items():
-        if not isinstance(config, dict):
-            raise PackImportError(f"config MCP '{name}' non valida: atteso un oggetto")
-        out[str(name)] = config
-    return out
-
-
-def _install_skill_into_pack(sdir: Path, pack: str) -> str:
-    """Copia una cartella skill in `skills-catalog/<pack>/<name>/`."""
+    status: installed | exists | error. Sequenza: copia → PKI (best-effort) →
+    registry.load() con rollback se lo spec non valida → whitelist gateway
+    (best-effort)."""
     try:
-        frontmatter, _b, _f = catalog._read_catalog_file(sdir / "SKILL.md")
-    except Exception:
-        frontmatter = {}
-    name = str(frontmatter.get("name") or sdir.name).strip()
-    if not catalog._NAME_RE.fullmatch(name):
-        raise PackImportError(
-            f"nome skill non valido: '{name}' (minuscole, cifre, - e _)")
-    dst = catalog.DATA_SKILLS_DIR / pack / name
-    if dst.exists():
-        shutil.rmtree(dst)
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copytree(sdir, dst, ignore=shutil.ignore_patterns(".git"))
-    return name
+        raw = yaml.safe_load((sdir / "agent.yaml").read_text(encoding="utf-8")) or {}
+    except Exception as e:
+        return {"name": sdir.name, "status": "error",
+                "detail": f"agent.yaml illeggibile: {str(e)[:120]}"}
+    name = str(raw.get("name") or sdir.name).strip()
+    if not _AGENT_NAME_RE.fullmatch(name):
+        return {"name": name, "status": "error", "detail": "nome agente non valido"}
+    if name in _NATIVE_AGENTS:
+        return {"name": name, "status": "error",
+                "detail": "nome nativo della piattaforma, non installabile da pack"}
+
+    dest = registry.base_dir / name
+    if dest.exists():
+        # Non sovrascrivere un agente esistente (stesso principio di
+        # init-datadir.sh: l'editing locale non si perde).
+        return {"name": name, "status": "exists"}
+
+    shutil.copytree(sdir, dest, ignore=shutil.ignore_patterns(".git"))
+    (dest / "memory").mkdir(exist_ok=True)
+
+    registry.load()
+    spec = registry.get_by_name(name)
+    if spec is None:
+        detail = registry.errors().get(name, "spec non valida")
+        shutil.rmtree(dest, ignore_errors=True)
+        registry.load()
+        return {"name": name, "status": "error", "detail": str(detail)[:200]}
+
+    # PKI: senza cert l'agente non si autentica al gateway (zero tool).
+    try:
+        from ..colony import pki
+        pki.issue_agent_identity(name)
+    except Exception as e:  # noqa: BLE001 — best-effort, issue-all al boot recupera
+        LOG.warning("PKI issue per '%s' fallita (recupero al prossimo boot): %s", name, e)
+
+    # Whitelist gateway: idempotente, best-effort.
+    try:
+        from . import gateway_admin
+        gateway_admin.register_agent(name, spec.tool_permissions or None)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("whitelist gateway per '%s' fallita: %s", name, e)
+
+    LOG.info("agent seed '%s' installato e registrato dal pack", name)
+    return {"name": name, "status": "installed"}
 
 
-def _install_rule_into_pack(rfile: Path, pack: str) -> str:
-    """Copia un file rule in `rules-catalog/<pack>/<name>.md`."""
-    name = rfile.stem
-    if not catalog._NAME_RE.fullmatch(name):
-        raise PackImportError(
-            f"nome rule non valido: '{name}' (minuscole, cifre, - e _)")
-    dst = catalog.DATA_RULES_DIR / pack / f"{name}.md"
-    dst.parent.mkdir(parents=True, exist_ok=True)
-    shutil.copy2(rfile, dst)
-    return name
-
-
-def _discover_rule_files(pack_root: Path) -> list[Path]:
-    """Rule del pack: file `rules/*.md` (README escluso)."""
-    rules_dir = pack_root / "rules"
-    if not rules_dir.is_dir():
-        return []
-    return sorted(
-        f for f in rules_dir.glob("*.md") if f.name != "README.md"
-    )
-
-
-def _write_pack_manifest(
-    pack: str,
-    *,
-    description: str,
-    version: str,
-    source: str,
-    mcp_servers: dict[str, Any],
-) -> None:
-    meta_dir = PACKS_META_DIR / pack
-    meta_dir.mkdir(parents=True, exist_ok=True)
-    manifest = {
-        "name": pack,
-        "description": description,
-        "version": version,
-        "source": source,
-        "origin": "imported",
-        "mcp_servers": mcp_servers,
-    }
-    (meta_dir / "pack.yaml").write_text(
-        yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
-
-
-def _install_pack_from_root(root: Path, *, source: str) -> dict[str, Any]:
-    """Installa il contenuto di `root` come pack. Ritorna il riepilogo."""
-    found = _find_manifest(root)
+def install_pack_from_root(root: Path, *, source: str) -> dict[str, Any]:
+    """Installa un archivio come PACK (o delega a plugin_import se non lo è)."""
+    found = find_pack_root(root)
     if found is None:
-        # Nessun manifest: bare skills → user-pack (comportamento storico).
-        names = _install_from_root(root)
-        return {
-            "pack": catalog.USER_PACK,
-            "skills": names,
-            "rules": [],
-            "mcp_servers": [],
-        }
+        result = plugin_import.install_plugin_from_root(root, source=source)
+        return {"kind": "plugin", **result}
 
-    pack_root, manifest, kind = found
+    pack_root, manifest = found
     pack = _sanitize_pack_name(manifest.get("name") or pack_root.name)
     description = str(manifest.get("description") or "").strip()
     version = str(manifest.get("version") or "").strip()
-    mcp_servers = _manifest_mcp_servers(pack_root, manifest, kind)
 
-    skill_dirs = [
-        d for d in _discover_skill_dirs(pack_root)
-        if ".claude-plugin" not in d.parts
-    ]
-    rule_files = _discover_rule_files(pack_root)
-    if not skill_dirs and not rule_files and not mcp_servers:
+    plugin_dirs = _plugin_dirs(pack_root)
+    seed_dirs = _seed_dirs(pack_root)
+    if not plugin_dirs and not seed_dirs:
         raise PackImportError(
-            "pack vuoto: nessuna skill (SKILL.md), rule (rules/*.md) o MCP server")
+            "pack vuoto: nessun agent seed (agents/<n>/agent.yaml) "
+            "né plugin (plugins/<n>/)")
 
-    skills = [_install_skill_into_pack(d, pack) for d in skill_dirs]
-    rules = [_install_rule_into_pack(f, pack) for f in rule_files]
-    _write_pack_manifest(
-        pack,
-        description=description,
-        version=version,
-        source=source,
-        mcp_servers=mcp_servers,
+    plugins: list[dict[str, Any]] = []
+    for pdir in plugin_dirs:
+        try:
+            plugins.append(plugin_import.install_plugin_from_root(
+                pdir, source=source, default_name=pdir.name))
+        except PluginImportError as e:
+            raise PackImportError(f"plugin '{pdir.name}': {e}")
+
+    agents = [_install_seed(sdir) for sdir in seed_dirs]
+    failed = [a for a in agents if a["status"] == "error"]
+    if failed and not any(a["status"] in ("installed", "exists") for a in agents) \
+            and not plugins:
+        raise PackImportError(
+            "nessun componente installato: " + "; ".join(
+                f"{a['name']}: {a.get('detail', '')}" for a in failed))
+
+    meta_dir = PACKS_META_DIR / pack
+    meta_dir.mkdir(parents=True, exist_ok=True)
+    (meta_dir / "pack.yaml").write_text(
+        yaml.safe_dump({
+            "name": pack,
+            "description": description,
+            "version": version,
+            "source": source,
+            "agents": [a["name"] for a in agents if a["status"] != "error"],
+            "plugins": [p["plugin"] for p in plugins],
+        }, allow_unicode=True, sort_keys=False),
+        encoding="utf-8",
     )
-    catalog._invalidate("skill")
-    catalog._invalidate("rule")
-    LOG.info(
-        "pack '%s' importato (%s): %d skill, %d rule, %d mcp server",
-        pack, kind, len(skills), len(rules), len(mcp_servers),
-    )
+    LOG.info("pack '%s' importato: %d agent, %d plugin", pack, len(agents), len(plugins))
     return {
+        "kind": "pack",
         "pack": pack,
-        "skills": skills,
-        "rules": rules,
-        "mcp_servers": sorted(mcp_servers),
+        "agents": agents,
+        "plugins": plugins,
     }
+
+
+def remove_pack(name: str) -> dict[str, Any]:
+    """Rimuove un pack: i suoi plugin, i suoi agenti (non nativi) e il manifest.
+
+    Ritorna il riepilogo; solleva KeyError se il pack non esiste."""
+    meta = PACKS_META_DIR / name / "pack.yaml"
+    if not meta.is_file():
+        raise KeyError(name)
+    try:
+        manifest = yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
+    except Exception:
+        manifest = {}
+
+    removed_plugins: list[str] = []
+    for plugin in manifest.get("plugins") or []:
+        plugin = str(plugin)
+        if plugin in plugin_import.RESERVED_PLUGIN_NAMES:
+            continue
+        if plugin_import.remove_plugin(plugin):
+            removed_plugins.append(plugin)
+
+    removed_agents: list[str] = []
+    for agent in manifest.get("agents") or []:
+        agent = str(agent)
+        if agent in _NATIVE_AGENTS or not _AGENT_NAME_RE.fullmatch(agent):
+            continue
+        adir = registry.base_dir / agent
+        if adir.is_dir():
+            shutil.rmtree(adir, ignore_errors=True)
+            removed_agents.append(agent)
+    if removed_agents:
+        registry.load()
+
+    shutil.rmtree(PACKS_META_DIR / name, ignore_errors=True)
+    LOG.info("pack '%s' rimosso: %d plugin, %d agenti", name,
+             len(removed_plugins), len(removed_agents))
+    return {"deleted": name, "plugins": removed_plugins, "agents": removed_agents}
 
 
 def import_pack_zip(data: bytes, *, source: str = "zip-upload") -> dict[str, Any]:
     with tempfile.TemporaryDirectory(prefix="clodia-pack-zip-") as tmp:
         root = Path(tmp)
         _safe_extract_zip(data, root)
-        return _install_pack_from_root(root, source=source)
+        return install_pack_from_root(root, source=source)
 
 
 def import_pack_url(url: str) -> dict[str, Any]:
@@ -269,4 +284,4 @@ def import_pack_url(url: str) -> dict[str, Any]:
             _safe_extract_zip(data, root)
         else:
             _git_clone(url, root)
-        return _install_pack_from_root(root, source=url)
+        return install_pack_from_root(root, source=url)

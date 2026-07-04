@@ -1,84 +1,108 @@
-# Pack — entità di primo livello del catalogo
+# Pack e Plugin — gerarchia del catalogo
 
-Un **pack** = `[skills] + [rules] + [mcp_servers]`, dove **nessun componente è
-obbligatorio**: un pack può contenere una singola skill, solo rule, solo MCP
-server, o qualunque combinazione. Il modello è compatibile con i **plugin di
-Claude Code** (in generale `[skills] + [mcpServers]`).
+Due livelli (decisione 4 lug 2026):
 
-La webui (pagina Packs) naviga il catalogo come tree: i nodi di primo livello
-sono i pack, da cui si scende a skills / rules / MCP server.
+```
+pack   := [agent seeds] + [plugins]        # unità di distribuzione Clodia
+plugin := [skills] + [rules] + [mcp]       # standard Claude Code
+```
 
-## Storage
+**Nessun componente è mai obbligatorio.** Un plugin può essere una singola
+skill; un pack può contenere solo un seed, solo plugin, o qualunque
+combinazione. I plugin possono vivere anche **sciolti**, fuori da qualunque
+pack. La webui (pagina Packs) naviga il catalogo come tree:
+pack → (agents | plugins) → skills / rules / MCP server.
+
+## Plugin
 
 | Componente | Path |
 |---|---|
-| skills | `CLODIA_DATA/skills-catalog/<pack>/<skill>/SKILL.md` |
-| rules | `CLODIA_DATA/rules-catalog/<pack>/<rule>.md` |
-| manifest (metadata + mcp_servers) | `CLODIA_DATA/packs/<pack>/pack.yaml` |
+| skills | `CLODIA_DATA/skills-catalog/<plugin>/<skill>/SKILL.md` |
+| rules | `CLODIA_DATA/rules-catalog/<plugin>/<rule>.md` |
+| manifest (metadata + mcp_servers) | `CLODIA_DATA/plugins/<plugin>/plugin.yaml` |
 
-Pack impliciti (non hanno manifest né sono importabili/rimovibili):
+Plugin impliciti (non importabili/rimovibili): **`base-pack`** (catalogo logic
+in git) e **`local-pack`** (entry flat del data catalog). I nomi storici
+(`anthropic-pack`, `user-pack`, …) restano invariati: sono etichette, l'entità
+è il plugin.
 
-- **`base-pack`** — il catalogo logic in git (`catalogs/skills/` + `catalogs/rules/`)
-- **`local-pack`** — le entry FLAT del data catalog (senza pack-subdir)
+Origini (`origin`): `logic`, `local`, `external` (da `external-packs.yaml` al
+setup), `user`, `imported`. Cancellabili: external / user / imported.
 
-Origini (`origin` nell'API): `logic` (base-pack), `local` (local-pack),
-`external` (installato al setup da `external-packs.yaml`), `user` (user-pack),
-`imported` (importato via zip/URL). Cancellabili: external / user / imported.
+Formati riconosciuti da `POST /clodia/plugins/import[-url]`:
 
-## Formati di import riconosciuti
+1. **Claude plugin** — `.claude-plugin/plugin.json` (+ `skills/`, `.mcp.json`)
+2. **Clodia plugin** — `plugin.yaml` (legacy `pack.yaml` v6.57) + skills/rules/mcp
+3. **Bare skills** — nessun manifest → `user-pack`
 
-`POST /clodia/packs/import` (.zip) e `POST /clodia/packs/import-url`
-(git repo o .zip remoto) riconoscono, in ordine:
+## Pack
 
-1. **Claude plugin** — `.claude-plugin/plugin.json` alla root (o un livello
-   sotto). `name`/`description`/`version` dal plugin.json; skills = ogni
-   cartella con `SKILL.md`; MCP = `mcpServers` in plugin.json o `.mcp.json`.
-2. **Clodia pack** — `pack.yaml` alla root:
+Formato di un pack (repo `clodia-packs` = directory di pack):
 
-   ```yaml
-   name: acme-pack
-   description: Pack di dominio ACME
-   version: 1.0.0
-   mcp_servers:            # formato mcpServers di Claude Code
-     kb:
-       type: http
-       url: https://kb.example.com/mcp/
-       headers: { Authorization: "${KB_TOKEN}" }
-   ```
+```
+<pack>/
+├── pack.yaml               # name, description, version
+├── agents/<seed>/          # agent.yaml + system-prompt.md + memory/ (+ pfp.png)
+└── plugins/<plugin>/       # ciascuno un plugin (plugin.json/plugin.yaml o bare)
+```
 
-   Skills = cartelle con `SKILL.md`; rules = `rules/*.md`.
-3. **Bare skills** — nessun manifest: fallback storico, tutte le skill trovate
-   finiscono in `user-pack`.
+Manifest runtime: `CLODIA_DATA/packs/<pack>/pack.yaml` (name, description,
+version, source, agents, plugins).
 
-## MCP server dei pack: esposti, mai auto-montati
+**Import** (`POST /clodia/packs/import[-url]`, unificato): se l'archivio è un
+pack installa plugin e seed; altrimenti delega all'import plugin
+(`kind: "pack" | "plugin"` nella risposta).
 
-Gli MCP server dichiarati da un pack sono **esposti dal catalogo** (config con
-secret mascherati) ma **non vengono mai registrati automaticamente sul
-gateway**: montarli resta un'azione esplicita dell'owner dalla sezione Tools
-della webui (Prima Legge: uno zip importato non deve attivare endpoint o
-processi arbitrari).
+**Install dei seed**: l'agente viene installato E registrato — copia in
+`CLODIA_DATA/agents/<name>/`, emissione cert PKI (senza cert l'agente non si
+autentica al gateway e vede zero tool), `registry.load()`, whitelist sul
+gateway. PKI e whitelist sono best-effort (l'entrypoint fa `issue-all` a ogni
+boot). Un seed esistente NON viene sovrascritto (`status: exists`); i nomi
+nativi (clodia/ophelia/mercuria) sono rifiutati.
+
+**`requires_plugins`** (in `agent.yaml` del seed): prerequisito **soft** verso
+un plugin:
+
+```yaml
+requires_plugins:
+  - name: eu-project-design
+    hard: false        # default; anche la forma breve "- eu-project-design"
+```
+
+Plugin mancante → l'agente parte comunque in modalità degradata; l'API packs
+espone `missing_plugins` per il warning in UI. `hard: true` è dichiarativo
+(nessun enforcement al boot, riservato a policy future).
+
+**Delete** (`DELETE /clodia/packs/{name}`): rimuove i plugin del pack, i suoi
+agenti non nativi e il manifest.
+
+## MCP server dei plugin: esposti, mai auto-montati
+
+Config esposte dal catalogo con secret mascherati; il mount sul gateway resta
+un'azione esplicita dell'owner dalla sezione Tools (Prima Legge: uno zip
+importato non deve attivare endpoint o processi arbitrari). I seed invece
+vengono registrati all'import: sono agenti della piattaforma, non endpoint
+esterni — e restano inerti finché non gli si parla o non li si schedula.
 
 ## API
 
-- `GET /clodia/packs` — lista pack con skills/rules/mcp_servers e counts
-- `GET /clodia/packs/{name}` — dettaglio singolo pack
-- `POST /clodia/packs/import` — import da .zip (multipart `file`)
-- `POST /clodia/packs/import-url` — import da URL (`{"url": ...}`)
-- `DELETE /clodia/packs/{name}` — rimozione pack non nativo (skills + rules +
-  manifest; per i pack external il marker `.external-packs/` resta, quindi la
-  rimozione è durevole ai riavvii)
-
-Le API storiche `/clodia/skills` e `/clodia/rules` restano invariate (item
-singoli con `pack`/`variants`).
+- `GET /clodia/packs` · `GET /clodia/packs/{name}` — pack con agenti
+  (installed, requires/missing_plugins) e plugin risolti
+- `POST /clodia/packs/import` · `/import-url` — import unificato pack|plugin
+- `DELETE /clodia/packs/{name}`
+- `GET /clodia/plugins` · `GET /clodia/plugins/{name}` — tutti i plugin
+  (anche sciolti)
+- `POST /clodia/plugins/import` · `/import-url` · `DELETE /clodia/plugins/{name}`
+- `/clodia/skills` e `/clodia/rules` restano invariate (item con `pack`/`variants`)
 
 ## Grant per-agent
 
-In `agent.yaml`, skills e rules supportano la stessa grammatica pack-aware:
+In `agent.yaml`, skills e rules usano la grammatica plugin-aware (invariata):
 
 ```yaml
-capabilities: ["base-pack/*", "anthropic-pack/pdf"]
+capabilities: ["base-pack/*", "eu-project-design/*"]
 rules: ["secrets-handling", "acme-pack/*"]
 ```
 
-`<pack>/<nome>` = elemento qualificato; `<pack>/*` = tutto il pack; `*` =
-tutto il catalogo (super-agent).
+`<plugin>/<nome>` = elemento qualificato; `<plugin>/*` = tutto il plugin;
+`*` = tutto il catalogo (super-agent).
