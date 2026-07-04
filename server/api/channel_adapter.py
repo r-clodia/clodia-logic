@@ -21,8 +21,9 @@ import json
 import logging
 
 from ..config import data_path
+from ..agents.loader import registry
 from . import channel_responder, telegram_client, topics_client
-from .channels import run_topic_turn
+from .channels import _tagged, run_topic_turn
 
 LOG = logging.getLogger("agent-server.channel_adapter")
 
@@ -83,13 +84,26 @@ async def _mirror_topic(tier: str, name: str, channel: dict) -> None:
     except Exception as e:  # noqa: BLE001
         LOG.warning("ensure_responder %s/%s: %s", tier, name, e)
 
+    # meta del topic: serve per sapere quali agenti sono partecipanti (un @tag
+    # innesca un turno solo se indirizza un agente reale del topic).
+    try:
+        meta = topics_client.open_topic(tier, name).get("meta", {})
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("open_topic %s/%s: %s", tier, name, e)
+        meta = {}
+    participants = set(meta.get("participants", []))
+
     # 1) INBOUND
     try:
         res = telegram_client.updates(chat_id)
     except Exception as e:  # noqa: BLE001
         LOG.warning("telegram updates %s/%s: %s", tier, name, e)
         return
-    new_in = 0
+    # Un COMANDO è un messaggio di un PRINCIPAL registrato che TAGGA un agente
+    # partecipante. I proxy (mittenti non registrati su Clodia) vengono specchiati
+    # ma IGNORATI come committenti: non innescano turni (modello di rango,
+    # spec-rank-model §2 — gli agenti ignorano i proxy).
+    command = None  # (principal_name, trigger_text) del comando più recente
     for m in res.get("messages", []):
         mid = m.get("message_id")
         if mid in seen:
@@ -99,18 +113,26 @@ async def _mirror_topic(tier: str, name: str, channel: dict) -> None:
         text = (m.get("text") or "").strip()
         if not text:
             continue
+        # Mirror come proxy `tg:<...>` (fedeltà della chat + anti-eco in outbound).
         try:
             topics_client.post_message(tier, name, _proxy_author(m), text, kind="human")
-            new_in += 1
         except Exception as e:  # noqa: BLE001
             LOG.warning("post_message inbound %s/%s: %s", tier, name, e)
+            continue
+        sender = registry.get_by_telegram(m.get("from") or m.get("from_id"))
+        tag = _tagged(text)
+        if sender is not None and tag and tag in participants:
+            command = (sender.name, text)
 
-    # 2) TURNO del responder (solo se è arrivato nuovo inbound)
-    if new_in:
+    # 2) TURNO — solo su comando di un principal registrato (mai su un proxy).
+    # `principal_hint` = il principal REALE → il turno agisce per suo conto e il
+    # gate del gateway (F2) validerà il rango del committente.
+    if command:
+        principal_name, trigger_text = command
         try:
-            meta = topics_client.open_topic(tier, name).get("meta", {})
             await run_topic_turn(tier, name, meta,
-                                 trigger_text="", principal_hint="tg:group")
+                                 trigger_text=trigger_text,
+                                 principal_hint=principal_name)
         except Exception as e:  # noqa: BLE001
             LOG.warning("responder turn %s/%s: %s", tier, name, e)
 
