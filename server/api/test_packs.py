@@ -1,5 +1,7 @@
-"""Test dell'entità Pack: enumerazione, import (Claude plugin / pack.yaml /
-bare skills), masking dei secret MCP, delete."""
+"""Test dell'entità Pack: pack = [agent seeds] + [plugins].
+
+Import unificato (pack vs plugin sciolto), install+registrazione dei seed,
+requires_plugins soft (missing → warning, mai errore), delete."""
 from __future__ import annotations
 
 import asyncio
@@ -11,7 +13,8 @@ from pathlib import Path
 
 import yaml
 
-from . import catalog, pack_import, packs
+from ..agents.loader import registry
+from . import catalog, pack_import, packs, plugin_import, plugins
 
 
 def _zip_bytes(files: dict[str, str]) -> bytes:
@@ -22,8 +25,21 @@ def _zip_bytes(files: dict[str, str]) -> bytes:
     return buf.getvalue()
 
 
-def _skill_md(name: str, description: str = "una skill") -> str:
-    return f"---\nname: {name}\ndescription: {description}\n---\n# {name}\n"
+def _skill_md(name: str) -> str:
+    return f"---\nname: {name}\ndescription: una skill\n---\n# {name}\n"
+
+
+def _agent_yaml(name: str, requires: list | None = None) -> str:
+    spec = {
+        "name": name,
+        "display_name": name.capitalize(),
+        "description": f"Agente di test {name}",
+        "type": "normal",
+        "system_prompt": "system-prompt.md",
+        "capabilities": [],
+        "requires_plugins": requires or [],
+    }
+    return yaml.safe_dump(spec, sort_keys=False)
 
 
 class PacksApiTest(unittest.TestCase):
@@ -34,9 +50,12 @@ class PacksApiTest(unittest.TestCase):
         self.data_skills = root / "data-skills"
         self.logic_rules = root / "logic-rules"
         self.data_rules = root / "data-rules"
+        self.plugins_meta = root / "plugins-meta"
         self.packs_meta = root / "packs-meta"
+        self.agents_dir = root / "agents"
         for p in (self.logic_skills, self.data_skills, self.logic_rules,
-                  self.data_rules, self.packs_meta):
+                  self.data_rules, self.plugins_meta, self.packs_meta,
+                  self.agents_dir):
             p.mkdir()
 
         self._old_catalog = (
@@ -47,10 +66,15 @@ class PacksApiTest(unittest.TestCase):
         catalog.DATA_SKILLS_DIR = self.data_skills
         catalog.LOGIC_RULES_DIR = self.logic_rules
         catalog.DATA_RULES_DIR = self.data_rules
-        self._old_meta = pack_import.PACKS_META_DIR
+        self._old_plugins_meta = plugin_import.PLUGINS_META_DIR
+        plugin_import.PLUGINS_META_DIR = self.plugins_meta
+        self._old_packs_meta = pack_import.PACKS_META_DIR
         pack_import.PACKS_META_DIR = self.packs_meta
-        self._old_manifest = packs.EXTERNAL_PACKS_MANIFEST
-        packs.EXTERNAL_PACKS_MANIFEST = root / "external-packs.yaml"
+        self._old_manifest = plugins.EXTERNAL_PACKS_MANIFEST
+        plugins.EXTERNAL_PACKS_MANIFEST = root / "external-packs.yaml"
+        self._old_agents_dir = registry.base_dir
+        registry.base_dir = self.agents_dir
+        registry.load()
         self._clear_caches()
 
     def tearDown(self) -> None:
@@ -58,8 +82,11 @@ class PacksApiTest(unittest.TestCase):
             catalog.LOGIC_SKILLS_DIR, catalog.DATA_SKILLS_DIR,
             catalog.LOGIC_RULES_DIR, catalog.DATA_RULES_DIR,
         ) = self._old_catalog
-        pack_import.PACKS_META_DIR = self._old_meta
-        packs.EXTERNAL_PACKS_MANIFEST = self._old_manifest
+        plugin_import.PLUGINS_META_DIR = self._old_plugins_meta
+        pack_import.PACKS_META_DIR = self._old_packs_meta
+        plugins.EXTERNAL_PACKS_MANIFEST = self._old_manifest
+        registry.base_dir = self._old_agents_dir
+        registry.load()
         self._clear_caches()
         self.tmp.cleanup()
 
@@ -69,167 +96,120 @@ class PacksApiTest(unittest.TestCase):
             cache["data"] = None
         for cache in catalog._DETAIL_CACHE.values():
             cache.clear()
-        packs._invalidate_packs()
+        plugins.invalidate_plugins()
 
-    def _skill(self, root: Path, *parts: str) -> None:
-        d = root.joinpath(*parts)
-        d.mkdir(parents=True, exist_ok=True)
-        (d / "SKILL.md").write_text(_skill_md(parts[-1]), encoding="utf-8")
-
-    def _rule(self, root: Path, *parts: str) -> None:
-        f = root.joinpath(*parts)
-        f.parent.mkdir(parents=True, exist_ok=True)
-        f.write_text("# Rule\nuna rule\n", encoding="utf-8")
-
-    def _by_name(self, name: str) -> dict:
-        for p in packs._list_packs():
-            if p["name"] == name:
-                return p
-        raise AssertionError(f"pack '{name}' non trovato")
-
-    # --- enumerazione -----------------------------------------------------
-
-    def test_list_base_local_and_subdir_packs(self) -> None:
-        self._skill(self.logic_skills, "fact-check")
-        self._rule(self.logic_rules, "git-style.md")
-        self._skill(self.data_skills, "my-flat-skill")           # → local-pack
-        self._skill(self.data_skills, "acme-pack", "pdf")        # → acme-pack
-        self._rule(self.data_rules, "acme-pack", "blog-voice.md")
-        self._rule(self.data_rules, "loose-rule.md")             # → local-pack
-
-        names = [p["name"] for p in packs._list_packs()]
-        self.assertEqual(names[0], "base-pack")  # base-pack sempre in testa
-        self.assertEqual(set(names), {"base-pack", "local-pack", "acme-pack"})
-
-        base = self._by_name("base-pack")
-        self.assertEqual([s["name"] for s in base["skills"]], ["fact-check"])
-        self.assertEqual([r["name"] for r in base["rules"]], ["git-style"])
-        self.assertEqual(base["origin"], "logic")
-        self.assertFalse(base["deletable"])
-
-        acme = self._by_name("acme-pack")
-        self.assertEqual([s["name"] for s in acme["skills"]], ["pdf"])
-        self.assertEqual([r["name"] for r in acme["rules"]], ["blog-voice"])
-        self.assertEqual(acme["origin"], "imported")
-        self.assertTrue(acme["deletable"])
-        self.assertEqual(acme["counts"], {"skills": 1, "rules": 1, "mcp_servers": 0})
-
-        local = self._by_name("local-pack")
-        self.assertEqual([s["name"] for s in local["skills"]], ["my-flat-skill"])
-        self.assertFalse(local["deletable"])
-
-    def test_external_origin_from_manifest(self) -> None:
-        self._skill(self.data_skills, "anthropic-pack", "pdf")
-        packs.EXTERNAL_PACKS_MANIFEST.write_text(
-            "- pack: anthropic-pack\n  repo: https://example.com/x\n  ref: main\n  subdir: skills\n",
-            encoding="utf-8",
-        )
-        item = self._by_name("anthropic-pack")
-        self.assertEqual(item["origin"], "external")
-        self.assertTrue(item["deletable"])
-
-    def test_mcp_only_pack_and_secret_masking(self) -> None:
-        (self.packs_meta / "mcp-only").mkdir()
-        (self.packs_meta / "mcp-only" / "pack.yaml").write_text(yaml.safe_dump({
-            "name": "mcp-only",
-            "description": "Solo MCP",
-            "mcp_servers": {
-                "weather": {
-                    "type": "http",
-                    "url": "https://mcp.example.com/",
-                    "headers": {"Authorization": "Bearer s3cret",
-                                "X-Api-Key": "${WEATHER_KEY}"},
-                },
-            },
-        }), encoding="utf-8")
-        item = self._by_name("mcp-only")
-        self.assertEqual(item["counts"], {"skills": 0, "rules": 0, "mcp_servers": 1})
-        srv = item["mcp_servers"][0]
-        self.assertEqual(srv["name"], "weather")
-        self.assertEqual(srv["transport"], "http")
-        headers = srv["config"]["headers"]
-        self.assertEqual(headers["Authorization"], "•••")          # secret mascherato
-        self.assertEqual(headers["X-Api-Key"], "${WEATHER_KEY}")   # placeholder visibile
+    def _pack_zip(self) -> bytes:
+        """Pack completo: 1 seed (con requires soft) + 1 plugin con manifest
+        proprio + 1 plugin bare (nome dal path)."""
+        return _zip_bytes({
+            "my-pack/pack.yaml": "name: my-pack\ndescription: Pack di test\nversion: 1.0.0\n",
+            "my-pack/agents/testbot/agent.yaml": _agent_yaml(
+                "testbot",
+                requires=[{"name": "inner-plugin", "hard": False},
+                          {"name": "not-installed", "hard": False}],
+            ),
+            "my-pack/agents/testbot/system-prompt.md": "# Testbot\n",
+            "my-pack/plugins/inner-plugin/.claude-plugin/plugin.json":
+                '{"name": "inner-plugin", "description": "demo", "version": "0.1.0"}',
+            "my-pack/plugins/inner-plugin/skills/hello/SKILL.md": _skill_md("hello"),
+            "my-pack/plugins/bare-plugin/skills/world/SKILL.md": _skill_md("world"),
+        })
 
     # --- import -----------------------------------------------------------
 
-    def test_import_claude_plugin_zip(self) -> None:
-        data = _zip_bytes({
-            "my-plugin/.claude-plugin/plugin.json":
-                '{"name": "My Plugin", "description": "demo", "version": "1.2.0"}',
-            "my-plugin/skills/hello/SKILL.md": _skill_md("hello"),
-            "my-plugin/.mcp.json":
-                '{"mcpServers": {"srv": {"command": "npx", "args": ["x"]}}}',
-        })
-        result = pack_import.import_pack_zip(data, source="my-plugin.zip")
-        self.assertEqual(result["pack"], "my-plugin")  # nome sanificato
-        self.assertEqual(result["skills"], ["hello"])
-        self.assertEqual(result["mcp_servers"], ["srv"])
+    def test_import_pack_installs_agents_and_plugins(self) -> None:
+        result = pack_import.import_pack_zip(self._pack_zip(), source="my-pack.zip")
+        self.assertEqual(result["kind"], "pack")
+        self.assertEqual(result["pack"], "my-pack")
+        self.assertEqual(result["agents"], [{"name": "testbot", "status": "installed"}])
+        self.assertEqual({p["plugin"] for p in result["plugins"]},
+                         {"inner-plugin", "bare-plugin"})
+        # seed installato e registrato nel registry
+        self.assertTrue((self.agents_dir / "testbot" / "agent.yaml").is_file())
+        self.assertTrue((self.agents_dir / "testbot" / "memory").is_dir())
+        self.assertIsNotNone(registry.get_by_name("testbot"))
+        # plugin sul filesystem
         self.assertTrue(
-            (self.data_skills / "my-plugin" / "hello" / "SKILL.md").is_file())
+            (self.data_skills / "inner-plugin" / "hello" / "SKILL.md").is_file())
+        self.assertTrue(
+            (self.data_skills / "bare-plugin" / "world" / "SKILL.md").is_file())
+        # manifest del pack
         manifest = yaml.safe_load(
-            (self.packs_meta / "my-plugin" / "pack.yaml").read_text(encoding="utf-8"))
-        self.assertEqual(manifest["version"], "1.2.0")
-        self.assertIn("srv", manifest["mcp_servers"])
+            (self.packs_meta / "my-pack" / "pack.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["agents"], ["testbot"])
+        self.assertEqual(sorted(manifest["plugins"]), ["bare-plugin", "inner-plugin"])
+
+    def test_list_packs_exposes_soft_missing_plugins(self) -> None:
+        pack_import.import_pack_zip(self._pack_zip(), source="my-pack.zip")
         self._clear_caches()
-        item = self._by_name("my-plugin")
-        self.assertEqual(item["origin"], "imported")
-        self.assertEqual(item["mcp_servers"][0]["transport"], "stdio")
+        items = packs._list_packs()
+        self.assertEqual(len(items), 1)
+        pack = items[0]
+        self.assertEqual(pack["name"], "my-pack")
+        agent = pack["agents"][0]
+        self.assertEqual(agent["name"], "testbot")
+        self.assertTrue(agent["installed"])
+        # requires soft: inner-plugin installato, not-installed → warning
+        self.assertEqual(agent["missing_plugins"], ["not-installed"])
+        plugin_names = {p["name"] for p in pack["plugins"]}
+        self.assertEqual(plugin_names, {"inner-plugin", "bare-plugin"})
+        self.assertEqual(pack["counts"], {"agents": 1, "plugins": 2})
 
-    def test_import_pack_yaml_zip_with_rules(self) -> None:
+    def test_unified_import_falls_back_to_plugin(self) -> None:
         data = _zip_bytes({
-            "pack.yaml": yaml.safe_dump({
-                "name": "acme-pack", "description": "Pack ACME",
-                "mcp_servers": {"kb": {"type": "http", "url": "https://kb/"}},
-            }),
-            "skills/pdf/SKILL.md": _skill_md("pdf"),
-            "rules/blog-voice.md": "# Rule\nvoce del blog\n",
+            ".claude-plugin/plugin.json": '{"name": "loose-plugin"}',
+            "skills/solo/SKILL.md": _skill_md("solo"),
         })
         result = pack_import.import_pack_zip(data)
-        self.assertEqual(result["pack"], "acme-pack")
-        self.assertEqual(result["skills"], ["pdf"])
-        self.assertEqual(result["rules"], ["blog-voice"])
-        self.assertTrue((self.data_rules / "acme-pack" / "blog-voice.md").is_file())
+        self.assertEqual(result["kind"], "plugin")
+        self.assertEqual(result["plugin"], "loose-plugin")
 
-    def test_import_bare_skills_falls_back_to_user_pack(self) -> None:
-        data = _zip_bytes({"hello/SKILL.md": _skill_md("hello")})
-        result = pack_import.import_pack_zip(data)
-        self.assertEqual(result["pack"], "user-pack")
-        self.assertEqual(result["skills"], ["hello"])
-        self.assertTrue(
-            (self.data_skills / "user-pack" / "hello" / "SKILL.md").is_file())
-
-    def test_import_reserved_pack_name_rejected(self) -> None:
+    def test_seed_native_name_rejected_seed_existing_skipped(self) -> None:
+        (self.agents_dir / "existing").mkdir()
+        (self.agents_dir / "existing" / "agent.yaml").write_text(
+            _agent_yaml("existing"), encoding="utf-8")
+        registry.load()
         data = _zip_bytes({
-            "pack.yaml": "name: base-pack\n",
-            "skills/x/SKILL.md": _skill_md("x"),
+            "pack.yaml": "name: seeds-pack\n",
+            "agents/clodia/agent.yaml": _agent_yaml("clodia"),
+            "agents/existing/agent.yaml": _agent_yaml("existing"),
+            "agents/fresh/agent.yaml": _agent_yaml("fresh"),
+            "agents/fresh/system-prompt.md": "# Fresh\n",
+        })
+        result = pack_import.import_pack_zip(data)
+        by_name = {a["name"]: a["status"] for a in result["agents"]}
+        self.assertEqual(by_name["clodia"], "error")     # nativo
+        self.assertEqual(by_name["existing"], "exists")  # non sovrascritto
+        self.assertEqual(by_name["fresh"], "installed")
+        # il manifest non elenca gli errori
+        manifest = yaml.safe_load(
+            (self.packs_meta / "seeds-pack" / "pack.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(sorted(manifest["agents"]), ["existing", "fresh"])
+
+    def test_invalid_seed_rolled_back(self) -> None:
+        data = _zip_bytes({
+            "pack.yaml": "name: bad-pack\n",
+            "agents/badbot/agent.yaml": "name: badbot\nunknown_field: boom\n",
         })
         with self.assertRaises(pack_import.PackImportError):
+            # unico componente e non valido → import fallisce
             pack_import.import_pack_zip(data)
-
-    def test_import_empty_pack_rejected(self) -> None:
-        data = _zip_bytes({"pack.yaml": "name: empty-pack\n"})
-        with self.assertRaises(pack_import.PackImportError):
-            pack_import.import_pack_zip(data)
+        self.assertFalse((self.agents_dir / "badbot").exists())
+        self.assertIsNone(registry.get_by_name("badbot"))
 
     # --- delete -----------------------------------------------------------
 
-    def test_delete_pack_removes_all_components(self) -> None:
-        self._skill(self.data_skills, "acme-pack", "pdf")
-        self._rule(self.data_rules, "acme-pack", "style.md")
-        (self.packs_meta / "acme-pack").mkdir()
-        (self.packs_meta / "acme-pack" / "pack.yaml").write_text(
-            "name: acme-pack\n", encoding="utf-8")
-
-        res = asyncio.run(packs.delete_pack("acme-pack"))
-        self.assertEqual(res, {"deleted": "acme-pack"})
-        self.assertFalse((self.data_skills / "acme-pack").exists())
-        self.assertFalse((self.data_rules / "acme-pack").exists())
-        self.assertFalse((self.packs_meta / "acme-pack").exists())
-
-    def test_delete_reserved_pack_forbidden(self) -> None:
-        res = asyncio.run(packs.delete_pack("base-pack"))
-        self.assertEqual(res.status_code, 403)
+    def test_delete_pack_removes_plugins_and_agents(self) -> None:
+        pack_import.import_pack_zip(self._pack_zip(), source="my-pack.zip")
+        self._clear_caches()
+        res = asyncio.run(packs.delete_pack("my-pack"))
+        self.assertEqual(res["deleted"], "my-pack")
+        self.assertEqual(sorted(res["plugins"]), ["bare-plugin", "inner-plugin"])
+        self.assertEqual(res["agents"], ["testbot"])
+        self.assertFalse((self.agents_dir / "testbot").exists())
+        self.assertFalse((self.data_skills / "inner-plugin").exists())
+        self.assertFalse((self.packs_meta / "my-pack").exists())
+        self.assertIsNone(registry.get_by_name("testbot"))
 
     def test_delete_missing_pack_404(self) -> None:
         res = asyncio.run(packs.delete_pack("ghost-pack"))
