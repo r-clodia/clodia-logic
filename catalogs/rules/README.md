@@ -26,10 +26,15 @@ clodia-logic/rules-catalog/        # base-pack, in git, distribuibile
 └── skill-authoring.md
 
 clodia-data/rules-catalog/         # local-pack e pack installati dell'istanza
-├── acme-blog-voice.md           # acme-pack
-├── acme-next-conventions.md # acme-pack
-└── agent-server-fastapi.md        # local-pack, se non dichiara pack
+├── agent-server-fastapi.md        # rule FLAT → local-pack
+└── acme-pack/                     # pack-subdir → pack esplicito (dal path)
+    ├── blog-voice.md
+    └── next-conventions.md
 ```
+
+Come per le skill, il pack di una rule del data catalog è determinato dal
+**path** (`<pack>/<rule>.md`); le rule flat restano `local-pack`. I pack
+importati via `/clodia/packs/import` installano le loro rule nel pack-subdir.
 
 ## Rules vs Skills vs CLAUDE.md
 
@@ -83,14 +88,18 @@ Se il pack non è dichiarato, l'API applica fallback pragmatici:
 dichiarata in `agent.yaml.rules` come file `.agent/rules/<name>.md` nel
 workspace effimero.
 
-Ordine di risoluzione:
+Ordine di risoluzione (speculare a `skill_sync`):
 
-1. `/datadir/rules-catalog/<name>.md`
-2. `/clodia/rules-catalog/<name>.md`
+1. nome QUALIFICATO `<pack>/<rule>` → `/datadir/rules-catalog/<pack>/<rule>.md`
+2. nome BARE: `/datadir/rules-catalog/<rule>.md` (flat)
+3. nome BARE: `/datadir/rules-catalog/<pack>/<rule>.md` (primo pack in ordine)
+4. `/clodia/rules-catalog/<rule>.md` (base-pack)
 
 Questa precedenza implementa l'override locale: la versione data vince, se
-esiste. Gli adapter runtime convertono poi la forma neutra nel layout richiesto
-dal runtime agentico.
+esiste. In `agent.yaml.rules` sono supportati anche il pack-glob `<pack>/*`
+(tutte le rule di un pack) e la wildcard `*` (tutto il catalogo). Gli adapter
+runtime convertono poi la forma neutra nel layout richiesto dal runtime
+agentico.
 
 ## Dichiarare rules per un agente
 

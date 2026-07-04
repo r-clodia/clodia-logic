@@ -220,6 +220,34 @@ def _iter_rule_paths(root: Path) -> dict[str, Path]:
     return out
 
 
+def _iter_data_rule_paths(root: Path) -> dict[str, list[tuple[str | None, Path]]]:
+    """Enumera le rule del catalogo DATA con supporto ai pack-subdir.
+
+    Layout supportati sotto `root` (speculare a `_iter_data_skill_paths`):
+      <rule>.md            → rule flat (local/user)
+      <pack>/<rule>.md     → rule in un pack esplicito (pack = <pack>)
+    """
+    out: dict[str, list[tuple[str | None, Path]]] = {}
+    if not root.is_dir():
+        return out
+    try:
+        children = sorted(root.iterdir())  # ordine deterministico (coerente con rule_sync)
+    except OSError as e:
+        LOG.warning("rules catalog %s unreadable: %s", root, e)
+        return out
+    for child in children:
+        if child.is_file() and child.suffix == ".md" and child.name != "README.md":
+            out.setdefault(child.stem, []).append((None, child))
+            continue
+        if not child.is_dir() or child.name.startswith("."):
+            continue
+        for f in sorted(child.glob("*.md")):
+            if f.name == "README.md":
+                continue
+            out.setdefault(f.stem, []).append((child.name, f))
+    return out
+
+
 def _paths_for(
     kind: CatalogKind,
 ) -> tuple[dict[str, Path], dict[str, list[tuple[str | None, Path]]]]:
@@ -234,8 +262,7 @@ def _paths_for(
     logic = _iter_rule_paths(LOGIC_RULES_DIR)
     if LOGIC_RULES_DIR.resolve() == DATA_RULES_DIR.resolve():
         return logic, {}
-    data = {n: [(None, p)] for n, p in _iter_rule_paths(DATA_RULES_DIR).items()}
-    return logic, data
+    return logic, _iter_data_rule_paths(DATA_RULES_DIR)
 
 
 def _item_from_path(
