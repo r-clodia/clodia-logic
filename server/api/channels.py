@@ -290,6 +290,27 @@ def _history_prompt(name: str, tier: str, messages: list[dict]) -> str:
             + "\n\nRispondi all'ultimo messaggio come parte della conversazione del canale.")
 
 
+def _reused_turn_prompt(tier: str, name: str, responder: str, principal: str,
+                        fallback: str) -> str:
+    """Prompt per un turno su sessione RIUSATA. La sessione SDK del responder
+    contiene solo i PROPRI turni: NON ha visto i messaggi di ALTRI partecipanti
+    (altri agenti — es. Mercuria — o altri umani) comparsi dal suo ultimo
+    intervento. Se ce ne sono, glieli passiamo come storico recente; altrimenti
+    basta il `fallback` (il nuovo messaggio a cui rispondere).
+
+    Senza questo, un agente non "vede" le risposte degli altri agenti nel canale.
+    """
+    msgs = topics_client.list_messages(tier, name, limit=200)
+    last_own = max((i for i, m in enumerate(msgs)
+                    if (m.get("author") or "") == responder), default=-1)
+    unseen = msgs[last_own + 1:]
+    # C'è un messaggio non-visto di un TERZO (né il responder né chi ha appena
+    # scritto)? → il responder deve vederlo per non perdere il filo multi-agente.
+    if any((m.get("author") or "") not in (responder, principal) for m in unseen):
+        return _history_prompt(name, tier, _context_messages(unseen))
+    return fallback
+
+
 def _context_messages(messages: list[dict]) -> list[dict]:
     """Solo i messaggi successivi all'ultimo reset contesto entrano nel prompt."""
     for i in range(len(messages) - 1, -1, -1):
@@ -389,10 +410,12 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
     if created:
         prompt = _history_prompt(name, tier_real, _context_messages(topics_client.list_messages(tier, name, limit=200)))
     else:
-        prompt = (f"[Canale #{name} · {tier_real}] @{principal}: {req.content}\n"
-                  f"({_channel_files_hint(tier_real, name)} "
-                  f"Per offrire scelte rapide usa <!-- choices=A,B,C --> o "
-                  f"<!-- choices-multi=A,B,C -->.)")
+        fallback = (f"[Canale #{name} · {tier_real}] @{principal}: {req.content}\n"
+                    f"({_channel_files_hint(tier_real, name)} "
+                    f"Per offrire scelte rapide usa <!-- choices=A,B,C --> o "
+                    f"<!-- choices-multi=A,B,C -->.)")
+        # se altri agenti/umani hanno scritto dal suo ultimo turno, glieli passa
+        prompt = _reused_turn_prompt(tier, name, responder.name, principal, fallback)
     _spawn_bg(_run_and_post_response(tier, name, responder.name, chat, prompt,
                                      principal=principal, hop=0))
     return {"posted": True, "queued": True, "responder": responder.name,
@@ -468,8 +491,9 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         prompt = _history_prompt(name, tier_real,
                                  _context_messages(topics_client.list_messages(tier, name, limit=200)))
     else:
-        prompt = (f"[Canale #{name} · {tier_real}] nuovo messaggio nel gruppo. "
-                  f"{_channel_files_hint(tier_real, name)}")
+        fallback = (f"[Canale #{name} · {tier_real}] nuovo messaggio nel gruppo. "
+                    f"{_channel_files_hint(tier_real, name)}")
+        prompt = _reused_turn_prompt(tier, name, responder.name, chat.principal, fallback)
     reply = await _run_and_post_response(tier, name, responder.name, chat, prompt)
     return responder.name, reply
 
