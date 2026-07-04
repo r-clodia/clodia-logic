@@ -15,6 +15,13 @@ sotto) accompagnato da directory `agents/` (alias `seeds/`) o `plugins/`, o da
 chiavi `agents`/`plugins` nel manifest. Un semplice `pack.yaml` con skill
 (formato v6.57) resta un manifest di plugin legacy.
 
+È inoltre riconosciuto come pack un **Claude marketplace** —
+`.claude-plugin/marketplace.json` alla root (o un livello sotto), lo standard
+con cui Claude Code distribuisce più plugin in un repo (es. clodia-plugins):
+nome/descrizione dal marketplace, plugin dalle `source` dichiarate in
+`plugins[]`, agent seed dalle directory `agents|seeds/` se presenti (estensione
+Clodia: lo standard Claude non ha il concetto di seed).
+
 Install dei seed (decisione 4 lug 2026): l'agente viene installato E
 registrato — copia in `CLODIA_DATA/agents/<name>/`, emissione cert PKI
 (gli agenti creati a mano senza cert non si autenticano al gateway e vedono
@@ -27,6 +34,7 @@ dall'API packs, mai un errore.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import shutil
@@ -118,6 +126,62 @@ def find_pack_root(root: Path) -> tuple[Path, dict[str, Any]] | None:
     return None
 
 
+def find_marketplace_root(root: Path) -> tuple[Path, dict[str, Any]] | None:
+    """Riconosce un Claude marketplace: `.claude-plugin/marketplace.json` alla
+    root o un livello sotto (zip GitHub che incapsulano `repo-main/`).
+
+    Ritorna (marketplace_root, manifest) oppure None."""
+    candidates = [root]
+    try:
+        candidates += sorted(
+            c for c in root.iterdir() if c.is_dir() and c.name != ".git"
+        )
+    except OSError:
+        pass
+    for cand in candidates:
+        mp_json = cand / ".claude-plugin" / "marketplace.json"
+        if not mp_json.is_file():
+            continue
+        try:
+            manifest = json.loads(mp_json.read_text(encoding="utf-8"))
+        except Exception as e:
+            raise PackImportError(f"marketplace.json non valido: {str(e)[:120]}")
+        if not isinstance(manifest, dict):
+            raise PackImportError("marketplace.json non valido: atteso un oggetto")
+        return cand, manifest
+    return None
+
+
+def _marketplace_plugin_dirs(mp_root: Path, manifest: dict[str, Any]) -> list[Path]:
+    """Directory dei plugin dichiarati in `plugins[].source` del marketplace.
+
+    Ogni source deve risolvere a una directory DENTRO il marketplace (guardia
+    path-traversal). Una entry dichiarata ma assente è un errore esplicito,
+    non uno skip silenzioso. Senza entry valide, fallback alla scansione di
+    `plugins/` (come per i pack)."""
+    entries = manifest.get("plugins")
+    if not isinstance(entries, list) or not entries:
+        return _plugin_dirs(mp_root)
+    mp_resolved = mp_root.resolve()
+    out: list[Path] = []
+    for entry in entries:
+        if not isinstance(entry, dict):
+            raise PackImportError("marketplace.json: entry di plugins[] non valida")
+        src = str(entry.get("source") or "").strip()
+        name = str(entry.get("name") or src or "?")
+        if not src:
+            raise PackImportError(f"marketplace.json: plugin '{name}' senza source")
+        pdir = (mp_root / src).resolve()
+        if pdir != mp_resolved and mp_resolved not in pdir.parents:
+            raise PackImportError(
+                f"marketplace.json: source non sicura per '{name}': {src}")
+        if not pdir.is_dir():
+            raise PackImportError(
+                f"marketplace.json: source di '{name}' non trovata: {src}")
+        out.append(pdir)
+    return out
+
+
 def _install_seed(sdir: Path) -> dict[str, Any]:
     """Installa e registra un agent seed. Ritorna {name, status, detail?}.
 
@@ -173,7 +237,12 @@ def _install_seed(sdir: Path) -> dict[str, Any]:
 
 def install_pack_from_root(root: Path, *, source: str) -> dict[str, Any]:
     """Installa un archivio come PACK (o delega a plugin_import se non lo è)."""
+    marketplace = None
     found = find_pack_root(root)
+    if found is None:
+        marketplace = find_marketplace_root(root)
+        if marketplace is not None:
+            found = marketplace
     if found is None:
         result = plugin_import.install_plugin_from_root(root, source=source)
         return {"kind": "plugin", **result}
@@ -183,7 +252,10 @@ def install_pack_from_root(root: Path, *, source: str) -> dict[str, Any]:
     description = str(manifest.get("description") or "").strip()
     version = str(manifest.get("version") or "").strip()
 
-    plugin_dirs = _plugin_dirs(pack_root)
+    if marketplace is not None:
+        plugin_dirs = _marketplace_plugin_dirs(pack_root, manifest)
+    else:
+        plugin_dirs = _plugin_dirs(pack_root)
     seed_dirs = _seed_dirs(pack_root)
     if not plugin_dirs and not seed_dirs:
         raise PackImportError(

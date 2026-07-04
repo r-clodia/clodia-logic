@@ -53,6 +53,13 @@ version, source, agents, plugins).
 pack installa plugin e seed; altrimenti delega all'import plugin
 (`kind: "pack" | "plugin"` nella risposta).
 
+**Claude marketplace**: un repo con `.claude-plugin/marketplace.json` (lo
+standard con cui Claude Code distribuisce più plugin, es. `clodia-plugins`) è
+riconosciuto come pack: nome/descrizione dal marketplace, plugin dalle `source`
+dichiarate in `plugins[]` (una source assente o fuori dal repo è un errore
+esplicito), seed dalle directory `agents|seeds/` se presenti (estensione
+Clodia). I plugin presenti nel repo ma non dichiarati NON vengono importati.
+
 **Install dei seed**: l'agente viene installato E registrato — copia in
 `CLODIA_DATA/agents/<name>/`, emissione cert PKI (senza cert l'agente non si
 autentica al gateway e vede zero tool), `registry.load()`, whitelist sul
