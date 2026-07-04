@@ -38,6 +38,28 @@ def rank_label(spec: AgentSpec) -> str:
     return _LABEL[rank_tier(spec)]
 
 
+# Fuori dal lattice: proxy (`tg:*`, utenti Telegram non registrati) e nomi ignoti.
+# È il rango 0 → fail-closed nell'enforcement (un committente fuori-lattice non
+# autorizza alcun ordine).
+RANK_OUTSIDE = 0
+
+
+def rank_of_name(name: str | None) -> int:
+    """Rango di un agente/principal per NOME, risolto via registry.
+
+    Ritorna `RANK_OUTSIDE` (0) se il nome è assente, non registrato, o un proxy
+    (`tg:*`): è la base dell'enforcement di comando (`rango(committente) ≥
+    rango(esecutore)`), dove un proxy/ignoto (0) non può autorizzare nulla.
+    NON solleva mai: fail-closed su input sconosciuti."""
+    if not name:
+        return RANK_OUTSIDE
+    # Import locale: evita cicli all'inizializzazione del package (loader esegue
+    # registry.load() a import-time).
+    from .loader import registry
+    spec = registry.get_by_name(name)
+    return rank_tier(spec) if spec is not None else RANK_OUTSIDE
+
+
 def rank_key(spec: AgentSpec) -> tuple:
     """Chiave di ordinamento: il PRIMO dopo il sort parla. tier desc, poi
     created_at asc (più anziano prima). Senza created_at = meno anziano."""
