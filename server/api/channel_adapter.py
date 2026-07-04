@@ -119,7 +119,11 @@ async def _mirror_topic(tier: str, name: str, channel: dict) -> None:
         except Exception as e:  # noqa: BLE001
             LOG.warning("post_message inbound %s/%s: %s", tier, name, e)
             continue
-        sender = registry.get_by_telegram(m.get("from") or m.get("from_id"))
+        # Risoluzione del mittente su identificatori STABILI (username/id), non
+        # sulla stringa di display `from` (nome profilo, mutabile e non univoco).
+        fid = m.get("from_id")
+        sender = registry.get_by_telegram(
+            m.get("from_username") or (str(fid) if fid is not None else None))
         tag = _tagged(text)
         if sender is not None and tag and tag in participants:
             command = (sender.name, text)
