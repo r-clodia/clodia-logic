@@ -77,7 +77,8 @@ async def _lifespan(app: FastAPI):
     async def _safe_install_packs():
         try:
             from .setup.external_packs import install_external_packs
-            res = await asyncio.to_thread(install_external_packs)
+            res = await asyncio.to_thread(
+                install_external_packs, False, profile.skill_packs)
             if res:
                 LOG.info("Pack esterni installati: %s", res)
         except Exception as e:  # noqa: BLE001

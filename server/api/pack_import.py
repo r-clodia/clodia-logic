@@ -281,8 +281,25 @@ def install_pack_from_root(root: Path, *, source: str) -> dict[str, Any]:
         if marketplace is not None:
             found = marketplace
     if found is None:
+        # Niente plugin sciolti (spec v0.3 §4b.3): l'import di un plugin nudo
+        # genera un pack WRAPPER omonimo — il pack è sempre il contenitore.
         result = plugin_import.install_plugin_from_root(root, source=source)
-        return {"kind": "plugin", **result}
+        wrapper = result["plugin"]
+        meta_dir = PACKS_META_DIR / wrapper
+        meta_dir.mkdir(parents=True, exist_ok=True)
+        (meta_dir / "pack.yaml").write_text(
+            yaml.safe_dump({
+                "name": wrapper,
+                "description": "",
+                "version": "",
+                "source": source,
+                "agents": [],
+                "plugins": [wrapper],
+            }, allow_unicode=True, sort_keys=False),
+            encoding="utf-8",
+        )
+        return {"kind": "pack", "pack": wrapper, "agents": [],
+                "plugins": [result], "wrapped": True}
 
     pack_root, manifest = found
     pack = _sanitize_pack_name(manifest.get("name") or pack_root.name)

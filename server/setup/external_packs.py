@@ -42,12 +42,19 @@ def _load_manifest() -> list[dict]:
     return [e for e in data if isinstance(e, dict) and e.get("pack") and e.get("repo")]
 
 
-def install_external_packs(force: bool = False) -> dict[str, int]:
+def install_external_packs(force: bool = False,
+                           only: list[str] | None = None) -> dict[str, int]:
     """Installa i pack del manifest. Ritorna {pack: n_skill_installate}.
-    I pack già installati (marker presente) sono saltati salvo `force`."""
+    I pack già installati (marker presente) sono saltati salvo `force`.
+
+    `only` (terraformazione, spec v0.3 §4b.2): None = tutti (storico);
+    lista = solo i pack elencati (anche vuota = nessun pack esterno)."""
     result: dict[str, int] = {}
     for entry in _load_manifest():
         pack = str(entry["pack"]).strip()
+        if only is not None and pack not in only:
+            LOG.info("pack esterno '%s' non nel profilo (skill_packs) — skip", pack)
+            continue
         repo = str(entry["repo"]).strip()
         ref = str(entry.get("ref", "main")).strip()
         subdir = str(entry.get("subdir", "")).strip().strip("/")

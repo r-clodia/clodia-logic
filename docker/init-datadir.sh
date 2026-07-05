@@ -43,9 +43,16 @@ mkdir -p "$DATADIR/secrets/keystore"
 # genoma clonato con ogni istanza. Eventuali agent aggiuntivi dell'istanza vivono
 # in CLODIA_DATA/agents/ e non stanno nel repo. Copia solo se manca, per non
 # sovrascrivere editing locale.
+# Terraformazione (Modular Distro): se esiste $DATADIR/native-seeds (un nome
+# per riga), vengono seminati SOLO i seed elencati (anche uno solo). File
+# assente = tutti (comportamento storico). Il file lo scrive clodia-build.
 for seed in "$BUNDLE_ROOT"/catalogs/agents-seed/*; do
     [ -d "$seed" ] || continue
     name="$(basename "$seed")"
+    if [ -f "$DATADIR/native-seeds" ] && ! grep -qx "$name" "$DATADIR/native-seeds"; then
+        echo "Seed agent SALTATO (native-seeds): $name"
+        continue
+    fi
     target="$DATADIR/agents/$name"
     if [ ! -e "$target" ]; then
         cp -R "$seed" "$target"
