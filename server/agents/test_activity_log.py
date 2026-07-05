@@ -60,12 +60,16 @@ class ProviderSummaryTest(TestCase):
                 encoding="utf-8",
             )
             with patch.object(activity_log, "ACTIVITY_DIR", root):
-                rows = {r["provider"]: r for r in activity_log.provider_summary(["clodia"])}
+                ordered = activity_log.provider_summary(["clodia"])
+                rows = {r["provider"]: r for r in ordered}
 
         self.assertEqual(rows["claude-pro-max"]["tokens_in"], 100)
         self.assertEqual(rows["claude-pro-max"]["tokens_out"], 10)
         self.assertIn("sconosciuto", rows)   # lo storico NON è attribuito a un provider reale
         self.assertEqual(rows["sconosciuto"]["tokens_in"], 999)
+        # "sconosciuto" ha PIÙ token ma va comunque IN FONDO (non è un provider reale)
+        self.assertEqual(ordered[-1]["provider"], "sconosciuto")
+        self.assertEqual(ordered[0]["provider"], "claude-pro-max")
 
 
 class CodexUsageDeltaTest(TestCase):
