@@ -13,7 +13,7 @@ if not os.environ.get("ANTHROPIC_API_KEY"):
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from . import __version__
+from . import __version__, instance_profile
 from .api import admin, agent_registry, agents, auth, catalog, channels, connectors, files, health, human_auth, packs, plugins, profile, providers, spawns, topics
 from .config import HOST, PORT
 from .scheduler import api as jobs_api
@@ -84,20 +84,27 @@ async def _lifespan(app: FastAPI):
             LOG.warning("install pack esterni fallito: %s", e)
     asyncio.create_task(_safe_install_packs())
 
+    profile = instance_profile.load()
+
     # Scheduler: init DB, start, riconcilia jobstore con jobs table.
-    try:
-        scheduler_init_db()
-        loop = asyncio.get_running_loop()
-        start_scheduler(loop)
-        n = reload_all_enabled_jobs()
-        LOG.info("Scheduler pronto: %d job enabled caricati", n)
-    except Exception as e:
-        # Lo scheduler non deve mai impedire l'avvio del server. Loggiamo e
-        # proseguiamo — le API /clodia/jobs risponderanno con errori se
-        # invocate, e l'operatore vedrà il problema nei log.
-        LOG.exception("Errore di avvio dello scheduler: %s", e)
+    # Feature `jobs` (profilo istanza): se spenta, lo scheduler non parte.
+    if profile.features.jobs:
+        try:
+            scheduler_init_db()
+            loop = asyncio.get_running_loop()
+            start_scheduler(loop)
+            n = reload_all_enabled_jobs()
+            LOG.info("Scheduler pronto: %d job enabled caricati", n)
+        except Exception as e:
+            # Lo scheduler non deve mai impedire l'avvio del server. Loggiamo e
+            # proseguiamo — le API /clodia/jobs risponderanno con errori se
+            # invocate, e l'operatore vedrà il problema nei log.
+            LOG.exception("Errore di avvio dello scheduler: %s", e)
+    else:
+        LOG.info("feature 'jobs' OFF (profilo '%s'): scheduler non avviato", profile.edition)
     # Channel-adapter Telegram: loop periodico server-side (trasporto in codice,
     # nessuna logica AI). Non deve mai impedire l'avvio: gira in background.
+    # Feature `channels` (profilo istanza): se spenta, il loop non parte.
     async def _channel_adapter_loop():
         from .api import channel_adapter
         interval = int(os.environ.get("CLODIA_CHANNEL_TICK_SEC", "45"))
@@ -107,7 +114,12 @@ async def _lifespan(app: FastAPI):
             except Exception as e:  # noqa: BLE001
                 LOG.warning("channel adapter tick: %s", e)
             await asyncio.sleep(interval)
-    channel_task = asyncio.create_task(_channel_adapter_loop())
+    if profile.features.channels:
+        channel_task = asyncio.create_task(_channel_adapter_loop())
+    else:
+        LOG.info("feature 'channels' OFF (profilo '%s'): channel adapter non avviato",
+                 profile.edition)
+        channel_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
 
     # Idle reaper: evince periodicamente le sessioni chat idle (subprocess
     # claude/codex ancora vivo + spawn su disco) per recuperare RAM e disco.
@@ -187,6 +199,11 @@ def create_app() -> FastAPI:
              "detail": "istanza non reclamata: configura il superadmin"},
             status_code=423)
 
+    # Profilo d'istanza (Modular Distro F1): feature spenta = router NON
+    # montato (endpoint inesistente, 404) — riduzione reale della superficie.
+    # Profilo assente = FULL → comportamento identico a prima.
+    prof = instance_profile.load()
+
     app.include_router(health.router)
     app.include_router(admin.router)
     app.include_router(auth.router)
@@ -196,14 +213,21 @@ def create_app() -> FastAPI:
     app.include_router(connectors.router)
     app.include_router(agent_registry.router)
     app.include_router(files.router)
-    app.include_router(topics.router)
+    if prof.features.topics != "off":
+        app.include_router(topics.router)
     app.include_router(profile.router)
     app.include_router(catalog.router)
     app.include_router(packs.router)
     app.include_router(plugins.router)
     app.include_router(providers.router)
     app.include_router(spawns.router)
-    app.include_router(jobs_api.router)
+    if prof.features.jobs:
+        app.include_router(jobs_api.router)
+
+    @app.get("/profile")
+    async def get_instance_profile() -> dict:
+        """Profilo pubblico dell'istanza per la webui (nessun segreto)."""
+        return instance_profile.public_view()
 
     # Nessun frontend embedded: la webui ufficiale è clodia-web (servita a
     # parte). L'agent-server espone solo le API REST.
