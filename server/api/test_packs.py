@@ -162,8 +162,13 @@ class PacksApiTest(unittest.TestCase):
             "skills/solo/SKILL.md": _skill_md("solo"),
         })
         result = pack_import.import_pack_zip(data)
-        self.assertEqual(result["kind"], "plugin")
-        self.assertEqual(result["plugin"], "loose-plugin")
+        # niente plugin sciolti: wrapper pack omonimo (spec v0.3)
+        self.assertEqual(result["kind"], "pack")
+        self.assertEqual(result["pack"], "loose-plugin")
+        self.assertTrue(result.get("wrapped"))
+        manifest = yaml.safe_load(
+            (self.packs_meta / "loose-plugin" / "pack.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["plugins"], ["loose-plugin"])
 
     # --- marketplace (repo Claude multi-plugin) ----------------------------
 
@@ -317,6 +322,18 @@ class PacksApiTest(unittest.TestCase):
         self.assertFalse((self.data_skills / "inner-plugin").exists())
         self.assertFalse((self.packs_meta / "my-pack").exists())
         self.assertIsNone(registry.get_by_name("testbot"))
+
+    def test_virtual_packs_for_unreferenced_plugins(self) -> None:
+        # base-pack (logic) non è referenziato da alcun pack → pack virtuale
+        skill = self.logic_skills / "fact-check"
+        skill.mkdir()
+        (skill / "SKILL.md").write_text(_skill_md("fact-check"), encoding="utf-8")
+        self._clear_caches()
+        items = packs._list_packs()
+        base = [x for x in items if x["name"] == "base-pack"]
+        self.assertEqual(len(base), 1)
+        self.assertTrue(base[0]["virtual"])
+        self.assertEqual(base[0]["counts"], {"agents": 0, "plugins": 1})
 
     def test_delete_missing_pack_404(self) -> None:
         res = asyncio.run(packs.delete_pack("ghost-pack"))

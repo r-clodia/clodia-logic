@@ -73,7 +73,8 @@ def _list_packs() -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     meta_root = pack_import.PACKS_META_DIR
     if not meta_root.is_dir():
-        return out
+        meta_root.mkdir(parents=True, exist_ok=True)
+    referenced: set[str] = set()
     for child in sorted(meta_root.iterdir()):
         manifest_path = child / "pack.yaml"
         if not child.is_dir() or not manifest_path.is_file():
@@ -82,6 +83,7 @@ def _list_packs() -> list[dict[str, Any]]:
         name = child.name
         agent_names = [str(a) for a in (manifest.get("agents") or [])]
         plugin_names = [str(p) for p in (manifest.get("plugins") or [])]
+        referenced.update(plugin_names)
         agents = [_agent_entry(a, installed_plugins) for a in agent_names]
         plugin_children = [
             plugin_items.get(p, {"name": p, "missing": True}) for p in plugin_names
@@ -93,11 +95,28 @@ def _list_packs() -> list[dict[str, Any]]:
             "source": str(manifest.get("source") or "").strip(),
             "agents": agents,
             "plugins": plugin_children,
+            "virtual": False,
             "counts": {
                 "agents": len(agents),
                 "plugins": len(plugin_children),
             },
         })
+    # Niente plugin sciolti (spec v0.3 §4b.3): ogni plugin senza pack è esposto
+    # come pack VIRTUALE omonimo — il tree della webui mostra solo pack.
+    for pname, item in plugin_items.items():
+        if pname in referenced:
+            continue
+        out.append({
+            "name": pname,
+            "description": item.get("description") or "",
+            "version": item.get("version") or "",
+            "source": item.get("source") or "",
+            "agents": [],
+            "plugins": [item],
+            "virtual": True,
+            "counts": {"agents": 0, "plugins": 1},
+        })
+    out.sort(key=lambda x: (x["name"] != "base-pack", x["name"]))
     return out
 
 
@@ -157,6 +176,14 @@ async def delete_pack(name: str):
     try:
         result = pack_import.remove_pack(name)
     except KeyError:
-        return JSONResponse(status_code=404, content={"error": "pack non trovato"})
+        # pack virtuale (plugin senza manifest): delega alla rimozione plugin
+        from .plugin_import import RESERVED_PLUGIN_NAMES, remove_plugin
+        if name in RESERVED_PLUGIN_NAMES:
+            return JSONResponse(status_code=403,
+                                content={"error": f"'{name}' è nativo, non rimovibile"})
+        removed = remove_plugin(name)
+        if not removed:
+            return JSONResponse(status_code=404, content={"error": "pack non trovato"})
+        result = {"deleted": name, "plugins": [name], "agents": []}
     plugins_api.invalidate_plugins()
     return result

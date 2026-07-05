@@ -77,6 +77,9 @@ class IntegrationsConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     allowed: list[str] = Field(default_factory=list)  # whitelist per mode fixed
+    # In mode fixed: l'admin può comunque montare MCP con paste manuale dalla
+    # UI (decisione di terraformazione, spec v0.3 §4b.4).
+    allow_manual_mcp: bool = False
 
 
 class TopicsSingleConfig(BaseModel):
@@ -95,6 +98,10 @@ class InstanceProfile(BaseModel):
     rag: RagConfig = Field(default_factory=RagConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     topics_single: TopicsSingleConfig = Field(default_factory=TopicsSingleConfig)
+    # Pack esterni di skill da installare al boot (spec v0.3 §4b.2):
+    # None/assente = tutti (comportamento storico full); lista = solo quelli
+    # (anche vuota: nessun pack esterno, solo base-pack).
+    skill_packs: Optional[list[str]] = None
 
 
 _CACHE: Optional[InstanceProfile] = None
@@ -133,6 +140,7 @@ def public_view() -> dict:
         "features": p.features.model_dump(),
         "branding": p.branding.model_dump(),
         "rag": {"collection": p.rag.collection} if p.features.rag == "single" else {},
+        "integrations": {"allow_manual_mcp": p.integrations.allow_manual_mcp},
         "topics_single": (
             p.topics_single.model_dump() if p.features.topics == "single" else {}
         ),
