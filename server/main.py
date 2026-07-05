@@ -188,6 +188,7 @@ def create_app() -> FastAPI:
                     # login di un'edizione custom mostri il suo branding e la
                     # webui non ripieghi su FULL durante il bootstrap.
                     or path == "/profile"
+                    or path == "/profile/logo"
                     or path == "/openapi.json"
                     or path.startswith("/docs")
                     or path.startswith("/redoc"))
@@ -234,6 +235,21 @@ def create_app() -> FastAPI:
     async def get_instance_profile() -> dict:
         """Profilo pubblico dell'istanza per la webui (nessun segreto)."""
         return instance_profile.public_view()
+
+    @app.get("/profile/logo")
+    async def get_instance_logo():
+        """Logo dell'edizione (branding.logo, path relativo alla datadir).
+        Pre-claim: il marchio del cliente appare già sulla schermata di login.
+        Path-safety: il file risolto deve stare DENTRO la datadir."""
+        from fastapi.responses import FileResponse, JSONResponse as _JR
+        from .config import CLODIA_DATA
+        rel = instance_profile.load().branding.logo
+        if not rel:
+            return _JR(status_code=404, content={"error": "nessun logo configurato"})
+        path = (CLODIA_DATA / rel).resolve()
+        if CLODIA_DATA.resolve() not in path.parents or not path.is_file():
+            return _JR(status_code=404, content={"error": "logo non trovato"})
+        return FileResponse(path)
 
     # Nessun frontend embedded: la webui ufficiale è clodia-web (servita a
     # parte). L'agent-server espone solo le API REST.
