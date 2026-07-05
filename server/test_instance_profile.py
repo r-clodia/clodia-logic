@@ -76,6 +76,21 @@ class InstanceProfileTest(unittest.TestCase):
             p = ip.load(force=True)
         self.assertEqual(p.edition, "full")
 
+    def test_vocabulary_exposed_and_prompt_section(self) -> None:
+        self._write("vocabulary:\n  topic: {singolare: pratica, plurale: pratiche}\n  agent: collaboratore\n")
+        p = ip.load(force=True)
+        self.assertEqual(p.vocabulary["topic"]["singolare"], "pratica")
+        view = ip.public_view()
+        self.assertIn("topic", view["vocabulary"])
+        sec = ip.vocabulary_prompt_section()
+        self.assertIn("pratica", sec)
+        self.assertIn("pratiche", sec)
+        self.assertIn("collaboratore", sec)
+        # senza vocabolario: sezione vuota
+        (Path(self.tmp.name) / ip.PROFILE_FILENAME).unlink()
+        ip.load(force=True)
+        self.assertEqual(ip.vocabulary_prompt_section(), "")
+
     def test_cache_and_force(self) -> None:
         p1 = ip.load(force=True)
         self._write("edition: nuova\n")

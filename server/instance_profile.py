@@ -112,6 +112,11 @@ class InstanceProfile(BaseModel):
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     topics_single: TopicsSingleConfig = Field(default_factory=TopicsSingleConfig)
     helpdesk: HelpdeskConfig = Field(default_factory=HelpdeskConfig)
+    # Vocabolario dell'edizione (white-label COSMETICO: UI e conversazioni
+    # agentiche; API/verbi/storage restano canonici). Chiave = termine
+    # canonico, valore = stringa o {singolare, plurale}.
+    # Es: {topic: {singolare: pratica, plurale: pratiche}}
+    vocabulary: dict = Field(default_factory=dict)
     # Pack esterni di skill da installare al boot (spec v0.3 §4b.2):
     # None/assente = tutti (comportamento storico full); lista = solo quelli
     # (anche vuota: nessun pack esterno, solo base-pack).
@@ -148,6 +153,26 @@ def load(force: bool = False) -> InstanceProfile:
     return _CACHE
 
 
+def vocabulary_prompt_section() -> str:
+    """Sezione 'vocabolario' da appendere al system-prompt degli agenti
+    (edizioni con vocabulary): l'agente parla la lingua del cliente, i verbi
+    tool restano canonici."""
+    vocab = load().vocabulary
+    if not vocab:
+        return ""
+    lines = ["## Vocabolario dell'edizione",
+             "",
+             "Con l'utente usa SEMPRE questi termini (i nomi dei tool restano invariati):"]
+    for canon, val in vocab.items():
+        if isinstance(val, dict):
+            sing = val.get("singolare") or canon
+            plur = val.get("plurale") or sing
+            lines.append(f"- «{canon}» → di' **{sing}** (plurale: {plur})")
+        else:
+            lines.append(f"- «{canon}» → di' **{val}**")
+    return "\n".join(lines) + "\n"
+
+
 def public_view() -> dict:
     """Vista per `GET /profile` (webui): features risolte + branding.
 
@@ -159,6 +184,7 @@ def public_view() -> dict:
         "branding": p.branding.model_dump(),
         "rag": {"collection": p.rag.collection} if p.features.rag == "single" else {},
         "helpdesk": {"agent": p.helpdesk.agent},
+        "vocabulary": p.vocabulary,
         "integrations": {
             "allow_manual_mcp": p.integrations.allow_manual_mcp,
             "connectors": p.integrations.connectors,
