@@ -70,11 +70,13 @@ class InstanceProfileTest(unittest.TestCase):
             p = ip.load(force=True)
         self.assertEqual(p.features.topics, "full")   # fallback FULL
 
-    def test_unknown_field_rejected_to_full(self) -> None:
-        self._write("features: {jetpack: true}\n")
-        with self.assertLogs("agent-server.instance_profile", level="ERROR"):
-            p = ip.load(force=True)
-        self.assertEqual(p.edition, "full")
+    def test_unknown_keys_ignored_not_full(self) -> None:
+        # Chiave sconosciuta (builder più nuovo) → ignorata, il resto del
+        # profilo resta valido (NIENTE fallback FULL).
+        self._write("edition: e1\nfeatures: {jetpack: true, topics: single}\nchiave_futura: {x: 1}\n")
+        p = ip.load(force=True)
+        self.assertEqual(p.edition, "e1")
+        self.assertEqual(p.features.topics, "single")
 
     def test_vocabulary_exposed_and_prompt_section(self) -> None:
         self._write("vocabulary:\n  topic: {singolare: pratica, plurale: pratiche}\n  agent: collaboratore\n")
