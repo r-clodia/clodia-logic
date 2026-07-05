@@ -274,14 +274,13 @@ async def activity_summary() -> dict:
     """Leaderboard cumulativa all-time: per agent seed E per provider di inferenza.
 
     La leaderboard provider aggrega i token per servizio (i prezzi differiscono
-    molto): usa il provider registrato in ogni run, con fallback al provider
-    effettivo corrente dell'agente per gli eventi storici."""
-    from ..sdk_runtime.session import agent_effective_provider
+    molto) usando il provider registrato in ogni run (`payload.provider`); gli
+    eventi storici che non lo riportano finiscono in "sconosciuto" (nessun
+    indovinello sul provider corrente → niente mis-attribuzione temporale)."""
     agent_seeds = [a.name for a in registry.list() if a.type != "human"]
-    prov_map = {name: agent_effective_provider(name) for name in agent_seeds}
     return {
         "agents": activity_log.summary(agent_seeds),
-        "providers": activity_log.provider_summary(prov_map, agent_seeds),
+        "providers": activity_log.provider_summary(agent_seeds),
     }
 
 

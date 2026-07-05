@@ -194,17 +194,16 @@ def summary(agent_names: list[str] | None = None) -> list[dict]:
     return out
 
 
-def provider_summary(agent_provider_map: dict[str, str | None] | None = None,
-                     agent_names: list[str] | None = None) -> list[dict]:
+def provider_summary(agent_names: list[str] | None = None) -> list[dict]:
     """Leaderboard cumulativa per PROVIDER di inferenza: token consumati da ogni
     servizio (i prezzi differiscono molto → utile vedere il consumo per provider).
 
     Il provider di ogni run è quello registrato nell'evento `run_done`
-    (`payload.provider`); per gli eventi storici che non lo riportano si ricade
-    sul provider EFFETTIVO corrente dell'agente (`agent_provider_map`), o
-    "sconosciuto". Il conteggio token riusa `_usage_totals` (normalizza le
-    differenze di conteggio input fra Anthropic e OpenAI)."""
-    prov_map = agent_provider_map or {}
+    (`payload.provider`). Gli eventi storici che non lo riportano (pre-feature)
+    finiscono in **"sconosciuto"**: NON si indovina il provider corrente
+    dell'agente, che sarebbe una mis-attribuzione temporale (un agente può aver
+    cambiato provider dopo quegli eventi). Il conteggio token riusa `_usage_totals`
+    (normalizza le differenze di conteggio input fra Anthropic e OpenAI)."""
     names = set(agent_names or [])
     if ACTIVITY_DIR.is_dir():
         names.update(child.name for child in ACTIVITY_DIR.iterdir() if child.is_dir())
@@ -216,7 +215,7 @@ def provider_summary(agent_provider_map: dict[str, str | None] | None = None,
                 if e.get("type") != "run_done":
                     continue
                 payload = e.get("payload") or {}
-                provider = payload.get("provider") or prov_map.get(agent) or "sconosciuto"
+                provider = payload.get("provider") or "sconosciuto"
                 tin, tout = _usage_totals(payload.get("usage"))
                 row = acc.setdefault(provider, {
                     "provider": provider, "runs": 0, "tokens_in": 0, "tokens_out": 0,

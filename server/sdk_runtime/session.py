@@ -1289,11 +1289,31 @@ class CodexChatSession:
                                 {"error": f"codex exit {proc.returncode}", "chat_id": self.chat_id})
             raise RuntimeError(f"codex exit {proc.returncode}: {err or 'nessun output'}")
         full = "".join(parts)
+        # Codex (`exec resume`) riporta l'usage CUMULATIVO del thread: registra il
+        # DELTA di QUESTO run, così la leaderboard può sommare i run_done senza
+        # multi-contare (bug totali provider nella pagina Activity).
+        run_usage = self._codex_run_usage_delta(self._last_usage)
         activity_log.append(self.kind, "run_done",
                             {"reply": _snippet(full), "chat_id": self.chat_id,
-                             "usage": self._last_usage or None,
+                             "usage": run_usage or None,
                              "provider": agent_effective_provider(self.kind)})
         return full
+
+    def _codex_run_usage_delta(self, cumulative: dict | None) -> dict | None:
+        """Codex riporta l'usage CUMULATIVO del thread (`exec resume`). Ritorna il
+        DELTA di questo run rispetto al cumulativo del run precedente e aggiorna il
+        baseline di sessione. Cumulativo che cala (thread ripartito) → baseline
+        azzerato. usage vuoto (nessun turn.completed) → None, baseline invariato."""
+        if not cumulative:
+            return None
+        keys = ("input_tokens", "output_tokens", "cache_read_input_tokens")
+        base = getattr(self, "_usage_cumulative", None) or {}
+        cur = {k: int(cumulative.get(k, 0) or 0) for k in keys}
+        if cur["input_tokens"] < int(base.get("input_tokens", 0) or 0):
+            base = {}  # thread ripartito: il cumulativo è calato → riparti da 0
+        delta = {k: max(0, cur[k] - int(base.get(k, 0) or 0)) for k in keys}
+        self._usage_cumulative = cur
+        return delta
 
     async def _handle_event(self, ev: dict, parts: list[str]) -> None:
         t = ev.get("type")
