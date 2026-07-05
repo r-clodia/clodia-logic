@@ -80,6 +80,9 @@ class IntegrationsConfig(BaseModel):
     # In mode fixed: l'admin può comunque montare MCP con paste manuale dalla
     # UI (decisione di terraformazione, spec v0.3 §4b.4).
     allow_manual_mcp: bool = False
+    # Connettori NATIVI dell'edizione (gmail, mailboxes, trello, …).
+    # None = tutti (storico); lista = solo quelli (gap-1 acme-min, 6 lug).
+    connectors: Optional[list[str]] = None
 
 
 class TopicsSingleConfig(BaseModel):
@@ -140,7 +143,10 @@ def public_view() -> dict:
         "features": p.features.model_dump(),
         "branding": p.branding.model_dump(),
         "rag": {"collection": p.rag.collection} if p.features.rag == "single" else {},
-        "integrations": {"allow_manual_mcp": p.integrations.allow_manual_mcp},
+        "integrations": {
+            "allow_manual_mcp": p.integrations.allow_manual_mcp,
+            "connectors": p.integrations.connectors,
+        },
         "topics_single": (
             p.topics_single.model_dump() if p.features.topics == "single" else {}
         ),
