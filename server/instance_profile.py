@@ -34,7 +34,10 @@ PROFILE_FILENAME = "profile.yaml"
 
 
 class Features(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    # extra="ignore": una chiave feature scritta da un builder più nuovo non
+    # deve invalidare il profilo (→ fallback FULL = superficie riaperta).
+    # Stessa lezione del gateway (6 lug, tools 0.75.1), specchiata.
+    model_config = ConfigDict(extra="ignore")
 
     jobs: bool = True
     topics: Literal["off", "single", "full"] = "full"
@@ -103,7 +106,7 @@ class TopicsSingleConfig(BaseModel):
 
 
 class InstanceProfile(BaseModel):
-    model_config = ConfigDict(extra="forbid")
+    model_config = ConfigDict(extra="ignore")
 
     edition: str = "full"
     features: Features = Field(default_factory=Features)
@@ -117,6 +120,9 @@ class InstanceProfile(BaseModel):
     # canonico, valore = stringa o {singolare, plurale}.
     # Es: {topic: {singolare: pratica, plurale: pratiche}}
     vocabulary: dict = Field(default_factory=dict)
+    # Default dei topic appena creati (enforcement nel gateway):
+    # {participants: [clodia, ...]}.
+    topics_defaults: dict = Field(default_factory=dict)
     # Pack esterni di skill da installare al boot (spec v0.3 §4b.2):
     # None/assente = tutti (comportamento storico full); lista = solo quelli
     # (anche vuota: nessun pack esterno, solo base-pack).
@@ -185,6 +191,7 @@ def public_view() -> dict:
         "rag": {"collection": p.rag.collection} if p.features.rag == "single" else {},
         "helpdesk": {"agent": p.helpdesk.agent},
         "vocabulary": p.vocabulary,
+        "topics_defaults": p.topics_defaults,
         "integrations": {
             "allow_manual_mcp": p.integrations.allow_manual_mcp,
             "connectors": p.integrations.connectors,
