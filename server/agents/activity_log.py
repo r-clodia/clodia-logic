@@ -32,6 +32,11 @@ LOG = logging.getLogger("agent-server.agents.activity")
 
 ACTIVITY_DIR = data_path("agent-state") / "activity"
 
+# Bucket per i run_done storici (pre-tracciamento provider) senza `payload.provider`.
+# Nella leaderboard va SEMPRE in fondo, a prescindere dai token (non è un provider
+# reale, non deve competere in cima con quelli attribuiti).
+UNKNOWN_PROVIDER = "sconosciuto"
+
 
 def _file_for(agent: str, when: Optional[datetime] = None) -> Path:
     when = when or datetime.now(timezone.utc)
@@ -215,7 +220,7 @@ def provider_summary(agent_names: list[str] | None = None) -> list[dict]:
                 if e.get("type") != "run_done":
                     continue
                 payload = e.get("payload") or {}
-                provider = payload.get("provider") or "sconosciuto"
+                provider = payload.get("provider") or UNKNOWN_PROVIDER
                 tin, tout = _usage_totals(payload.get("usage"))
                 row = acc.setdefault(provider, {
                     "provider": provider, "runs": 0, "tokens_in": 0, "tokens_out": 0,
@@ -235,5 +240,10 @@ def provider_summary(agent_names: list[str] | None = None) -> list[dict]:
         row["agents"] = sorted(row.pop("agents"))
         row["agents_count"] = len(row["agents"])
         out.append(row)
-    out.sort(key=lambda r: (r["tokens_in"] + r["tokens_out"], r["runs"]), reverse=True)
+    # Provider reali per token desc; "sconosciuto" (storico non attribuito) SEMPRE
+    # in fondo. Con reverse=True, `provider != UNKNOWN` dà True(1) ai reali e
+    # False(0) allo sconosciuto → i reali precedono, lo sconosciuto chiude.
+    out.sort(key=lambda r: (r["provider"] != UNKNOWN_PROVIDER,
+                            r["tokens_in"] + r["tokens_out"], r["runs"]),
+             reverse=True)
     return out
