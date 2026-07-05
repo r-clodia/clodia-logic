@@ -182,6 +182,11 @@ def create_app() -> FastAPI:
         if method == "GET":
             return (path.startswith("/api/admin")
                     or path == "/health"
+                    # Profilo dell'edizione: solo features+branding, nessun
+                    # segreto — serve PRE-claim perché la schermata di claim/
+                    # login di un'edizione custom mostri il suo branding e la
+                    # webui non ripieghi su FULL durante il bootstrap.
+                    or path == "/profile"
                     or path == "/openapi.json"
                     or path.startswith("/docs")
                     or path.startswith("/redoc"))
