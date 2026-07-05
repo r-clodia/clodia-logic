@@ -48,6 +48,8 @@ class Features(BaseModel):
     activity: bool = True
     # Sezione/pairing PWA (Settings): spenta nelle edizioni senza PWA (§4b.6).
     pwa: bool = True
+    # Popup helpdesk della webui (coda Sprint 3): non sempre necessario.
+    helpdesk: bool = True
     # Accettati per forward-compat con la spec; oggi nessun router da gatare.
     kanban: bool = False
     colony: bool = False
@@ -87,6 +89,12 @@ class IntegrationsConfig(BaseModel):
     connectors: Optional[list[str]] = None
 
 
+class HelpdeskConfig(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
+    agent: str = "wainston"        # agente del popup (default wainston)
+
+
 class TopicsSingleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -103,6 +111,7 @@ class InstanceProfile(BaseModel):
     rag: RagConfig = Field(default_factory=RagConfig)
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     topics_single: TopicsSingleConfig = Field(default_factory=TopicsSingleConfig)
+    helpdesk: HelpdeskConfig = Field(default_factory=HelpdeskConfig)
     # Pack esterni di skill da installare al boot (spec v0.3 §4b.2):
     # None/assente = tutti (comportamento storico full); lista = solo quelli
     # (anche vuota: nessun pack esterno, solo base-pack).
@@ -149,6 +158,7 @@ def public_view() -> dict:
         "features": p.features.model_dump(),
         "branding": p.branding.model_dump(),
         "rag": {"collection": p.rag.collection} if p.features.rag == "single" else {},
+        "helpdesk": {"agent": p.helpdesk.agent},
         "integrations": {
             "allow_manual_mcp": p.integrations.allow_manual_mcp,
             "connectors": p.integrations.connectors,
