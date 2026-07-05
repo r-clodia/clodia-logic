@@ -436,8 +436,12 @@ def _parse_code_state(raw: str) -> tuple[str, str | None]:
 @router.get("/api/providers")
 async def list_providers() -> dict:
     """Stato dei provider (mai i valori delle credenziali)."""
+    from .. import instance_profile
+    edition = instance_profile.load().providers  # None = tutto il catalogo
     out = []
     for pid, meta in _CATALOG.items():
+        if edition is not None and pid not in edition:
+            continue
         d = _read(pid)
         out.append({
             "id": pid, "name": meta["name"],
@@ -464,6 +468,10 @@ class KeyBody(BaseModel):
 async def set_key(pid: str, body: KeyBody) -> dict:
     if pid not in _CATALOG:
         raise HTTPException(404, f"provider sconosciuto: {pid}")
+    from .. import instance_profile
+    edition = instance_profile.load().providers
+    if edition is not None and pid not in edition:
+        raise HTTPException(403, f"provider '{pid}' non previsto dall'edizione")
     if not body.api_key.strip():
         raise HTTPException(400, "api_key vuota")
     try:

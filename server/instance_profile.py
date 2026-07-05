@@ -46,6 +46,8 @@ class Features(BaseModel):
     packs_ui: bool = True
     providers_ui: bool = True
     activity: bool = True
+    # Sezione/pairing PWA (Settings): spenta nelle edizioni senza PWA (§4b.6).
+    pwa: bool = True
     # Accettati per forward-compat con la spec; oggi nessun router da gatare.
     kanban: bool = False
     colony: bool = False
@@ -105,6 +107,10 @@ class InstanceProfile(BaseModel):
     # None/assente = tutti (comportamento storico full); lista = solo quelli
     # (anche vuota: nessun pack esterno, solo base-pack).
     skill_packs: Optional[list[str]] = None
+    # Provider dell'edizione (§4b.5): None = tutto il catalogo (storico);
+    # lista = /api/providers mostra solo questi e il deposito key degli altri
+    # è rifiutato.
+    providers: Optional[list[str]] = None
 
 
 _CACHE: Optional[InstanceProfile] = None
