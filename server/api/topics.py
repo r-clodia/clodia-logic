@@ -866,15 +866,57 @@ async def get_topic_file(
 _DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB hard cap per il download
 
 
+def _download_scope(tier: str, name: str, path: str) -> str:
+    return f"topic|{tier}|{name}|{path}"
+
+
+@router.get("/topics/{tier}/{name}/download-url")
+async def topic_download_url(
+    request: Request,
+    tier: str,
+    name: str,
+    path: str = Query(...),
+):
+    """URL firmato a scadenza per il download (per i link <a> del browser).
+    Richiede login + membership del canale — è QUI che si paga l'ACL."""
+    from urllib.parse import quote
+
+    from . import download_sign
+    from .channels import _require_member
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "topic non trovato")
+    _require_member(request, topic.get("meta", {}))
+    exp, sig = download_sign.make(_download_scope(tier, name, path))
+    return {"url": (f"/topics/{quote(tier)}/{quote(name)}/download"
+                    f"?path={quote(path)}&exp={exp}&sig={sig}"),
+            "expires_in": max(0, exp - __import__("time").time().__int__())}
+
+
 @router.get("/topics/{tier}/{name}/download")
 async def download_topic_file(
+    request: Request,
     tier: str,
     name: str,
     path: str = Query(..., description="path relativo al topic (es. files/report.pdf)"),
+    exp: int | None = None,
+    sig: str | None = None,
 ):
-    """Download di un file dentro il topic v2 (via gateway). `tier` = P0..P3."""
+    """Download di un file dentro il topic v2 (via gateway). `tier` = P0..P3.
+
+    AUTENTICATO (fix 7 lug 2026 — prima era aperto: chiunque col link
+    scaricava, anche da tier confidenziali): serve una firma valida a
+    scadenza (URL presigned da /download-url) OPPURE una sessione con
+    membership del canale."""
     if not path or path.startswith("/"):
         raise HTTPException(400, "path deve essere relativo, non vuoto")
+    from . import download_sign
+    if not (exp and sig and download_sign.verify(_download_scope(tier, name, path), exp, sig)):
+        from .channels import _require_member
+        topic = topics_client.open_topic(tier, name)
+        if not topic:
+            raise HTTPException(404, "topic non trovato")
+        _require_member(request, topic.get("meta", {}))
     try:
         data = topics_client.get_file(tier, name, path)
     except topics_client.TopicsClientError as e:
