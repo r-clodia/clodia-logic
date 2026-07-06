@@ -110,7 +110,11 @@ def welcome_message(name: str, title: str, topic_type: str,
         if isinstance(t, dict) and t.get("key") == topic_type:
             label = t.get("label") or topic_type
             break
-    lines = [f"Ciao! Questa {noun} — **{title or name}** ({label}) — è pronta."]
+    # Genere dell'articolo: euristica it-IT sul sostantivo del vocabolario
+    # (pratica → Questa/pronta; topic/canale → Questo/pronto).
+    fem = noun.lower().endswith("a")
+    questo, pronto = ("Questa", "pronta") if fem else ("Questo", "pronto")
+    lines = [f"Ciao! {questo} {noun} — **{title or name}** ({label}) — è {pronto}."]
     if pills:
         lines.append("Posso partire subito con una di queste attività:")
         lines.append(f"<!-- choices={','.join(pills)} -->")
