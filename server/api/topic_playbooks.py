@@ -25,8 +25,18 @@ LOG = logging.getLogger("agent-server.topic_playbooks")
 
 
 def _plugin_playbooks() -> dict[str, list[dict[str, str]]]:
-    """Unione dei topic_playbooks dichiarati dai plugin installati."""
+    """Unione dei topic_playbooks: plugin installati + profilo dell'istanza.
+
+    Oltre ai manifest dei plugin (curated dal pack developer), anche il
+    profilo può dichiarare `topics_defaults.playbooks` — per le istanze che
+    vogliono pills sui propri tipi senza passare da un pack (es. personal
+    con i tipi storici). Stessa forma: {tipo: [{label, skill?}]}."""
     merged: dict[str, list[dict[str, str]]] = {}
+    prof_pb = (instance_profile.load().topics_defaults or {}).get("playbooks") or {}
+    for ttype, pills in prof_pb.items():
+        if isinstance(pills, list):
+            merged.setdefault(str(ttype), []).extend(
+                p for p in pills if isinstance(p, dict) and p.get("label"))
     for manifest in sorted(Path(data_path("plugins")).glob("*/plugin.yaml")):
         try:
             meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
