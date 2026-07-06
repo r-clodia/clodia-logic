@@ -183,7 +183,12 @@ def _tagged(text: str) -> str | None:
 
 
 def _channel_meta(body: dict, principal: str, name: str) -> dict:
-    contact_agent = (body.get("contact_agent") or "clodia").strip().lower()
+    # Default del contact agent per EDIZIONE (topics_defaults.contact_agent):
+    # nelle edizioni verticali il referente delle pratiche è l'agente di
+    # dominio (es. commercialista), non clodia (feedback Davide 7 lug).
+    from .. import instance_profile
+    _edition_ca = (instance_profile.load().topics_defaults or {}).get("contact_agent") or "clodia"
+    contact_agent = (body.get("contact_agent") or _edition_ca).strip().lower()
     meta = {
         "title": (body.get("title") or name),
         "type": body.get("type") or "progetto",
