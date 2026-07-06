@@ -521,6 +521,18 @@ async def channel_create(request: Request) -> dict:
         created = topics_client.create_topic(tier, name, meta)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"creazione canale fallita: {str(e)[:160]}")
+    # Benvenuto con action pills (playbook dei pack, per tipo, filtrate sulle
+    # skill dei partecipanti): composto in codice, zero token. Best-effort.
+    try:
+        from . import topic_playbooks
+        text = topic_playbooks.welcome_message(
+            name, created.get("title") or name, created.get("type") or "",
+            created.get("participants") or [])
+        if text:
+            topics_client.post_message(
+                tier, name, created.get("contact_agent") or "clodia", text, kind="ai")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("welcome playbook non postato su %s/%s: %s", tier, name, str(e)[:120])
     return {"tier": tier, "name": name, "meta": created}
 
 
