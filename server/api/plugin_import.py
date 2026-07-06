@@ -219,6 +219,34 @@ def _sanitize_requires(raw: Any) -> dict[str, list[str]]:
     return out
 
 
+def _sanitize_playbooks(raw: Any) -> dict[str, list[dict[str, str]]]:
+    """Playbook per tipo di topic (pack ops UX): {tipo: [{label, skill?}]}.
+    Le pills sono GROUNDED: `skill` (formato "<plugin>/<skill>" o nome bare
+    base-pack) è il requisito che un agente partecipante deve possedere
+    perché la pill appaia. Le label diventano choices della webui: niente
+    virgole (separatore del markup) — vengono sostituite."""
+    out: dict[str, list[dict[str, str]]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for ttype, pills in raw.items():
+        if not isinstance(pills, list):
+            continue
+        clean: list[dict[str, str]] = []
+        for pill in pills:
+            if not isinstance(pill, dict):
+                continue
+            label = str(pill.get("label") or "").strip().replace(",", " –")
+            if not label:
+                continue
+            entry = {"label": label}
+            if pill.get("skill"):
+                entry["skill"] = str(pill["skill"]).strip()
+            clean.append(entry)
+        if clean:
+            out[str(ttype).strip()] = clean
+    return out
+
+
 def _write_plugin_manifest(
     plugin: str,
     *,
@@ -228,6 +256,7 @@ def _write_plugin_manifest(
     mcp_servers: dict[str, Any],
     datastores: list[dict[str, Any]] | None = None,
     requires: dict[str, list[str]] | None = None,
+    topic_playbooks: dict[str, list[dict[str, str]]] | None = None,
 ) -> None:
     meta_dir = PLUGINS_META_DIR / plugin
     meta_dir.mkdir(parents=True, exist_ok=True)
@@ -249,6 +278,8 @@ def _write_plugin_manifest(
         manifest["datastores"] = datastores
     if requires:
         manifest["requires"] = requires
+    if topic_playbooks:
+        manifest["topic_playbooks"] = topic_playbooks
     (meta_dir / "plugin.yaml").write_text(
         yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -298,6 +329,7 @@ def install_plugin_from_root(
     rules = [_install_rule_into_plugin(f, plugin) for f in rule_files]
     datastores = _sanitize_datastores(manifest.get("datastores"))
     requires = _sanitize_requires(manifest.get("requires"))
+    topic_playbooks = _sanitize_playbooks(manifest.get("topic_playbooks"))
     _write_plugin_manifest(
         plugin,
         description=description,
@@ -306,6 +338,7 @@ def install_plugin_from_root(
         mcp_servers=mcp_servers,
         datastores=datastores,
         requires=requires,
+        topic_playbooks=topic_playbooks,
     )
     # I file degli MCP server vanno copiati nella datadir (prima restavano nel
     # tmp dell'import → config esposta ma server non montabile). Il server che

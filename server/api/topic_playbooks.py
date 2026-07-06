@@ -1,0 +1,109 @@
+"""Topic playbooks — benvenuto con action pills nei topic/pratiche nuovi.
+
+I plugin dichiarano `topic_playbooks: {tipo: [{label, skill?}]}` nel manifest
+(curated dal pack developer, propagato dall'import in plugin.yaml). Alla
+creazione di un topic la piattaforma posta un messaggio di benvenuto del
+contact agent con le pills del TIPO, filtrate su ciò che gli agenti
+PARTECIPANTI sanno davvero fare (capabilities → skill possedute): la pill
+esiste solo se nel canale c'è chi la sa eseguire. Zero token: il benvenuto è
+composto in codice, non da un turno LLM; le pills usano il markup choices
+della webui (click = invio del testo).
+"""
+from __future__ import annotations
+
+import logging
+from pathlib import Path
+
+import yaml
+
+from .. import instance_profile
+from ..agents.loader import registry
+from ..agents.skill_sync import WILDCARDS, _all_skill_names, _pack_skill_names
+from ..config import data_path
+
+LOG = logging.getLogger("agent-server.topic_playbooks")
+
+
+def _plugin_playbooks() -> dict[str, list[dict[str, str]]]:
+    """Unione dei topic_playbooks dichiarati dai plugin installati."""
+    merged: dict[str, list[dict[str, str]]] = {}
+    for manifest in sorted(Path(data_path("plugins")).glob("*/plugin.yaml")):
+        try:
+            meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        if not isinstance(meta, dict):
+            continue
+        for ttype, pills in (meta.get("topic_playbooks") or {}).items():
+            if isinstance(pills, list):
+                merged.setdefault(str(ttype), []).extend(
+                    p for p in pills if isinstance(p, dict) and p.get("label"))
+    return merged
+
+
+def _agent_skill_names(agent: str) -> set[str]:
+    """Skill possedute da un agente (capabilities espanse: wildcard e pack-glob)."""
+    try:
+        spec = registry.get(agent)
+    except KeyError:
+        return set()
+    caps = list(getattr(spec, "capabilities", None) or [])
+    if any(c in WILDCARDS for c in caps):
+        return set(_all_skill_names())
+    out: set[str] = set()
+    for cap in caps:
+        if cap.endswith("/*"):
+            out.update(_pack_skill_names(cap[:-2]))
+        else:
+            out.add(cap)
+    return out
+
+
+def pills_for(topic_type: str, participants: list[str]) -> list[str]:
+    """Label delle pills per il tipo, filtrate sulle skill dei partecipanti AI."""
+    pills = _plugin_playbooks().get(topic_type or "", [])
+    if not pills:
+        return []
+    owned: set[str] = set()
+    for p in participants:
+        owned |= _agent_skill_names(p)
+    out: list[str] = []
+    for pill in pills:
+        req = pill.get("skill")
+        if req and req not in owned:
+            continue
+        label = str(pill["label"]).replace(",", " –").strip()
+        if label and label not in out:
+            out.append(label)
+    return out
+
+
+def welcome_message(name: str, title: str, topic_type: str,
+                    participants: list[str]) -> str | None:
+    """Testo del benvenuto (o None se l'edizione non lo prevede).
+
+    Si posta se ci sono pills per il tipo, oppure se l'edizione dichiara i
+    tipi nel profilo (edizione verticale): le istanze storiche senza types
+    né playbook non cambiano comportamento."""
+    pills = pills_for(topic_type, participants)
+    prof = instance_profile.load()
+    types_conf = (prof.topics_defaults or {}).get("types") or []
+    if not pills and not types_conf:
+        return None
+    vocab_topic = prof.vocabulary.get("topic")
+    if isinstance(vocab_topic, dict):
+        noun = vocab_topic.get("singolare") or "topic"
+    else:
+        noun = str(vocab_topic) if vocab_topic else "topic"
+    label = topic_type or "progetto"
+    for t in types_conf:
+        if isinstance(t, dict) and t.get("key") == topic_type:
+            label = t.get("label") or topic_type
+            break
+    lines = [f"Ciao! Questa {noun} — **{title or name}** ({label}) — è pronta."]
+    if pills:
+        lines.append("Posso partire subito con una di queste attività:")
+        lines.append(f"<!-- choices={','.join(pills)} -->")
+    else:
+        lines.append("Descrivimi l'esigenza e imposto il lavoro.")
+    return "\n\n".join(lines)
