@@ -13,7 +13,7 @@ import re
 import unicodedata
 from pathlib import Path
 
-from fastapi import APIRouter, File, HTTPException, Query, UploadFile
+from fastapi import APIRouter, File, HTTPException, Query, Request, UploadFile
 from fastapi.responses import FileResponse
 
 from ..config import CLODIA_DATA, WORKSPACE_ROOT
@@ -71,8 +71,19 @@ def _is_allowed(p: Path) -> bool:
     return True
 
 
+def _require_login(request) -> str:
+    """Fix sicurezza 7 lug 2026: gli endpoint /files erano senza auth —
+    chiunque col link scaricava file della datadir. Ora serve una sessione."""
+    from .agents import _principal_from_request
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "login richiesto")
+    return principal
+
+
 @router.get("/files/download")
-async def download_file(path: str = Query(..., description="Absolute path to the file")):
+async def download_file(request: Request, path: str = Query(..., description="Absolute path to the file")):
+    _require_login(request)
     if not path.startswith("/"):
         raise HTTPException(400, "path must be absolute")
     p = Path(path)
@@ -86,7 +97,8 @@ async def download_file(path: str = Query(..., description="Absolute path to the
 
 
 @router.get("/files/check")
-async def check_file(path: str = Query(...)):
+async def check_file(request: Request, path: str = Query(...)):
+    _require_login(request)
     """Endpoint leggero per il frontend: dice se un path è scaricabile senza fare il download.
     Restituisce {allowed: bool, name: str, size: int|null}."""
     out = {"allowed": False, "name": "", "size": None}
@@ -141,7 +153,7 @@ def _unique_destination(directory: Path, filename: str) -> Path:
 
 
 @router.post("/files/upload")
-async def upload_file(file: UploadFile = File(...)):
+async def upload_file(request: Request, file: UploadFile = File(...)):
     """Riceve un file droppato dalla GUI e lo salva in dump/.
 
     Validazioni:
@@ -151,6 +163,7 @@ async def upload_file(file: UploadFile = File(...)):
 
     Risposta JSON: {ok, path, name, size}.
     """
+    _require_login(request)
     if not DUMP_DIR.is_dir():
         raise HTTPException(500, f"upload dir {DUMP_DIR} non esiste")
 
