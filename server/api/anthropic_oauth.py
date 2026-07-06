@@ -32,7 +32,7 @@ SUBSCRIPTION_ENV = "CLAUDE_CODE_OAUTH_TOKEN"
 _REFRESH_SKEW = 300  # 5 min
 
 # Public client di Claude Code (PKCE, nessun secret). Stesso del flusso CLI.
-CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"
+CLIENT_ID = "9d1c250a-e61b-44d9-88ed-5944d1962f5e"  # gitleaks:allow
 AUTHORIZE_URL = "https://claude.ai/oauth/authorize"
 # Endpoint token dell'abbonamento (Claude Max): è su claude.ai, NON su
 # console.anthropic.com (che è il flusso Console/API → rotta /v1/oauth/token

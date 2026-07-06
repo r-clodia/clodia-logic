@@ -1,0 +1,7 @@
+# Falsi positivi verificati — audit contacts.db / gitleaks CI del 6 lug 2026.
+# CLIENT_ID OAuth PKCE di Claude Code: identificatore PUBBLICO (stesso del
+# flusso CLI ufficiale), nessun segreto. La regola generic-api-key lo aggancia
+# solo perché è un UUID ad alta entropia assegnato a una variabile *_ID.
+8eb46812f38d6aa1938e28168633a9c03ba3a4fb:server/api/anthropic_oauth.py:generic-api-key:35
+# Stesso identificatore, vecchio path storico pre-split del repo.
+99b40438b9ae9184e7f04be453acab2586dcf860:tools/system/agent-server/server/api/anthropic_oauth.py:generic-api-key:30
