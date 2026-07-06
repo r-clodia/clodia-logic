@@ -103,6 +103,23 @@ async def _lifespan(app: FastAPI):
             LOG.exception("Errore di avvio dello scheduler: %s", e)
     else:
         LOG.info("feature 'jobs' OFF (profilo '%s'): scheduler non avviato", profile.edition)
+
+    # Pack ops (Saimon): riconciliazione a stato desiderato al BOOT, se i
+    # plugin installati dichiarano requires:/datastores:. Chiude il problema
+    # del filesystem effimero: dopo un recreate del container l'agente
+    # riconverge (install già in path persistenti → no-op veloce). Best-effort,
+    # ritardata per lasciare al runtime il tempo di collegare i provider;
+    # senza dichiarazioni non parte nessuna sessione (zero costo).
+    async def _safe_boot_reconcile():
+        try:
+            await asyncio.sleep(30)
+            from .api import pack_ops
+            res = await pack_ops.trigger_reconcile("boot")
+            if res.get("triggered"):
+                LOG.info("pack ops: boot reconcile consegnato a '%s'", res.get("agent"))
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("pack ops boot reconcile fallito: %s", e)
+    asyncio.create_task(_safe_boot_reconcile())
     # Channel-adapter Telegram: loop periodico server-side (trasporto in codice,
     # nessuna logica AI). Non deve mai impedire l'avvio: gira in background.
     # Feature `channels` (profilo istanza): se spenta, il loop non parte.

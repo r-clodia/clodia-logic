@@ -139,6 +139,28 @@ async def get_pack(name: str):
     return JSONResponse(status_code=404, content={"error": "pack non trovato"})
 
 
+def _has_pack_ops_declarations(result: dict) -> bool:
+    """True se l'import ha installato plugin con requires:/datastores: (pack ops)."""
+    if result.get("kind") == "packs":
+        return any(_has_pack_ops_declarations(r) for r in result.get("packs", []))
+    return any(p.get("datastores") or p.get("requires")
+               for p in result.get("plugins", []) if isinstance(p, dict))
+
+
+def _maybe_trigger_pack_ops(result: dict) -> None:
+    """Post-import: consegna la riconciliazione all'agente pack_ops (fire-and-forget).
+
+    Solo se QUESTO import ha introdotto dichiarazioni — un import di sole
+    skill non deve costare un run dell'agente sysadmin."""
+    if not _has_pack_ops_declarations(result):
+        return
+    import asyncio
+
+    from . import pack_ops
+    asyncio.create_task(pack_ops.trigger_reconcile("post-import"))
+    result["pack_ops"] = {"scheduled": True}
+
+
 @router.post("/clodia/packs/import")
 async def import_pack_zip(file: UploadFile = File(...)):
     """Import unificato da .zip: pack (agents+plugins) o plugin sciolto."""
@@ -151,6 +173,7 @@ async def import_pack_zip(file: UploadFile = File(...)):
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"error": f"import fallito: {str(e)[:160]}"})
     plugins_api.invalidate_plugins()
+    _maybe_trigger_pack_ops(result)
     return result
 
 
@@ -165,6 +188,7 @@ async def import_pack_url(payload: PackImportUrl):
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"error": f"import fallito: {str(e)[:160]}"})
     plugins_api.invalidate_plugins()
+    _maybe_trigger_pack_ops(result)
     return result
 
 

@@ -98,6 +98,17 @@ class HelpdeskConfig(BaseModel):
     agent: str = "wainston"        # agente del popup (default wainston)
 
 
+class PackOpsConfig(BaseModel):
+    """Sysadmin di piattaforma (pack ops): riconcilia requires:/datastores:
+    dichiarati dai pack. La piattaforma cerca il RUOLO, non il nome: le
+    edizioni possono rinominare l'agente puntando qui il proprio seed.
+    Se l'agente non è nel roster → degradazione pulita (nessun trigger,
+    i gap restano nel report post-install)."""
+    model_config = ConfigDict(extra="forbid")
+
+    agent: str = "saimon"          # agente sysadmin (default saimon)
+
+
 class TopicsSingleConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
@@ -115,6 +126,7 @@ class InstanceProfile(BaseModel):
     integrations: IntegrationsConfig = Field(default_factory=IntegrationsConfig)
     topics_single: TopicsSingleConfig = Field(default_factory=TopicsSingleConfig)
     helpdesk: HelpdeskConfig = Field(default_factory=HelpdeskConfig)
+    pack_ops: PackOpsConfig = Field(default_factory=PackOpsConfig)
     # Vocabolario dell'edizione (white-label COSMETICO: UI e conversazioni
     # agentiche; API/verbi/storage restano canonici). Chiave = termine
     # canonico, valore = stringa o {singolare, plurale}.
@@ -190,6 +202,7 @@ def public_view() -> dict:
         "branding": p.branding.model_dump(),
         "rag": {"collection": p.rag.collection} if p.features.rag == "single" else {},
         "helpdesk": {"agent": p.helpdesk.agent},
+        "pack_ops": {"agent": p.pack_ops.agent},
         "vocabulary": p.vocabulary,
         "topics_defaults": p.topics_defaults,
         "integrations": {
