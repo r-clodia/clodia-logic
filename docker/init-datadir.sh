@@ -18,14 +18,10 @@ echo "Inizializzazione datadir: $DATADIR"
 # successivo dopo migrazione vault/MCP/home-effimere.)
 mkdir -p "$DATADIR"/{secrets,data,topics,boot/retrospectives,daemon-state/{whatsapp,telegram,check-mail},claude-home,codex-home,agents,jobs,spawns,sessions,pki,providers,agent-workspaces,agent-state,agency-shared,skills-catalog,rules-catalog}
 
-# DB: crea file vuoti e applica lo schema (logica nel bundle, dati nella datadir)
-if command -v sqlite3 &>/dev/null; then
-    echo "Applicazione schema contacts.db..."
-    sqlite3 "$DATADIR/contacts.db" < "$BUNDLE_ROOT/docker/schema/contacts.sql"
-else
-    echo "⚠️  sqlite3 non trovato — DB creati vuoti senza schema. Installare sqlite3 e rieseguire."
-    touch "$DATADIR/contacts.db"
-fi
+# (rimosso 6 lug 2026) contacts.db NON viene più creato al bootstrap: era un
+# residuo del CRM di Clodia Primal. Le edizioni cliente integrano il PROPRIO
+# CRM via MCP (pagina Integrations / pack). Le istanze esistenti che hanno un
+# contacts.db lo conservano: nulla lo tocca.
 
 # VIOLATION.md deve esistere come file
 touch "$DATADIR/boot/VIOLATION.md"
