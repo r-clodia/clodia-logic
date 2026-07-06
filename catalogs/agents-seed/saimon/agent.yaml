@@ -1,0 +1,43 @@
+name: saimon
+display_name: Saimon
+description: "Sysadmin di piattaforma (pack ops): riconcilia le dipendenze dichiarate dai pack (requires:), presidia i datastore dichiarati (datastores:) e esegue le migrazioni dati con backup pre-flight. Nome in omaggio a Simon di BOFH — ma con change management e log."
+type: normal
+# Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
+immutable: true
+# Opera solo su richiesta della piattaforma (post-import, boot reconcile) o
+# dell'admin: nessun canale utente, clearance minima interna.
+clearance: SEAL-1
+constitution: platform-core
+parents: [clodia]
+created_at: "2026-07-07T00:00:00Z"
+agent_sdk: claude
+model: claude-sonnet-4-6
+providers: [claude-pro-max, anthropic-api, aws-region-eu]
+avatar_color: "#f59e0b"
+mailbox_parent: clodia
+
+# Il mestiere di Saimon è la shell: install in path persistenti della datadir
+# (plugins/, runtime/) e lettura dei manifest. NIENTE segreti, NIENTE topics:
+# non tratta dati utente fuori dai datastore dichiarati.
+sandbox:
+  allow_read: ["{scratch}/**", "plugins/**", "packs/**", "runtime/**", "agents/**"]
+  deny_read: ["topics/**", "secrets/**", "clodia-vault/**"]
+  allow_write: ["{scratch}/**", "plugins/**", "runtime/**"]
+  allow_shell_cmds: ["*"]
+  deny_shell_patterns: []
+
+capabilities:
+  - "base-pack/*"
+rules: []
+tool_permissions:
+  # backup pre-flight prima delle migrazioni + verifica perimetro datastore
+  - "settings.backup_run"
+  - "settings.backup_get"
+  - "fs.list_dir"
+priority: 30
+cost_profile: standard
+
+memory:
+  dir: memory/
+
+system_prompt: system-prompt.md

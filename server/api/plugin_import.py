@@ -180,6 +180,45 @@ def _discover_rule_files(plugin_root: Path) -> list[Path]:
     )
 
 
+def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
+    """Dichiarazioni datastore del plugin (pack ops): lista di
+    {path, purpose?, pii?, backup?}. Path SOLO relativi alla datadir del
+    plugin (niente assoluti, niente traversal) — il db resta confinato in
+    plugins/<nome>/. Entry malformate vengono scartate, non bloccano l'import."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(raw, list):
+        return out
+    for ds in raw:
+        if not isinstance(ds, dict):
+            continue
+        path = str(ds.get("path") or "").strip()
+        if not path or path.startswith(("/", "~")) or ".." in Path(path).parts:
+            continue
+        out.append({
+            "path": path,
+            "purpose": str(ds.get("purpose") or ""),
+            "pii": bool(ds.get("pii", False)),
+            "backup": bool(ds.get("backup", True)),
+        })
+    return out
+
+
+def _sanitize_requires(raw: Any) -> dict[str, list[str]]:
+    """Dipendenze curated del plugin (pack ops): {bin|npm|pip|system: [str]}.
+    Solo dichiarazione — l'esecuzione è dell'agente pack_ops (Saimon), che
+    installa esclusivamente ciò che è dichiarato qui."""
+    out: dict[str, list[str]] = {}
+    if not isinstance(raw, dict):
+        return out
+    for tier in ("bin", "npm", "pip", "system"):
+        vals = raw.get(tier)
+        if isinstance(vals, list):
+            clean = [str(v).strip() for v in vals if str(v).strip()]
+            if clean:
+                out[tier] = clean
+    return out
+
+
 def _write_plugin_manifest(
     plugin: str,
     *,
@@ -187,9 +226,17 @@ def _write_plugin_manifest(
     version: str,
     source: str,
     mcp_servers: dict[str, Any],
+    datastores: list[dict[str, Any]] | None = None,
+    requires: dict[str, list[str]] | None = None,
 ) -> None:
     meta_dir = PLUGINS_META_DIR / plugin
     meta_dir.mkdir(parents=True, exist_ok=True)
+    # ${CLAUDE_PLUGIN_ROOT} → path reale nella datadir: la config MCP scritta
+    # nel manifest è direttamente montabile (i file mcp/ vengono copiati lì).
+    if mcp_servers:
+        resolved = json.dumps(mcp_servers).replace(
+            "${CLAUDE_PLUGIN_ROOT}", str(meta_dir))
+        mcp_servers = json.loads(resolved)
     manifest = {
         "name": plugin,
         "description": description,
@@ -198,6 +245,10 @@ def _write_plugin_manifest(
         "origin": "imported",
         "mcp_servers": mcp_servers,
     }
+    if datastores:
+        manifest["datastores"] = datastores
+    if requires:
+        manifest["requires"] = requires
     (meta_dir / "plugin.yaml").write_text(
         yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -245,13 +296,27 @@ def install_plugin_from_root(
 
     skills = [_install_skill_into_plugin(d, plugin) for d in skill_dirs]
     rules = [_install_rule_into_plugin(f, plugin) for f in rule_files]
+    datastores = _sanitize_datastores(manifest.get("datastores"))
+    requires = _sanitize_requires(manifest.get("requires"))
     _write_plugin_manifest(
         plugin,
         description=description,
         version=version,
         source=source,
         mcp_servers=mcp_servers,
+        datastores=datastores,
+        requires=requires,
     )
+    # I file degli MCP server vanno copiati nella datadir (prima restavano nel
+    # tmp dell'import → config esposta ma server non montabile). Il server che
+    # possiede un datastore deve esistere fisicamente accanto ad esso.
+    src_mcp = plugin_root / "mcp"
+    if src_mcp.is_dir():
+        shutil.copytree(
+            src_mcp, PLUGINS_META_DIR / plugin / "mcp",
+            dirs_exist_ok=True,
+            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
+        )
     catalog._invalidate("skill")
     catalog._invalidate("rule")
     LOG.info(
@@ -263,6 +328,8 @@ def install_plugin_from_root(
         "skills": skills,
         "rules": rules,
         "mcp_servers": sorted(mcp_servers),
+        "datastores": datastores,
+        "requires": requires,
     }
 
 
