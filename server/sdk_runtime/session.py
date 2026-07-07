@@ -49,6 +49,70 @@ _CLODIA_TOOLS_TOKEN_TTL = 24 * 3600
 _STREAM_LIMIT = 32 * 1024 * 1024  # 32MB
 
 COLLECT_CHUNK_TIMEOUT = 5 * 60    # 5 min silenzio SDK → stallo reale
+
+# Iniezioni del runtime Claude che NON sono risposta dell'assistente: quando
+# una skill viene espansa, il CLI la streamma come blocco testo che inizia con
+# questa sentinella — senza filtro finiva nel messaggio di canale (bug
+# segnalato da Davide, 8 lug 2026: SKILL.md intera prima della risposta).
+_INJECTION_SENTINELS = ("Base directory for this skill:",)
+_SENTINEL_MAXLEN = max(len(x) for x in _INJECTION_SENTINELS)
+
+
+class _BlockFilter:
+    """Classifica i text-block dello stream: trattiene i primi byte di ogni
+    blocco finché non può decidere se è un'iniezione (drop) o testo vero
+    (keep + flush). `feed(index, text)` ritorna il testo da mostrare ORA
+    (può essere vuoto mentre bufferizza); `end_block()` flusha il residuo."""
+
+    def __init__(self) -> None:
+        self._index: int | None = None
+        self._buf = ""
+        self._mode = "undecided"   # undecided | keep | drop
+        self._emitted_any = False  # per il separatore fra blocchi tenuti
+
+    def _decide(self) -> None:
+        if any(self._buf.startswith(x) for x in _INJECTION_SENTINELS):
+            self._mode = "drop"
+        else:
+            self._mode = "keep"
+
+    def feed(self, index, text: str) -> str:
+        out = ""
+        if index != self._index:
+            out += self.end_block()
+            self._index = index
+        if self._mode == "drop":
+            return out
+        if self._mode == "keep":
+            return out + text
+        self._buf += text
+        if len(self._buf) >= _SENTINEL_MAXLEN or any(
+                not x.startswith(self._buf[:len(x)]) for x in _INJECTION_SENTINELS
+                if len(self._buf) < len(x)):
+            self._decide()
+            if self._mode == "keep":
+                flushed = self._buf
+                self._buf = ""
+                if self._emitted_any:
+                    flushed = "\n\n" + flushed
+                self._emitted_any = True
+                return out + flushed
+            self._buf = ""
+        return out
+
+    def end_block(self) -> str:
+        """Chiude il blocco corrente; ritorna l'eventuale residuo da mostrare."""
+        residue = ""
+        if self._mode == "undecided" and self._buf:
+            self._decide()
+            if self._mode == "keep":
+                residue = ("\n\n" if self._emitted_any else "") + self._buf
+                self._emitted_any = True
+        self._buf = ""
+        self._mode = "undecided"
+        self._index = None
+        return residue
+
 COLLECT_MAX_SECONDS   = 4 * 60 * 60  # 4h hard cap assoluto
 QUERY_TIMEOUT         = 90         # invio prompt al subprocess: oltre = client wedged → recovery
 # Watchdog di turno: INDIPENDENTE da asyncio.timeout (che su certi hang del
@@ -868,6 +932,7 @@ class ChatSession:
     async def _collect_response(self) -> str:
         parts: list[str] = []
         saw_text_delta = False
+        blockfilter = _BlockFilter()
         start = asyncio.get_event_loop().time()
         iterator = self._client.receive_response().__aiter__()
         while True:
@@ -891,18 +956,33 @@ class ChatSession:
                 # come *append* (campo `delta`) così il FE costruisce la bolla
                 # progressivamente senza clobber multi-blocco.
                 ev = message.event or {}
-                if ev.get("type") == "content_block_delta":
-                    delta = ev.get("delta") or {}
-                    dtype = delta.get("type")
-                    if dtype == "text_delta" and delta.get("text"):
-                        parts.append(delta["text"])
+                if ev.get("type") == "content_block_stop":
+                    residue = blockfilter.end_block()
+                    if residue:
+                        parts.append(residue)
                         saw_text_delta = True
                         await bus.publish(Event(
                             type="message_chunk",
                             payload={"chat_id": self.chat_id, "role": "assistant",
-                                     "delta": delta["text"]},
+                                     "delta": residue},
                             timestamp=datetime.now(timezone.utc),
                         ))
+                if ev.get("type") == "content_block_delta":
+                    delta = ev.get("delta") or {}
+                    dtype = delta.get("type")
+                    if dtype == "text_delta" and delta.get("text"):
+                        # Filtro iniezioni (SKILL.md espansa dal runtime) +
+                        # separatore fra blocchi distinti: vedi _BlockFilter.
+                        visible = blockfilter.feed(ev.get("index"), delta["text"])
+                        if visible:
+                            parts.append(visible)
+                            saw_text_delta = True
+                            await bus.publish(Event(
+                                type="message_chunk",
+                                payload={"chat_id": self.chat_id, "role": "assistant",
+                                         "delta": visible},
+                                timestamp=datetime.now(timezone.utc),
+                            ))
                     elif dtype == "thinking_delta" and delta.get("thinking"):
                         await bus.publish(Event(
                             type="thinking_chunk",
