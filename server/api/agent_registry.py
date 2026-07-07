@@ -314,6 +314,32 @@ async def get_system_prompt(name: str, request: Request) -> dict:
     return {"name": name, "filename": spec.system_prompt, "body": path.read_text()}
 
 
+@router.get("/{name}/memories")
+async def get_agent_memories(name: str, request: Request) -> dict:
+    """Memorie persistenti dell'agente: l'indice MEMORY.md + i singoli file .md
+    nella cartella memory/ del seed. Vuoto se l'agente è stateless (es. human) o
+    non ha ancora memorie."""
+    spec = registry.get_by_name(name)
+    if spec is None:
+        raise HTTPException(404, f"agent '{name}' non trovato")
+    _require_self_or_admin(request, name)
+    index: Optional[str] = None
+    files: list[dict] = []
+    mem_rel = spec.memory.dir if spec.memory else "memory/"
+    mem_dir = Path(spec.agent_dir) / mem_rel
+    if mem_dir.is_dir():
+        for p in sorted(mem_dir.glob("*.md")):
+            try:
+                body = p.read_text(encoding="utf-8")
+            except OSError:
+                continue
+            if p.name == "MEMORY.md":
+                index = body
+            else:
+                files.append({"name": p.name, "body": body})
+    return {"name": name, "index": index, "files": files, "count": len(files)}
+
+
 class AgentPatch(BaseModel):
     system_prompt: Optional[str] = None   # BODY del prompt (non il filename)
     agent_sdk: Optional[str] = None
