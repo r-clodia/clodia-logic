@@ -282,7 +282,18 @@ _CHANNEL_CAPS = (
     "(un click invia subito quella scelta);\n"
     "- scelta multipla: <!-- choices-multi=A,B,C --> "
     "(l'utente ne seleziona più d'una e conferma).\n"
-    "Metti comunque la domanda in chiaro nel testo; il marcatore è in AGGIUNTA."
+    "Metti comunque la domanda in chiaro nel testo; il marcatore è in AGGIUNTA.\n"
+    "\n"
+    "MODALITÀ INTERVISTA (intake): quando l'utente sceglie una pill di avvio "
+    "attività (dal messaggio di benvenuto o proponendo un lavoro complesso), "
+    "NON partire subito: verifica di avere tutti gli input necessari (la skill "
+    "li elenca nella sezione Intake, se presente). Conduci un'intervista breve: "
+    "UNA domanda per messaggio, con pills quando le opzioni sono enumerabili "
+    "(es. per i documenti: <!-- choices=Sono nei file della pratica,Li carico "
+    "ora,Indico io il percorso -->). Quando hai tutto, riepiloga gli input "
+    "raccolti in 2-3 righe e chiedi conferma con <!-- choices=Procedi,Correggi "
+    "qualcosa --> PRIMA di eseguire. Se l'utente ha già fornito tutto nel "
+    "messaggio, salta le domande inutili: chiedi solo ciò che manca."
 )
 
 
