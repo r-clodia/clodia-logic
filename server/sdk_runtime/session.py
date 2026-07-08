@@ -1029,6 +1029,13 @@ class ChatSession:
                                 },
                                 timestamp=datetime.now(timezone.utc),
                             ))
+                # UserMessage = tool result / echo dell'utente: MAI parte del
+                # messaggio visibile dell'assistente. `continue` per non cadere nel
+                # catch-all difensivo sotto, che estraeva il testo del tool-result
+                # (es. il corpo di una skill caricata: "Base directory for this
+                # skill: …") e lo appendeva alla risposta. Leak confermato via
+                # strumentazione (msgtype=UserMessage, path catch-all).
+                continue
             elif isinstance(message, TaskProgressMessage):
                 await bus.publish(Event(
                     type="task_progress",
