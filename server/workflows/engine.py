@@ -26,7 +26,7 @@ LOG = logging.getLogger("agent-server.workflows")
 
 TICK_SECONDS = 20
 _MAX_CONCURRENT_RUNS = 2
-_STAGE_TIMEOUT = 30 * 60          # un turno di stage oltre 30 min = failed
+_STAGE_TIMEOUT = 10 * 60          # sotto il watchdog SDK: fallisce pulito, non appeso
 
 _sem = asyncio.Semaphore(_MAX_CONCURRENT_RUNS)
 _inflight: set[str] = set()
@@ -150,8 +150,13 @@ async def _run_stage(run: dict) -> None:
         status, summary = _parse_esito(reply)
     except ProviderNotConnected:
         status, summary = "failed", "provider non connesso per l'agente assegnato"
-    except (asyncio.TimeoutError, Exception) as e:  # noqa: BLE001
-        status, summary = "failed", f"errore stage: {str(e)[:200]}"
+    except asyncio.TimeoutError:
+        status, summary = "failed", f"timeout: nessun esito entro {_STAGE_TIMEOUT}s"
+    except Exception as e:  # noqa: BLE001
+        # Le cancellazioni del watchdog SDK arrivano con str() vuoto: cattura
+        # almeno il tipo, così il fallimento è diagnosticabile dalla board.
+        msg = str(e).strip() or f"{type(e).__name__} (turno interrotto dal watchdog?)"
+        status, summary = "failed", f"errore stage: {msg}"
 
     entry["finished_at"] = _now()
     entry["status"] = status
