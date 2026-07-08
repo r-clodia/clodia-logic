@@ -57,7 +57,7 @@ def pick_agent(skill: str) -> str | None:
     """Agente che possiede la skill: prima gli specializzati (non-super,
     non-human), poi i super. Nessuno → None (gap riportato sul run)."""
     normals, supers = [], []
-    for spec in registry.all():
+    for spec in registry.list():
         a_type = getattr(spec, "type", "normal")
         if a_type == "human":
             continue
