@@ -1,0 +1,81 @@
+"""API dei workflow dichiarativi (montata solo con features.kanban)."""
+from __future__ import annotations
+
+from fastapi import APIRouter, HTTPException, Request
+from pydantic import BaseModel
+
+from ..api.agents import _principal_from_request
+from . import engine, store
+
+router = APIRouter()
+
+
+def _require_login(request: Request) -> str:
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "login richiesto")
+    return principal
+
+
+@router.get("/clodia/workflows")
+async def list_workflows(request: Request) -> dict:
+    _require_login(request)
+    return {"workflows": store.available_workflows(),
+            "runs": store.list_runs()}
+
+
+class StartBody(BaseModel):
+    title: str = ""
+    params: str = ""
+    topic: dict | None = None      # {tier, name} opzionale
+
+
+@router.post("/clodia/workflows/{plugin}/{name}/start")
+async def start_workflow(plugin: str, name: str, body: StartBody, request: Request) -> dict:
+    principal = _require_login(request)
+    try:
+        run = store.create_run(plugin, name, title=body.title, params=body.params,
+                               topic=body.topic, requested_by=principal)
+    except KeyError as e:
+        raise HTTPException(404, str(e))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return run
+
+
+@router.get("/clodia/workflows/runs/{run_id}")
+async def get_run(run_id: str, request: Request) -> dict:
+    _require_login(request)
+    try:
+        run = store.load_run(run_id)
+    except ValueError:
+        raise HTTPException(400, "run id non valido")
+    if not run:
+        raise HTTPException(404, "run non trovato")
+    return run
+
+
+class VerdictBody(BaseModel):
+    note: str = ""
+
+
+@router.post("/clodia/workflows/runs/{run_id}/approve")
+async def approve_run(run_id: str, body: VerdictBody, request: Request) -> dict:
+    principal = _require_login(request)
+    try:
+        return engine.approve(run_id, principal, body.note)
+    except KeyError:
+        raise HTTPException(404, "run non trovato")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
+@router.post("/clodia/workflows/runs/{run_id}/reject")
+async def reject_run(run_id: str, body: VerdictBody, request: Request) -> dict:
+    principal = _require_login(request)
+    try:
+        return engine.reject(run_id, principal, body.note)
+    except KeyError:
+        raise HTTPException(404, "run non trovato")
+    except ValueError as e:
+        raise HTTPException(409, str(e))

@@ -120,6 +120,12 @@ async def _lifespan(app: FastAPI):
         except Exception as e:  # noqa: BLE001
             LOG.warning("pack ops boot reconcile fallito: %s", e)
     asyncio.create_task(_safe_boot_reconcile())
+
+    # Workflow engine (kanban dichiarativo dai pack): parte solo se la
+    # feature è attiva nel profilo. Stato in datadir → riprende dopo restart.
+    if profile.features.kanban:
+        from .workflows.engine import engine_loop
+        asyncio.create_task(engine_loop())
     # Channel-adapter Telegram: loop periodico server-side (trasporto in codice,
     # nessuna logica AI). Non deve mai impedire l'avvio: gira in background.
     # Feature `channels` (profilo istanza): se spenta, il loop non parte.
@@ -239,6 +245,9 @@ def create_app() -> FastAPI:
     app.include_router(files.router)
     if prof.features.topics != "off":
         app.include_router(topics.router)
+    if prof.features.kanban:
+        from .workflows import api as workflows_api
+        app.include_router(workflows_api.router)
     app.include_router(profile.router)
     app.include_router(catalog.router)
     app.include_router(packs.router)
