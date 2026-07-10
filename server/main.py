@@ -123,7 +123,7 @@ async def _lifespan(app: FastAPI):
 
     # Workflow engine (kanban dichiarativo dai pack): parte solo se la
     # feature è attiva nel profilo. Stato in datadir → riprende dopo restart.
-    if profile.features.kanban:
+    if profile.features.workflows:
         from .workflows.engine import engine_loop
         asyncio.create_task(engine_loop())
     # Channel-adapter Telegram: loop periodico server-side (trasporto in codice,
@@ -245,7 +245,7 @@ def create_app() -> FastAPI:
     app.include_router(files.router)
     if prof.features.topics != "off":
         app.include_router(topics.router)
-    if prof.features.kanban:
+    if prof.features.workflows:
         from .workflows import api as workflows_api
         app.include_router(workflows_api.router)
     app.include_router(profile.router)
