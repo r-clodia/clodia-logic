@@ -70,6 +70,17 @@ async def approve_run(run_id: str, body: VerdictBody, request: Request) -> dict:
         raise HTTPException(409, str(e))
 
 
+@router.post("/clodia/workflows/runs/{run_id}/cancel")
+async def cancel_run(run_id: str, body: VerdictBody, request: Request) -> dict:
+    principal = _require_login(request)
+    try:
+        return await engine.cancel(run_id, principal, body.note)
+    except KeyError:
+        raise HTTPException(404, "run non trovato")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
+
+
 @router.post("/clodia/workflows/runs/{run_id}/reject")
 async def reject_run(run_id: str, body: VerdictBody, request: Request) -> dict:
     principal = _require_login(request)
