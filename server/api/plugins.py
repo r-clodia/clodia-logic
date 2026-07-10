@@ -195,6 +195,28 @@ def _plugin_item(name: str, bucket: dict[str, Any], external: set[str]) -> dict[
     ).strip()
     skills = sorted(bucket["skills"], key=lambda e: e["name"])
     rules = sorted(bucket["rules"], key=lambda e: e["name"])
+    # Workflow e datastore dichiarati dal plugin (pack ops): esposti così il
+    # pack si auto-descrive nella UI accanto a skill/rule/mcp.
+    wf_raw = manifest.get("workflows") or {}
+    workflows = [
+        {
+            "name": wname,
+            "trigger": wf.get("trigger") or [],
+            "stages": [
+                {"lane": st.get("lane"), "skill": st.get("skill"),
+                 "human_gate": bool(st.get("human_gate"))}
+                for st in (wf.get("stages") or []) if isinstance(st, dict)
+            ],
+        }
+        for wname, wf in sorted(wf_raw.items())
+        if isinstance(wf, dict)
+    ] if isinstance(wf_raw, dict) else []
+    ds_raw = manifest.get("datastores") or []
+    datastores = [
+        {"path": d.get("path"), "purpose": d.get("purpose", ""),
+         "pii": bool(d.get("pii")), "backup": bool(d.get("backup", True))}
+        for d in ds_raw if isinstance(d, dict) and d.get("path")
+    ] if isinstance(ds_raw, list) else []
     return {
         "name": name,
         "description": description,
@@ -205,10 +227,14 @@ def _plugin_item(name: str, bucket: dict[str, Any], external: set[str]) -> dict[
         "skills": skills,
         "rules": rules,
         "mcp_servers": mcp_servers,
+        "workflows": workflows,
+        "datastores": datastores,
         "counts": {
             "skills": len(skills),
             "rules": len(rules),
             "mcp_servers": len(mcp_servers),
+            "workflows": len(workflows),
+            "datastores": len(datastores),
         },
     }
 
