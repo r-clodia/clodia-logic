@@ -23,7 +23,7 @@ from ..config import data_path
 RUNS_DIR_NAME = "workflows/runs"
 
 RUN_STATUSES = ("pending", "running", "waiting_approval", "done",
-                "failed", "rejected")
+                "failed", "rejected", "cancelled")
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,60}$")
 
@@ -119,7 +119,7 @@ def list_runs(include_done: bool = True) -> list[dict]:
             r = json.loads(p.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
-        if not include_done and r.get("status") in ("done", "failed", "rejected"):
+        if not include_done and r.get("status") in ("done", "failed", "rejected", "cancelled"):
             continue
         out.append(r)
     out.sort(key=lambda r: r.get("updated_at") or "", reverse=True)

@@ -209,6 +209,34 @@ def reject(run_id: str, by: str, note: str = "") -> dict:
     return run
 
 
+async def cancel(run_id: str, by: str, note: str = "") -> dict:
+    """Interrompe un run in QUALUNQUE stato non terminale (pending, running,
+    waiting_approval): stato → cancelled, marca lo stage corrente e chiude la
+    sessione dello stage eventualmente in volo. È il verbo dietro il bottone
+    Stop della board — colma il gap (prima si fermava a mano nello store)."""
+    run = store.load_run(run_id)
+    if not run:
+        raise KeyError(run_id)
+    if run["status"] in ("done", "failed", "rejected", "cancelled"):
+        raise ValueError(f"run già terminato ({run['status']})")
+    _inflight.add(run_id)  # impedisce che un tick concorrente lo rilanci
+    if run["history"] and run["history"][-1].get("status") == "running":
+        run["history"][-1]["status"] = "cancelled"
+        run["history"][-1]["summary"] = f"interrotto da {by}" + (f": {note}" if note else "")
+    run["approvals"].append({"stage": run["current"], "by": by,
+                             "verdict": "cancelled", "note": note, "at": _now()})
+    run["status"] = "cancelled"
+    store.save_run(run)
+    # chiudi la sessione dello stage in volo (best-effort): libera il subprocess
+    try:
+        from ..sdk_runtime.session import manager
+        await manager.delete(f"wf:{run_id}:{run['current']}")
+    except Exception:  # noqa: BLE001
+        pass
+    LOG.info("workflow %s cancellato da %s", run_id, by)
+    return run
+
+
 async def _guarded_run(run_id: str) -> None:
     async with _sem:
         run = store.load_run(run_id)
