@@ -24,7 +24,7 @@ import logging
 from typing import Literal, Optional
 
 import yaml
-from pydantic import BaseModel, ConfigDict, Field, field_validator
+from pydantic import BaseModel, ConfigDict, Field, field_validator, model_validator
 
 from .config import data_path
 
@@ -53,9 +53,18 @@ class Features(BaseModel):
     pwa: bool = True
     # Popup helpdesk della webui (coda Sprint 3): non sempre necessario.
     helpdesk: bool = True
-    # Accettati per forward-compat con la spec; oggi nessun router da gatare.
-    kanban: bool = False
+    # Motore workflow dichiarativi (pack): board /workflows + API + engine.
+    # `kanban` (legacy, era il mirror Trello) resta accettato come ALIAS
+    # deprecato → mappa su workflows.
+    workflows: bool = False
     colony: bool = False
+
+    @model_validator(mode="before")
+    @classmethod
+    def _alias_kanban(cls, data):
+        if isinstance(data, dict) and "kanban" in data and "workflows" not in data:
+            data = {**data, "workflows": data["kanban"]}
+        return data
 
     @field_validator("topics", "rag", "integrations", mode="before")
     @classmethod
