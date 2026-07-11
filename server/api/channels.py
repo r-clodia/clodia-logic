@@ -479,17 +479,26 @@ async def channel_remote(tier: str, name: str, request: Request) -> dict:
 
 
 async def run_topic_turn(tier: str, name: str, meta: dict,
-                         trigger_text: str = "", principal_hint: str | None = None):
+                         trigger_text: str = "", principal_hint: str | None = None,
+                         responder_hint: str | None = None):
     """Esegue UN turno del responder del topic sul contesto corrente e posta la
     risposta (kind=ai). Ritorna (responder_name, reply) o (None, None).
 
     Usato dall'adapter dei channel esterni (Telegram): non c'è un principal umano
     → la sessione riceve un principal-hint NON privilegiato (proxy), così un
     messaggio arrivato dal canale non eredita autorità (barriera azioni, spec §5).
-    Il responder è comunque scelto con le stesse regole SEAL/clearance della webui."""
+    Il responder è comunque scelto con le stesse regole SEAL/clearance della webui.
+
+    `responder_hint`: FORZA uno specifico agente come responder (usato dal motore
+    dei workflow, dove l'agente di ogni stadio è deciso dall'engine, non
+    dall'auto-picker). L'agente deve comunque avere clearance ≥ tier."""
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
-    responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""))
+    if responder_hint:
+        forced = registry.get_by_name(responder_hint)
+        responder = forced if (forced and _can_access(_effective_clearance(forced), tier_real)) else None
+    else:
+        responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""))
     if responder is None:
         return None, None
     chat_id = f"chan:{tier}:{name}:{responder.name}"

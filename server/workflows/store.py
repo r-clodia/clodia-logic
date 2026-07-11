@@ -22,8 +22,8 @@ from ..config import data_path
 
 RUNS_DIR_NAME = "workflows/runs"
 
-RUN_STATUSES = ("pending", "running", "waiting_approval", "done",
-                "failed", "rejected", "cancelled")
+RUN_STATUSES = ("pending", "running", "await", "done",
+                "failed", "cancelled")
 
 _NAME_RE = re.compile(r"^[a-z0-9][a-z0-9_-]{0,60}$")
 
@@ -55,6 +55,7 @@ def available_workflows() -> dict[str, dict]:
                 out[f"{plugin}/{wname}"] = {
                     "plugin": plugin, "name": wname,
                     "trigger": wf.get("trigger") or ["api"],
+                    "tier": wf.get("tier") or "SEAL-1",
                     "stages": wf["stages"],
                 }
     return out
@@ -77,11 +78,14 @@ def create_run(plugin: str, workflow: str, *, title: str, params: str = "",
         "params": params,
         "topic": topic or None,          # {tier, name} opzionale: la pratica di riferimento
         "requested_by": requested_by,
+        "tier": defs[key].get("tier", "SEAL-1"),   # tier del topic effimero
         # snapshot delle stage alla creazione: un run non cambia se il pack
         # viene aggiornato a metà corsa.
         "stages": defs[key]["stages"],
         "current": 0,                    # indice stage corrente
         "status": "pending",
+        "gate_pending": False,           # await su un gate (vs intake)?
+        "await_marker": None,            # # messaggi nel topic all'ingresso in await
         "history": [],                   # [{lane, skill, agent, started_at, finished_at, status, summary}]
         "approvals": [],                 # [{stage, by, verdict, note, at}]
         "created_at": _now(),
@@ -119,7 +123,7 @@ def list_runs(include_done: bool = True) -> list[dict]:
             r = json.loads(p.read_text(encoding="utf-8"))
         except Exception:  # noqa: BLE001
             continue
-        if not include_done and r.get("status") in ("done", "failed", "rejected", "cancelled"):
+        if not include_done and r.get("status") in ("done", "failed", "cancelled"):
             continue
         out.append(r)
     out.sort(key=lambda r: r.get("updated_at") or "", reverse=True)

@@ -277,7 +277,13 @@ def _sanitize_workflows(raw: Any) -> dict[str, dict]:
             continue
         trigger = [str(t) for t in (wf.get("trigger") or ["api"])
                    if str(t) in ("api", "pill", "job")] or ["api"]
-        out[str(wname).strip()] = {"trigger": trigger, "stages": stages}
+        # Tier del topic effimero del run (workflow conversazionali): default
+        # SEAL-1 (interno). Legacy P0-P3 accettati.
+        tier = str(wf.get("tier") or "SEAL-1").strip().upper()
+        tier = {"P0":"SEAL-0","P1":"SEAL-1","P2":"SEAL-2","P3":"SEAL-3"}.get(tier, tier)
+        if tier not in ("SEAL-0","SEAL-1","SEAL-2","SEAL-3","SEAL-4"):
+            tier = "SEAL-1"
+        out[str(wname).strip()] = {"trigger": trigger, "tier": tier, "stages": stages}
     return out
 
 
