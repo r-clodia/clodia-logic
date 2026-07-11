@@ -35,11 +35,14 @@ async def start_workflow(plugin: str, name: str, body: StartBody, request: Reque
     principal = _require_login(request)
     try:
         run = store.create_run(plugin, name, title=body.title, params=body.params,
-                               topic=body.topic, requested_by=principal)
+                               topic=None, requested_by=principal)
     except KeyError as e:
         raise HTTPException(404, str(e))
     except ValueError as e:
         raise HTTPException(400, str(e))
+    # Crea subito il topic effimero del run (participants = agenti + umano),
+    # così la risposta porta già il link alla conversazione.
+    run = engine.ensure_topic(run)
     return run
 
 
