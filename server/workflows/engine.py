@@ -583,17 +583,38 @@ async def _guarded_resolve(run_id: str) -> None:
     _inflight.discard(run_id)
 
 
+def _recover_orphan(run: dict) -> None:
+    """Un run 'running' senza turno in volo (rid ∉ _inflight) è orfano: il turno
+    era in esecuzione quando il processo è morto/riavviato. _run_stage_turn non
+    lascia MAI 'running' al ritorno (sempre await/pending/done/failed), quindi
+    questa condizione = crash/restart a metà turno, non un turno lento.
+    Recupero: scarto l'entry monca dello stadio interrotto e riporto a 'pending'
+    → lo stadio viene rieseguito da capo (nuovo kickoff + directive)."""
+    h = run["history"]
+    if h and h[-1].get("stage_idx") == run["current"] and h[-1].get("status") == "running":
+        h.pop()
+    run["status"] = "pending"
+    LOG.warning("workflow %s: run orfano 'running' → recuperato a 'pending' (stadio %d)",
+                run["id"], run["current"])
+    store.save_run(run)
+
+
 async def tick_once() -> int:
     launched = 0
     for run in store.list_runs(include_done=False):
         rid = run["id"]
         if rid in _inflight:
             continue
-        if run["status"] == "pending":
+        status = run["status"]
+        if status == "running":
+            # orfano da restart/crash: normalizza a 'pending' e rilancia.
+            _recover_orphan(run)
+            status = "pending"
+        if status == "pending":
             _inflight.add(rid)
             asyncio.get_running_loop().create_task(_guarded_stage(rid))
             launched += 1
-        elif run["status"] == "await" and _has_new_reply(run):
+        elif status == "await" and _has_new_reply(run):
             _inflight.add(rid)
             asyncio.get_running_loop().create_task(_guarded_resolve(rid))
             launched += 1
