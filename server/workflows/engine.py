@@ -114,6 +114,60 @@ def ensure_topic(run: dict) -> dict:
     return run
 
 
+def ensure_workspace(run: dict) -> dict:
+    """Clona (idempotente) il repo del workflow in una temp dir per-run, su cui
+    lavorano gli stadi. Il PAT viene dal vault (credenziale dichiarata). Il path
+    viene passato agli stadi nel prompt. Best-effort: se fallisce, gli stadi che
+    ne hanno bisogno lo segnaleranno."""
+    cfg = run.get("workspace_cfg")
+    if not cfg or run.get("workspace_path"):
+        return run
+    import subprocess
+    from ..api import git_client
+    from ..config import data_path
+
+    base = data_path("workflows") / "workspaces" / run["id"]
+    base.mkdir(parents=True, exist_ok=True)
+    repo = cfg["repo"]
+    dirn = cfg.get("dir") or repo.rstrip("/").split("/")[-1].removesuffix(".git")
+    dest = base / dirn
+    if dest.exists():
+        run["workspace_path"] = str(dest)
+        store.save_run(run)
+        return run
+    pat = git_client.read_credential(cfg.get("credential") or "github_pat")
+    url = repo
+    if pat and repo.startswith("https://"):
+        url = repo.replace("https://", f"https://x-access-token:{pat}@", 1)
+    try:
+        subprocess.run(["git", "clone", url, str(dest)],
+                       capture_output=True, text=True, timeout=300, check=True)
+        # il remote resta tokenizzato → il push finale (Pubblicazione) funziona;
+        # il token vive nel .git/config della temp dir per-run, cancellata a fine
+        # run (stesso perimetro del vault, mai esposto).
+        run["workspace_path"] = str(dest)
+        store.save_run(run)
+        LOG.info("workflow %s: workspace clonata da %s in %s", run["id"], repo, dest)
+    except Exception as e:  # noqa: BLE001
+        out = getattr(e, "stderr", "") or str(e)
+        LOG.warning("workflow %s: clone workspace fallito: %s", run["id"], str(out)[:200])
+    return run
+
+
+def _cleanup_workspace(run: dict) -> None:
+    p = run.get("workspace_path")
+    if not p:
+        return
+    import shutil
+    from ..config import data_path
+    base = data_path("workflows") / "workspaces" / run["id"]
+    try:
+        if base.exists():
+            shutil.rmtree(base, ignore_errors=True)
+    except Exception:  # noqa: BLE001
+        pass
+
+
 # ── prompt e parsing ─────────────────────────────────────────────────────────
 def _stage_kickoff(run: dict, stage: dict) -> str:
     """Istruzione di avvio stadio, postata come messaggio system nel topic."""
@@ -123,6 +177,9 @@ def _stage_kickoff(run: dict, stage: dict) -> str:
         lines.append("Esito degli stadi precedenti (dettagli nei messaggi sopra):")
         for h in done[-4:]:
             lines.append(f"- {h['lane']}: {(h.get('summary') or '')[:300]}")
+    if run.get("workspace_path"):
+        lines.append(f"Working copy del repo del workflow: {run['workspace_path']} "
+                     "(lavora QUI, non su path locali di altre macchine).")
     lines += [
         "",
         f"Applica la skill `{stage['skill']}` seguendo il suo protocollo. Se ti "
@@ -227,6 +284,8 @@ async def _run_stage_turn(run: dict) -> None:
 
     if not run.get("topic"):
         ensure_topic(run)
+    if run.get("workspace_cfg") and not run.get("workspace_path"):
+        ensure_workspace(run)
     if not run.get("topic"):
         run["status"] = "failed"
         run["history"].append({"stage_idx": run["current"], "lane": run["stages"][run["current"]]["lane"],
@@ -466,6 +525,7 @@ def _finalize(run: dict) -> None:
             notify.notify_end(run, art)
         except Exception as e:  # noqa: BLE001
             LOG.warning("workflow %s: notifica END fallita: %s", run["id"], str(e)[:120])
+    _cleanup_workspace(run)
     if not run.get("topic"):
         return
     from ..api import topics_client

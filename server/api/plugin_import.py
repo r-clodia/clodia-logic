@@ -284,8 +284,20 @@ def _sanitize_workflows(raw: Any) -> dict[str, dict]:
         if tier not in ("SEAL-0","SEAL-1","SEAL-2","SEAL-3","SEAL-4"):
             tier = "SEAL-1"
         owner = str(wf.get("owner") or "").strip()   # agente umano responsabile
+        # workspace: repo git clonato in temp per-run su cui lavorano gli stadi.
+        # Interno (non input): {repo, dir?, credential?} — credential = nome
+        # della credenziale git nel vault (default github_pat).
+        ws = wf.get("workspace")
+        workspace = None
+        if isinstance(ws, dict) and str(ws.get("repo") or "").strip():
+            workspace = {
+                "repo": str(ws["repo"]).strip(),
+                "dir": str(ws.get("dir") or "").strip() or None,
+                "credential": str(ws.get("credential") or "github_pat").strip(),
+            }
         out[str(wname).strip()] = {"trigger": trigger, "tier": tier,
-                                   "owner": owner, "stages": stages}
+                                   "owner": owner, "workspace": workspace,
+                                   "stages": stages}
     return out
 
 
