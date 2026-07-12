@@ -20,8 +20,12 @@ def _require_login(request: Request) -> str:
 @router.get("/clodia/workflows")
 async def list_workflows(request: Request) -> dict:
     _require_login(request)
-    return {"workflows": store.available_workflows(),
-            "runs": store.list_runs()}
+    runs = store.list_runs()
+    # per i run in await: allega la domanda corrente (inline sulla board)
+    for r in runs:
+        if r.get("status") == "await":
+            r["question"] = engine.current_question(r)
+    return {"workflows": store.available_workflows(), "runs": runs}
 
 
 class StartBody(BaseModel):
@@ -60,6 +64,24 @@ async def get_run(run_id: str, request: Request) -> dict:
 
 class VerdictBody(BaseModel):
     note: str = ""
+
+
+class AnswerBody(BaseModel):
+    text: str = ""
+
+
+@router.post("/clodia/workflows/runs/{run_id}/answer")
+async def answer_run(run_id: str, body: AnswerBody, request: Request) -> dict:
+    """Risposta inline dalla board a una domanda dell'agente (intake o gate)."""
+    principal = _require_login(request)
+    if not body.text.strip():
+        raise HTTPException(400, "testo vuoto")
+    try:
+        return await engine.submit_answer(run_id, principal, body.text.strip())
+    except KeyError:
+        raise HTTPException(404, "run non trovato")
+    except ValueError as e:
+        raise HTTPException(409, str(e))
 
 
 @router.post("/clodia/workflows/runs/{run_id}/approve")
