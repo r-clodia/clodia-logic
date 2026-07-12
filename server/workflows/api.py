@@ -107,6 +107,18 @@ async def cancel_run(run_id: str, body: VerdictBody, request: Request) -> dict:
         raise HTTPException(409, str(e))
 
 
+@router.delete("/clodia/workflows/runs/{run_id}")
+async def delete_run_endpoint(run_id: str, request: Request) -> dict:
+    principal = _require_login(request)
+    try:
+        removed = await engine.delete(run_id, principal)
+    except ValueError:
+        raise HTTPException(400, "run id non valido")
+    if not removed:
+        raise HTTPException(404, "run non trovato")
+    return {"ok": True, "deleted": run_id}
+
+
 @router.post("/clodia/workflows/runs/{run_id}/reject")
 async def reject_run(run_id: str, body: VerdictBody, request: Request) -> dict:
     principal = _require_login(request)
