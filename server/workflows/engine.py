@@ -146,11 +146,19 @@ def ensure_workspace(run: dict) -> dict:
         # il token vive nel .git/config della temp dir per-run, cancellata a fine
         # run (stesso perimetro del vault, mai esposto).
         run["workspace_path"] = str(dest)
+        run["workspace_error"] = None
         store.save_run(run)
         LOG.info("workflow %s: workspace clonata da %s in %s", run["id"], repo, dest)
     except Exception as e:  # noqa: BLE001
         out = getattr(e, "stderr", "") or str(e)
-        LOG.warning("workflow %s: clone workspace fallito: %s", run["id"], str(out)[:200])
+        # maschera il token e tieni la CODA (dove sta la causa reale, es. 403),
+        # non l'inizio ("Cloning into…") che non dice nulla.
+        if pat:
+            out = out.replace(pat, "***")
+        reason = " ".join(out.split())[-300:]
+        run["workspace_error"] = reason
+        store.save_run(run)
+        LOG.warning("workflow %s: clone workspace fallito: %s", run["id"], reason)
     return run
 
 
@@ -299,6 +307,19 @@ async def _run_stage_turn(run: dict) -> None:
         ensure_topic(run)
     if run.get("workspace_cfg") and not run.get("workspace_path"):
         ensure_workspace(run)
+        if not run.get("workspace_path"):
+            # workspace dichiarato ma non clonabile → fallisci subito, non
+            # trascinare 8 stadi che poi crollano sul repo mancante.
+            err = run.get("workspace_error") or "clone del repo fallita"
+            run["status"] = "failed"
+            run["history"].append({
+                "stage_idx": run["current"], "lane": run["stages"][run["current"]]["lane"],
+                "skill": run["stages"][run["current"]]["skill"], "agent": None,
+                "started_at": _now(), "finished_at": _now(), "status": "failed",
+                "input": "", "summary": f"workspace non disponibile: {err}"})
+            store.save_run(run)
+            _finalize(run)
+            return
     if not run.get("topic"):
         run["status"] = "failed"
         run["history"].append({"stage_idx": run["current"], "lane": run["stages"][run["current"]]["lane"],
