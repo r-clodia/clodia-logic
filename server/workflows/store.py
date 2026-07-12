@@ -56,6 +56,7 @@ def available_workflows() -> dict[str, dict]:
                     "plugin": plugin, "name": wname,
                     "trigger": wf.get("trigger") or ["api"],
                     "tier": wf.get("tier") or "SEAL-1",
+                    "owner": wf.get("owner") or "",
                     "stages": wf["stages"],
                 }
     return out
@@ -79,6 +80,8 @@ def create_run(plugin: str, workflow: str, *, title: str, params: str = "",
         "topic": topic or None,          # {tier, name} opzionale: la pratica di riferimento
         "requested_by": requested_by,
         "tier": defs[key].get("tier", "SEAL-1"),   # tier del topic effimero
+        "wf_owner": defs[key].get("owner", ""),     # agente umano responsabile (notifiche)
+        "gate_nonce": None,                          # one-time token del gate corrente
         # snapshot delle stage alla creazione: un run non cambia se il pack
         # viene aggiornato a metà corsa.
         "stages": defs[key]["stages"],
