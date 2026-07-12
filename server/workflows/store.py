@@ -57,7 +57,7 @@ def available_workflows() -> dict[str, dict]:
                     "trigger": wf.get("trigger") or ["api"],
                     "tier": wf.get("tier") or "SEAL-1",
                     "owner": wf.get("owner") or "",
-                    "workspace_cfg": wf.get("workspace"),
+                    "workspace": wf.get("workspace"),
                     "stages": wf["stages"],
                 }
     return out
