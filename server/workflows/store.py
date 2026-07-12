@@ -38,6 +38,32 @@ def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+_TERMINAL = ("done", "failed", "cancelled")
+
+
+def _seq_file() -> Path:
+    # Fuori da runs/ così il glob "*.json" di list_runs non lo raccoglie.
+    d = data_path("workflows")
+    d.mkdir(parents=True, exist_ok=True)
+    return d / "run_seq.json"
+
+
+def _next_seq(plugin: str, workflow: str) -> int:
+    """Contatore monotòno per workflow (sopravvive alla cancellazione dei run)."""
+    key = f"{plugin}/{workflow}"
+    p = _seq_file()
+    try:
+        data = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+    except Exception:  # noqa: BLE001
+        data = {}
+    n = int(data.get(key, 0)) + 1
+    data[key] = n
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(data, ensure_ascii=False, indent=2), encoding="utf-8")
+    tmp.replace(p)
+    return n
+
+
 # ── definizioni (dai manifest dei plugin) ────────────────────────────────────
 def available_workflows() -> dict[str, dict]:
     """{"<plugin>/<workflow>": {plugin, name, trigger, stages}} dai plugin installati."""
@@ -72,11 +98,15 @@ def create_run(plugin: str, workflow: str, *, title: str, params: str = "",
         raise KeyError(f"workflow sconosciuto: {key}")
     if not _NAME_RE.fullmatch(plugin) or not _NAME_RE.fullmatch(workflow):
         raise ValueError("nomi plugin/workflow non validi")
+    seq = _next_seq(plugin, workflow)
+    auto_name = f"{workflow} #{seq}"
     run = {
         "id": f"{workflow}-{secrets.token_hex(4)}",
+        "seq": seq,                      # progressivo per workflow
+        "name": auto_name,               # nome leggibile: "{workflow} #N"
         "plugin": plugin,
         "workflow": workflow,
-        "title": title or workflow,
+        "title": title or auto_name,     # etichetta mostrata (default = nome auto)
         "params": params,
         "topic": topic or None,          # {tier, name} opzionale: la pratica di riferimento
         "requested_by": requested_by,
@@ -95,6 +125,8 @@ def create_run(plugin: str, workflow: str, *, title: str, params: str = "",
         "history": [],                   # [{lane, skill, agent, started_at, finished_at, status, summary}]
         "approvals": [],                 # [{stage, by, verdict, note, at}]
         "created_at": _now(),
+        "started_at": _now(),            # datetime di inizio del run
+        "ended_at": None,                # datetime di fine (stampata al terminale)
         "updated_at": _now(),
     }
     save_run(run)
@@ -116,6 +148,10 @@ def load_run(run_id: str) -> dict | None:
 
 def save_run(run: dict) -> None:
     run["updated_at"] = _now()
+    # Stampa la datetime di fine alla PRIMA transizione a stato terminale,
+    # qualunque sia il percorso (done/failed/cancelled). Punto unico.
+    if run.get("status") in _TERMINAL and not run.get("ended_at"):
+        run["ended_at"] = _now()
     p = run_path(run["id"])
     tmp = p.with_suffix(".tmp")
     tmp.write_text(json.dumps(run, ensure_ascii=False, indent=2), encoding="utf-8")
