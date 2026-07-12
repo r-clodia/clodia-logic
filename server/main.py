@@ -248,6 +248,10 @@ def create_app() -> FastAPI:
     if prof.features.workflows:
         from .workflows import api as workflows_api
         app.include_router(workflows_api.router)
+        # Pagina di decisione dei gate via link firmato (no login, token-auth):
+        # deve essere raggiungibile senza sessione (arrivi da mail/Telegram).
+        from .api import gate_public
+        app.include_router(gate_public.router)
     app.include_router(profile.router)
     app.include_router(catalog.router)
     app.include_router(packs.router)

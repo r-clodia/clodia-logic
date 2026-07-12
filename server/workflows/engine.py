@@ -153,6 +153,13 @@ def _parse_esito(reply: str) -> tuple[str, str]:
     return "asked", tail                  # ESITO: BLOCCATO → sta chiedendo
 
 
+def _extract_artefatto(summary: str) -> str | None:
+    """Convenzione: una riga `ARTEFATTO: <url|path>` nell'ESITO dello stadio."""
+    import re
+    m = re.search(r"ARTEFATTO:\s*(\S.*)", summary or "", re.I)
+    return m.group(1).strip()[:300] if m else None
+
+
 def _msg_count(run: dict) -> int:
     from ..api import topics_client
     t = run["topic"]
@@ -283,6 +290,7 @@ async def _run_stage_turn(run: dict) -> None:
     if status == "ok":
         entry["finished_at"] = _now()
         entry["status"] = "ok"
+        entry["artefatto"] = _extract_artefatto(entry["summary"])
         if stage.get("human_gate"):
             # Gate conversazionale: posta il go/no-go come pill e attendi.
             try:
@@ -295,6 +303,17 @@ async def _run_stage_turn(run: dict) -> None:
             run["status"] = "await"
             run["gate_pending"] = True
             run["await_marker"] = _msg_count(run)
+            # notifica l'owner: link firmato one-time alla pagina di decisione
+            try:
+                from ..api import gate_sign
+                from . import notify
+                nonce = gate_sign.new_nonce()
+                run["gate_nonce"] = nonce
+                token = gate_sign.make(run["id"], idx, nonce)
+                store.save_run(run)
+                notify.notify_gate(run, token, entry.get("artefatto"))
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("workflow %s: notifica gate fallita: %s", run["id"], str(e)[:120])
         elif idx + 1 < len(run["stages"]):
             run["current"] = idx + 1
             run["status"] = "pending"
@@ -438,7 +457,15 @@ async def cancel(run_id: str, by: str, note: str = "") -> dict:
 
 
 def _finalize(run: dict) -> None:
-    """A terminale: archivia il topic del run (sezione archivio dedicata)."""
+    """A terminale: notifica l'owner (su done) e archivia il topic del run."""
+    if run.get("status") == "done":
+        try:
+            from . import notify
+            done = [h for h in run["history"] if h.get("status") == "ok"]
+            art = next((h.get("artefatto") for h in reversed(done) if h.get("artefatto")), None)
+            notify.notify_end(run, art)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("workflow %s: notifica END fallita: %s", run["id"], str(e)[:120])
     if not run.get("topic"):
         return
     from ..api import topics_client

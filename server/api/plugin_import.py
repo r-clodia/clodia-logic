@@ -283,7 +283,9 @@ def _sanitize_workflows(raw: Any) -> dict[str, dict]:
         tier = {"P0":"SEAL-0","P1":"SEAL-1","P2":"SEAL-2","P3":"SEAL-3"}.get(tier, tier)
         if tier not in ("SEAL-0","SEAL-1","SEAL-2","SEAL-3","SEAL-4"):
             tier = "SEAL-1"
-        out[str(wname).strip()] = {"trigger": trigger, "tier": tier, "stages": stages}
+        owner = str(wf.get("owner") or "").strip()   # agente umano responsabile
+        out[str(wname).strip()] = {"trigger": trigger, "tier": tier,
+                                   "owner": owner, "stages": stages}
     return out
 
 
