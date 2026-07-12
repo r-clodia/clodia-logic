@@ -925,8 +925,15 @@ async def download_topic_file(
         raise HTTPException(404, f"file non trovato: {tier}/{name}/{path}")
     fname = path.rsplit("/", 1)[-1]
     media_type = mimetypes.guess_type(fname)[0] or "application/octet-stream"
+    # Content-Disposition deve essere latin-1: nomi con caratteri non-ASCII
+    # (es. en-dash '–') vanno codificati RFC 5987 (filename*), con fallback
+    # ASCII per i client vecchi — altrimenti l'header crasha con 500.
+    from urllib.parse import quote
+    ascii_name = fname.encode("ascii", "ignore").decode("ascii").replace('"', "") or "download"
+    disposition = (f"attachment; filename=\"{ascii_name}\"; "
+                   f"filename*=UTF-8''{quote(fname)}")
     from fastapi.responses import Response
     return Response(
         content=data, media_type=media_type,
-        headers={"Content-Disposition": f'attachment; filename="{fname}"'},
+        headers={"Content-Disposition": disposition},
     )
