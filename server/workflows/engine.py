@@ -342,6 +342,8 @@ async def _run_stage_turn(run: dict) -> None:
     if not continuation:
         directive = _stage_kickoff(run, stage)
         entry["input"] = directive[:6000]   # input dello step, per l'ispezione
+        store.save_run(run)                 # persisti l'input PRIMA del turno,
+        #                                     così il dettaglio lo mostra live
         try:
             topics_client.post_message(t["tier"], t["name"], "workflow",
                                        directive, kind="system")
