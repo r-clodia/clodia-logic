@@ -480,7 +480,7 @@ async def channel_remote(tier: str, name: str, request: Request) -> dict:
 
 async def run_topic_turn(tier: str, name: str, meta: dict,
                          trigger_text: str = "", principal_hint: str | None = None,
-                         responder_hint: str | None = None):
+                         responder_hint: str | None = None, directive: str = ""):
     """Esegue UN turno del responder del topic sul contesto corrente e posta la
     risposta (kind=ai). Ritorna (responder_name, reply) o (None, None).
 
@@ -491,7 +491,13 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
 
     `responder_hint`: FORZA uno specifico agente come responder (usato dal motore
     dei workflow, dove l'agente di ogni stadio è deciso dall'engine, non
-    dall'auto-picker). L'agente deve comunque avere clearance ≥ tier."""
+    dall'auto-picker). L'agente deve comunque avere clearance ≥ tier.
+
+    `directive`: istruzione operativa del turno iniettata ESPLICITAMENTE nel
+    prompt. Necessaria per i workflow: su sessione riusata il reused-turn prompt
+    filtra i messaggi il cui autore coincide col principal (il kickoff è authored
+    "workflow" == principal_hint), quindi senza questo l'agente non vedrebbe mai
+    l'istruzione dello stadio e resterebbe in attesa."""
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
     if responder_hint:
@@ -519,6 +525,8 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         fallback = (f"[Canale #{name} · {tier_real}] nuovo messaggio nel gruppo. "
                     f"{_channel_files_hint(tier_real, name)}")
         prompt = _reused_turn_prompt(tier, name, responder.name, chat.principal, fallback)
+    if directive:
+        prompt = prompt + "\n\n─────\n[Istruzione operativa di questo turno]\n" + directive
     reply = await _run_and_post_response(tier, name, responder.name, chat, prompt)
     return responder.name, reply
 

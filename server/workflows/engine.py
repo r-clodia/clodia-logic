@@ -170,24 +170,36 @@ def _cleanup_workspace(run: dict) -> None:
 
 # ── prompt e parsing ─────────────────────────────────────────────────────────
 def _stage_kickoff(run: dict, stage: dict) -> str:
-    """Istruzione di avvio stadio, postata come messaggio system nel topic."""
+    """Istruzione di avvio stadio. Passata all'agente come DIRETTIVA del turno
+    (oltre che postata nel topic per l'audit trail): porta per intero l'output
+    dello stadio immediatamente precedente — l'input diretto di questo stadio —
+    così l'agente NON deve andarlo a cercare né attendere un upload."""
     lines = [f"[workflow · stadio «{stage['lane']}»]"]
     done = [h for h in run["history"] if h.get("status") == "ok"]
     if done:
-        lines.append("Esito degli stadi precedenti (dettagli nei messaggi sopra):")
-        for h in done[-4:]:
-            lines.append(f"- {h['lane']}: {(h.get('summary') or '')[:300]}")
+        prev = done[-1]
+        lines.append(f"── Input da «{prev['lane']}» (è QUI sotto, è già il tuo "
+                     "input: usalo, NON attendere che venga caricato un file):")
+        lines.append((prev.get("summary") or "").strip())
+        earlier = done[:-1]
+        if earlier:
+            lines.append("")
+            lines.append("Stadi precedenti (sintesi):")
+            for h in earlier[-3:]:
+                lines.append(f"- {h['lane']}: {(h.get('summary') or '')[:200]}")
     if run.get("workspace_path"):
         lines.append(f"Working copy del repo del workflow: {run['workspace_path']} "
                      "(lavora QUI, non su path locali di altre macchine).")
     lines += [
         "",
-        f"Applica la skill `{stage['skill']}` seguendo il suo protocollo. Se ti "
-        "mancano input (sezione Intake), NON inventare: chiedili in chat (usa "
-        "il marcatore <!-- choices=A,B,C --> quando le opzioni sono enumerabili) "
-        "e ATTENDI la risposta — non scrivere ESITO finché non hai tutto.",
-        "Quando lo stadio è completo, chiudi con una riga "
-        "`ESITO: OK` (o `ESITO: FALLITO`) + un riepilogo di 2-3 righe.",
+        f"Esegui ORA lo stadio «{stage['lane']}» applicando la skill "
+        f"`{stage['skill']}`. Hai già l'input qui sopra e nella conversazione: "
+        "procedi, NON restare in attesa di file o messaggi. Chiedi in chat "
+        "(marcatore <!-- choices=A,B,C --> per opzioni enumerabili) SOLO se ti "
+        "manca davvero un input essenziale elencato nell'Intake della skill; "
+        "altrimenti lavora e basta.",
+        "A stadio completo chiudi con `ESITO: OK` (o `ESITO: FALLITO`) + "
+        "un riepilogo di 2-3 righe.",
     ]
     return "\n".join(lines)
 
@@ -197,17 +209,18 @@ def _parse_esito(reply: str) -> tuple[str, str]:
     o BLOCCATO → l'agente sta chiedendo qualcosa (→ await). Robusto: trova
     l'ULTIMA occorrenza di `ESITO:` ovunque nel testo (non solo a inizio riga)
     e legge l'esito che segue."""
-    tail = (reply or "").strip()[-1600:]
-    up = tail.upper()
+    full = (reply or "").strip()
+    up = full[-1600:].upper()             # l'ESITO sta sempre in coda
     pos = up.rfind("ESITO:")
+    # summary = testo completo (è l'input del prossimo stadio); cap al call site.
     if pos == -1:
-        return "asked", tail              # nessun ESITO → sta chiedendo
+        return "asked", full              # nessun ESITO → sta chiedendo
     after = up[pos + len("ESITO:"): pos + len("ESITO:") + 40]
     if "FALLITO" in after:
-        return "failed", tail
+        return "failed", full
     if "OK" in after:
-        return "ok", tail
-    return "asked", tail                  # ESITO: BLOCCATO → sta chiedendo
+        return "ok", full
+    return "asked", full                  # ESITO: BLOCCATO → sta chiedendo
 
 
 def _extract_artefatto(summary: str) -> str | None:
@@ -319,11 +332,17 @@ async def _run_stage_turn(run: dict) -> None:
     run["status"] = "running"
     store.save_run(run)
 
-    # Prima esecuzione dello stadio: semina l'istruzione come messaggio system.
+    # Prima esecuzione dello stadio: semina l'istruzione come messaggio system
+    # (audit trail nel topic) E la passa come DIRETTIVA del turno (così la
+    # sessione riusata dell'agente la riceve davvero nel prompt — il messaggio
+    # system da solo, essendo authored "workflow" == principal, verrebbe filtrato
+    # dal reused-turn prompt e l'agente resterebbe in attesa).
+    directive = ""
     if not continuation:
+        directive = _stage_kickoff(run, stage)
         try:
             topics_client.post_message(t["tier"], t["name"], "workflow",
-                                       _stage_kickoff(run, stage), kind="system")
+                                       directive, kind="system")
         except Exception as e:  # noqa: BLE001
             LOG.warning("workflow %s: kickoff non postato: %s", run["id"], str(e)[:120])
 
@@ -331,7 +350,8 @@ async def _run_stage_turn(run: dict) -> None:
         async with asyncio.timeout(_STAGE_TIMEOUT):
             responder, reply = await channels.run_topic_turn(
                 t["tier"], t["name"], {"tier": t["tier"]},
-                trigger_text="", principal_hint="workflow", responder_hint=agent)
+                trigger_text="", principal_hint="workflow", responder_hint=agent,
+                directive=directive)
         if responder is None:
             status, summary = "failed", f"responder '{agent}' non idoneo al tier {t['tier']}"
         else:
@@ -344,7 +364,7 @@ async def _run_stage_turn(run: dict) -> None:
         msg = str(e).strip() or f"{type(e).__name__} (watchdog?)"
         status, summary = "failed", f"errore turno: {msg}"
 
-    entry["summary"] = (summary or "")[-1500:]
+    entry["summary"] = (summary or "")[-4000:]
 
     if status == "ok":
         entry["finished_at"] = _now()
