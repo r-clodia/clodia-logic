@@ -146,6 +146,16 @@ def load_run(run_id: str) -> dict | None:
     return json.loads(p.read_text(encoding="utf-8"))
 
 
+def delete_run(run_id: str) -> bool:
+    """Rimuove definitivamente il file del run. True se c'era, False altrimenti.
+    Non tocca il contatore seq (monotòno: i numeri non si riusano)."""
+    p = run_path(run_id)
+    if not p.is_file():
+        return False
+    p.unlink()
+    return True
+
+
 def save_run(run: dict) -> None:
     run["updated_at"] = _now()
     # Stampa la datetime di fine alla PRIMA transizione a stato terminale,

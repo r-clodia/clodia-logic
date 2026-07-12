@@ -539,6 +539,22 @@ async def cancel(run_id: str, by: str, note: str = "") -> dict:
     return run
 
 
+async def delete(run_id: str, by: str) -> bool:
+    """Rimuove un run dalla lista. Se è ancora attivo lo annulla prima (pulizia
+    workspace + archiviazione topic), poi elimina il file. Idempotente."""
+    run = store.load_run(run_id)
+    if not run:
+        return False
+    if run["status"] not in ("done", "failed", "cancelled"):
+        try:
+            await cancel(run_id, by, "eliminato")
+        except (KeyError, ValueError):
+            pass
+    _inflight.discard(run_id)
+    LOG.info("workflow %s eliminato da %s", run_id, by)
+    return store.delete_run(run_id)
+
+
 def _finalize(run: dict) -> None:
     """A terminale: notifica l'owner (su done) e archivia il topic del run."""
     if run.get("status") == "done":
