@@ -327,7 +327,8 @@ async def _run_stage_turn(run: dict) -> None:
         entry = last
     else:
         entry = {"stage_idx": idx, "lane": stage["lane"], "skill": stage["skill"], "agent": agent,
-                 "started_at": _now(), "finished_at": None, "status": "running", "summary": ""}
+                 "started_at": _now(), "finished_at": None, "status": "running",
+                 "input": "", "summary": ""}
         run["history"].append(entry)
     run["status"] = "running"
     store.save_run(run)
@@ -340,6 +341,7 @@ async def _run_stage_turn(run: dict) -> None:
     directive = ""
     if not continuation:
         directive = _stage_kickoff(run, stage)
+        entry["input"] = directive[:6000]   # input dello step, per l'ispezione
         try:
             topics_client.post_message(t["tier"], t["name"], "workflow",
                                        directive, kind="system")
