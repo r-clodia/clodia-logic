@@ -172,6 +172,44 @@ def _last_message(run: dict) -> dict | None:
         return None
 
 
+def current_question(run: dict) -> dict | None:
+    """Per un run in await: la domanda che l'agente sta ponendo, per renderla
+    INLINE sulla board (niente chat). Ritorna {text, choices[], gate}.
+    None se il run non è in await o il topic non è leggibile."""
+    if run.get("status") != "await" or not run.get("topic"):
+        return None
+    last = _last_message(run)
+    if not last:
+        return None
+    text = (last.get("text") or "").strip()
+    # estrai le choices dal marcatore <!-- choices=... --> (single o multi)
+    import re
+    choices: list[str] = []
+    mm = re.search(r"<!--\s*choices(?:-multi)?\s*=(.*?)-->", text, re.I | re.S)
+    if mm:
+        choices = [c.strip() for c in mm.group(1).split(",") if c.strip()]
+        text = re.sub(r"<!--\s*choices(?:-multi)?\s*=.*?-->", "", text, flags=re.I | re.S).strip()
+    return {"text": text[-1500:], "choices": choices, "gate": bool(run.get("gate_pending"))}
+
+
+async def submit_answer(run_id: str, by: str, text: str) -> dict:
+    """Inietta la risposta dell'utente (dalla board inline) nel topic del run e
+    riprende immediatamente lo stadio — senza aspettare il tick."""
+    run = store.load_run(run_id)
+    if not run:
+        raise KeyError(run_id)
+    if run.get("status") != "await":
+        raise ValueError(f"run non in attesa ({run.get('status')})")
+    if not run.get("topic"):
+        raise ValueError("run senza topic")
+    from ..api import topics_client
+    t = run["topic"]
+    topics_client.post_message(t["tier"], t["name"], by or "user", text, kind="human")
+    # resume immediato (l'engine tick sarebbe comunque il fallback)
+    await _resolve_await(store.load_run(run_id))
+    return store.load_run(run_id)
+
+
 # ── esecuzione di un turno di stadio ─────────────────────────────────────────
 async def _run_stage_turn(run: dict) -> None:
     """Esegue UN turno dell'agente dello stadio corrente nel topic del run e
