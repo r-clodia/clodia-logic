@@ -20,7 +20,8 @@ def _require_login(request: Request) -> str:
 @router.get("/clodia/workflows")
 async def list_workflows(request: Request) -> dict:
     _require_login(request)
-    runs = store.list_runs()
+    # i run cancellati spariscono dalla pagina (i file restano per audit)
+    runs = [r for r in store.list_runs() if r.get("status") != "cancelled"]
     # per i run in await: allega la domanda corrente (inline sulla board)
     for r in runs:
         if r.get("status") == "await":
