@@ -38,6 +38,15 @@ _inflight: set[str] = set()
 _GATE_CHOICES = "Approva,Rimanda con modifiche,Annulla"
 
 
+def _gate_choices(run: dict, idx: int) -> str:
+    """Choices del gate allo stadio idx: Approva / Rimanda (rifà lo stadio) /
+    Torna a <lane> per OGNI stadio già passato / Annulla. Il 'torna a' è un
+    salto di rework indietro nel pipeline (non un branching in avanti)."""
+    back = [f"Torna a {run['stages'][j]['lane']}" for j in range(idx)]
+    parts = ["Approva", "Rimanda con modifiche", *back, "Annulla"]
+    return ",".join(parts)
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
@@ -401,7 +410,7 @@ async def _run_stage_turn(run: dict) -> None:
                 topics_client.post_message(
                     t["tier"], t["name"], agent,
                     f"Stadio «{stage['lane']}» completato. Procedo?\n"
-                    f"<!-- choices={_GATE_CHOICES} -->", kind="ai")
+                    f"<!-- choices={_gate_choices(run, idx)} -->", kind="ai")
             except Exception:  # noqa: BLE001
                 pass
             run["status"] = "await"
@@ -484,6 +493,26 @@ async def _resolve_await(run: dict) -> None:
             run["gate_pending"] = False
             run["await_marker"] = None
             run["status"] = "cancelled"
+        elif text.startswith("torna a "):
+            # Salto di rework indietro: "Torna a <lane>" → rimette current a
+            # quello stadio. Gli stadi da lì al gate si rigenerano scorrendo in
+            # avanti (le vecchie entry restano come audit; entryFor mostra la
+            # più recente). Se la lane non è tra gli stadi precedenti → rimanda.
+            target = text[len("torna a "):].strip()
+            j = next((k for k in range(idx)
+                      if run["stages"][k]["lane"].strip().lower() == target), None)
+            if j is None:
+                run["approvals"].append({"stage": idx, "by": by, "verdict": "rimanda",
+                                         "note": last.get("text", "")[:500], "at": _now()})
+                run["current"] = idx
+            else:
+                run["approvals"].append({"stage": idx, "by": by,
+                                         "verdict": f"torna_a:{run['stages'][j]['lane']}",
+                                         "note": last.get("text", "")[:500], "at": _now()})
+                run["current"] = j
+            run["gate_pending"] = False
+            run["await_marker"] = None
+            run["status"] = "pending"
         else:
             # "Rimanda con modifiche" o testo libero → rifà lo stadio con la nota
             run["approvals"].append({"stage": idx, "by": by, "verdict": "rimanda",
