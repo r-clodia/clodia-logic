@@ -48,6 +48,60 @@ def _is_skill_dir(p: Path) -> bool:
     return p.is_dir() and (p / "SKILL.md").is_file()
 
 
+def _datastore_map(pack: str) -> dict[str, str]:
+    """{key → path assoluto} dei datastore dichiarati nel plugin.yaml del pack.
+    key = basename del path dichiarato senza estensione (es. `data/leads.db` →
+    `leads`). Il path assoluto è risolto nel runtime corrente:
+    `{CLODIA_DATA}/plugins/<pack>/<path dichiarato>`. Così una skill che scrive
+    `<DATASTORE:leads>` è portabile: ogni istanza lo risolve al proprio datadir.
+    """
+    import yaml
+    manifest = data_path("plugins") / pack / "plugin.yaml"
+    if not manifest.is_file():
+        return {}
+    try:
+        meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return {}
+    out: dict[str, str] = {}
+    base = data_path("plugins") / pack
+    for ds in (meta.get("datastores") or []):
+        rel = (ds or {}).get("path")
+        if not rel or not isinstance(rel, str):
+            continue
+        key = Path(rel).stem  # 'data/leads.db' → 'leads'
+        out[key] = str((base / rel).resolve())
+    return out
+
+
+def _substitute_datastore_tokens(skill_dir: Path, pack: str) -> None:
+    """Sostituisce i token `<DATASTORE:key>` nei file .md della skill col path
+    assoluto del datastore nel runtime corrente. Token senza datastore
+    corrispondente → lasciato invariato (loggato), mai crash."""
+    import re
+    dsmap = _datastore_map(pack)
+    token_re = re.compile(r"<DATASTORE:([A-Za-z0-9_-]+)>")
+    for md in skill_dir.rglob("*.md"):
+        try:
+            text = md.read_text(encoding="utf-8")
+        except Exception:  # noqa: BLE001
+            continue
+        if "<DATASTORE:" not in text:
+            continue
+
+        def _repl(m: "re.Match") -> str:
+            key = m.group(1)
+            if key in dsmap:
+                return dsmap[key]
+            LOG.warning("skill %s: token <DATASTORE:%s> senza datastore nel pack %s",
+                        skill_dir.name, key, pack)
+            return m.group(0)
+
+        new = token_re.sub(_repl, text)
+        if new != text:
+            md.write_text(new, encoding="utf-8")
+
+
 def _resolve_skill_source(cap: str) -> Optional[Path]:
     """Trova la cartella sorgente della skill.
 
@@ -177,6 +231,10 @@ def materialize_capabilities(
         if dst.exists():
             shutil.rmtree(dst)
         shutil.copytree(src, dst)
+        # Token `<DATASTORE:key>` → path assoluto del datastore nel runtime
+        # (portabilità: la skill non hardcoda path di una macchina specifica).
+        if "/" in cap:
+            _substitute_datastore_tokens(dst, cap.partition("/")[0])
         copied += 1
         LOG.debug("materializzata skill '%s' da %s", cap, src.parent)
     return copied, unresolved
