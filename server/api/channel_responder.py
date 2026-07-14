@@ -25,6 +25,14 @@ LOG = logging.getLogger("agent-server.channel_responder")
 
 _ARCHETYPE = WORKSPACE_ROOT / "catalogs" / "agent-templates" / "eco"
 
+# Tool minimi del responder di canale: elencare/leggere i file del canale e
+# mandare allegati BINARI (docx/pdf/xlsx) via path nello scratch — senza base64
+# come parametro, che si troncava sui file grandi. Sono verbi topic-scoped: il
+# gateway richiede la membership, e il responder è participant SOLO del proprio
+# topic → resta confinato al suo canale (least-privilege).
+_RESPONDER_TOOLS = ["topic.files", "topic.read_file", "topic.fetch",
+                    "topic.put", "topic.attach"]
+
 
 def responder_name(topic_name: str) -> str:
     return f"eco-{topic_name}"
@@ -58,7 +66,7 @@ def ensure_responder(tier: str, name: str, topic_tier: str) -> str:
     # è baked nell'immagine → un rebuild azzera le registrazioni runtime. Ripeterla
     # a ogni tick rende il clone auto-guarente (torna dopo un rebuild del gateway).
     try:
-        gateway_admin.register_agent(rn, allowed_tools=[])
+        gateway_admin.register_agent(rn, allowed_tools=_RESPONDER_TOOLS)
     except Exception as e:  # noqa: BLE001
         LOG.warning("register_agent %s nel gateway fallita: %s", rn, e)
     try:
