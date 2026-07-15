@@ -73,6 +73,11 @@ class AgentSpec(BaseModel):
 
     name: str
     description: str
+    # Frase-dominio concisa (1-2 righe) per il ROUTING del risponditore per
+    # rilevanza: descrive i compiti/temi che l'agente presidia (es. "Analisi di
+    # documenti lunghi, minute, preventivi"). Se vuota, il routing ripiega su
+    # description+capabilities (segnale più debole). Vedi responder_routing.
+    expertise: str = ""
     # Modello d'inferenza. Obbligatorio per gli agent ESEGUITI (normal/super);
     # None per i principal `human` (non eseguiti: nessun motore).
     model: Optional[str] = None
