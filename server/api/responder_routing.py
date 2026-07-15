@@ -94,6 +94,17 @@ def _rag_titles(collection: str) -> str:
     return titles
 
 
+def _agent_collections(spec) -> list[str]:
+    """Collection RAG a cui l'agente accede: quelle dichiarate in `rag_read` più
+    quelle derivate dai suoi tool (eu_corpus.*/rag.* → il corpus di piattaforma
+    'eu-normativa'). Aitiero, p.es., ha rag_read vuoto ma i tool eu_corpus/rag."""
+    colls = set(getattr(spec, "rag_read", None) or [])
+    tp = [str(t) for t in (getattr(spec, "tool_permissions", None) or [])]
+    if any(t.startswith("eu_corpus") or t.startswith("rag.") or t == "rag" for t in tp):
+        colls.add("eu-normativa")
+    return list(colls)
+
+
 def _profile_text(spec) -> str:
     """Profilo-dominio AUTO-DERIVATO da ciò che l'agente sa davvero:
     - descrizioni in linguaggio naturale delle sue SKILL (non gli slug);
@@ -112,8 +123,8 @@ def _profile_text(spec) -> str:
         d = _skill_description(str(cap))
         if d:
             parts.append(d)
-    # knowledge base RAG → titoli documenti
-    for coll in (getattr(spec, "rag_read", None) or []):
+    # knowledge base RAG → titoli documenti (dalle collection accessibili)
+    for coll in _agent_collections(spec):
         t = _rag_titles(str(coll))
         if t:
             parts.append(f"Conosce documenti su: {t}")
