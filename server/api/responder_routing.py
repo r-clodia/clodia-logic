@@ -48,21 +48,80 @@ def embed_text(text: str) -> list[float] | None:
         return None
 
 
+_SKILL_DESC_CACHE: dict[str, str] = {}
+_RAG_TITLES_CACHE: dict[str, tuple[float, str]] = {}   # collection → (ts, titoli)
+_RAG_TTL = 300.0
+
+
+def _skill_description(slug: str) -> str:
+    """Descrizione in linguaggio naturale di una skill (dalla frontmatter del suo
+    SKILL.md nel catalog), non lo slug opaco. Cachata."""
+    if slug in _SKILL_DESC_CACHE:
+        return _SKILL_DESC_CACHE[slug]
+    desc = ""
+    try:
+        from ..agents.skill_sync import _resolve_skill_source
+        import yaml
+        src = _resolve_skill_source(slug)
+        if src and (src / "SKILL.md").is_file():
+            txt = (src / "SKILL.md").read_text(encoding="utf-8")
+            if txt.startswith("---"):
+                fm = txt.split("---", 2)[1]
+                meta = yaml.safe_load(fm) or {}
+                desc = str(meta.get("description") or "").strip()
+    except Exception:  # noqa: BLE001
+        desc = ""
+    _SKILL_DESC_CACHE[slug] = desc
+    return desc
+
+
+def _rag_titles(collection: str) -> str:
+    """Titoli dei documenti di una collection RAG (la KNOWLEDGE BASE dell'agente).
+    Cachati con TTL per non interrogare /documents a ogni messaggio."""
+    import time
+    hit = _RAG_TITLES_CACHE.get(collection)
+    if hit and (time.time() - hit[0]) < _RAG_TTL:
+        return hit[1]
+    titles = ""
+    try:
+        url = f"{EMBED_URL}/documents?" + urllib.parse.urlencode({"collection": collection})
+        with urllib.request.urlopen(url, timeout=6) as r:
+            docs = (json.loads(r.read()) or {}).get("documents") or []
+        titles = ", ".join(str(d.get("name") or "") for d in docs if d.get("name"))
+    except Exception:  # noqa: BLE001
+        titles = ""
+    _RAG_TITLES_CACHE[collection] = (time.time(), titles)
+    return titles
+
+
 def _profile_text(spec) -> str:
-    """Profilo-dominio dell'agente per il routing. Preferisce il campo curato
-    `expertise` (frase-dominio pulita → embedding discriminante). Se assente,
-    ripiega su display_name + description + competenze (segnale più debole: gli
-    slug delle skill diluiscono l'embedding)."""
+    """Profilo-dominio AUTO-DERIVATO da ciò che l'agente sa davvero:
+    - descrizioni in linguaggio naturale delle sue SKILL (non gli slug);
+    - titoli dei documenti delle sue collection RAG (`rag_read`) = knowledge base;
+    - più `expertise` (frase curata) come AUGMENT opzionale.
+    Auto-manutenuto: aggiungi una skill o ingesti un documento → il profilo (e il
+    routing) si aggiornano da soli. Fallback: description se non c'è altro."""
+    parts = [getattr(spec, "display_name", "") or spec.name]
     exp = (getattr(spec, "expertise", "") or "").strip()
     if exp:
-        return f"{getattr(spec, 'display_name', '') or spec.name}. {exp}"
-    caps = getattr(spec, "capabilities", None) or []
-    caps_txt = ", ".join(str(c) for c in caps if not str(c).endswith("/*"))
-    return " ".join(filter(None, [
-        getattr(spec, "display_name", "") or getattr(spec, "name", ""),
-        (getattr(spec, "description", "") or "")[:800],
-        f"Competenze: {caps_txt}" if caps_txt else "",
-    ]))
+        parts.append(exp)
+    # skill → descrizioni (salta i wildcard tipo base-pack/*: generici)
+    for cap in (getattr(spec, "capabilities", None) or []):
+        if str(cap).endswith("/*"):
+            continue
+        d = _skill_description(str(cap))
+        if d:
+            parts.append(d)
+    # knowledge base RAG → titoli documenti
+    for coll in (getattr(spec, "rag_read", None) or []):
+        t = _rag_titles(str(coll))
+        if t:
+            parts.append(f"Conosce documenti su: {t}")
+    if len(parts) == 1:   # solo il nome → usa la description come fallback
+        d = (getattr(spec, "description", "") or "")[:600]
+        if d:
+            parts.append(d)
+    return ". ".join(p for p in parts if p)
 
 
 def _profile_vec(spec) -> list[float] | None:
