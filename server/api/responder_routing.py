@@ -24,11 +24,13 @@ LOG = logging.getLogger("agent-server.responder_routing")
 EMBED_URL = os.environ.get("EU_RAG_SEARCH_URL", "http://192.168.1.45:7900").rstrip("/")
 
 # Soglie di routing (calibrabili). cosine su MiniLM multilingue normalizzato.
-THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.30"))
-MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.05"))
+# Con il match MULTI-VETTORE (max sui pezzi) i picchi sono più alti → soglia più
+# alta e margine più piccolo che nel vecchio profilo mediato.
+THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.38"))
+MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.03"))
 
-# cache profilo: {agent_name: (profile_hash, vector)}
-_PROFILE_CACHE: dict[str, tuple[str, list[float]]] = {}
+# cache profilo: {agent_name: (pieces_hash, [vettori per-pezzo])}
+_PROFILE_CACHE: dict[str, tuple[str, list[list[float]]]] = {}
 
 
 def embed_text(text: str) -> list[float] | None:
@@ -48,49 +50,26 @@ def embed_text(text: str) -> list[float] | None:
         return None
 
 
-_SKILL_DESC_CACHE: dict[str, str] = {}
-_RAG_TITLES_CACHE: dict[str, tuple[float, str]] = {}   # collection → (ts, titoli)
+_RAG_TITLES_CACHE: dict[str, tuple[float, list[str]]] = {}   # coll → (ts, [titoli])
 _RAG_TTL = 300.0
 
 
-def _skill_description(slug: str) -> str:
-    """Descrizione in linguaggio naturale di una skill (dalla frontmatter del suo
-    SKILL.md nel catalog), non lo slug opaco. Cachata."""
-    if slug in _SKILL_DESC_CACHE:
-        return _SKILL_DESC_CACHE[slug]
-    desc = ""
-    try:
-        from ..agents.skill_sync import _resolve_skill_source
-        import yaml
-        src = _resolve_skill_source(slug)
-        if src and (src / "SKILL.md").is_file():
-            txt = (src / "SKILL.md").read_text(encoding="utf-8")
-            if txt.startswith("---"):
-                fm = txt.split("---", 2)[1]
-                meta = yaml.safe_load(fm) or {}
-                desc = str(meta.get("description") or "").strip()
-    except Exception:  # noqa: BLE001
-        desc = ""
-    _SKILL_DESC_CACHE[slug] = desc
-    return desc
-
-
-def _rag_titles(collection: str) -> str:
-    """Titoli dei documenti di una collection RAG (la KNOWLEDGE BASE dell'agente).
-    Cachati con TTL per non interrogare /documents a ogni messaggio."""
+def _rag_title_list(collection: str) -> list[str]:
+    """Titoli (puliti) dei documenti di una collection RAG = knowledge base.
+    Ognuno diventa un PEZZO del profilo. Cachati con TTL."""
     import time
     hit = _RAG_TITLES_CACHE.get(collection)
     if hit and (time.time() - hit[0]) < _RAG_TTL:
         return hit[1]
-    titles = ""
+    titles: list[str] = []
     try:
         url = f"{EMBED_URL}/documents?" + urllib.parse.urlencode({"collection": collection})
         with urllib.request.urlopen(url, timeout=6) as r:
             docs = (json.loads(r.read()) or {}).get("documents") or []
-        titles = ", ".join(str(d.get("name") or "").replace("-", " ").replace("_", " ")
-                            for d in docs if d.get("name"))
+        titles = [str(d.get("name") or "").replace("-", " ").replace("_", " ").strip()
+                  for d in docs if d.get("name")]
     except Exception:  # noqa: BLE001
-        titles = ""
+        titles = []
     _RAG_TITLES_CACHE[collection] = (time.time(), titles)
     return titles
 
@@ -114,44 +93,49 @@ def _slug_words(cap: str) -> str:
     return cap.split("/")[-1].replace("-", " ").replace("_", " ").strip()
 
 
-def _profile_text(spec) -> str:
-    """Profilo-dominio IBRIDO, auto-manutenuto:
-    - `expertise` (frase-dominio curata) = segnale forte;
-    - keyword delle SKILL (parole dello slug, non le description verbose/inglesi);
-    - titoli dei documenti delle collection RAG accessibili (la knowledge base) —
-      così 'conosce' ciò che è davvero ingestito (es. i bandi FESR Sardegna).
-    Aggiungi una skill o ingesti un documento → profilo (e routing) si aggiornano.
-    Fallback: description se non c'è nient'altro."""
-    parts = [getattr(spec, "display_name", "") or spec.name]
+def _profile_pieces(spec) -> list[str]:
+    """PEZZI di dominio dell'agente (per il match MULTI-VETTORE): ogni pezzo è un
+    segnale sharp (una clausola dell'expertise, una skill, un titolo di documento
+    RAG). Lo score dell'agente = MAX cosine su questi pezzi → l'ampiezza del
+    profilo non diluisce più i picchi (una skill precisa vince quando pertinente,
+    le altre restano basse). Auto-manutenuto: skill/documenti nuovi = pezzi nuovi."""
+    import re
+    pieces: list[str] = []
     exp = (getattr(spec, "expertise", "") or "").strip()
     if exp:
-        parts.append(exp)
-    kw = " ".join(_slug_words(str(c)) for c in (getattr(spec, "capabilities", None) or [])
-                  if not str(c).endswith("/*"))
-    if kw:
-        parts.append(f"Competenze: {kw}")
+        pieces += [c.strip() for c in re.split(r"[;.\n]", exp) if len(c.strip()) >= 4]
+    for cap in (getattr(spec, "capabilities", None) or []):
+        if str(cap).endswith("/*"):
+            continue
+        w = _slug_words(str(cap))
+        if w:
+            pieces.append(w)
     for coll in _agent_collections(spec):
-        t = _rag_titles(str(coll))
-        if t:
-            parts.append(f"Conosce documenti su: {t}")
-    if len(parts) == 1:   # solo il nome → fallback su description
-        d = (getattr(spec, "description", "") or "")[:600]
+        pieces += [t for t in _rag_title_list(str(coll)) if t]
+    if not pieces:   # niente segnale → usa la description come unico pezzo
+        d = (getattr(spec, "description", "") or "")[:300].strip()
         if d:
-            parts.append(d)
-    return ". ".join(p for p in parts if p)
+            pieces.append(d)
+    # dedup preservando l'ordine
+    seen, out = set(), []
+    for p in pieces:
+        k = p.lower()
+        if k not in seen:
+            seen.add(k); out.append(p)
+    return out
 
 
-def _profile_vec(spec) -> list[float] | None:
-    """Vettore del profilo (cachato per nome+hash del profilo)."""
-    prof = _profile_text(spec)
-    h = hashlib.sha1(prof.encode("utf-8")).hexdigest()
+def _profile_vecs(spec) -> list[list[float]]:
+    """Vettori dei pezzi del profilo (cachati per hash dei pezzi)."""
+    pieces = _profile_pieces(spec)
+    h = hashlib.sha1("".join(pieces).encode("utf-8")).hexdigest()
     cached = _PROFILE_CACHE.get(spec.name)
     if cached and cached[0] == h:
         return cached[1]
-    v = embed_text(prof)
-    if v:
-        _PROFILE_CACHE[spec.name] = (h, v)
-    return v
+    vecs = [v for v in (embed_text(p) for p in pieces) if v]
+    if vecs:
+        _PROFILE_CACHE[spec.name] = (h, vecs)
+    return vecs
 
 
 def _cosine(a: list[float], b: list[float]) -> float:
@@ -160,9 +144,9 @@ def _cosine(a: list[float], b: list[float]) -> float:
 
 
 def pick_by_relevance(specialists: list, message: str):
-    """Fra gli specialisti (già filtrati per idoneità, NON super), ritorna quello
-    più pertinente al messaggio se supera la soglia E batte il 2° del margine.
-    Ritorna (spec, score) o None (→ il chiamante ricade sul rango)."""
+    """Fra gli specialisti (idonei, NON super), ritorna quello più pertinente al
+    messaggio — score = MAX cosine sui pezzi del suo profilo — se supera la soglia
+    E batte il 2° del margine. Altrimenti None (→ fallback a rango/Clodia)."""
     if not specialists:
         return None
     mv = embed_text(message)
@@ -170,9 +154,9 @@ def pick_by_relevance(specialists: list, message: str):
         return None
     scored = []
     for s in specialists:
-        pv = _profile_vec(s)
-        if pv:
-            scored.append((s, _cosine(mv, pv)))
+        vecs = _profile_vecs(s)
+        if vecs:
+            scored.append((s, max(_cosine(mv, v) for v in vecs)))
     if not scored:
         return None
     scored.sort(key=lambda x: x[1], reverse=True)
@@ -180,7 +164,7 @@ def pick_by_relevance(specialists: list, message: str):
     if best_score < THRESHOLD:
         return None
     if len(scored) > 1 and (best_score - scored[1][1]) < MARGIN:
-        return None  # troppo vicino al 2° → ambiguo, meglio il capitano (rango)
+        return None
     return best, best_score
 
 
