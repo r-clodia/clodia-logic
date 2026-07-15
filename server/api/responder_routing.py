@@ -112,7 +112,12 @@ def _profile_pieces(spec) -> list[str]:
             pieces.append(w)
     for coll in _agent_collections(spec):
         pieces += [t for t in _rag_title_list(str(coll)) if t]
-    if not pieces:   # niente segnale → usa la description come unico pezzo
+    # Filtro qualità: scarta i pezzi RUMOROSI (acronimi/mono-parola tipo "AGA",
+    # "pdf", "docx") — le stringhe corte hanno embedding inaffidabili e danno
+    # match spuri (es. "AGA" ~ "ciao come va" a 0.61). Tieni frasi ≥2 parole e
+    # ≥8 char; quei domini restano coperti dalle clausole dell'expertise.
+    pieces = [p for p in pieces if len(p.strip()) >= 8 and len(p.split()) >= 2]
+    if not pieces:   # niente segnale utile → usa la description come unico pezzo
         d = (getattr(spec, "description", "") or "")[:300].strip()
         if d:
             pieces.append(d)
