@@ -24,7 +24,7 @@ LOG = logging.getLogger("agent-server.responder_routing")
 EMBED_URL = os.environ.get("EU_RAG_SEARCH_URL", "http://192.168.1.45:7900").rstrip("/")
 
 # Soglie di routing (calibrabili). cosine su MiniLM multilingue normalizzato.
-THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.35"))
+THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.30"))
 MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.05"))
 
 # cache profilo: {agent_name: (profile_hash, vector)}
@@ -49,7 +49,13 @@ def embed_text(text: str) -> list[float] | None:
 
 
 def _profile_text(spec) -> str:
-    """Profilo-dominio dell'agente: nome + descrizione + competenze (skill)."""
+    """Profilo-dominio dell'agente per il routing. Preferisce il campo curato
+    `expertise` (frase-dominio pulita → embedding discriminante). Se assente,
+    ripiega su display_name + description + competenze (segnale più debole: gli
+    slug delle skill diluiscono l'embedding)."""
+    exp = (getattr(spec, "expertise", "") or "").strip()
+    if exp:
+        return f"{getattr(spec, 'display_name', '') or spec.name}. {exp}"
     caps = getattr(spec, "capabilities", None) or []
     caps_txt = ", ".join(str(c) for c in caps if not str(c).endswith("/*"))
     return " ".join(filter(None, [
