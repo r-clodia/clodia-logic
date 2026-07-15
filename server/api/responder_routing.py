@@ -87,7 +87,8 @@ def _rag_titles(collection: str) -> str:
         url = f"{EMBED_URL}/documents?" + urllib.parse.urlencode({"collection": collection})
         with urllib.request.urlopen(url, timeout=6) as r:
             docs = (json.loads(r.read()) or {}).get("documents") or []
-        titles = ", ".join(str(d.get("name") or "") for d in docs if d.get("name"))
+        titles = ", ".join(str(d.get("name") or "").replace("-", " ").replace("_", " ")
+                            for d in docs if d.get("name"))
     except Exception:  # noqa: BLE001
         titles = ""
     _RAG_TITLES_CACHE[collection] = (time.time(), titles)
@@ -105,30 +106,35 @@ def _agent_collections(spec) -> list[str]:
     return list(colls)
 
 
+def _slug_words(cap: str) -> str:
+    """Slug skill → parole di dominio (l'ultimo segmento, trattini→spazi):
+    'tomato/tomato-blue-preventivo' → 'tomato blue preventivo'. Leggero e
+    multilingue: le description dei SKILL.md sono spesso in inglese e verbose →
+    diluiscono l'embedding e sbagliano il match sulle query italiane."""
+    return cap.split("/")[-1].replace("-", " ").replace("_", " ").strip()
+
+
 def _profile_text(spec) -> str:
-    """Profilo-dominio AUTO-DERIVATO da ciò che l'agente sa davvero:
-    - descrizioni in linguaggio naturale delle sue SKILL (non gli slug);
-    - titoli dei documenti delle sue collection RAG (`rag_read`) = knowledge base;
-    - più `expertise` (frase curata) come AUGMENT opzionale.
-    Auto-manutenuto: aggiungi una skill o ingesti un documento → il profilo (e il
-    routing) si aggiornano da soli. Fallback: description se non c'è altro."""
+    """Profilo-dominio IBRIDO, auto-manutenuto:
+    - `expertise` (frase-dominio curata) = segnale forte;
+    - keyword delle SKILL (parole dello slug, non le description verbose/inglesi);
+    - titoli dei documenti delle collection RAG accessibili (la knowledge base) —
+      così 'conosce' ciò che è davvero ingestito (es. i bandi FESR Sardegna).
+    Aggiungi una skill o ingesti un documento → profilo (e routing) si aggiornano.
+    Fallback: description se non c'è nient'altro."""
     parts = [getattr(spec, "display_name", "") or spec.name]
     exp = (getattr(spec, "expertise", "") or "").strip()
     if exp:
         parts.append(exp)
-    # skill → descrizioni (salta i wildcard tipo base-pack/*: generici)
-    for cap in (getattr(spec, "capabilities", None) or []):
-        if str(cap).endswith("/*"):
-            continue
-        d = _skill_description(str(cap))
-        if d:
-            parts.append(d)
-    # knowledge base RAG → titoli documenti (dalle collection accessibili)
+    kw = " ".join(_slug_words(str(c)) for c in (getattr(spec, "capabilities", None) or [])
+                  if not str(c).endswith("/*"))
+    if kw:
+        parts.append(f"Competenze: {kw}")
     for coll in _agent_collections(spec):
         t = _rag_titles(str(coll))
         if t:
             parts.append(f"Conosce documenti su: {t}")
-    if len(parts) == 1:   # solo il nome → usa la description come fallback
+    if len(parts) == 1:   # solo il nome → fallback su description
         d = (getattr(spec, "description", "") or "")[:600]
         if d:
             parts.append(d)
