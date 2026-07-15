@@ -1765,6 +1765,23 @@ class OpenCodeChatSession:
         }
         async with await self._http() as c:
             r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
+            if r.status_code == 404 and "not found" in r.text.lower():
+                # La sessione OpenCode vive solo dentro il suo processo `opencode
+                # serve`: dopo un restart dell'agent-server l'id .ocsession di un
+                # processo precedente è invalido → 404. Ne creo una nuova e riprovo
+                # (perde la storia OpenCode-interna ma RISPONDE invece di fallire;
+                # il contesto arriva comunque dal prompt).
+                LOG.warning("opencode %s: sessione %s non trovata → ricreo",
+                            self.kind, self._oc_session)
+                sr = await c.post(f"{self._base_url}/session", json={})
+                nid = (sr.json() or {}).get("id") if sr.status_code < 400 else None
+                if nid:
+                    self._oc_session = nid
+                    try:
+                        self._ocsession_file.write_text(nid)
+                    except Exception:  # noqa: BLE001
+                        pass
+                    r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
             if r.status_code >= 400:
                 activity_log.append(self.kind, "error",
                                     {"error": f"opencode {r.status_code}", "chat_id": self.chat_id})
