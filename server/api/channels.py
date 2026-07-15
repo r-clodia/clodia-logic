@@ -21,6 +21,7 @@ from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import manager, ProviderNotConnected
 from . import topics_client
 from . import access_log
+from . import responder_routing
 from .agents import _principal_from_request
 
 router = APIRouter()
@@ -231,12 +232,17 @@ def _eligibility(spec, tier: str | None) -> dict:
     return {"eligible": bool(clr_ok and prov_ok), "warn": False}
 
 
-def _pick_responder(participants: list[str], tier: str, tagged: str | None):
-    """AI partecipante taggato (se idoneo), altrimenti il più alto di rango fra gli
-    AI idonei. Idoneità (30 giu 2026): clearance ≥ tier SEMPRE; inoltre, per gli
-    agent NORMAL, anche provider.seal ≥ tier (enforcement duro). I super-agent
-    (clodia) bypassano il vincolo provider → rispondono comunque, ma chi chiama
-    riceve un warning se il provider è sotto il tier (vedi channel_post)."""
+def _pick_responder(participants: list[str], tier: str, tagged: str | None,
+                    message: str = ""):
+    """Chi risponde in un canale. Priorità:
+    1. agente TAGGATO (@nome), se idoneo — override esplicito;
+    2. routing per RILEVANZA: lo specialista (non-super) il cui dominio matcha il
+       messaggio (embedding, zero turni LLM) — così il super-agent non intercetta
+       tutto; fallback al rango se non pertinente o router non disponibile;
+    3. il più alto di RANGO fra gli idonei (il super = Clodia).
+    Idoneità (INVARIATA): clearance ≥ tier SEMPRE; per i NORMAL anche
+    provider.seal ≥ tier (enforcement duro). I super bypassano il vincolo
+    provider (warning se sotto tier)."""
     specs = [registry.get_by_name(n) for n in participants]
 
     def eligible(s) -> bool:
@@ -253,7 +259,26 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None):
         t = next((s for s in ai if s.name == tagged), None)
         if t:
             return t
+    if message and _routing_mode() == "relevance":
+        specialists = [s for s in ai if s.type != "super"]
+        try:
+            hit = responder_routing.pick_by_relevance(specialists, message)
+        except Exception:  # noqa: BLE001
+            hit = None
+        if hit:
+            return hit[0]
     return rank_mod.highest(ai)
+
+
+def _routing_mode() -> str:
+    """Modalità di selezione risponditore: 'relevance' (default) o 'rank'.
+    Configurabile per-edizione via instance_profile.topics_defaults."""
+    try:
+        from .. import instance_profile
+        td = instance_profile.load().topics_defaults or {}
+        return (td.get("responder_routing") or "relevance").strip().lower()
+    except Exception:  # noqa: BLE001
+        return "relevance"
 
 
 def _fmt_msg(m: dict) -> str:
@@ -377,7 +402,7 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
         return {"posted": True, "responder": None}
 
     # 2. scegli il risponditore (tag o rango più alto, con clearance)
-    responder = _pick_responder(participants, tier_real, _tagged(req.content))
+    responder = _pick_responder(participants, tier_real, _tagged(req.content), req.content)
     if responder is None:
         return {"posted": True, "responder": None,
                 "note": "nessun agente AI partecipante con clearance e provider "
@@ -504,7 +529,8 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         forced = registry.get_by_name(responder_hint)
         responder = forced if (forced and _can_access(_effective_clearance(forced), tier_real)) else None
     else:
-        responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""))
+        responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""),
+                                    trigger_text or "")
     if responder is None:
         return None, None
     chat_id = f"chan:{tier}:{name}:{responder.name}"
