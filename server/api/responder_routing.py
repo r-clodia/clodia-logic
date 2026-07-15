@@ -26,7 +26,7 @@ EMBED_URL = os.environ.get("EU_RAG_SEARCH_URL", "http://192.168.1.45:7900").rstr
 # Soglie di routing (calibrabili). cosine su MiniLM multilingue normalizzato.
 # Con il match MULTI-VETTORE (max sui pezzi) i picchi sono più alti → soglia più
 # alta e margine più piccolo che nel vecchio profilo mediato.
-THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.38"))
+THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.50"))
 MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.03"))
 
 # cache profilo: {agent_name: (pieces_hash, [vettori per-pezzo])}
@@ -103,7 +103,7 @@ def _profile_pieces(spec) -> list[str]:
     pieces: list[str] = []
     exp = (getattr(spec, "expertise", "") or "").strip()
     if exp:
-        pieces += [c.strip() for c in re.split(r"[;.\n]", exp) if len(c.strip()) >= 4]
+        pieces += [c.strip() for c in re.split(r"[;,.\n]", exp) if len(c.strip()) >= 4]
     for cap in (getattr(spec, "capabilities", None) or []):
         if str(cap).endswith("/*"):
             continue
