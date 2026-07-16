@@ -895,6 +895,35 @@ async def channel_remove_participant(tier: str, name: str, request: Request) -> 
     return topics_client.set_participant(tier, name, agent, add=False)
 
 
+@router.post("/clodia/channels/{tier}/{name}/participants/internal")
+async def channel_set_participant_internal(tier: str, name: str, request: Request) -> dict:
+    """Aggiunge/rimuove un partecipante su richiesta di un AGENTE (via gateway).
+    Body: {agent, by, add}. Autorizzazione: `by` (il chiamante) deve essere
+    l'owner, un partecipante del canale, o un super-agent — chi è "nella stanza"
+    può gestire la squadra (come invitare in un canale Slack). L'idoneità SEAL
+    dell'agente aggiunto resta enforced al momento della risposta (un agente
+    sotto-tier può entrare ma non risponde). Nessun principal: endpoint interno."""
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    meta = topic.get("meta", {})
+    body = await request.json()
+    agent = (body.get("agent") or "").strip()
+    by = (body.get("by") or "").strip()
+    add = bool(body.get("add", True))
+    if not agent or not by:
+        raise HTTPException(400, "agent e by richiesti")
+    # autorizzazione del CHIAMANTE
+    by_spec = registry.get_by_name(by)
+    is_super = bool(by_spec and getattr(by_spec, "type", None) == "super")
+    if not (is_super or by == meta.get("owner") or by in (meta.get("participants") or [])):
+        raise HTTPException(403, f"'{by}' non è owner/partecipante/super di questo canale")
+    # l'agente aggiunto dev'essere registrato
+    if registry.get_by_name(agent) is None:
+        raise HTTPException(404, f"'{agent}' non esiste: aggiungi un agent/utente registrato")
+    return topics_client.set_participant(tier, name, agent, add=add)
+
+
 @router.get("/clodia/channels/{tier}/{name}/files")
 async def channel_files(tier: str, name: str, request: Request, path: str = "") -> dict:
     topic = topics_client.open_topic(tier, name)
