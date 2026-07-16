@@ -1,0 +1,28 @@
+# Composizione della squadra di un topic nuovo: chiedi di cosa tratta, poi proponi
+# gli agenti più specializzati e meno costosi idonei al tier via topic.suggest_team.
+# L'invito resta owner-only: la skill si ferma alla proposta (marker <!-- invite=... -->).
+version: "1.0.0"
+owner: owner
+status: APPROVED
+input_schema:
+  type: object
+  properties:
+    tier:
+      type: string
+      description: "tier del topic corrente (SEAL-0..4)"
+    description:
+      type: string
+      description: "di cosa tratta il topic, in linguaggio naturale"
+  required: [description]
+output_schema:
+  type: object
+  description: "proposta di squadra presentata all'owner (nessun effetto sui partecipanti)"
+  properties:
+    suggested: {type: array, items: {type: string}}
+    coordinator: {type: string}
+required_tools:
+  - topic.suggest_team
+side_effects: []
+idempotency_policy: at_most_once
+retry_policy:
+  on_conflict: escalate

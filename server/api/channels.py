@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import re
 from datetime import datetime, timezone
 
@@ -230,6 +231,102 @@ def _eligibility(spec, tier: str | None) -> dict:
     if spec.type == "super":
         return {"eligible": True, "warn": not prov_ok}
     return {"eligible": bool(clr_ok and prov_ok), "warn": False}
+
+
+# --- Composizione squadra alla creazione di un topic ----------------------
+# Criterio (richiesta Davide 16 lug): dato una breve descrizione del topic,
+# proporre gli agenti PIÙ SPECIALIZZATI e MENO COSTOSI idonei al tier. Riusa la
+# rilevanza (embedding, come il routing) + l'idoneità SEAL + un proxy di costo.
+
+# prezzo relativo per famiglia di modello (proxy del token price): opus è il
+# più caro, i modelli piccoli/aperti i più economici. Default prudente=standard.
+_MODEL_PRICE = [
+    ("opus", 3, "premium"), ("gpt-5", 3, "premium"),
+    ("sonnet", 2, "standard"), ("gpt-4", 2, "standard"), ("glm", 2, "standard"),
+    ("haiku", 1, "economy"), ("gpt-oss", 1, "economy"), ("mini", 1, "economy"),
+    ("nano", 1, "economy"), ("mistral", 1, "economy"),
+]
+# soglia di rilevanza per ENTRARE nella squadra proposta: più bassa del routing
+# runtime (0.50) perché qui vogliamo una squadra, non un singolo vincitore.
+TEAM_THRESHOLD = float(os.environ.get("TEAM_SUGGEST_THRESHOLD", "0.34"))
+TEAM_MAX_SPECIALISTS = int(os.environ.get("TEAM_MAX_SPECIALISTS", "3"))
+
+
+def _agent_cost(spec) -> dict:
+    """Proxy di costo di un agente: fascia di prezzo del modello effettivo +
+    numero di skill (peso del system prompt per turno)."""
+    from ..sdk_runtime.session import agent_effective_model, agent_effective_provider
+    model = (agent_effective_model(spec.name) or getattr(spec, "model", None) or "").lower()
+    price, label = 2, "standard"
+    for key, p, lab in _MODEL_PRICE:
+        if key in model:
+            price, label = p, lab
+            break
+    if getattr(spec, "type", None) == "super":
+        label = "premium"  # generalista full-power: prompt grande + top model
+        price = max(price, 3)
+    return {
+        "price": price, "label": label,
+        "skills": len(getattr(spec, "skills", []) or []),
+        "provider": agent_effective_provider(spec.name),
+        "model": model or None,
+    }
+
+
+def suggest_team(tier: str, description: str) -> dict:
+    """Proposta di squadra per un topic di dato tier data una descrizione.
+    Ritorna candidati (idonei ordinati per rilevanza+costo), `suggested` (gli
+    specialisti proposti) e `coordinator` (super-agent idoneo, opzionale)."""
+    tier = _norm(tier)
+    specs = [s for s in registry.list() if s and s.type in ("super", "normal")]
+    elig = {s.name: _eligibility(s, tier) for s in specs}
+    specialists = [s for s in specs
+                   if s.type != "super" and elig[s.name]["eligible"]]
+    scored = responder_routing.score_specialists(specialists, description or "")
+    score_of = {s.name: sc for s, sc in scored}
+
+    def _cost_of(s):
+        return _agent_cost(s)
+
+    rows = []
+    for s in specs:
+        c = _cost_of(s)
+        rows.append({
+            "name": s.name,
+            "display": getattr(s, "display_name", s.name),
+            "type": s.type,
+            "score": round(score_of.get(s.name, 0.0), 3),
+            "eligible": elig[s.name]["eligible"],
+            "warn": elig[s.name]["warn"],
+            "cost": c,
+            "expertise": (getattr(s, "expertise", "") or "")[:220],
+        })
+    # ordina: idonei prima, poi per rilevanza desc, a parità il più economico
+    rows.sort(key=lambda r: (r["eligible"], r["score"], -r["cost"]["price"]),
+              reverse=True)
+
+    # specialisti proposti: sopra soglia, in ordine di rilevanza, cap N,
+    # a parità di rilevanza (entro 0.03) preferisci il più economico
+    above = [(s, sc) for s, sc in scored if sc >= TEAM_THRESHOLD]
+
+    def _rank_key(item):
+        s, sc = item
+        return (-sc, _cost_of(s)["price"])
+    above.sort(key=_rank_key)
+    suggested = [s.name for s, _ in above[:TEAM_MAX_SPECIALISTS]]
+
+    supers = [s for s in specs if s.type == "super" and elig[s.name]["eligible"]]
+    coordinator = supers[0].name if supers else None
+
+    return {
+        "tier": tier,
+        "description": description or "",
+        "candidates": rows,
+        "suggested": suggested,
+        "coordinator": coordinator,
+        "threshold": TEAM_THRESHOLD,
+        "embed_ok": bool(scored) or not specialists,
+    }
 
 
 def _pick_responder(participants: list[str], tier: str, tagged: str | None,
@@ -616,13 +713,27 @@ async def channel_create(request: Request) -> dict:
         from . import topic_playbooks
         text = topic_playbooks.welcome_message(
             name, created.get("title") or name, created.get("type") or "",
-            created.get("participants") or [])
+            created.get("participants") or [],
+            contact_agent=created.get("contact_agent") or "clodia")
         if text:
             topics_client.post_message(
                 tier, name, created.get("contact_agent") or "clodia", text, kind="ai")
     except Exception as e:  # noqa: BLE001
         LOG.warning("welcome playbook non postato su %s/%s: %s", tier, name, str(e)[:120])
     return {"tier": tier, "name": name, "meta": created}
+
+
+@router.post("/clodia/channels/suggest-team")
+async def channel_suggest_team(request: Request) -> dict:
+    """Proposta di squadra per un nuovo topic. Input: {tier, description}.
+    Read-only: non modifica partecipanti (l'invito resta owner-only via UI).
+    Usato dal tool gateway `topic.suggest_team` e, in futuro, dalla webui.
+    Non richiede principal: espone solo roster/rilevanza/costo (già visibili in
+    UI), non tocca partecipanti — così il proxy interno del gateway può servirlo."""
+    body = await request.json()
+    tier = body.get("tier") or "SEAL-0"
+    description = (body.get("description") or "").strip()
+    return suggest_team(tier, description)
 
 
 @router.post("/clodia/dms")
