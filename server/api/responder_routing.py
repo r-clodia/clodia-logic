@@ -148,29 +148,41 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
-def pick_by_relevance(specialists: list, message: str):
-    """Fra gli specialisti (idonei, NON super), ritorna quello più pertinente al
-    messaggio — score = MAX cosine sui pezzi del suo profilo — se supera la soglia
-    E batte il 2° del margine. Altrimenti None (→ fallback a rango/Clodia)."""
+def score_specialists(specialists: list, message: str) -> list[tuple]:
+    """[(spec, score)] ordinato per rilevanza (max-sim sui pezzi del profilo).
+    [] se /embed non disponibile o nessun profilo. Base sia del picker sia del
+    TRACE del routing mostrato in UI."""
     if not specialists:
-        return None
+        return []
     mv = embed_text(message)
     if not mv:
-        return None
+        return []
     scored = []
     for s in specialists:
         vecs = _profile_vecs(s)
         if vecs:
             scored.append((s, max(_cosine(mv, v) for v in vecs)))
+    scored.sort(key=lambda x: x[1], reverse=True)
+    return scored
+
+
+def decide(scored: list):
+    """Applica soglia+margine a uno scored già ordinato → (spec, score) o None."""
     if not scored:
         return None
-    scored.sort(key=lambda x: x[1], reverse=True)
     best, best_score = scored[0]
     if best_score < THRESHOLD:
         return None
     if len(scored) > 1 and (best_score - scored[1][1]) < MARGIN:
         return None
     return best, best_score
+
+
+def pick_by_relevance(specialists: list, message: str):
+    """Fra gli specialisti (idonei, NON super), ritorna (spec, score) del più
+    pertinente se supera soglia E batte il 2° del margine, altrimenti None
+    (→ fallback a rango/Clodia)."""
+    return decide(score_specialists(specialists, message))
 
 
 def invalidate_cache(name: str | None = None) -> None:
