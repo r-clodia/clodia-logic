@@ -56,26 +56,11 @@ def _job_view(prop: dict) -> dict:
 
 
 def _job_decide(prop: dict, choice: str, comment: str) -> dict:
-    from ..scheduler import db, proposals, scheduler
-    if choice.startswith("approva"):
-        proposals.resolve(prop["id"], "approved", comment)
-        import sqlite3
-        try:
-            job = db.create_job(
-                name=prop["name"], cron_expr=prop["cron_expr"],
-                prompt=prop["prompt"], agent=prop["agent"],
-                enabled=bool(prop.get("enabled", True)))
-        except sqlite3.IntegrityError:
-            raise HTTPException(409, f"esiste già un job con nome '{prop['name']}'")
-        if job.get("enabled"):
-            try:
-                scheduler.register_job(job)
-            except Exception as e:  # noqa: BLE001
-                raise HTTPException(500, f"job creato (id={job['id']}) ma "
-                                         f"registrazione scheduler fallita: {e}")
-        return {"ok": True, "outcome": "approvato", "job_id": job["id"]}
-    proposals.resolve(prop["id"], "rejected", comment)
-    return {"ok": True, "outcome": "annullato"}
+    from ..scheduler import proposals
+    try:
+        return proposals.apply_decision(prop, choice, comment)
+    except proposals.ProposalError as e:
+        raise HTTPException(e.status, e.detail)
 
 
 def _resolve(token: str) -> dict:

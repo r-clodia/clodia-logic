@@ -94,3 +94,37 @@ def resolve(pid: int, status: str, comment: str = "") -> Optional[dict]:
 
 def list_pending() -> list[dict]:
     return [d for d in _all() if d.get("status") == "pending"]
+
+
+class ProposalError(Exception):
+    """Errore applicativo con status HTTP suggerito (tradotto dal layer web)."""
+    def __init__(self, status: int, detail: str):
+        self.status = status
+        self.detail = detail
+        super().__init__(detail)
+
+
+def apply_decision(prop: dict, choice: str, comment: str = "") -> dict:
+    """Applica la decisione dell'owner su una proposta (approva → crea+registra
+    il job; annulla → rifiuta). Condivisa dal gate SINCRONO (popup in chat) e da
+    quello ASINCRONO (link firmato)."""
+    from . import db, scheduler
+    import sqlite3
+    if choice.startswith("approva"):
+        resolve(prop["id"], "approved", comment)
+        try:
+            job = db.create_job(
+                name=prop["name"], cron_expr=prop["cron_expr"],
+                prompt=prop["prompt"], agent=prop["agent"],
+                enabled=bool(prop.get("enabled", True)))
+        except sqlite3.IntegrityError:
+            raise ProposalError(409, f"esiste già un job con nome '{prop['name']}'")
+        if job.get("enabled"):
+            try:
+                scheduler.register_job(job)
+            except Exception as e:  # noqa: BLE001
+                raise ProposalError(500, f"job creato (id={job['id']}) ma "
+                                         f"registrazione scheduler fallita: {e}")
+        return {"ok": True, "outcome": "approvato", "job_id": job["id"]}
+    resolve(prop["id"], "rejected", comment)
+    return {"ok": True, "outcome": "annullato"}
