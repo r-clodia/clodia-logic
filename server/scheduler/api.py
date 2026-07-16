@@ -13,7 +13,7 @@ Validazione cron: rifiuta espressioni invalide con 422.
 import sqlite3
 from typing import Optional
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import db, scheduler, nl_schedule
@@ -158,33 +158,61 @@ async def api_create_job(req: JobCreate):
 
 @router.post("/clodia/jobs/propose", status_code=201)
 async def api_propose_job(req: JobPropose):
-    """Un AGENTE propone un job: NON lo crea. Registra una proposta pendente e
-    notifica l'owner con un link firmato one-time (gate). Il job nasce solo
-    all'approvazione (POST /gate/{token}/decide → 'Approva'). Sicurezza: un job
-    è esecuzione autonoma ricorrente → deve passare dall'owner (Prima Legge)."""
-    from ..api import gate_sign
-    from ..workflows import notify
+    """Un AGENTE propone un job: NON lo crea. Registra una proposta pendente; il
+    job nasce solo all'approvazione dell'owner. Gate SINCRONO: la conferma avviene
+    con un popup in chat (l'owner è presente) via POST /clodia/jobs/proposals/{id}/
+    decide. Sicurezza: un job è esecuzione autonoma ricorrente → deve passare
+    dall'owner (Prima Legge). Il link firmato asincrono resta per i workflow."""
     from . import proposals
+    from ..api import gate_sign
     cron = _resolve_cron(req.cron_expr, req.schedule_text)
     _require_valid_agent(req.agent)
     if db.get_job_by_name(req.name) is not None:
         raise HTTPException(status_code=409, detail=f"job name '{req.name}' already exists")
-    nonce = gate_sign.new_nonce()
     prop = proposals.create(
         name=req.name, cron_expr=cron, prompt=req.prompt, agent=req.agent,
-        enabled=req.enabled, requested_by=(req.requested_by or "agente"), nonce=nonce)
-    token = gate_sign.make_job(prop["id"], nonce)
-    channels = notify.notify_job_gate(prop, token)
+        enabled=req.enabled, requested_by=(req.requested_by or "agente"),
+        nonce=gate_sign.new_nonce())
     return {
         "proposal_id": prop["id"],
         "status": "pending",
         "name": prop["name"],
         "cron_expr": cron,
         "agent": prop["agent"],
-        "notified": channels,
-        "message": ("Proposta inviata all'owner per approvazione. Il job sarà "
-                    "creato solo dopo l'ok dal link di gate."),
+        "prompt": prop["prompt"],
+        # Istruzione per l'agente: presenta il job e chiudi con questo marker, così
+        # la webui mostra il popup di conferma Approva/Annulla all'owner.
+        "render_marker": f"<!-- job-proposal={prop['id']} -->",
+        "message": ("Proposta registrata. Presenta il job all'owner e includi il "
+                    "marker `render_marker` in fondo al messaggio: comparirà un "
+                    "popup Approva/Annulla. Il job nasce solo se l'owner approva."),
     }
+
+
+@router.post("/clodia/jobs/proposals/{pid}/decide")
+async def api_decide_proposal(pid: int, request: Request):
+    """Conferma SINCRONA di una proposta (popup in chat). Autorizzata: solo un
+    principal umano admin/superadmin (l'owner). Approva → crea+registra il job."""
+    from . import proposals
+    from ..api.admin import is_admin
+    from ..api.agents import _principal_from_request
+    principal = _principal_from_request(request)
+    if not is_admin(principal):
+        raise HTTPException(403, "solo l'owner (admin) può approvare un job")
+    prop = proposals.get(pid)
+    if not prop:
+        raise HTTPException(404, "proposta non trovata")
+    if prop.get("status") != "pending":
+        raise HTTPException(409, "questa proposta non è più in attesa")
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    choice = (body.get("choice") or "").strip().lower()
+    try:
+        return proposals.apply_decision(prop, choice, body.get("comment", ""))
+    except proposals.ProposalError as e:
+        raise HTTPException(e.status, e.detail)
 
 
 @router.patch("/clodia/jobs/{job_id}")
