@@ -713,7 +713,8 @@ async def channel_create(request: Request) -> dict:
         from . import topic_playbooks
         text = topic_playbooks.welcome_message(
             name, created.get("title") or name, created.get("type") or "",
-            created.get("participants") or [])
+            created.get("participants") or [],
+            contact_agent=created.get("contact_agent") or "clodia")
         if text:
             topics_client.post_message(
                 tier, name, created.get("contact_agent") or "clodia", text, kind="ai")

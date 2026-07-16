@@ -88,17 +88,30 @@ def pills_for(topic_type: str, participants: list[str]) -> list[str]:
     return out
 
 
+def _coordinator_can_compose(contact_agent: str | None) -> bool:
+    """True se il contact agent è un super-agent (coordinatore): in quel caso il
+    benvenuto invita a descrivere il topic per comporre la squadra (skill
+    team-composition). I super-agent hanno tutto il catalog → hanno la skill."""
+    if not contact_agent:
+        return False
+    spec = registry.get_by_name(contact_agent)
+    return bool(spec and getattr(spec, "type", None) == "super")
+
+
 def welcome_message(name: str, title: str, topic_type: str,
-                    participants: list[str]) -> str | None:
+                    participants: list[str],
+                    contact_agent: str | None = None) -> str | None:
     """Testo del benvenuto (o None se l'edizione non lo prevede).
 
-    Si posta se ci sono pills per il tipo, oppure se l'edizione dichiara i
-    tipi nel profilo (edizione verticale): le istanze storiche senza types
-    né playbook non cambiano comportamento."""
+    Si posta se ci sono pills per il tipo, se l'edizione dichiara i tipi nel
+    profilo (edizione verticale), oppure se il contact agent è un coordinatore
+    (super-agent) che può comporre la squadra: in quel caso chiede di cosa
+    tratta il topic per proporre gli agenti da invitare (team-composition)."""
     pills = pills_for(topic_type, participants)
     prof = instance_profile.load()
     types_conf = (prof.topics_defaults or {}).get("types") or []
-    if not pills and not types_conf:
+    compose = _coordinator_can_compose(contact_agent)
+    if not pills and not types_conf and not compose:
         return None
     vocab_topic = prof.vocabulary.get("topic")
     if isinstance(vocab_topic, dict):
@@ -118,6 +131,12 @@ def welcome_message(name: str, title: str, topic_type: str,
     if pills:
         lines.append("Posso partire subito con una di queste attività:")
         lines.append(f"<!-- choices={','.join(pills)} -->")
+    elif compose:
+        # team-composition: chiedi di cosa tratta per proporre la squadra
+        lines.append(
+            f"Di cosa tratta {questo.lower()} {noun}? Descrivimelo in una riga e "
+            "ti propongo la **squadra di agenti** più adatta da invitare — i più "
+            "specializzati e meno costosi per il caso.")
     else:
         lines.append("Descrivimi l'esigenza e imposto il lavoro.")
     return "\n\n".join(lines)
