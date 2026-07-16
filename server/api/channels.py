@@ -233,7 +233,7 @@ def _eligibility(spec, tier: str | None) -> dict:
 
 
 def _pick_responder(participants: list[str], tier: str, tagged: str | None,
-                    message: str = ""):
+                    message: str = "", trace: dict | None = None):
     """Chi risponde in un canale. Priorità:
     1. agente TAGGATO (@nome), se idoneo — override esplicito;
     2. routing per RILEVANZA: lo specialista (non-super) il cui dominio matcha il
@@ -255,19 +255,42 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         return True
 
     ai = [s for s in specs if eligible(s)]
+
+    def _record(chosen, reason: str, mode: str, scored=None):
+        if trace is None:
+            return chosen
+        trace.update({
+            "tier": tier,
+            "mode": mode,
+            "reason": reason,
+            "chosen": getattr(chosen, "name", None),
+            "threshold": responder_routing.THRESHOLD,
+            "margin": responder_routing.MARGIN,
+            "candidates": [
+                {"name": s.name, "score": round(sc, 3),
+                 "super": s.type == "super"}
+                for s, sc in (scored or [])
+            ],
+            "eligible": [s.name for s in ai],
+        })
+        return chosen
+
     if tagged:
         t = next((s for s in ai if s.name == tagged), None)
         if t:
-            return t
-    if message and _routing_mode() == "relevance":
+            return _record(t, "tagged", "tag")
+    mode = _routing_mode()
+    if message and mode == "relevance":
         specialists = [s for s in ai if s.type != "super"]
         try:
-            hit = responder_routing.pick_by_relevance(specialists, message)
+            scored = responder_routing.score_specialists(specialists, message)
+            hit = responder_routing.decide(scored)
         except Exception:  # noqa: BLE001
-            hit = None
+            scored, hit = [], None
         if hit:
-            return hit[0]
-    return rank_mod.highest(ai)
+            return _record(hit[0], "relevance", "relevance", scored)
+        return _record(rank_mod.highest(ai), "fallback-rank", "relevance", scored)
+    return _record(rank_mod.highest(ai), "rank", "rank")
 
 
 def _routing_mode() -> str:
@@ -402,7 +425,19 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
         return {"posted": True, "responder": None}
 
     # 2. scegli il risponditore (tag o rango più alto, con clearance)
-    responder = _pick_responder(participants, tier_real, _tagged(req.content), req.content)
+    routing: dict = {}
+    responder = _pick_responder(participants, tier_real, _tagged(req.content),
+                                req.content, trace=routing)
+    if routing.get("chosen"):
+        # blocco "🧭 Routing" in chat: mostra candidati/punteggi e perché
+        try:
+            await bus.publish(Event(
+                type="routing_decision",
+                payload={"tier": tier, "name": name, **routing},
+                timestamp=datetime.now(timezone.utc),
+            ))
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("routing_decision non pubblicato: %s", e)
     if responder is None:
         return {"posted": True, "responder": None,
                 "note": "nessun agente AI partecipante con clearance e provider "
