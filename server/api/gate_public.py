@@ -18,6 +18,66 @@ LOG = logging.getLogger("agent-server.api.gate_public")
 router = APIRouter()
 
 
+# ---------------------------------------------------------------------------
+# Gate delle PROPOSTE DI JOB (stessa pagina/token del gate workflow, kind="job")
+# ---------------------------------------------------------------------------
+
+def _resolve_job(token: str) -> dict:
+    payload = gate_sign.verify_job(token)
+    if not payload:
+        raise HTTPException(403, "link non valido o scaduto")
+    from ..scheduler import proposals
+    prop = proposals.get(payload["job"])
+    if not prop:
+        raise HTTPException(404, "proposta non trovata")
+    if prop.get("status") != "pending" or not prop.get("nonce"):
+        raise HTTPException(409, "questa proposta non è più in attesa")
+    if prop.get("nonce") != payload["nonce"]:
+        raise HTTPException(403, "link già usato o non più valido")
+    return prop
+
+
+def _job_view(prop: dict) -> dict:
+    """Stessa shape del gate workflow → la pagina /gate la rende senza modifiche."""
+    sched = prop.get("cron_expr") or "—"
+    summary = (f"Agente al fire: {prop.get('agent')}\n"
+               f"Schedule (cron): {sched}\n"
+               f"Abilitato: {'sì' if prop.get('enabled', True) else 'no'}\n\n"
+               f"Prompt del job:\n{prop.get('prompt', '')}")
+    return {
+        "run_id": f"job:{prop['id']}",
+        "title": prop.get("name", ""),
+        "workflow": f"Proposta di job (da {prop.get('requested_by') or 'agente'})",
+        "lane": f"schedule {sched}",
+        "summary": summary,
+        "artefatto": None,
+        "choices": ["Approva", "Annulla"],
+    }
+
+
+def _job_decide(prop: dict, choice: str, comment: str) -> dict:
+    from ..scheduler import db, proposals, scheduler
+    if choice.startswith("approva"):
+        proposals.resolve(prop["id"], "approved", comment)
+        import sqlite3
+        try:
+            job = db.create_job(
+                name=prop["name"], cron_expr=prop["cron_expr"],
+                prompt=prop["prompt"], agent=prop["agent"],
+                enabled=bool(prop.get("enabled", True)))
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, f"esiste già un job con nome '{prop['name']}'")
+        if job.get("enabled"):
+            try:
+                scheduler.register_job(job)
+            except Exception as e:  # noqa: BLE001
+                raise HTTPException(500, f"job creato (id={job['id']}) ma "
+                                         f"registrazione scheduler fallita: {e}")
+        return {"ok": True, "outcome": "approvato", "job_id": job["id"]}
+    proposals.resolve(prop["id"], "rejected", comment)
+    return {"ok": True, "outcome": "annullato"}
+
+
 def _resolve(token: str) -> dict:
     """Verifica firma + scadenza + one-time (nonce), ritorna il run in gate."""
     payload = gate_sign.verify(token)
@@ -35,7 +95,9 @@ def _resolve(token: str) -> dict:
 
 @router.get("/gate/{token}")
 async def gate_view(token: str) -> dict:
-    """Dati per la pagina di decisione (no login)."""
+    """Dati per la pagina di decisione (no login). Kind workflow o job."""
+    if gate_sign.token_kind(token) == "job":
+        return _job_view(_resolve_job(token))
     run = _resolve(token)
     idx = run["current"]
     stage = run["stages"][idx]
@@ -60,6 +122,9 @@ class Decide(BaseModel):
 @router.post("/gate/{token}/decide")
 async def gate_decide(token: str, body: Decide) -> dict:
     """Applica la decisione (one-time): consuma il nonce e risolve il gate."""
+    if gate_sign.token_kind(token) == "job":
+        prop = _resolve_job(token)
+        return _job_decide(prop, (body.choice or "").strip().lower(), body.comment)
     run = _resolve(token)
     idx = run["current"]
     choice = (body.choice or "").strip().lower()

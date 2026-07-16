@@ -87,6 +87,33 @@ def _dispatch(run: dict, subject: str, text: str) -> list[str]:
     return sent
 
 
+def _platform_owner() -> str:
+    """Nome dell'owner umano della piattaforma (primo human `role: superadmin`),
+    a cui notificare le proposte di job. Fallback: primo human registrato."""
+    from ..agents.loader import registry
+    humans = [s for s in registry.list() if getattr(s, "type", None) == "human"]
+    for s in humans:
+        if getattr(s, "role", None) == "superadmin":
+            return s.name
+    return humans[0].name if humans else ""
+
+
+def notify_job_gate(proposal: dict, token: str) -> list[str]:
+    """Notifica all'owner una PROPOSTA DI JOB: link firmato one-time al gate."""
+    url = f"{_webui_url()}/gate/{token}" if _webui_url() else f"/gate/{token}"
+    lines = [
+        f"L'agente «{proposal.get('requested_by') or '?'}» propone un job schedulato:",
+        f"• nome: {proposal.get('name')}",
+        f"• schedule (cron): {proposal.get('cron_expr')}",
+        f"• agente al fire: {proposal.get('agent')}",
+        "",
+        f"Approva o annulla (link monouso): {url}",
+    ]
+    fake_run = {"wf_owner": _platform_owner(),
+                "requested_by": proposal.get("requested_by")}
+    return _dispatch(fake_run, "🔔 Proposta di job da approvare", "\n".join(lines))
+
+
 def notify_gate(run: dict, token: str, artefatto: str | None) -> None:
     """Notifica un gate: link firmato alla pagina di decisione + artefatto."""
     lane = run["stages"][run["current"]]["lane"]
