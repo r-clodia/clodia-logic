@@ -38,6 +38,17 @@ class JobCreate(BaseModel):
     enabled: bool = True
 
 
+class JobPropose(BaseModel):
+    name: str = Field(..., min_length=1, max_length=200)
+    cron_expr: Optional[str] = Field(None, max_length=200)
+    schedule_text: Optional[str] = Field(None, max_length=200)
+    prompt: str = Field(..., min_length=1)
+    agent: str = Field("clodia", min_length=1, max_length=100)
+    enabled: bool = True
+    # chi propone (impostato dal gateway dall'identità dell'agente chiamante)
+    requested_by: str = Field("", max_length=100)
+
+
 class JobUpdate(BaseModel):
     name: Optional[str] = Field(None, min_length=1, max_length=200)
     cron_expr: Optional[str] = Field(None, min_length=1, max_length=200)
@@ -143,6 +154,37 @@ async def api_create_job(req: JobCreate):
                 detail=f"job created (id={job['id']}) but scheduler registration failed: {e}",
             )
     return job
+
+
+@router.post("/clodia/jobs/propose", status_code=201)
+async def api_propose_job(req: JobPropose):
+    """Un AGENTE propone un job: NON lo crea. Registra una proposta pendente e
+    notifica l'owner con un link firmato one-time (gate). Il job nasce solo
+    all'approvazione (POST /gate/{token}/decide → 'Approva'). Sicurezza: un job
+    è esecuzione autonoma ricorrente → deve passare dall'owner (Prima Legge)."""
+    from ..api import gate_sign
+    from ..workflows import notify
+    from . import proposals
+    cron = _resolve_cron(req.cron_expr, req.schedule_text)
+    _require_valid_agent(req.agent)
+    if db.get_job_by_name(req.name) is not None:
+        raise HTTPException(status_code=409, detail=f"job name '{req.name}' already exists")
+    nonce = gate_sign.new_nonce()
+    prop = proposals.create(
+        name=req.name, cron_expr=cron, prompt=req.prompt, agent=req.agent,
+        enabled=req.enabled, requested_by=(req.requested_by or "agente"), nonce=nonce)
+    token = gate_sign.make_job(prop["id"], nonce)
+    channels = notify.notify_job_gate(prop, token)
+    return {
+        "proposal_id": prop["id"],
+        "status": "pending",
+        "name": prop["name"],
+        "cron_expr": cron,
+        "agent": prop["agent"],
+        "notified": channels,
+        "message": ("Proposta inviata all'owner per approvazione. Il job sarà "
+                    "creato solo dopo l'ok dal link di gate."),
+    }
 
 
 @router.patch("/clodia/jobs/{job_id}")
