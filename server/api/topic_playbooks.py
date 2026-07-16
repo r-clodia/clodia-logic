@@ -128,15 +128,17 @@ def welcome_message(name: str, title: str, topic_type: str,
     fem = noun.lower().endswith("a")
     questo, pronto = ("Questa", "pronta") if fem else ("Questo", "pronto")
     lines = [f"Ciao! {questo} {noun} — **{title or name}** ({label}) — è {pronto}."]
-    if pills:
-        lines.append("Posso partire subito con una di queste attività:")
-        lines.append(f"<!-- choices={','.join(pills)} -->")
-    elif compose:
-        # team-composition: chiedi di cosa tratta per proporre la squadra
+    if compose:
+        # team-composition PRIMA di tutto: in un topic nuovo si compone la squadra,
+        # poi si pianifica. Ha precedenza sulle pills di planning (che tornano
+        # naturali dopo, quando gli specialisti sono a bordo).
         lines.append(
             f"Di cosa tratta {questo.lower()} {noun}? Descrivimelo in una riga e "
             "ti propongo la **squadra di agenti** più adatta da invitare — i più "
             "specializzati e meno costosi per il caso.")
+    elif pills:
+        lines.append("Posso partire subito con una di queste attività:")
+        lines.append(f"<!-- choices={','.join(pills)} -->")
     else:
         lines.append("Descrivimi l'esigenza e imposto il lavoro.")
     return "\n\n".join(lines)
