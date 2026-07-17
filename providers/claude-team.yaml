@@ -1,0 +1,47 @@
+# Provider Claude Team (abbonamento business claude.ai) — pezzo di sistema CLONABILE.
+# Solo DEFINIZIONE (catalogo), MAI credenziali (→ vault del gateway). Il flusso
+# OAuth+PKCE (login su claude.ai) è lo stesso di Claude Pro/Max (campo `flow`):
+# la distinzione è CONTRATTUALE (il piano dell'account che fa login), non tecnica.
+#
+# Termini VERIFICATI in fonte primaria Anthropic (18 lug 2026):
+#   • Claude for Work (Team/Enterprise) è governato dai COMMERCIAL TERMS, non dai
+#     Consumer Terms → https://www.anthropic.com/legal/commercial-terms
+#   • No-training garantito: "Anthropic may not train models on Customer Content".
+#   • DPA art. 28 + SCC incorporato automaticamente nei Commercial Terms
+#     → https://www.anthropic.com/legal/data-processing-addendum
+#   • Data residency EU / US-only inference = feature ENTERPRISE-only. Su Team
+#     l'inference resta US (mercato UE ≠ residenza del dato UE).
+#   • Retention configurabile e Compliance API = Enterprise-only; Team = standard.
+# Rispetto a Claude Pro/Max (consumer, senza DPA, training possibile): Team ha
+# DPA + no-training contrattuali → un gradino sopra. Ma US-residency → SEAL-1,
+# NON adatto di default ai dati che richiedono residenza EU (usare aws-region-eu).
+name: Claude Team
+# Meccanismo: login-abbonamento OAuth+PKCE su claude.ai → CLAUDE_CODE_OAUTH_TOKEN.
+# NB: identico a claude-pro-max; l'owner deve fare login con l'account TEAM.
+mechanism: subscription
+sdk: claude
+flow: anthropic
+# Preferenza entro l'SDK claude: dopo l'API commerciale (10, ZDR enterprise
+# disponibile), prima dell'abbonamento consumer Pro/Max (20).
+priority: 15
+models: ["claude-*"]
+
+# ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) — SEAL eff = min(SOV-2/3/7)
+sovereignty:
+  seal: SEAL-1
+  assessment: { SOV-2: SEAL-1, SOV-3: SEAL-1, SOV-7: SEAL-1 }
+  dimensions:
+    jurisdiction: us            # Anthropic PBC; foro Irlanda per sottoscrittori EEA
+    dpa: true                   # DPA commerciale art. 28 + SCC (Commercial Terms)
+    dpa_url: "https://www.anthropic.com/legal/commercial-terms"
+    no_training: true           # no-training su Customer Content (Commercial Terms)
+    data_residency: us          # US-only/EU residency è Enterprise-only, non Team
+    retention: standard         # controlli retention = Enterprise-only; niente ZDR su Team
+    cloud_act_exposed: true
+  note: >
+    Abbonamento business sotto Commercial Terms: DPA + no-training contrattuali
+    (SOV-3=SEAL-1, meglio del consumer Pro/Max). Trattamento US e controllo
+    Anthropic PBC (CLOUD Act) → giurisdizionale, non sovrano del dato. SEAL
+    effettivo = SEAL-1: adatto a dati internal (SEAL-0/1), NON a dati confidenziali
+    con residenza EU (per quelli: aws-region-eu = SEAL-2). Distinzione Team vs
+    Pro/Max non è verificabile tecnicamente: dipende dall'account usato al login.
