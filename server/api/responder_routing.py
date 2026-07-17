@@ -105,9 +105,27 @@ def _profile_pieces(spec) -> list[str]:
     if exp:
         pieces += [c.strip() for c in re.split(r"[;,.\n]", exp) if len(c.strip()) >= 4]
     for cap in (getattr(spec, "capabilities", None) or []):
-        if str(cap).endswith("/*"):
+        cap = str(cap)
+        if cap.endswith("/*"):
+            # Wildcard di pack (standard per gli agenti installati da pack):
+            # espandi nelle skill reali, altrimenti il profilo perde proprio i
+            # segnali di dominio più sharp (es. commercialista con SOLO
+            # wildcard → score 0.08 su "bilancio provvisorio", che da slug
+            # farebbe 0.80). base-pack/logic esclusi: skill di piattaforma
+            # comuni a tutti gli agenti = nessun segnale discriminante.
+            pack = cap[:-2]
+            if pack in ("base-pack", "logic"):
+                continue
+            try:
+                from ..agents.skill_sync import _pack_skill_names
+                for skill in _pack_skill_names(pack):
+                    w = _slug_words(skill)
+                    if w:
+                        pieces.append(w)
+            except Exception:  # noqa: BLE001 — best-effort, profilo resta valido
+                pass
             continue
-        w = _slug_words(str(cap))
+        w = _slug_words(cap)
         if w:
             pieces.append(w)
     for coll in _agent_collections(spec):
