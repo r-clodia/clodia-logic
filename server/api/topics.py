@@ -871,7 +871,7 @@ def _download_scope(tier: str, name: str, path: str) -> str:
 
 
 @router.get("/topics/{tier}/{name}/download-url")
-async def topic_download_url(
+def topic_download_url(
     request: Request,
     tier: str,
     name: str,
@@ -894,7 +894,7 @@ async def topic_download_url(
 
 
 @router.get("/topics/{tier}/{name}/download")
-async def download_topic_file(
+def download_topic_file(
     request: Request,
     tier: str,
     name: str,

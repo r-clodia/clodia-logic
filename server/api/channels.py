@@ -826,7 +826,7 @@ def _active_responders(tier: str, name: str, participants: list[str]) -> list[st
 
 
 @router.get("/clodia/channels/{tier}/{name}")
-async def channel_open(tier: str, name: str, request: Request) -> dict:
+def channel_open(tier: str, name: str, request: Request) -> dict:
     """Meta del canale (owner, participants, tier, summary/tldr) per la UI.
     Solo i partecipanti/owner possono aprirlo."""
     topic = topics_client.open_topic(tier, name)
@@ -840,7 +840,7 @@ async def channel_open(tier: str, name: str, request: Request) -> dict:
 
 
 @router.get("/clodia/channels/{tier}/{name}/eligibility")
-async def channel_eligibility(tier: str, name: str, request: Request) -> dict:
+def channel_eligibility(tier: str, name: str, request: Request) -> dict:
     """Idoneità di ogni AeI registrato rispetto al tier del topic.
     Usato dalla UI per (a) nascondere i partecipanti non idonei — tranne i super,
     mostrati con ⚠️ — e (b) filtrare il dropdown «aggiungi agente»."""
