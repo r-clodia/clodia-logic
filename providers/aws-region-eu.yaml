@@ -13,7 +13,7 @@ extra_env:
   CLAUDE_CODE_USE_BEDROCK: "1"
   AWS_REGION: eu-west-1
   ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-4-6-v1"
-  ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-4-6"
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-5"
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 # SDK di esecuzione: i modelli Claude via Bedrock.
 sdk: claude
