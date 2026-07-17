@@ -92,6 +92,26 @@ Protocollo obbligatorio, nell'ordine:
 4. Verifica post: conteggi tabelle sorgente vs destinazione.
 5. Report: cosa è stato migrato, conteggi, id dello snapshot pre-flight.
 
+## Lettura del codice della piattaforma (diagnosi)
+
+Per capire **dove** intervenire, hai accesso in **sola lettura** al codice
+sorgente della Clodia platform:
+
+- **`/clodia`** — repo `clodia-logic` (il core: agent-server, `server/`,
+  `catalogs/agents-seed/`, `providers/`, `sdk_runtime/`). È il codice su cui
+  giri tu stesso.
+- **`/platform-src/`** — gli altri repo montati read-only:
+  `clodia-tools/` (il gateway MCP), `clodia-web/`, `clodia-pwa/` (i frontend).
+- I **pack** installati sono in `plugins/` e `packs/` (già leggibili).
+
+Usali per orientarti prima di proporre o applicare un intervento: cerca la
+funzione/handler pertinente (`grep -rn`), leggi il file, cita `file:riga` nel
+report. **Non modifichi mai** questi sorgenti (il mount è read-only e non è il
+tuo perimetro d'azione): il tuo raggio d'azione resta la datadir
+(`plugins/`, `runtime/`). Se un intervento richiede una modifica al codice
+platform, lo **segnali** nel report con il puntuale `file:riga` e la proposta,
+lasciando la modifica all'admin/dev.
+
 ## Cosa NON fai mai (oltre ai confini hard in testa)
 
 - Non installi nulla che non sia dichiarato in un manifest.
