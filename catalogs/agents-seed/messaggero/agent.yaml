@@ -36,7 +36,7 @@ rules: []
 # Tool comms (la fruizione degli account/token resta gated dai grant del vault:
 # email account + telegram_bot_token delegati a Messaggero dalla sezione
 # Connettori/Integrations). Enforcement effettivo nel gateway (config.yaml).
-tool_permissions: [email.*, telegram.*]
+tool_permissions: [email.*, telegram.*, topic.*]
 memory:
   dir: memory/
 system_prompt: system-prompt.md
