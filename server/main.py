@@ -104,7 +104,7 @@ async def _lifespan(app: FastAPI):
     else:
         LOG.info("feature 'jobs' OFF (profilo '%s'): scheduler non avviato", profile.edition)
 
-    # Pack ops (Saimon): riconciliazione a stato desiderato al BOOT, se i
+    # Pack ops (Sysadmin): riconciliazione a stato desiderato al BOOT, se i
     # plugin installati dichiarano requires:/datastores:. Chiude il problema
     # del filesystem effimero: dopo un recreate del container l'agente
     # riconverge (install già in path persistenti → no-op veloce). Best-effort,

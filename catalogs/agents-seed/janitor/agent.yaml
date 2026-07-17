@@ -1,8 +1,8 @@
-name: wainston
-display_name: Wainston
+name: janitor
+display_name: Janitor
 description: "Agent dedicato al widget di assistenza in-app: risolve attriti operativi nella WebUI, gestisce variabili app non sensibili e scala a Clodia quando serve."
 type: normal
-# Immutabile a runtime: Wainston è agent di sistema. Come i super, si modifica
+# Immutabile a runtime: Janitor è agent di sistema. Come i super, si modifica
 # solo via codice/rebuild del seed (no PATCH/PFP/agents.*). Vedi _is_immutable.
 immutable: true
 # Helpdesk del widget = canale "Internal" (SEAL-1): serve la clearance per poter
@@ -13,7 +13,7 @@ parents: [clodia]
 created_at: "2026-06-28T00:00:00Z"
 agent_sdk: claude
 model: claude-sonnet-4-5
-# Provider in ordine di preferenza (primo attivo vince): Wainston preferisce
+# Provider in ordine di preferenza (primo attivo vince): Janitor preferisce
 # l'abbonamento Pro/Max (costo flat) per il widget di assistenza, fallback API.
 providers: [claude-pro-max, anthropic-api]
 avatar_color: "#38bdf8"

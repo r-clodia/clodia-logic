@@ -356,7 +356,7 @@ class AgentPatch(BaseModel):
 
 def _is_immutable(spec) -> bool:
     """Un agent è immutabile a runtime se è un super-agent (nucleo) o porta il
-    flag immutable:true (es. Wainston). Gli immutabili si modificano SOLO via
+    flag immutable:true (es. Janitor). Gli immutabili si modificano SOLO via
     codice/rebuild del seed: nessuna via applicativa (PATCH, PFP, agents.*) può
     toccarli."""
     return getattr(spec, "type", None) == "super" or bool(getattr(spec, "immutable", False))
@@ -565,7 +565,7 @@ async def select_provider(name: str, body: ProviderSelect, request: Request) -> 
     """Fissa il provider da usare per l'agent, scelto dalla sua lista dichiarata.
 
     È STATO OPERATIVO (routing), non identità: consentito ANCHE sui super/immutabili
-    (clodia/wainston) — non tocca l'agent.yaml, quindi non viola l'immutabilità.
+    (clodia/janitor) — non tocca l'agent.yaml, quindi non viola l'immutabilità.
     Solo admin. Il provider deve appartenere alla lista di preferenza dell'agent
     (non si può assegnare un provider che l'agent non dichiara)."""
     if not admin.is_admin(_principal_from_request(request)):
@@ -624,15 +624,15 @@ class AgentCreate(BaseModel):
 # Nomi riservati ai super-agent nativi (seed nel repo, non ricreabili via API).
 # Agenti NATIVI della piattaforma: seed nel repo (catalogs/agents-seed), clonati
 # con ogni istanza. Nome riservato → non ricreabili via API. clodia/ophelia sono
-# anche super; mercuria (agente messaggero) è nativa ma normal.
-_NATIVE_AGENTS = {"clodia", "ophelia", "mercuria"}
+# anche super; messaggero (agente messaggero) è nativo ma normal.
+_NATIVE_AGENTS = {"clodia", "ophelia", "messaggero"}
 
 
 @router.post("", status_code=201, response_model=AgentSpec)
 async def create_agent(body: AgentCreate) -> AgentSpec:
     """Crea un nuovo agente USER-DEFINED generando lo scaffold direttamente dallo
     schema (single source of truth — niente file-template da tenere allineato),
-    poi reload. Gli agent nativi (clodia/ophelia/mercuria) sono seed nel repo."""
+    poi reload. Gli agent nativi (clodia/ophelia/messaggero) sono seed nel repo."""
     name = body.name.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,30}", name):
         raise HTTPException(400, "nome invalido (usa [a-z0-9_-], inizia con alfanumerico)")

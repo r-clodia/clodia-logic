@@ -455,7 +455,7 @@ def _reused_turn_prompt(tier: str, name: str, responder: str, principal: str,
                         fallback: str) -> str:
     """Prompt per un turno su sessione RIUSATA. La sessione SDK del responder
     contiene solo i PROPRI turni: NON ha visto i messaggi di ALTRI partecipanti
-    (altri agenti — es. Mercuria — o altri umani) comparsi dal suo ultimo
+    (altri agenti — es. Messaggero — o altri umani) comparsi dal suo ultimo
     intervento. Se ce ne sono, glieli passiamo come storico recente; altrimenti
     basta il `fallback` (il nuovo messaggio a cui rispondere).
 

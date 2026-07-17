@@ -1,9 +1,9 @@
-"""Pack ops — consegna della riconciliazione all'agente sysadmin (Saimon).
+"""Pack ops — consegna della riconciliazione all'agente sysadmin (Sysadmin).
 
 I pack dichiarano dipendenze (`requires:`) e datastore (`datastores:`) nel
 manifest, curated dal pack developer; l'import le propaga in
 `CLODIA_DATA/plugins/<nome>/plugin.yaml`. Questo modulo NON esegue nulla:
-individua l'agente col ruolo `pack_ops.agent` del profilo (default `saimon`)
+individua l'agente col ruolo `pack_ops.agent` del profilo (default `sysadmin`)
 e gli consegna un turno di riconciliazione — è l'agente a convergere,
 dentro il perimetro dichiarato (vedi il suo system-prompt).
 
@@ -28,7 +28,7 @@ from ..config import data_path
 LOG = logging.getLogger("agent-server.pack_ops")
 
 # Chat persistente della riconciliazione (una per agente): la storia dei run
-# è il log operativo di Saimon, consultabile dalla webui.
+# è il log operativo di Sysadmin, consultabile dalla webui.
 _CHAT_PREFIX = "packops:"
 
 

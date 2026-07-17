@@ -1527,7 +1527,7 @@ OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
 
 
 class OpenCodeChatSession:
-    """Chat servita dal runtime **OpenCode** (agent multi-provider, es. Mercuria
+    """Chat servita dal runtime **OpenCode** (agent multi-provider, es. Messaggero
     su gpt-oss-120b/scaleway). Stessa interfaccia di ChatSession/CodexChatSession
     (start/send_user_message/stop/…): stesso event-bus e stessa history JSONL.
 
@@ -1538,7 +1538,7 @@ class OpenCodeChatSession:
     (`{env:…}`) così non finiscono su disco. Vedi project_opencode_runtime_spike.
     """
 
-    def __init__(self, chat_id: str, kind: str = "mercuria", title: str = "") -> None:
+    def __init__(self, chat_id: str, kind: str = "messaggero", title: str = "") -> None:
         if not known_kind(kind):
             raise ValueError(f"unknown agent kind: {kind}")
         self.chat_id = chat_id
