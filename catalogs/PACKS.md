@@ -70,7 +70,7 @@ Clodia). I plugin presenti nel repo ma non dichiarati NON vengono importati.
 autentica al gateway e vede zero tool), `registry.load()`, whitelist sul
 gateway. PKI e whitelist sono best-effort (l'entrypoint fa `issue-all` a ogni
 boot). Un seed esistente NON viene sovrascritto (`status: exists`); i nomi
-nativi (clodia/ophelia/mercuria) sono rifiutati.
+nativi (clodia/ophelia/messaggero) sono rifiutati.
 
 **`requires_plugins`** (in `agent.yaml` del seed): prerequisito **soft** verso
 un plugin:

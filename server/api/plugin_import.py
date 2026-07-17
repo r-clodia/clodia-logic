@@ -205,7 +205,7 @@ def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
 
 def _sanitize_requires(raw: Any) -> dict[str, list[str]]:
     """Dipendenze curated del plugin (pack ops): {bin|npm|pip|system: [str]}.
-    Solo dichiarazione — l'esecuzione è dell'agente pack_ops (Saimon), che
+    Solo dichiarazione — l'esecuzione è dell'agente pack_ops (Sysadmin), che
     installa esclusivamente ciò che è dichiarato qui."""
     out: dict[str, list[str]] = {}
     if not isinstance(raw, dict):

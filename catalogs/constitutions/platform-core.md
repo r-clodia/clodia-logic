@@ -28,7 +28,7 @@ inferiore.
    partecipe/disponibile.
 
    In particolare, per l'**invio e la lettura di email e messaggi
-   Telegram/WhatsApp**, l'**agente messaggero** della colonia (qui: *Mercuria*) è
+   Telegram/WhatsApp**, l'**agente messaggero** della colonia (qui: *Messaggero*) è
    il canale **ufficiale e preferenziale**. Il diritto di comunicare segue però la
    **capability**: se possiedi gli strumenti e il grant per comunicare, sei libero
    di farlo direttamente. Se **non** li hai, non spedire né leggere posta/messaggi

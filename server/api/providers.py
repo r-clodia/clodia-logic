@@ -174,7 +174,7 @@ def resume_provider(pid: str) -> dict:
 # profilo dell'agent quale provider della sua lista usare adesso (es. Clodia:
 # [claude-pro-max*, aws-region-eu] → attiva aws-region-eu). È STATO OPERATIVO,
 # non identità: vive fuori dall'agent.yaml, così vale ANCHE sui super immutabili
-# (clodia/wainston) senza violarne l'immutabilità. Se l'override non è più usabile
+# (clodia/janitor) senza violarne l'immutabilità. Se l'override non è più usabile
 # (disconnesso/in pausa/uscito dalla lista) si ripiega sulla preferenza.
 _OVERRIDE_FILE = data_path("agent-state") / "provider-override.json"
 

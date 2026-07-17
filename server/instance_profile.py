@@ -104,7 +104,7 @@ class IntegrationsConfig(BaseModel):
 class HelpdeskConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    agent: str = "wainston"        # agente del popup (default wainston)
+    agent: str = "janitor"        # agente del popup (default janitor)
 
 
 class PackOpsConfig(BaseModel):
@@ -115,7 +115,7 @@ class PackOpsConfig(BaseModel):
     i gap restano nel report post-install)."""
     model_config = ConfigDict(extra="forbid")
 
-    agent: str = "saimon"          # agente sysadmin (default saimon)
+    agent: str = "sysadmin"          # agente sysadmin (default sysadmin)
 
 
 class TopicsSingleConfig(BaseModel):

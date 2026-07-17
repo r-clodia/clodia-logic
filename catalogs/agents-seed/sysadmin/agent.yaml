@@ -1,5 +1,5 @@
-name: saimon
-display_name: Saimon
+name: sysadmin
+display_name: Sysadmin
 description: "Sysadmin di piattaforma (pack ops): riconcilia le dipendenze dichiarate dai pack (requires:), presidia i datastore dichiarati (datastores:) e esegue le migrazioni dati con backup pre-flight. Nome in omaggio a Simon di BOFH — ma con change management e log."
 type: normal
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
@@ -16,7 +16,7 @@ providers: [claude-pro-max, anthropic-api, aws-region-eu]
 avatar_color: "#f59e0b"
 mailbox_parent: clodia
 
-# Il mestiere di Saimon è la shell: install in path persistenti della datadir
+# Il mestiere di Sysadmin è la shell: install in path persistenti della datadir
 # (plugins/, runtime/) e lettura dei manifest. NIENTE segreti, NIENTE topics:
 # non tratta dati utente fuori dai datastore dichiarati.
 sandbox:
