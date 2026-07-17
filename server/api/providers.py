@@ -377,13 +377,35 @@ def _bundle_usable(pid: str, d: dict | None) -> bool:
     return d.get("method") == "subscription"
 
 
+# Cache TTL sui provider collegati. Senza, ogni chiamata fa una GET al gateway
+# PER OGNI provider noto, e eligibility/agents-list la invocano PER OGNI agente:
+# un poll della webui su un topic diventa ~60 chiamate HTTP sincrone serializzate
+# sull'event loop (incidente 17 lug 2026: gateway saturato, health in timeout,
+# webui bloccata). 10s di staleness sono accettabili; connect/disconnect
+# invalidano esplicitamente.
+_CONN_CACHE: tuple[float, frozenset[str]] | None = None
+_CONN_TTL = 10.0
+
+
+def invalidate_connected_cache() -> None:
+    global _CONN_CACHE
+    _CONN_CACHE = None
+
+
 def connected_provider_ids() -> set[str]:
     """ID dei provider collegati CON credenziale usabile (vedi `_bundle_usable`).
 
-    Legge il bundle di ogni provider noto (alias legacy normalizzati). Su gateway
-    irraggiungibile rilancia: i chiamati a valle (enforcement) sono fail-open."""
+    Legge il bundle di ogni provider noto (alias legacy normalizzati), con
+    cache TTL breve. Su gateway irraggiungibile rilancia: i chiamati a valle
+    (enforcement) sono fail-open."""
+    global _CONN_CACHE
+    now = time.monotonic()
+    if _CONN_CACHE is not None and (now - _CONN_CACHE[0]) < _CONN_TTL:
+        return set(_CONN_CACHE[1])
     present = {_normalize(p) for p in provider_store.list_ids()}
-    return {p for p in present if p in _CATALOG and _bundle_usable(p, _read(p))}
+    ids = {p for p in present if p in _CATALOG and _bundle_usable(p, _read(p))}
+    _CONN_CACHE = (now, frozenset(ids))
+    return ids
 
 
 # state → {verifier, exp}. In memoria: il login è una sessione breve. Anti-CSRF
@@ -409,6 +431,7 @@ def _write(pid: str, data: dict) -> None:
     """Persiste il bundle nel vault del gateway. Rilancia su errore (il
     login/refresh che chiama deve poterlo segnalare)."""
     provider_store.write(pid, data)
+    invalidate_connected_cache()
 
 
 def _gc_states() -> None:
@@ -541,6 +564,7 @@ async def login_complete(pid: str, body: CodeBody) -> dict:
 async def disconnect(pid: str) -> dict:
     try:
         provider_store.delete(pid)
+        invalidate_connected_cache()
     except provider_store.ProviderStoreError as e:
         raise HTTPException(502, f"disconnect fallito sul gateway: {str(e)[:160]}")
     if pid == "codex":
