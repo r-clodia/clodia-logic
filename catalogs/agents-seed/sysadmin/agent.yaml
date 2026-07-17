@@ -1,11 +1,11 @@
 name: sysadmin
 display_name: Sysadmin
-description: "Sysadmin di piattaforma (pack ops): riconcilia le dipendenze dichiarate dai pack (requires:), presidia i datastore dichiarati (datastores:) e esegue le migrazioni dati con backup pre-flight. Nome in omaggio a Simon di BOFH — ma con change management e log."
+description: "Sysadmin di piattaforma (platform ops): osserva l'attività degli agenti, osserva e propone job (approvazione owner), controlla le run dei workflow, importa/rimuove pack e ne installa le dipendenze nel gateway, osserva lo stato delle integration, aggiunge MCP server, mette in pausa/riattiva i provider, gestisce i settings. Change management e log su ogni azione. NON entra nei topic e non tratta mai dati confidenziali."
 type: normal
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
 immutable: true
-# Opera solo su richiesta della piattaforma (post-import, boot reconcile) o
-# dell'admin: nessun canale utente, clearance minima interna.
+# Clearance minima interna: SEAL-1. Sotto la soglia del confidenziale (SEAL-2+):
+# per costruzione non può accedere a dati confidenziali. Nessun canale utente.
 clearance: SEAL-1
 constitution: platform-core
 parents: [clodia]
@@ -16,9 +16,14 @@ providers: [claude-team, claude-pro-max, anthropic-api, aws-region-eu]
 avatar_color: "#f59e0b"
 mailbox_parent: clodia
 
-# Il mestiere di Sysadmin è la shell: install in path persistenti della datadir
-# (plugins/, runtime/) e lettura dei manifest. NIENTE segreti, NIENTE topics:
-# non tratta dati utente fuori dai datastore dichiarati.
+# Il mestiere di Sysadmin è l'operatività di piattaforma via tool gated + shell in
+# path persistenti della datadir (plugins/, runtime/). CONFINI HARD, non negoziabili:
+#   • NIENTE topics: non legge né scrive in topics/, e non ha i tool runtime.topics /
+#     runtime.chats (che esporrebbero conversazioni utente).
+#   • NIENTE confidenziale: clearance SEAL-1 < soglia SEAL-2; nessun dato utente fuori
+#     dai datastore dichiarati dai pack.
+#   • NIENTE segreti: no secrets/, no vault, no keystore provider (pause/resume di un
+#     provider NON espone la chiave).
 sandbox:
   allow_read: ["{scratch}/**", "plugins/**", "packs/**", "runtime/**", "agents/**"]
   deny_read: ["topics/**", "secrets/**", "clodia-vault/**"]
@@ -30,9 +35,32 @@ capabilities:
   - "base-pack/*"
 rules: []
 tool_permissions:
-  # backup pre-flight prima delle migrazioni + verifica perimetro datastore
-  - "settings.backup_run"
-  - "settings.backup_get"
+  # ── Osservazione (read-only). ESCLUSI di proposito runtime.topics e runtime.chats:
+  #    sysadmin non entra nei topic né legge conversazioni utente. ──
+  - "runtime.agents"          # attività/stato degli agenti
+  - "runtime.jobs"            # stato dei job
+  - "runtime.providers"       # stato dei provider (no segreti)
+  - "runtime.mcp_servers"     # MCP server registrati e loro stato
+  - "runtime.skills"          # skill materializzate
+  # ── Jobs: osserva + PROPONE (gate owner). Nessun create/delete diretto: anche
+  #    sysadmin passa dall'approvazione dell'owner per i job. ──
+  - "jobs.list"
+  - "jobs.propose"
+  # ── Pack ops: import / remove + install dipendenze dichiarate (requires:) ──
+  - "packs.*"
+  # ── Workflows: start / stop / terminate delle run ──
+  - "workflows.*"
+  # ── Integrations: osserva stato/connessione (no lettura dei dati veicolati) ──
+  - "integrations.list"
+  # ── MCP servers: aggiungi/registra ──
+  - "mcp.add"
+  - "mcp.list"
+  # ── Providers: pausa / riattiva (no accesso alle chiavi) ──
+  - "providers.list"
+  - "providers.pause"
+  - "providers.resume"
+  # ── Settings di piattaforma + backup pre-flight per le migrazioni ──
+  - "settings.*"
   - "fs.list_dir"
 priority: 30
 cost_profile: standard
