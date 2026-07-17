@@ -24,9 +24,16 @@ mailbox_parent: clodia
 #     dai datastore dichiarati dai pack.
 #   • NIENTE segreti: no secrets/, no vault, no keystore provider (pause/resume di un
 #     provider NON espone la chiave).
+# LETTURA CODICE PLATFORM (per capire dove intervenire): `/clodia` è il repo
+# clodia-logic (core, già nel container), `/platform-src/**` i sorgenti degli
+# altri repo montati read-only (clodia-tools/web/pwa). Sola lettura; i segreti
+# (secrets/, .env, vault) restano esclusi con precedenza sul deny.
 sandbox:
-  allow_read: ["{scratch}/**", "plugins/**", "packs/**", "runtime/**", "agents/**"]
-  deny_read: ["topics/**", "secrets/**", "clodia-vault/**"]
+  allow_read: ["{scratch}/**", "plugins/**", "packs/**", "runtime/**", "agents/**",
+               "/clodia/**", "/platform-src/**"]
+  deny_read: ["topics/**", "secrets/**", "clodia-vault/**",
+              "/clodia/secrets/**", "/clodia/**/.env*", "/clodia/**/*.key",
+              "/platform-src/**/secrets/**", "/platform-src/**/.env*", "/platform-src/**/*.key"]
   allow_write: ["{scratch}/**", "plugins/**", "runtime/**"]
   allow_shell_cmds: ["*"]
   deny_shell_patterns: []
