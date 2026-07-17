@@ -15,7 +15,7 @@ agent_sdk: claude
 model: claude-sonnet-4-5
 # Provider in ordine di preferenza (primo attivo vince): Janitor preferisce
 # l'abbonamento Pro/Max (costo flat) per il widget di assistenza, fallback API.
-providers: [claude-pro-max, anthropic-api]
+providers: [claude-team, claude-pro-max, anthropic-api]
 avatar_color: "#38bdf8"
 mailbox_parent: clodia
 

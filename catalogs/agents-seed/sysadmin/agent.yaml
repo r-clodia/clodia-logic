@@ -12,7 +12,7 @@ parents: [clodia]
 created_at: "2026-07-07T00:00:00Z"
 agent_sdk: claude
 model: claude-sonnet-4-6
-providers: [claude-pro-max, anthropic-api, aws-region-eu]
+providers: [claude-team, claude-pro-max, anthropic-api, aws-region-eu]
 avatar_color: "#f59e0b"
 mailbox_parent: clodia
 
