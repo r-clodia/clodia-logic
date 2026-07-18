@@ -96,11 +96,13 @@ class ContextTests(unittest.TestCase):
     def _m(self, uid, uname, text):
         return {"from_id": uid, "from_username": uname, "from": uname, "text": text}
 
-    def test_line_compact_format(self):
-        line = _line(self._m(76632169, "therealdadabit", "ciao"), "-5506202478")
-        self.assertEqual(line, "[tg://-5506202478/therealdadabit] -> ciao")
+    def test_line_uses_group_name(self):
+        m = self._m(76632169, "therealdadabit", "ciao")
+        m["chat_title"] = "Proof-of-flex"
+        line = _line(m, "-5279916551")
+        self.assertEqual(line, "[tg://Proof-of-flex/therealdadabit] -> ciao")
 
-    def test_line_falls_back_to_uid(self):
+    def test_line_falls_back_to_chat_id(self):
         line = _line({"from_id": 999, "text": "spam"}, "-5")
         self.assertEqual(line, "[tg://-5/999] -> spam")
 

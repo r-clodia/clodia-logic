@@ -128,10 +128,12 @@ def _save_state(chat_id: str, state: dict) -> None:
 
 # ── rendering del contesto (compatto) ─────────────────────────────────────────
 def _line(m: dict, chat_id: str) -> str:
-    """Una riga compatta per messaggio: `[tg://<chat_id>/<user>] -> <verbatim>`.
-    `user` = username Telegram (identità autenticata) o uid se assente."""
+    """Una riga compatta per messaggio: `[tg://<gruppo>/<user>] -> <verbatim>`.
+    `<gruppo>` = NOME/titolo della chat (leggibile), fallback al chat_id.
+    `<user>` = username Telegram (identità autenticata) o uid se assente."""
+    group = m.get("chat_title") or chat_id
     user = m.get("from_username") or (str(m.get("from_id")) if m.get("from_id") is not None else "?")
-    return f"[tg://{chat_id}/{user}] -> {(m.get('text') or '').strip()}"
+    return f"[tg://{group}/{user}] -> {(m.get('text') or '').strip()}"
 
 
 def _context_block(buffer: list, chat_id: str) -> str:
