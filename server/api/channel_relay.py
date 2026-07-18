@@ -42,16 +42,45 @@ def _seed_of(name: str) -> str:
     return re.sub(r"-\d+$", "", str(name or "").strip()) or "messaggero"
 
 
+# Blocco whitelist dentro MEMORY.md: un marcatore HTML-commento seguito da un
+# blocco ```json. Sta nell'UNICO file di note del messaggero (visibile in webui e
+# sempre in contesto), ma è machine-readable per il relay.
+_WL_RE = re.compile(
+    r"<!--\s*telegram-whitelist\s*-->\s*```(?:json)?\s*(\{.*?\})\s*```",
+    re.DOTALL | re.IGNORECASE)
+
+
+def _parse_whitelist(text: str) -> dict:
+    m = _WL_RE.search(text or "")
+    if not m:
+        return {}
+    try:
+        data = json.loads(m.group(1))
+    except (json.JSONDecodeError, TypeError):
+        return {}
+    return {str(k): v for k, v in data.items() if v in ("command", "dialogue")}
+
+
 def _load_whitelist(messenger: str | None) -> dict:
-    """Whitelist di autorizzazione gestita dal MESSAGGERO nella sua seed memory
-    (`agents/<seed>/memory/telegram_whitelist.json`, mappa uid→command|dialogue).
-    È il messaggero a mantenerla (via memory.*); il relay la legge. Assente/rotta
-    → {} (tutti sconosciuti → rifiuto: fail-closed)."""
+    """Whitelist di autorizzazione gestita dal MESSAGGERO nella sua seed memory.
+    Fonte primaria: il blocco marcato `telegram-whitelist` dentro `MEMORY.md`
+    (unico file note, visibile in webui + sempre in contesto). Retro-compat:
+    `telegram_whitelist.json` se presente. Assente/rotta → {} (fail-closed:
+    tutti sconosciuti → rifiuto)."""
     seed = _seed_of(messenger or "messaggero")
     base = os.environ.get("CLODIA_DATA", "/datadir")
-    p = os.path.join(base, "agents", seed, "memory", "telegram_whitelist.json")
+    mdir = os.path.join(base, "agents", seed, "memory")
+    # 1) blocco dentro MEMORY.md
     try:
-        with open(p, encoding="utf-8") as f:
+        with open(os.path.join(mdir, "MEMORY.md"), encoding="utf-8") as f:
+            wl = _parse_whitelist(f.read())
+        if wl:
+            return wl
+    except OSError:
+        pass
+    # 2) fallback: file JSON dedicato (retro-compat)
+    try:
+        with open(os.path.join(mdir, "telegram_whitelist.json"), encoding="utf-8") as f:
             data = json.load(f)
         return {str(k): v for k, v in data.items() if v in ("command", "dialogue")}
     except (OSError, json.JSONDecodeError, AttributeError):

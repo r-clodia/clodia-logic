@@ -8,7 +8,8 @@ import unittest
 import os
 import tempfile
 
-from .channel_relay import _authz_line, _envelope, _is_messenger, _seed_of, _load_whitelist
+from .channel_relay import (_authz_line, _envelope, _is_messenger, _seed_of,
+                            _load_whitelist, _parse_whitelist)
 
 
 class AuthzTests(unittest.TestCase):
@@ -102,6 +103,37 @@ class WhitelistTests(unittest.TestCase):
                 os.environ.pop("CLODIA_DATA", None)
             else:
                 os.environ["CLODIA_DATA"] = old
+
+    def test_whitelist_block_in_memory_md_is_primary(self):
+        d = tempfile.mkdtemp()
+        old = os.environ.get("CLODIA_DATA")
+        os.environ["CLODIA_DATA"] = d
+        try:
+            memdir = os.path.join(d, "agents", "messaggero", "memory")
+            os.makedirs(memdir)
+            with open(os.path.join(memdir, "MEMORY.md"), "w") as f:
+                f.write("# Memory\n\nNote varie.\n\n<!-- telegram-whitelist -->\n"
+                        '```json\n{"76632169": "command"}\n```\n')
+            self.assertEqual(_load_whitelist("messaggero"), {"76632169": "command"})
+        finally:
+            if old is None:
+                os.environ.pop("CLODIA_DATA", None)
+            else:
+                os.environ["CLODIA_DATA"] = old
+
+
+class ParseWhitelistTests(unittest.TestCase):
+    def test_extracts_marked_json_block(self):
+        md = ("bla bla\n<!-- telegram-whitelist -->\n```json\n"
+              '{"1": "command", "2": "dialogue"}\n```\ncoda')
+        self.assertEqual(_parse_whitelist(md), {"1": "command", "2": "dialogue"})
+
+    def test_no_block_is_empty(self):
+        self.assertEqual(_parse_whitelist("nessun blocco qui"), {})
+
+    def test_malformed_json_is_empty(self):
+        md = "<!-- telegram-whitelist -->\n```json\n{oops}\n```"
+        self.assertEqual(_parse_whitelist(md), {})
 
 
 if __name__ == "__main__":
