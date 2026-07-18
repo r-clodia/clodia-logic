@@ -5,7 +5,10 @@ Il perno di sicurezza è che l'autorizzazione dipende dall'uid NUMERICO (dal cam
 """
 import unittest
 
-from .channel_relay import _authz_line, _envelope, _is_messenger
+import os
+import tempfile
+
+from .channel_relay import _authz_line, _envelope, _is_messenger, _seed_of, _load_whitelist
 
 
 class AuthzTests(unittest.TestCase):
@@ -65,6 +68,40 @@ class IsMessengerTests(unittest.TestCase):
         self.assertFalse(_is_messenger("clodia"))
         self.assertFalse(_is_messenger("ophelia"))
         self.assertFalse(_is_messenger(""))
+
+
+class WhitelistTests(unittest.TestCase):
+    def test_seed_strips_instance_suffix(self):
+        self.assertEqual(_seed_of("messaggero-3"), "messaggero")
+        self.assertEqual(_seed_of("messaggero"), "messaggero")
+
+    def test_missing_whitelist_is_fail_closed(self):
+        old = os.environ.get("CLODIA_DATA")
+        os.environ["CLODIA_DATA"] = tempfile.mkdtemp()
+        try:
+            self.assertEqual(_load_whitelist("messaggero"), {})
+        finally:
+            if old is None:
+                os.environ.pop("CLODIA_DATA", None)
+            else:
+                os.environ["CLODIA_DATA"] = old
+
+    def test_whitelist_loads_and_filters_invalid(self):
+        d = tempfile.mkdtemp()
+        old = os.environ.get("CLODIA_DATA")
+        os.environ["CLODIA_DATA"] = d
+        try:
+            memdir = os.path.join(d, "agents", "messaggero", "memory")
+            os.makedirs(memdir)
+            with open(os.path.join(memdir, "telegram_whitelist.json"), "w") as f:
+                f.write('{"76632169": "command", "5": "dialogue", "9": "bogus"}')
+            wl = _load_whitelist("messaggero-2")
+            self.assertEqual(wl, {"76632169": "command", "5": "dialogue"})
+        finally:
+            if old is None:
+                os.environ.pop("CLODIA_DATA", None)
+            else:
+                os.environ["CLODIA_DATA"] = old
 
 
 if __name__ == "__main__":

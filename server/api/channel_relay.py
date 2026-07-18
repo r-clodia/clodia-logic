@@ -20,6 +20,8 @@ from __future__ import annotations
 
 import json
 import logging
+import os
+import re
 
 from ..config import data_path
 from . import telegram_client, topics_client
@@ -34,6 +36,26 @@ def _is_messenger(agent: str) -> bool:
     """Un'istanza del seed messaggero (messaggero, messaggero-1, …)."""
     a = str(agent or "")
     return a == "messaggero" or a.startswith("messaggero-")
+
+
+def _seed_of(name: str) -> str:
+    return re.sub(r"-\d+$", "", str(name or "").strip()) or "messaggero"
+
+
+def _load_whitelist(messenger: str | None) -> dict:
+    """Whitelist di autorizzazione gestita dal MESSAGGERO nella sua seed memory
+    (`agents/<seed>/memory/telegram_whitelist.json`, mappa uid→command|dialogue).
+    È il messaggero a mantenerla (via memory.*); il relay la legge. Assente/rotta
+    → {} (tutti sconosciuti → rifiuto: fail-closed)."""
+    seed = _seed_of(messenger or "messaggero")
+    base = os.environ.get("CLODIA_DATA", "/datadir")
+    p = os.path.join(base, "agents", seed, "memory", "telegram_whitelist.json")
+    try:
+        with open(p, encoding="utf-8") as f:
+            data = json.load(f)
+        return {str(k): v for k, v in data.items() if v in ("command", "dialogue")}
+    except (OSError, json.JSONDecodeError, AttributeError):
+        return {}
 
 
 def _state_dir():
@@ -65,9 +87,9 @@ def _save_state(tier: str, name: str, state: dict) -> None:
         json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
-def _authz_line(participants: dict, uid) -> str:
+def _authz_line(whitelist: dict, uid) -> str:
     """Risolve l'autorizzazione dal solo uid NUMERICO (immutabile), mai dal testo."""
-    rights = participants.get(str(uid)) if uid is not None else None
+    rights = whitelist.get(str(uid)) if uid is not None else None
     if rights == "command":
         return "command — può impartire ordini agli agenti del topic"
     if rights == "dialogue":
@@ -77,7 +99,7 @@ def _authz_line(participants: dict, uid) -> str:
             "interagire con questo utente» e non eseguire nulla")
 
 
-def _envelope(m: dict, participants: dict, chat_id: str, multi: bool) -> str:
+def _envelope(m: dict, whitelist: dict, chat_id: str, multi: bool) -> str:
     """Envelope strutturato, distinto dal testo citato. Identità dal campo `from`
     dell'API (uid + username), non derivabile dal contenuto del messaggio."""
     uid = m.get("from_id")
@@ -89,7 +111,7 @@ def _envelope(m: dict, participants: dict, chat_id: str, multi: bool) -> str:
         head += f" chat:{chat_id}"
     ident = (f"from: {disp} (@{uname}, uid {uid})" if uname
              else f"from: {disp} (uid {uid})")
-    return (f"{head}\n{ident}\nautorizzazione: {_authz_line(participants, uid)}\n"
+    return (f"{head}\n{ident}\nautorizzazione: {_authz_line(whitelist, uid)}\n"
             f"testo: «{text}»")
 
 
@@ -97,7 +119,9 @@ async def _relay_topic(tier: str, name: str, channel: dict) -> None:
     listens = channel.get("listens") or []
     if not listens:
         return
-    participants_map = channel.get("participants") or {}
+    messenger = channel.get("messenger") or "messaggero"
+    # Autorizzazione dalla whitelist gestita dal messaggero nella sua seed memory.
+    whitelist = _load_whitelist(messenger)
     state = _load_state(tier, name)
     seen = set(state.get("seen", []))
     multi = len(listens) > 1
@@ -124,11 +148,11 @@ async def _relay_topic(tier: str, name: str, channel: dict) -> None:
             state["seen"].append(mid)
             if not (m.get("text") or "").strip():
                 continue
-            env = _envelope(m, participants_map, str(chat_id), multi)
+            env = _envelope(m, whitelist, str(chat_id), multi)
             try:
-                # Autore = "clodia" (identità mostrata del messaggero verso il
-                # topic). Il messaggero riporta; non è il committente.
-                topics_client.post_message(tier, name, "clodia", env, kind="telegram")
+                # Autore = il MESSAGGERO (corriere): è lui che riporta nel topic,
+                # non clodia. Non è il committente; riporta soltanto.
+                topics_client.post_message(tier, name, messenger, env, kind="telegram")
             except Exception as e:  # noqa: BLE001
                 LOG.warning("post_message inbound %s/%s: %s", tier, name, e)
                 continue
