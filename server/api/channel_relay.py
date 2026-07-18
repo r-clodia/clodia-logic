@@ -170,7 +170,9 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
         if not text:
             continue
         buffer.append(m)                       # contesto (sempre)
-        if not _addresses_bot(text, participants):
+        # Il bot è INTERPELLATO da una menzione (@clodia/agente) OPPURE da una
+        # REPLY a un suo messaggio (le reply valgono come menzioni dirette).
+        if not (_addresses_bot(text, participants) or m.get("reply_to_bot")):
             continue
         # messaggio che INTERPELLA il bot → PRIMO CHECK: mittente in whitelist?
         uid = m.get("from_id")
