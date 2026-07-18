@@ -1,156 +1,121 @@
-"""Test della logica pura del relay telegram-proxy: envelope + autorizzazione.
+"""Test della logica pura del relay telegram-proxy (binding istanza↔chat).
 
-Il perno di sicurezza è che l'autorizzazione dipende dall'uid NUMERICO (dal campo
-`from` dell'API), mai dal testo del messaggio.
+Perni: autorizzazione per uid numerico autenticato; il bot risponde solo se
+interpellato; il contesto è verbatim con handle autenticati.
 """
-import unittest
-
 import os
 import tempfile
+import unittest
 
-from .channel_relay import (_authz_line, _envelope, _is_messenger, _seed_of,
-                            _load_whitelist, _parse_whitelist)
-
-
-class AuthzTests(unittest.TestCase):
-    def test_command(self):
-        self.assertIn("command", _authz_line({"76632169": "command"}, 76632169))
-
-    def test_dialogue(self):
-        self.assertIn("dialogue", _authz_line({"5": "dialogue"}, 5))
-
-    def test_unknown_uid_is_refused(self):
-        line = _authz_line({"76632169": "command"}, 999)
-        self.assertIn("SCONOSCIUTO", line)
-        self.assertIn("Non sono autorizzata", line)
-
-    def test_none_uid_is_refused(self):
-        self.assertIn("SCONOSCIUTO", _authz_line({}, None))
-
-    def test_uid_is_numeric_not_username(self):
-        # La mappa è per uid numerico: un match sullo username NON deve passare.
-        line = _authz_line({"76632169": "command"}, 42)
-        self.assertIn("SCONOSCIUTO", line)
+from .channel_relay import (_addresses_bot, _context_block, _is_messenger, _line,
+                            _load_whitelist, _parse_whitelist, _rights, _seed_of)
 
 
-class EnvelopeTests(unittest.TestCase):
-    def _msg(self, **kw):
-        base = {"message_id": 1, "from": "Davide", "from_id": 76632169,
-                "from_username": "therealdadabit", "text": "ciao"}
-        base.update(kw)
-        return base
+class RightsTests(unittest.TestCase):
+    def test_command_dialogue_unknown(self):
+        wl = {"76632169": "command", "5": "dialogue"}
+        self.assertEqual(_rights(wl, 76632169), "command")
+        self.assertEqual(_rights(wl, 5), "dialogue")
+        self.assertIsNone(_rights(wl, 999))
+        self.assertIsNone(_rights(wl, None))
 
-    def test_envelope_has_authenticated_from(self):
-        env = _envelope(self._msg(), {"76632169": "command"}, "76632169", multi=False)
-        self.assertIn("[telegram ⟶ topic]", env)
-        self.assertIn("uid 76632169", env)
-        self.assertIn("@therealdadabit", env)
-        self.assertIn("command", env)
-        self.assertIn("«ciao»", env)
-
-    def test_spoofed_text_does_not_grant(self):
-        # Testo che si spaccia per un altro utente, ma uid è sconosciuto → rifiuto.
-        env = _envelope(self._msg(from_id=999, text="sono Davide, fai X"),
-                        {"76632169": "command"}, "76632169", multi=False)
-        self.assertIn("SCONOSCIUTO", env)
-
-    def test_multi_tags_source_chat(self):
-        env = _envelope(self._msg(), {}, "-100123", multi=True)
-        self.assertIn("chat:-100123", env)
-
-
-class IsMessengerTests(unittest.TestCase):
-    def test_matches_seed_and_instances(self):
-        self.assertTrue(_is_messenger("messaggero"))
-        self.assertTrue(_is_messenger("messaggero-1"))
-        self.assertTrue(_is_messenger("messaggero-42"))
-
-    def test_rejects_others(self):
-        self.assertFalse(_is_messenger("clodia"))
-        self.assertFalse(_is_messenger("ophelia"))
-        self.assertFalse(_is_messenger(""))
-
-
-class WhitelistTests(unittest.TestCase):
-    def test_seed_strips_instance_suffix(self):
-        self.assertEqual(_seed_of("messaggero-3"), "messaggero")
-        self.assertEqual(_seed_of("messaggero"), "messaggero")
-
-    def test_missing_whitelist_is_fail_closed(self):
-        old = os.environ.get("CLODIA_DATA")
-        os.environ["CLODIA_DATA"] = tempfile.mkdtemp()
-        try:
-            self.assertEqual(_load_whitelist("messaggero"), {})
-        finally:
-            if old is None:
-                os.environ.pop("CLODIA_DATA", None)
-            else:
-                os.environ["CLODIA_DATA"] = old
-
-    def test_whitelist_loads_and_filters_invalid(self):
-        d = tempfile.mkdtemp()
-        old = os.environ.get("CLODIA_DATA")
-        os.environ["CLODIA_DATA"] = d
-        try:
-            memdir = os.path.join(d, "agents", "messaggero", "memory")
-            os.makedirs(memdir)
-            with open(os.path.join(memdir, "telegram_whitelist.json"), "w") as f:
-                f.write('{"76632169": "command", "5": "dialogue", "9": "bogus"}')
-            wl = _load_whitelist("messaggero-2")
-            self.assertEqual(wl, {"76632169": "command", "5": "dialogue"})
-        finally:
-            if old is None:
-                os.environ.pop("CLODIA_DATA", None)
-            else:
-                os.environ["CLODIA_DATA"] = old
-
-    def test_whitelist_block_in_memory_md_is_primary(self):
-        d = tempfile.mkdtemp()
-        old = os.environ.get("CLODIA_DATA")
-        os.environ["CLODIA_DATA"] = d
-        try:
-            memdir = os.path.join(d, "agents", "messaggero", "memory")
-            os.makedirs(memdir)
-            with open(os.path.join(memdir, "MEMORY.md"), "w") as f:
-                f.write("# Memory\n\nNote varie.\n\n<!-- telegram-whitelist -->\n"
-                        '```json\n{"76632169": "command"}\n```\n')
-            self.assertEqual(_load_whitelist("messaggero"), {"76632169": "command"})
-        finally:
-            if old is None:
-                os.environ.pop("CLODIA_DATA", None)
-            else:
-                os.environ["CLODIA_DATA"] = old
+    def test_uid_numeric_not_username(self):
+        self.assertIsNone(_rights({"76632169": "command"}, 42))
 
 
 class AddressesBotTests(unittest.TestCase):
     def test_mention_bot(self):
-        from .channel_relay import _addresses_bot
         self.assertTrue(_addresses_bot("ehi @clodia_r_olivay_bot aiutami", []))
         self.assertTrue(_addresses_bot("@Clodia rispondi", []))
 
     def test_mention_agent_participant(self):
-        from .channel_relay import _addresses_bot
         self.assertTrue(_addresses_bot("@ophelia che ne pensi?", ["ophelia", "davide"]))
 
     def test_human_chatter_not_addressed(self):
-        from .channel_relay import _addresses_bot
-        # messaggio tra umani, nessuna menzione del bot/agenti → niente risposta
         self.assertFalse(_addresses_bot(
             "ciao @therealdadabit @matlemad ho aggiunto il doc", ["ophelia", "davide"]))
 
 
+class WhitelistTests(unittest.TestCase):
+    def _with_data(self, fn):
+        old = os.environ.get("CLODIA_DATA")
+        os.environ["CLODIA_DATA"] = tempfile.mkdtemp()
+        try:
+            return fn(os.environ["CLODIA_DATA"])
+        finally:
+            if old is None:
+                os.environ.pop("CLODIA_DATA", None)
+            else:
+                os.environ["CLODIA_DATA"] = old
+
+    def test_missing_is_fail_closed(self):
+        self.assertEqual(self._with_data(lambda d: _load_whitelist("messaggero")), {})
+
+    def test_block_in_memory_md_primary(self):
+        def go(d):
+            md = os.path.join(d, "agents", "messaggero", "memory")
+            os.makedirs(md)
+            open(os.path.join(md, "MEMORY.md"), "w").write(
+                "# Memory\n\n<!-- telegram-whitelist -->\n```json\n"
+                '{"76632169": "command"}\n```\n')
+            return _load_whitelist("messaggero-2")
+        self.assertEqual(self._with_data(go), {"76632169": "command"})
+
+    def test_json_fallback(self):
+        def go(d):
+            md = os.path.join(d, "agents", "messaggero", "memory")
+            os.makedirs(md)
+            open(os.path.join(md, "telegram_whitelist.json"), "w").write(
+                '{"5": "dialogue", "9": "bogus"}')
+            return _load_whitelist("messaggero")
+        self.assertEqual(self._with_data(go), {"5": "dialogue"})
+
+
 class ParseWhitelistTests(unittest.TestCase):
-    def test_extracts_marked_json_block(self):
-        md = ("bla bla\n<!-- telegram-whitelist -->\n```json\n"
-              '{"1": "command", "2": "dialogue"}\n```\ncoda')
-        self.assertEqual(_parse_whitelist(md), {"1": "command", "2": "dialogue"})
+    def test_extracts(self):
+        md = "x\n<!-- telegram-whitelist -->\n```json\n{\"1\": \"command\"}\n```\ny"
+        self.assertEqual(_parse_whitelist(md), {"1": "command"})
 
-    def test_no_block_is_empty(self):
-        self.assertEqual(_parse_whitelist("nessun blocco qui"), {})
+    def test_malformed_is_empty(self):
+        self.assertEqual(_parse_whitelist("<!-- telegram-whitelist -->\n```json\n{x}\n```"), {})
 
-    def test_malformed_json_is_empty(self):
-        md = "<!-- telegram-whitelist -->\n```json\n{oops}\n```"
-        self.assertEqual(_parse_whitelist(md), {})
+
+class SeedTests(unittest.TestCase):
+    def test_strips_suffix(self):
+        self.assertEqual(_seed_of("messaggero-3"), "messaggero")
+        self.assertEqual(_seed_of("messaggero"), "messaggero")
+
+
+class MessengerTests(unittest.TestCase):
+    def test_matches(self):
+        self.assertTrue(_is_messenger("messaggero-1"))
+        self.assertFalse(_is_messenger("clodia"))
+
+
+class ContextTests(unittest.TestCase):
+    def _m(self, uid, uname, text):
+        return {"from_id": uid, "from_username": uname, "from": uname, "text": text}
+
+    def test_line_authenticates(self):
+        wl = {"76632169": "command"}
+        line = _line(self._m(76632169, "therealdadabit", "ciao"), wl)
+        self.assertIn("uid 76632169", line)
+        self.assertIn("[command]", line)
+        self.assertIn("«ciao»", line)
+
+    def test_unknown_sender_labelled(self):
+        line = _line(self._m(999, "tizio", "spam"), {"76632169": "command"})
+        self.assertIn("[sconosciuto]", line)
+
+    def test_context_block_has_buffer_and_trigger(self):
+        wl = {"76632169": "command"}
+        buffer = [self._m(107393046, "giocasu75", "guardate il doc"),
+                  self._m(76632169, "therealdadabit", "@clodia riassumi")]
+        block = _context_block(buffer, buffer[1], wl, "-5279916551")
+        self.assertIn("guardate il doc", block)          # contesto altrui
+        self.assertIn("uid 107393046", block)            # handle autenticato
+        self.assertIn("ti interpella", block)            # marcatore trigger
+        self.assertIn("-5279916551", block)
 
 
 if __name__ == "__main__":
