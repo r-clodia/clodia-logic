@@ -126,24 +126,26 @@ async def _lifespan(app: FastAPI):
     if profile.features.workflows:
         from .workflows.engine import engine_loop
         asyncio.create_task(engine_loop())
-    # Channel-adapter Telegram: loop periodico server-side (trasporto in codice,
-    # nessuna logica AI). Non deve mai impedire l'avvio: gira in background.
-    # Feature `channels` (profilo istanza): se spenta, il loop non parte.
-    async def _channel_adapter_loop():
-        from .api import channel_adapter
+    # Relay inbound Telegram → topic (modello telegram-proxy, 18 lug 2026): loop
+    # periodico server-side, trasporto MECCANICO (nessuna logica AI). Ripete
+    # verbatim nella chat del topic i messaggi delle chat in `listens`, con handle
+    # autenticato, poi innesca il responder tra gli agenti reali. Gattato dalla
+    # feature `channels`. Non deve mai impedire l'avvio: gira in background.
+    async def _channel_relay_loop():
+        from .api import channel_relay
         interval = int(os.environ.get("CLODIA_CHANNEL_TICK_SEC", "45"))
         while True:
             try:
-                await channel_adapter.tick_once()
+                await channel_relay.tick_once()
             except Exception as e:  # noqa: BLE001
-                LOG.warning("channel adapter tick: %s", e)
+                LOG.warning("channel relay tick: %s", e)
             await asyncio.sleep(interval)
     if profile.features.channels:
-        channel_task = asyncio.create_task(_channel_adapter_loop())
+        relay_task = asyncio.create_task(_channel_relay_loop())
     else:
-        LOG.info("feature 'channels' OFF (profilo '%s'): channel adapter non avviato",
+        LOG.info("feature 'channels' OFF (profilo '%s'): relay telegram non avviato",
                  profile.edition)
-        channel_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
+        relay_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
 
     # Idle reaper: evince periodicamente le sessioni chat idle (subprocess
     # claude/codex ancora vivo + spawn su disco) per recuperare RAM e disco.
@@ -176,7 +178,7 @@ async def _lifespan(app: FastAPI):
 
     yield
     # --- shutdown ---
-    channel_task.cancel()
+    relay_task.cancel()
     reaper_task.cancel()
     try:
         shutdown_scheduler()
