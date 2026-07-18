@@ -151,7 +151,7 @@ def _context_block(buffer: list, trigger: dict, whitelist: dict, chat_id: str) -
 
 
 # ── relay di una singola chat legata (binding) ────────────────────────────────
-async def _relay_chat(chat_id: str, binding: dict) -> None:
+async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
     instance = binding.get("instance") or "messaggero"
     tier = binding.get("tier")
     topic = binding.get("topic")
@@ -169,14 +169,8 @@ async def _relay_chat(chat_id: str, binding: dict) -> None:
     seen = set(state.get("seen", []))
     buffer = state.get("buffer", [])
 
-    try:
-        res = telegram_client.updates(chat_id)
-    except Exception as e:  # noqa: BLE001
-        LOG.warning("telegram updates chat %s: %s", chat_id, e)
-        return
-
     trigger = None          # ultimo messaggio LEGIT che interpella il bot
-    for m in res.get("messages", []):
+    for m in messages:
         mid = m.get("message_id")
         if mid in seen:
             continue
@@ -227,14 +221,28 @@ async def _relay_chat(chat_id: str, binding: dict) -> None:
     _save_state(chat_id, state)
 
 
-async def tick_once() -> int:
-    """Un giro su tutte le chat legate (binding istanza↔chat). Ritorna quante servite."""
+async def run_poll_cycle(timeout: int = 25) -> int:
+    """UN ciclo di long-poll: blocca (in un thread) fino a un nuovo messaggio o al
+    timeout, poi instrada i messaggi delle chat LEGATE ai rispettivi topic. Ritorna
+    il numero di chat servite. Latenza quasi zero: appena arriva un messaggio, il
+    getUpdates ritorna e si processa subito."""
+    import asyncio
+    updates = await asyncio.to_thread(telegram_client.poll, timeout)
+    if not updates:
+        return 0
     bindings = tb.load()
+    by_chat: dict = {}
+    for u in updates:
+        by_chat.setdefault(str(u.get("chat_id")), []).append(u)
     n = 0
-    for chat_id, b in bindings.items():
+    for chat_id, msgs in by_chat.items():
+        b = bindings.get(chat_id)
+        if not b:            # chat non legata a nessun topic → ignora
+            continue
         try:
-            await _relay_chat(chat_id, b)
+            await _relay_chat(chat_id, b, msgs)
             n += 1
         except Exception as e:  # noqa: BLE001
             LOG.warning("relay chat %s: %s", chat_id, e)
+    return n
     return n

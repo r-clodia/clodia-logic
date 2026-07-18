@@ -49,3 +49,12 @@ def send(chat_id: str, text: str) -> dict:
                       json={"chat_id": str(chat_id), "text": text}, timeout=_HTTP_TIMEOUT)
     r.raise_for_status()
     return r.json()
+
+
+def poll(timeout: int = 25) -> list:
+    """LONG-POLL verso il gateway: blocca fino a un nuovo messaggio (o timeout) e
+    ritorna i messaggi nuovi di TUTTE le chat. HTTP timeout > del long-poll."""
+    r = requests.post(f"{_base_url()}/poll", headers=_headers(),
+                      json={"timeout": timeout}, timeout=timeout + 15)
+    r.raise_for_status()
+    return r.json().get("messages", [])
