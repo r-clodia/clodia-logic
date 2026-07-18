@@ -34,7 +34,7 @@ LOG = logging.getLogger("agent-server.channel_relay")
 
 _SEEN_CAP = 500
 _BUFFER_CAP = 40   # finestra di contesto massima per chat
-_REFUSAL = "Non sono autorizzata ad interagire con questo utente"
+_DENY = "Mi spiace ma non sono autorizzata ad interagire con te"
 
 
 def _is_messenger(agent: str) -> bool:
@@ -188,15 +188,24 @@ async def _relay_chat(chat_id: str, binding: dict) -> None:
         buffer.append(m)                       # contesto (sempre)
         if not _addresses_bot(text, participants):
             continue
-        # messaggio che INTERPELLA il bot
-        if _rights(whitelist, m.get("from_id")) in ("command", "dialogue"):
-            trigger = m                        # attiva il relay verso il topic
-        else:
-            # non autorizzato → il messaggero rifiuta SU TELEGRAM (no topic)
+        # messaggio che INTERPELLA il bot → PRIMO CHECK: mittente in whitelist?
+        uid = m.get("from_id")
+        disp = m.get("from") or m.get("from_username") or str(uid)
+        if _rights(whitelist, uid) in ("command", "dialogue"):
+            # SÌ → ACK immediato su Telegram + riporto nel topic (trigger)
+            trigger = m
             try:
-                telegram_client.send(str(chat_id), _REFUSAL)
+                telegram_client.send(
+                    str(chat_id),
+                    f"✅ Ricevuto, {disp}. Prendo in carico e porto il messaggio nel topic.")
             except Exception as e:  # noqa: BLE001
-                LOG.warning("refusal send chat %s: %s", chat_id, e)
+                LOG.warning("ack send chat %s: %s", chat_id, e)
+        else:
+            # NO → deny immediato su Telegram (non tocca il topic)
+            try:
+                telegram_client.send(str(chat_id), _DENY)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("deny send chat %s: %s", chat_id, e)
 
     state["buffer"] = buffer
     if trigger is not None:
