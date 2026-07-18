@@ -2,10 +2,11 @@
 # Auto-istanziata (agents-seed/): agente dedicato a email e Telegram (in
 # prospettiva anche WhatsApp). Le comunicazioni trasportano documenti e
 # informazioni provenienti da più topic → clearance minima SEAL-2.
-# NB: distinta da Eco (agent-templates/eco), il responder-nel-canale confinato
-# per-topic e senza portata esterna.
-# Roadmap: in futuro un'istanza di Messaggero per topic svolgerà le funzioni di
-# messaggero locale; per ora è un'unica istanza con i tool comms a disposizione.
+# Modello telegram-proxy (18 lug): il messaggero è l'UNICA superficie esposta a
+# Telegram. Inbound = relay meccanico server-side (ripete verbatim nel topic con
+# handle autenticato; il messaggero non esegue/risponde); outbound = telegram.send
+# esclusivo, su delega degli agenti. Seed multi-istanza: il binding è per-istanza
+# (messaggero-#N ↔ set di chat_id via telegram.listen), non per-topic.
 name: messaggero
 display_name: Messaggero
 description: "Agente messaggero: email e Telegram per conto della colonia. Clearance SEAL-2 (le comunicazioni attraversano documenti di più topic)."
