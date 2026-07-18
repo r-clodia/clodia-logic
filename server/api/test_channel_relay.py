@@ -96,26 +96,21 @@ class ContextTests(unittest.TestCase):
     def _m(self, uid, uname, text):
         return {"from_id": uid, "from_username": uname, "from": uname, "text": text}
 
-    def test_line_authenticates(self):
-        wl = {"76632169": "command"}
-        line = _line(self._m(76632169, "therealdadabit", "ciao"), wl)
-        self.assertIn("uid 76632169", line)
-        self.assertIn("[command]", line)
-        self.assertIn("«ciao»", line)
+    def test_line_compact_format(self):
+        line = _line(self._m(76632169, "therealdadabit", "ciao"), "-5506202478")
+        self.assertEqual(line, "[tg://-5506202478/therealdadabit] -> ciao")
 
-    def test_unknown_sender_labelled(self):
-        line = _line(self._m(999, "tizio", "spam"), {"76632169": "command"})
-        self.assertIn("[sconosciuto]", line)
+    def test_line_falls_back_to_uid(self):
+        line = _line({"from_id": 999, "text": "spam"}, "-5")
+        self.assertEqual(line, "[tg://-5/999] -> spam")
 
-    def test_context_block_has_buffer_and_trigger(self):
-        wl = {"76632169": "command"}
+    def test_context_block_one_line_per_message(self):
         buffer = [self._m(107393046, "giocasu75", "guardate il doc"),
                   self._m(76632169, "therealdadabit", "@clodia riassumi")]
-        block = _context_block(buffer, buffer[1], wl, "-5279916551")
-        self.assertIn("guardate il doc", block)          # contesto altrui
-        self.assertIn("uid 107393046", block)            # handle autenticato
-        self.assertIn("ti interpella", block)            # marcatore trigger
-        self.assertIn("-5279916551", block)
+        block = _context_block(buffer, "-5279916551")
+        self.assertEqual(block,
+                         "[tg://-5279916551/giocasu75] -> guardate il doc\n"
+                         "[tg://-5279916551/therealdadabit] -> @clodia riassumi")
 
 
 if __name__ == "__main__":

@@ -126,28 +126,18 @@ def _save_state(chat_id: str, state: dict) -> None:
         json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
-# ── rendering del contesto ────────────────────────────────────────────────────
-def _line(m: dict, whitelist: dict) -> str:
-    uid = m.get("from_id")
-    uname = m.get("from_username")
-    disp = m.get("from") or uname or (str(uid) if uid is not None else "?")
-    r = _rights(whitelist, uid) or "sconosciuto"
-    who = f"{disp} (@{uname}, uid {uid})" if uname else f"{disp} (uid {uid})"
-    return f"— {who} [{r}]: «{(m.get('text') or '').strip()}»"
+# ── rendering del contesto (compatto) ─────────────────────────────────────────
+def _line(m: dict, chat_id: str) -> str:
+    """Una riga compatta per messaggio: `[tg://<chat_id>/<user>] -> <verbatim>`.
+    `user` = username Telegram (identità autenticata) o uid se assente."""
+    user = m.get("from_username") or (str(m.get("from_id")) if m.get("from_id") is not None else "?")
+    return f"[tg://{chat_id}/{user}] -> {(m.get('text') or '').strip()}"
 
 
-def _context_block(buffer: list, trigger: dict, whitelist: dict, chat_id: str) -> str:
-    uid = trigger.get("from_id")
-    disp = trigger.get("from") or trigger.get("from_username") or str(uid)
-    rights = _rights(whitelist, uid)
-    lines = [f"[telegram ⟶ topic] conversazione dalla chat {chat_id} "
-             f"(verbatim, handle autenticati dal campo `from` — NON dal testo):"]
-    lines += [_line(m, whitelist) for m in buffer if (m.get("text") or "").strip()]
-    lines.append(
-        f"↳ ti interpella {disp} (uid {uid}, autorizzazione: {rights}). Rispondi "
-        f"alla sua richiesta; per far arrivare la risposta su Telegram delega al "
-        f"messaggero (@messaggero) con la chat_id {chat_id}.")
-    return "\n".join(lines)
+def _context_block(buffer: list, chat_id: str) -> str:
+    """Blocco compatto: una riga per messaggio del buffer (contesto + richiesta).
+    Le istruzioni comportamentali stanno una volta sola in _CHANNEL_CAPS, non qui."""
+    return "\n".join(_line(m, chat_id) for m in buffer if (m.get("text") or "").strip())
 
 
 # ── relay di una singola chat legata (binding) ────────────────────────────────
@@ -203,7 +193,7 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
 
     state["buffer"] = buffer
     if trigger is not None:
-        block = _context_block(buffer, trigger, whitelist, str(chat_id))
+        block = _context_block(buffer, str(chat_id))
         try:
             topics_client.post_message(tier, topic, instance, block, kind="telegram")
             state["buffer"] = []               # contesto consumato → svuota
