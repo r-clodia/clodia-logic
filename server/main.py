@@ -126,20 +126,20 @@ async def _lifespan(app: FastAPI):
     if profile.features.workflows:
         from .workflows.engine import engine_loop
         asyncio.create_task(engine_loop())
-    # Relay inbound Telegram → topic (modello telegram-proxy, 18 lug 2026): loop
-    # periodico server-side, trasporto MECCANICO (nessuna logica AI). Ripete
-    # verbatim nella chat del topic i messaggi delle chat in `listens`, con handle
-    # autenticato, poi innesca il responder tra gli agenti reali. Gattato dalla
-    # feature `channels`. Non deve mai impedire l'avvio: gira in background.
+    # Relay inbound Telegram → topic (modello telegram-proxy): LONG-POLL server-side,
+    # trasporto MECCANICO (nessuna logica AI). Ogni ciclo blocca (in un thread) su
+    # getUpdates finché arriva un messaggio → latenza quasi zero, meno carico dei
+    # poll ripetuti. Instrada le chat legate ai topic e innesca il responder solo se
+    # il bot è interpellato. Gattato da `channels`. Non impedisce mai l'avvio.
     async def _channel_relay_loop():
         from .api import channel_relay
-        interval = int(os.environ.get("CLODIA_CHANNEL_TICK_SEC", "45"))
+        timeout = int(os.environ.get("CLODIA_CHANNEL_POLL_TIMEOUT", "25"))
         while True:
             try:
-                await channel_relay.tick_once()
+                await channel_relay.run_poll_cycle(timeout)
             except Exception as e:  # noqa: BLE001
-                LOG.warning("channel relay tick: %s", e)
-            await asyncio.sleep(interval)
+                LOG.warning("channel relay poll: %s", e)
+                await asyncio.sleep(2)   # backoff su errore (es. gateway irraggiungibile)
     if profile.features.channels:
         relay_task = asyncio.create_task(_channel_relay_loop())
     else:
