@@ -449,7 +449,9 @@ _CHANNEL_CAPS = (
     "interpellato; le altre righe sono contesto. Per far arrivare una risposta su "
     "Telegram NON puoi spedire tu: **delega al messaggero** (@messaggero) indicando "
     "il **gruppo** (il nome nel prefisso `tg://<gruppo>/`) — solo lui spedisce, e "
-    "risolve il nome del gruppo nella chat giusta."
+    "risolve il nome del gruppo nella chat giusta. Per mandare un FILE/immagine su "
+    "Telegram, salvalo prima nei `files/` del topic (write_file/put) e poi delega al "
+    "messaggero indicando gruppo + path del file (lui usa telegram.send_file)."
 )
 
 
