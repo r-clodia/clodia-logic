@@ -126,24 +126,9 @@ async def _lifespan(app: FastAPI):
     if profile.features.workflows:
         from .workflows.engine import engine_loop
         asyncio.create_task(engine_loop())
-    # Channel-adapter Telegram: loop periodico server-side (trasporto in codice,
-    # nessuna logica AI). Non deve mai impedire l'avvio: gira in background.
-    # Feature `channels` (profilo istanza): se spenta, il loop non parte.
-    async def _channel_adapter_loop():
-        from .api import channel_adapter
-        interval = int(os.environ.get("CLODIA_CHANNEL_TICK_SEC", "45"))
-        while True:
-            try:
-                await channel_adapter.tick_once()
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("channel adapter tick: %s", e)
-            await asyncio.sleep(interval)
-    if profile.features.channels:
-        channel_task = asyncio.create_task(_channel_adapter_loop())
-    else:
-        LOG.info("feature 'channels' OFF (profilo '%s'): channel adapter non avviato",
-                 profile.edition)
-        channel_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
+    # (Rimosso 18 lug 2026) Il vecchio channel-adapter Telegram "mirror" è
+    # decommissionato: il modello telegram-proxy usa un agente messaggero con i
+    # verbi telegram.listen/unlisten/send, non un loop di mirroring server-side.
 
     # Idle reaper: evince periodicamente le sessioni chat idle (subprocess
     # claude/codex ancora vivo + spawn su disco) per recuperare RAM e disco.
@@ -176,7 +161,6 @@ async def _lifespan(app: FastAPI):
 
     yield
     # --- shutdown ---
-    channel_task.cancel()
     reaper_task.cancel()
     try:
         shutdown_scheduler()
