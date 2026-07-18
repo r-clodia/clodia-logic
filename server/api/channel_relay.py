@@ -42,6 +42,20 @@ def _seed_of(name: str) -> str:
     return re.sub(r"-\d+$", "", str(name or "").strip()) or "messaggero"
 
 
+def _addresses_bot(text: str, participants: list) -> bool:
+    """True se il messaggio INTERPELLA il bot o un agente del topic (menzione).
+    Serve a NON far rispondere gli agenti alla normale chiacchiera umana del
+    gruppo: si relaya tutto come contesto, ma si risponde solo se interpellati."""
+    t = (text or "").lower()
+    if "@clodia" in t:  # username del bot (clodia_*_bot) + agente clodia
+        return True
+    for p in (participants or []):
+        pl = str(p).lower()
+        if pl and f"@{pl}" in t:
+            return True
+    return False
+
+
 # Blocco whitelist dentro MEMORY.md: un marcatore HTML-commento seguito da un
 # blocco ```json. Sta nell'UNICO file di note del messaggero (visibile in webui e
 # sempre in contesto), ma è machine-readable per il relay.
@@ -161,8 +175,8 @@ async def _relay_topic(tier: str, name: str, channel: dict) -> None:
         LOG.warning("open_topic %s/%s: %s", tier, name, e)
         return
 
-    new_inbound = False
-    last_text = ""
+    participants = meta.get("participants") or []
+    addressed_text = ""   # ultimo messaggio che INTERPELLA il bot (trigger turno)
     for chat_id in listens:
         try:
             res = telegram_client.updates(chat_id)
@@ -175,21 +189,24 @@ async def _relay_topic(tier: str, name: str, channel: dict) -> None:
                 continue
             seen.add(mid)
             state["seen"].append(mid)
-            if not (m.get("text") or "").strip():
+            text = (m.get("text") or "").strip()
+            if not text:
                 continue
             env = _envelope(m, whitelist, str(chat_id), multi)
             try:
                 # Autore = il MESSAGGERO (corriere): è lui che riporta nel topic,
-                # non clodia. Non è il committente; riporta soltanto.
+                # non clodia. Non è il committente; riporta soltanto. Si relaya
+                # SEMPRE (contesto del topic), anche la chiacchiera non indirizzata.
                 topics_client.post_message(tier, name, messenger, env, kind="telegram")
             except Exception as e:  # noqa: BLE001
                 LOG.warning("post_message inbound %s/%s: %s", tier, name, e)
                 continue
-            new_inbound = True
-            last_text = (m.get("text") or "").strip()
-            # ACK immediato al mittente LEGIT (whitelisted): il messaggero conferma
-            # subito di aver preso in carico il messaggio e di portarlo nel topic.
-            # Gli sconosciuti non ricevono ack (li gestisce l'agente col rifiuto).
+            # Il bot RISPONDE solo se il messaggio lo interpella (menzione), per non
+            # intromettersi nella normale conversazione umana del gruppo.
+            if not _addresses_bot(text, participants):
+                continue
+            addressed_text = text
+            # ACK immediato SOLO se interpellato E mittente legit (whitelisted).
             uid = m.get("from_id")
             if (whitelist.get(str(uid)) if uid is not None else None) in ("command", "dialogue"):
                 disp = m.get("from") or m.get("from_username") or str(uid)
@@ -201,15 +218,14 @@ async def _relay_topic(tier: str, name: str, channel: dict) -> None:
                 except Exception as e:  # noqa: BLE001
                     LOG.warning("ack telegram %s/%s: %s", tier, name, e)
 
-    if new_inbound:
+    if addressed_text:
         # Turno del responder tra gli agenti REALI (messaggero* escluso: riporta,
-        # non risponde). Nessun principal privilegiato: gli agenti decidono in base
-        # all'envelope autenticato e alla mappa di autorizzazioni.
+        # non risponde). Innescato SOLO da un messaggio che interpella il bot; gli
+        # agenti decidono in base all'envelope autenticato e alla whitelist.
         meta_turn = dict(meta)
-        meta_turn["participants"] = [
-            p for p in (meta.get("participants") or []) if not _is_messenger(p)]
+        meta_turn["participants"] = [p for p in participants if not _is_messenger(p)]
         try:
-            await run_topic_turn(tier, name, meta_turn, trigger_text=last_text)
+            await run_topic_turn(tier, name, meta_turn, trigger_text=addressed_text)
         except Exception as e:  # noqa: BLE001
             LOG.warning("responder turn %s/%s: %s", tier, name, e)
 

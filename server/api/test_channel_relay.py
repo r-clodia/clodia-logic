@@ -122,6 +122,23 @@ class WhitelistTests(unittest.TestCase):
                 os.environ["CLODIA_DATA"] = old
 
 
+class AddressesBotTests(unittest.TestCase):
+    def test_mention_bot(self):
+        from .channel_relay import _addresses_bot
+        self.assertTrue(_addresses_bot("ehi @clodia_r_olivay_bot aiutami", []))
+        self.assertTrue(_addresses_bot("@Clodia rispondi", []))
+
+    def test_mention_agent_participant(self):
+        from .channel_relay import _addresses_bot
+        self.assertTrue(_addresses_bot("@ophelia che ne pensi?", ["ophelia", "davide"]))
+
+    def test_human_chatter_not_addressed(self):
+        from .channel_relay import _addresses_bot
+        # messaggio tra umani, nessuna menzione del bot/agenti → niente risposta
+        self.assertFalse(_addresses_bot(
+            "ciao @therealdadabit @matlemad ho aggiunto il doc", ["ophelia", "davide"]))
+
+
 class ParseWhitelistTests(unittest.TestCase):
     def test_extracts_marked_json_block(self):
         md = ("bla bla\n<!-- telegram-whitelist -->\n```json\n"
