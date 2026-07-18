@@ -187,6 +187,19 @@ async def _relay_topic(tier: str, name: str, channel: dict) -> None:
                 continue
             new_inbound = True
             last_text = (m.get("text") or "").strip()
+            # ACK immediato al mittente LEGIT (whitelisted): il messaggero conferma
+            # subito di aver preso in carico il messaggio e di portarlo nel topic.
+            # Gli sconosciuti non ricevono ack (li gestisce l'agente col rifiuto).
+            uid = m.get("from_id")
+            if (whitelist.get(str(uid)) if uid is not None else None) in ("command", "dialogue"):
+                disp = m.get("from") or m.get("from_username") or str(uid)
+                try:
+                    telegram_client.send(
+                        str(chat_id),
+                        f"✅ Ricevuto, {disp}. Preso in carico: porto il messaggio "
+                        f"nel topic «{name}», gli agenti lo elaborano a breve.")
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("ack telegram %s/%s: %s", tier, name, e)
 
     if new_inbound:
         # Turno del responder tra gli agenti REALI (messaggero* escluso: riporta,
