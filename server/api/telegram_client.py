@@ -58,3 +58,11 @@ def poll(timeout: int = 25) -> list:
                       json={"timeout": timeout}, timeout=timeout + 15)
     r.raise_for_status()
     return r.json().get("messages", [])
+
+
+def download(file_id: str) -> dict:
+    """Scarica un file di Telegram via il gateway. Ritorna {content_b64, size}."""
+    r = requests.post(f"{_base_url()}/download", headers=_headers(),
+                      json={"file_id": file_id}, timeout=90)
+    r.raise_for_status()
+    return r.json()
