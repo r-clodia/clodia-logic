@@ -126,14 +126,29 @@ def _save_state(chat_id: str, state: dict) -> None:
         json.dumps(state, ensure_ascii=False), encoding="utf-8")
 
 
+def _safe_filename(name: str) -> str:
+    """Nome file sicuro per lo storage del topic (no path traversal)."""
+    base = os.path.basename(str(name or "file")).replace("\\", "_").strip() or "file"
+    return re.sub(r"[^A-Za-z0-9._-]", "_", base)[:120]
+
+
 # ── rendering del contesto (compatto) ─────────────────────────────────────────
 def _line(m: dict, chat_id: str) -> str:
     """Una riga compatta per messaggio: `[tg://<gruppo>/<user>] -> <verbatim>`.
     `<gruppo>` = NOME/titolo della chat (leggibile), fallback al chat_id.
-    `<user>` = username Telegram (identità autenticata) o uid se assente."""
+    `<user>` = username Telegram (identità autenticata) o uid se assente.
+    Se il messaggio ha un allegato, aggiunge il riferimento al file salvato."""
     group = m.get("chat_title") or chat_id
     user = m.get("from_username") or (str(m.get("from_id")) if m.get("from_id") is not None else "?")
-    return f"[tg://{group}/{user}] -> {(m.get('text') or '').strip()}"
+    text = (m.get("text") or "").strip()
+    f = m.get("file")
+    if f:
+        saved = m.get("saved_file")
+        tag = (f"📎 {f.get('file_name')} → salvato in `{saved}` (leggilo con "
+               f"topic.read_document/read_file)" if saved
+               else f"📎 {f.get('file_name')} (download non riuscito)")
+        text = f"{text} {tag}".strip() if text else tag
+    return f"[tg://{group}/{user}] -> {text}"
 
 
 def _context_block(buffer: list, chat_id: str) -> str:
@@ -197,6 +212,20 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
 
     state["buffer"] = buffer
     if trigger is not None:
+        # Allegati: scarica da Telegram e salvali nello storage del topic, così gli
+        # agenti li leggono con topic.read_document. Solo alla relay (on trigger).
+        for m in buffer:
+            f = m.get("file")
+            if not f or m.get("saved_file") is not None:
+                continue
+            try:
+                dl = telegram_client.download(f["file_id"])
+                fname = _safe_filename(f.get("file_name") or f["file_id"])
+                topics_client.put_file(tier, topic, fname, dl["content_b64"])
+                m["saved_file"] = f"files/{fname}"
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("download/save file %s/%s: %s", tier, topic, e)
+                m["saved_file"] = ""      # download non riuscito (marcato)
         block = _context_block(buffer, str(chat_id))
         try:
             topics_client.post_message(tier, topic, instance, block, kind="telegram")

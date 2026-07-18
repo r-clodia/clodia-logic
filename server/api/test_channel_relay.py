@@ -106,6 +106,20 @@ class ContextTests(unittest.TestCase):
         line = _line({"from_id": 999, "text": "spam"}, "-5")
         self.assertEqual(line, "[tg://-5/999] -> spam")
 
+    def test_line_with_saved_file(self):
+        m = self._m(76632169, "therealdadabit", "")
+        m["file"] = {"file_name": "report.pdf"}
+        m["saved_file"] = "files/report.pdf"
+        line = _line(m, "-5")
+        self.assertIn("📎 report.pdf", line)
+        self.assertIn("files/report.pdf", line)
+
+    def test_line_file_download_failed(self):
+        m = self._m(1, "u", "")
+        m["file"] = {"file_name": "x.bin"}
+        m["saved_file"] = ""
+        self.assertIn("download non riuscito", _line(m, "-5"))
+
     def test_context_block_one_line_per_message(self):
         buffer = [self._m(107393046, "giocasu75", "guardate il doc"),
                   self._m(76632169, "therealdadabit", "@clodia riassumi")]
