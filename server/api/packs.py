@@ -23,12 +23,12 @@ import logging
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..agents.loader import registry
-from . import catalog, pack_import, plugins as plugins_api
+from . import catalog, gateway_pdp, pack_import, plugins as plugins_api
 
 LOG = logging.getLogger("agent-server.api.packs")
 router = APIRouter()
@@ -243,8 +243,9 @@ def _maybe_trigger_pack_ops(result: dict) -> None:
 
 
 @router.post("/clodia/packs/import")
-async def import_pack_zip(file: UploadFile = File(...)):
+async def import_pack_zip(request: Request, file: UploadFile = File(...)):
     """Import unificato da .zip: pack (agents+plugins) o plugin sciolto."""
+    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
     from .skill_import import SkillImportError
     data = await file.read()
     try:
@@ -259,8 +260,9 @@ async def import_pack_zip(file: UploadFile = File(...)):
 
 
 @router.post("/clodia/packs/import-url")
-async def import_pack_url(payload: PackImportUrl):
+async def import_pack_url(payload: PackImportUrl, request: Request):
     """Import unificato da URL (git repo o .zip remoto)."""
+    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
     from .skill_import import SkillImportError
     try:
         result = pack_import.import_pack_url(payload.url)
@@ -274,8 +276,9 @@ async def import_pack_url(payload: PackImportUrl):
 
 
 @router.delete("/clodia/packs/{name}")
-async def delete_pack(name: str):
+async def delete_pack(name: str, request: Request):
     """Rimuove un pack: i suoi plugin, i suoi agenti (non nativi) e il manifest."""
+    gateway_pdp.require_authz(request, "packs.remove")  # admin-only (PDP gateway)
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     # base-pack (e gli altri riservati) è first-party e NON è rimovibile — guardia
