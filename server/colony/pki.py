@@ -262,7 +262,9 @@ def _verify_cert(agent: str) -> Ed25519PublicKey:
 def mint_session_token(agent: str, execution_id: str = "",
                        ttl_seconds: int = SESSION_TTL_SECONDS,
                        principal: str | None = None,
-                       clearance: str | None = None) -> str:
+                       clearance: str | None = None,
+                       on_behalf: bool = False,
+                       human_role: str | None = None) -> str:
     """Firmato dal RUNNER con la chiave privata dell'agente (mai esposta
     al workspace). Nel workspace entra solo il token risultante.
 
@@ -286,6 +288,11 @@ def mint_session_token(agent: str, execution_id: str = "",
         payload["principal"] = principal
     if clearance:
         payload["clearance"] = clearance
+    # M-authz: chiamata ON-BEHALF di un umano → il gateway autorizza sul ruolo
+    # umano (PDP unico), non sul carrier-agent. Claim firmati → non forgiabili.
+    if on_behalf:
+        payload["on_behalf"] = True
+        payload["human_role"] = human_role or "user"
     body = _b64e(json.dumps(payload, separators=(",", ":")).encode())
     sig = _b64e(key.sign(body.encode()))
     return f"{TOKEN_PREFIX}.{body}.{sig}"

@@ -25,11 +25,11 @@ import time
 import urllib.parse
 
 import yaml
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
 from ..config import data_path, workspace_path
-from . import anthropic_oauth, openai_oauth, provider_store
+from . import anthropic_oauth, gateway_pdp, openai_oauth, provider_store
 
 router = APIRouter()
 LOG = logging.getLogger("agent-server.api.providers")
@@ -488,7 +488,8 @@ class KeyBody(BaseModel):
 
 
 @router.post("/api/providers/{pid}/key")
-async def set_key(pid: str, body: KeyBody) -> dict:
+async def set_key(pid: str, body: KeyBody, request: Request) -> dict:
+    gateway_pdp.require_authz(request, "providers.set_key")  # admin-only (PDP gateway)
     if pid not in _CATALOG:
         raise HTTPException(404, f"provider sconosciuto: {pid}")
     from .. import instance_profile
@@ -505,13 +506,14 @@ async def set_key(pid: str, body: KeyBody) -> dict:
 
 
 @router.post("/api/providers/{pid}/login/start")
-async def login_start(pid: str) -> dict:
+async def login_start(pid: str, request: Request) -> dict:
     """Avvia il login-abbonamento OAuth: genera PKCE verifier+state e restituisce
     l'authorize URL del provider. L'utente lo apre, autorizza con il proprio
     abbonamento e ottiene il code da incollare in /login/complete."""
     meta = _CATALOG.get(pid)
     if meta is None:
         raise HTTPException(404, f"provider sconosciuto: {pid}")
+    gateway_pdp.require_authz(request, "providers.login")  # admin-only (PDP gateway)
     oauth = meta.get("oauth")
     if oauth is None:
         raise HTTPException(400, f"login-abbonamento non disponibile per {pid}")
@@ -527,7 +529,7 @@ class CodeBody(BaseModel):
 
 
 @router.post("/api/providers/{pid}/login/complete")
-async def login_complete(pid: str, body: CodeBody) -> dict:
+async def login_complete(pid: str, body: CodeBody, request: Request) -> dict:
     """Completa il login-abbonamento: l'utente incolla il code ottenuto dopo
     l'autorizzazione. Exchange PKCE server-side, si persiste il bundle (mai
     esposto al modello)."""
@@ -537,6 +539,7 @@ async def login_complete(pid: str, body: CodeBody) -> dict:
     oauth = meta.get("oauth")
     if oauth is None:
         raise HTTPException(400, f"login-abbonamento non disponibile per {pid}")
+    gateway_pdp.require_authz(request, "providers.login")  # admin-only (PDP gateway)
     if not body.code.strip():
         raise HTTPException(400, "code vuoto")
     code, state = _parse_code_state(body.code)
@@ -561,7 +564,8 @@ async def login_complete(pid: str, body: CodeBody) -> dict:
 
 
 @router.delete("/api/providers/{pid}")
-async def disconnect(pid: str) -> dict:
+async def disconnect(pid: str, request: Request) -> dict:
+    gateway_pdp.require_authz(request, "providers.disconnect")  # admin-only (PDP gateway)
     try:
         provider_store.delete(pid)
         invalidate_connected_cache()
@@ -576,17 +580,19 @@ async def disconnect(pid: str) -> dict:
 
 
 @router.post("/api/providers/{pid}/pause")
-async def pause_provider_ep(pid: str) -> dict:
+async def pause_provider_ep(pid: str, request: Request) -> dict:
     """Mette in pausa il provider: resta connesso ma escluso dalla selezione
     (gli agent ripiegano sul prossimo provider attivo con SEAL più alto)."""
+    gateway_pdp.require_authz(request, "providers.pause")  # admin-only (PDP gateway)
     if _normalize(pid) not in _CATALOG:
         raise HTTPException(404, f"provider sconosciuto: {pid}")
     return pause_provider(pid)
 
 
 @router.post("/api/providers/{pid}/resume")
-async def resume_provider_ep(pid: str) -> dict:
+async def resume_provider_ep(pid: str, request: Request) -> dict:
     """Riattiva un provider precedentemente messo in pausa."""
+    gateway_pdp.require_authz(request, "providers.resume")  # admin-only (PDP gateway)
     if _normalize(pid) not in _CATALOG:
         raise HTTPException(404, f"provider sconosciuto: {pid}")
     return resume_provider(pid)

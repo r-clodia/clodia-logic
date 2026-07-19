@@ -4,6 +4,7 @@ from __future__ import annotations
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel
 
+from ..api import gateway_pdp
 from ..api.agents import _principal_from_request
 from . import engine, store
 
@@ -37,7 +38,7 @@ class StartBody(BaseModel):
 
 @router.post("/clodia/workflows/{plugin}/{name}/start")
 async def start_workflow(plugin: str, name: str, body: StartBody, request: Request) -> dict:
-    principal = _require_login(request)
+    principal = gateway_pdp.require_authz(request, "workflows.start")  # admin-only (PDP)
     try:
         run = store.create_run(plugin, name, title=body.title, params=body.params,
                                topic=None, requested_by=principal)
@@ -98,7 +99,7 @@ async def approve_run(run_id: str, body: VerdictBody, request: Request) -> dict:
 
 @router.post("/clodia/workflows/runs/{run_id}/cancel")
 async def cancel_run(run_id: str, body: VerdictBody, request: Request) -> dict:
-    principal = _require_login(request)
+    principal = gateway_pdp.require_authz(request, "workflows.cancel")  # admin-only (PDP)
     try:
         return await engine.cancel(run_id, principal, body.note)
     except KeyError:
@@ -109,7 +110,7 @@ async def cancel_run(run_id: str, body: VerdictBody, request: Request) -> dict:
 
 @router.delete("/clodia/workflows/runs/{run_id}")
 async def delete_run_endpoint(run_id: str, request: Request) -> dict:
-    principal = _require_login(request)
+    principal = gateway_pdp.require_authz(request, "workflows.delete")  # admin-only (PDP)
     try:
         removed = await engine.delete(run_id, principal)
     except ValueError:

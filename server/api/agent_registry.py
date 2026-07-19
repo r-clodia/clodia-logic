@@ -40,7 +40,7 @@ from .providers import (connected_provider_ids, candidate_providers, effective_p
                         provider_seal, provider_override, set_provider_override,
                         provider_paused)
 from .provider_store import ProviderStoreError
-from . import admin, contacts, imagegen_client
+from . import admin, contacts, gateway_pdp, imagegen_client
 from .agents import _principal_from_request
 
 router = APIRouter(prefix="/api/agents", tags=["agents"])
@@ -258,7 +258,8 @@ async def agent_pfp_status(name: str) -> dict:
 
 
 @router.post("/reload")
-async def reload_agents() -> dict:
+async def reload_agents(request: Request) -> dict:
+    gateway_pdp.require_authz(request, "agents.reload")  # admin-only (PDP gateway)
     registry.load()
     return {
         "loaded": len(registry.list()),
@@ -629,10 +630,11 @@ _NATIVE_AGENTS = {"clodia", "ophelia", "messaggero"}
 
 
 @router.post("", status_code=201, response_model=AgentSpec)
-async def create_agent(body: AgentCreate) -> AgentSpec:
+async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
     """Crea un nuovo agente USER-DEFINED generando lo scaffold direttamente dallo
     schema (single source of truth — niente file-template da tenere allineato),
     poi reload. Gli agent nativi (clodia/ophelia/messaggero) sono seed nel repo."""
+    gateway_pdp.require_authz(request, "agents.create")  # admin-only (PDP gateway)
     name = body.name.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,30}", name):
         raise HTTPException(400, "nome invalido (usa [a-z0-9_-], inizia con alfanumerico)")
