@@ -716,6 +716,30 @@ class ChatSession:
             env.update(fresh)
         return changed
 
+    def _refresh_mcp_principal(self) -> bool:
+        """Se il principal umano del turno è cambiato rispetto a quello 'cotto'
+        nel token MCP (all'avvio è None), ri-conia il token con il principal
+        attuale e aggiorna gli header di `mcp_servers` → così il gateway vede
+        l'UMANO reale del turno (enforcement compartimento need-to-know), non
+        None. Ritorna True se cambiato (→ il client va riaperto per iniettarlo).
+        Nel flusso normale scatta UNA volta, al primo turno umano (None→utente):
+        contesto vuoto, nessuna perdita. Chiude il gap descritto a `_open_client`."""
+        if self._opts_kwargs is None or self.principal == self._token_principal:
+            return False
+        mcp = (self._opts_kwargs.get("mcp_servers") or {}).get("clodia-tools")
+        if not isinstance(mcp, dict) or "headers" not in mcp:
+            return False  # kind senza MCP clodia-tools
+        try:
+            ct_token = pki.mint_session_token(
+                self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
+                principal=self.principal, clearance=_kind_clearance(self.kind))
+        except Exception as e:  # noqa: BLE001 — un re-mint fallito non rompe il turno
+            LOG.warning("re-mint token MCP (principal) fallito per kind=%s: %s", self.kind, e)
+            return False
+        mcp["headers"]["Authorization"] = f"Bearer {ct_token}"
+        self._token_principal = self.principal
+        return True
+
     async def _recover_session(self) -> bool:
         """Dopo un fallimento del turno (errore, timeout o subprocess wedged)
         riporta la sessione a uno stato PRONTO: chiude il client SDK corrente
@@ -770,8 +794,11 @@ class ChatSession:
             # Token OAuth long-lived: se è in scadenza, provider_env lo rinnova;
             # se è cambiato riapro il client col token fresco PRIMA del turno —
             # così un subprocess di vecchia data non dà 401 a metà sessione.
-            if self._refresh_provider_env():
-                LOG.info("token provider rinnovato → riapro il client per %s", self.chat_id)
+            # Riapri il client se cambia il token provider (scadenza OAuth) O il
+            # principal umano del turno (per propagarlo al gateway MCP). Uso `|`
+            # (non `or`) così entrambe le refresh girano sempre.
+            if self._refresh_provider_env() | self._refresh_mcp_principal():
+                LOG.info("token rinnovato (provider/principal) → riapro il client per %s", self.chat_id)
                 await self._recover_session()
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
