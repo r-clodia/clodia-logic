@@ -44,6 +44,21 @@ if not logging.getLogger().handlers:
 logging.getLogger("httpx").setLevel(logging.WARNING)
 logging.getLogger("httpcore").setLevel(logging.WARNING)
 
+# Log su FILE nella datadir (oltre a stdout): serve al tool `logs.tail` di
+# sysadmin, che legge il file dal datadir condiviso col gateway. Rotante per
+# non crescere illimitato. I segreti sono già soppressi sopra (httpx→WARNING).
+try:
+    from logging.handlers import RotatingFileHandler
+    from .config import data_path
+    _logdir = data_path("logs")
+    _logdir.mkdir(parents=True, exist_ok=True)
+    _fh = RotatingFileHandler(_logdir / "agent-server.log",
+                              maxBytes=2_000_000, backupCount=3, encoding="utf-8")
+    _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
+    logging.getLogger().addHandler(_fh)
+except Exception as _e:  # noqa: BLE001 — il file di log non deve mai bloccare il boot
+    logging.getLogger("agent-server").warning("file log non attivo: %s", _e)
+
 
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
