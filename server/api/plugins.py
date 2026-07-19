@@ -31,12 +31,12 @@ from pathlib import Path
 from typing import Any
 
 import yaml
-from fastapi import APIRouter, File, UploadFile
+from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..config import workspace_path
-from . import catalog, plugin_import
+from . import catalog, gateway_pdp, plugin_import
 from .plugin_import import RESERVED_PLUGIN_NAMES
 
 LOG = logging.getLogger("agent-server.api.plugins")
@@ -317,8 +317,9 @@ async def get_plugin(name: str):
 
 
 @router.post("/clodia/plugins/import")
-async def import_plugin_zip(file: UploadFile = File(...)):
+async def import_plugin_zip(request: Request, file: UploadFile = File(...)):
     """Importa un plugin da .zip (Claude plugin, plugin.yaml o bare skills)."""
+    gateway_pdp.require_authz(request, "mcp.add")  # admin-only (un plugin porta MCP/skill)
     from .skill_import import SkillImportError
     data = await file.read()
     try:
@@ -332,8 +333,9 @@ async def import_plugin_zip(file: UploadFile = File(...)):
 
 
 @router.post("/clodia/plugins/import-url")
-async def import_plugin_url(payload: PluginImportUrl):
+async def import_plugin_url(payload: PluginImportUrl, request: Request):
     """Importa un plugin da URL (git repo o .zip remoto)."""
+    gateway_pdp.require_authz(request, "mcp.add")  # admin-only (un plugin porta MCP/skill)
     from .skill_import import SkillImportError
     try:
         result = plugin_import.import_plugin_url(payload.url)
@@ -346,12 +348,13 @@ async def import_plugin_url(payload: PluginImportUrl):
 
 
 @router.delete("/clodia/plugins/{name}")
-async def delete_plugin(name: str):
+async def delete_plugin(name: str, request: Request):
     """Rimuove un plugin non nativo: skills, rules e manifest.
 
     Per i plugin external il marker `.external-packs/<pack>.installed` resta al
     suo posto, quindi la rimozione è durevole (nessuna reinstallazione al
     prossimo boot)."""
+    gateway_pdp.require_authz(request, "mcp.remove")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     if name in RESERVED_PLUGIN_NAMES:
