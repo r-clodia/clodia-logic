@@ -77,6 +77,26 @@ def _mask_secrets(value: Any, *, key: str = "") -> Any:
     return value
 
 
+def _external_pack_meta() -> dict[str, dict[str, Any]]:
+    """name → {third_party, license, license_note, repo} dai placeholder di terzi."""
+    try:
+        parsed = yaml.safe_load(EXTERNAL_PACKS_MANIFEST.read_text(encoding="utf-8"))
+    except Exception:
+        return {}
+    if not isinstance(parsed, list):
+        return {}
+    out: dict[str, dict[str, Any]] = {}
+    for e in parsed:
+        if isinstance(e, dict) and e.get("pack"):
+            out[str(e["pack"])] = {
+                "third_party": bool(e.get("third_party", True)),
+                "license": str(e.get("license") or "").strip(),
+                "license_note": str(e.get("license_note") or "").strip(),
+                "repo": str(e.get("repo") or "").strip(),
+            }
+    return out
+
+
 def _external_pack_names() -> set[str]:
     try:
         parsed = yaml.safe_load(EXTERNAL_PACKS_MANIFEST.read_text(encoding="utf-8"))
@@ -175,21 +195,22 @@ def _collect_plugins() -> dict[str, dict[str, Any]]:
     return plugins
 
 
-def _plugin_origin(name: str, external: set[str]) -> str:
+def _plugin_origin(name: str, external) -> str:
     if name == "base-pack":
         return "logic"
     if name == "local-pack":
         return "local"
     if name == catalog.USER_PACK:
         return "user"
-    if name in external:
+    if name in external:   # set o dict: membership per chiave
         return "external"
     return "imported"
 
 
-def _plugin_item(name: str, bucket: dict[str, Any], external: set[str]) -> dict[str, Any]:
+def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
     manifest = bucket["manifest"]
     origin = _plugin_origin(name, external)
+    _ext = (external.get(name) if isinstance(external, dict) else None) or {}
     mcp_raw = manifest.get("mcp_servers") or {}
     if not isinstance(mcp_raw, dict):
         mcp_raw = {}
@@ -239,9 +260,14 @@ def _plugin_item(name: str, bucket: dict[str, Any], external: set[str]) -> dict[
         "version": str(manifest.get("version") or "").strip(),
         "source": str(manifest.get("source") or "").strip(),
         # licenza dichiarata del plugin (umbrella per le sue skill); il base-pack
-        # la legge dalla propria pack.yaml bundled (first-party AGPL).
+        # la legge dalla propria pack.yaml bundled; i placeholder di terzi dal
+        # manifest external-packs.yaml.
         "license": (str(manifest.get("license") or "").strip()
-                    or (_base_pack_license() if name == "base-pack" else "")),
+                    or (_base_pack_license() if name == "base-pack" else "")
+                    or _ext.get("license", "")),
+        "license_note": _ext.get("license_note", ""),
+        # third-party = placeholder di terzi (opt-in + acknowledgment licenza).
+        "third_party": bool(_ext.get("third_party")) or origin == "external",
         "skills": skills,
         "rules": rules,
         "mcp_servers": mcp_servers,
@@ -261,7 +287,7 @@ def list_plugins() -> list[dict[str, Any]]:
     """Lista plugin (cache TTL). Usata anche dall'API packs per il cross-ref."""
     if _PLUGINS_CACHE["data"] is not None and (time.time() - _PLUGINS_CACHE["ts"]) < _TTL_SEC:
         return _PLUGINS_CACHE["data"]
-    external = _external_pack_names()
+    external = _external_pack_meta()
     plugins = _collect_plugins()
     out = [_plugin_item(name, bucket, external) for name, bucket in sorted(plugins.items())]
     # base-pack in testa, poi gli altri in ordine alfabetico

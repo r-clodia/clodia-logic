@@ -1,23 +1,36 @@
-# Pack di skill ESTERNI caricati al setup iniziale dell'istanza.
+# Pack di skill di TERZE PARTI, consegnati come placeholder (NON bundlati nel
+# nostro repo AGPL). Non vengono scaricati automaticamente: l'utente decide di
+# scaricarli (opt-in in terraformazione / dalla UI) e ne accetta la licenza.
 #
-# Al primo avvio l'installer (`server/setup/external_packs.py`) clona ogni repo
+# Al download, l'installer (`server/setup/external_packs.py`) clona il repo
 # (shallow) e copia le skill nel catalogo DATA sotto:
 #     CLODIA_DATA/skills-catalog/<pack>/<skill>/
-# Il pack è determinato dal PATH (la sottocartella), quindi i SKILL.md originali
-# NON vengono modificati: contenuto e file LICENSE viaggiano intatti con la skill.
+# I SKILL.md e i file LICENSE originali viaggiano INTATTI con la skill: la
+# licenza autorevole è quella che accompagna ogni skill (repo/subfolder/skill).
 #
-# Idempotente: un marker per pack in skills-catalog/.external-packs/ evita la
-# reinstallazione ai riavvii. Tollerante agli errori di rete (logga e prosegue).
-#
-# Campi: pack (label), repo (URL git), ref (branch/tag), subdir (root delle skill
-# nel repo). Le skill sono cartelle <skill>/ con SKILL.md sotto `subdir`.
+# Campi:
+#   pack (label) · repo (URL git) · ref · subdir (root skill nel repo)
+#   third_party: true  → non first-party, richiede opt-in + acknowledgment licenza
+#   license            → SPDX umbrella dichiarato (informativo; l'autorevole è nel
+#                        LICENSE che viaggia col pack). "" = per-skill / da confermare.
+#   license_note       → eccezioni granulari note
 
 - pack: anthropic-pack
   repo: https://github.com/anthropics/skills
   ref: main
   subdir: skills
+  third_party: true
+  license: Apache-2.0
+  license_note: >-
+    La maggior parte delle skill è Apache-2.0, MA docx/pdf/pptx/xlsx sono
+    "source-available, non open source" (licenza diversa, più restrittiva).
 
 - pack: openai-curated-pack
   repo: https://github.com/openai/skills
   ref: main
   subdir: skills/.curated
+  third_party: true
+  license: ""
+  license_note: >-
+    Licenze PER-SKILL (LICENSE.txt in ogni cartella), nessuna umbrella unica.
+    Repo deprecato da OpenAI. Licenza da confermare skill per skill al download.
