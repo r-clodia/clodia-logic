@@ -579,7 +579,11 @@ async def list_topics(request: Request) -> list[dict]:
 
     (Transizione: i vecchi git-topic non passano più da qui — vedi spec v2.)"""
     try:
-        rows = topics_client.list_topics()
+        # Restituiamo SEMPRE anche gli archived: la pagina Topics li nasconde di
+        # default lato client e li rivela col toggle «Archiviati» (filtro +
+        # conteggio sono client-side). Senza include_archived il toggle non
+        # avrebbe mai dati da mostrare.
+        rows = topics_client.list_topics(include_archived=True)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"gateway topics non disponibile: {str(e)[:160]}")
     me = _principal_from_request(request)
