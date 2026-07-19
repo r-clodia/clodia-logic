@@ -96,6 +96,8 @@ def _list_packs() -> list[dict[str, Any]]:
             "agents": agents,
             "plugins": plugin_children,
             "virtual": False,
+            # first-party (base-pack e riservati) → non rimovibile
+            "deletable": name not in pack_import.RESERVED_PACK_NAMES,
             "counts": {
                 "agents": len(agents),
                 "plugins": len(plugin_children),
@@ -114,6 +116,8 @@ def _list_packs() -> list[dict[str, Any]]:
             "agents": [],
             "plugins": [item],
             "virtual": True,
+            "deletable": bool(item.get("deletable", True))
+            and pname not in pack_import.RESERVED_PACK_NAMES,
             "counts": {"agents": 0, "plugins": 1},
         })
     out.sort(key=lambda x: (x["name"] != "base-pack", x["name"]))
@@ -197,6 +201,12 @@ async def delete_pack(name: str):
     """Rimuove un pack: i suoi plugin, i suoi agenti (non nativi) e il manifest."""
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    # base-pack (e gli altri riservati) è first-party e NON è rimovibile — guardia
+    # esplicita a monte, indipendente dal fatto che sia materializzato in DATA/packs.
+    if name in pack_import.RESERVED_PACK_NAMES:
+        return JSONResponse(
+            status_code=403,
+            content={"error": f"'{name}' è un pack first-party, non rimovibile"})
     try:
         result = pack_import.remove_pack(name)
     except KeyError:

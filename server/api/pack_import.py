@@ -357,7 +357,10 @@ def install_pack_from_root(root: Path, *, source: str) -> dict[str, Any]:
 def remove_pack(name: str) -> dict[str, Any]:
     """Rimuove un pack: i suoi plugin, i suoi agenti (non nativi) e il manifest.
 
-    Ritorna il riepilogo; solleva KeyError se il pack non esiste."""
+    Ritorna il riepilogo; solleva KeyError se il pack non esiste.
+    Solleva PackImportError se il pack è first-party/riservato (non rimovibile)."""
+    if name in RESERVED_PACK_NAMES:
+        raise PackImportError(f"pack first-party non rimovibile: '{name}'")
     meta = PACKS_META_DIR / name / "pack.yaml"
     if not meta.is_file():
         raise KeyError(name)
