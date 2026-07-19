@@ -1,0 +1,6 @@
+{
+  "name": "base-pack",
+  "description": "Skill e rule native della piattaforma Clodia (first-party, in git).",
+  "version": "6.3.0",
+  "license": "AGPL-3.0-or-later"
+}
