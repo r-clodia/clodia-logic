@@ -36,7 +36,9 @@ from ..config import data_path, workspace_path
 
 LOG = logging.getLogger("agent-server.agents.skill_sync")
 
-LOGIC_CATALOG_DIR = workspace_path("catalogs/skills")
+# base-pack: le skill native vivono nel pack bundled `catalogs/packs/base-pack`
+# (convenzione pack). Restano lette in place dal bundle git (nomi bare).
+LOGIC_CATALOG_DIR = workspace_path("catalogs/packs/base-pack/plugins/base-pack/skills")
 DATA_CATALOG_DIR = data_path("skills-catalog")
 
 # Token wildcard in capabilities/rules/tools = "tutto il catalog". Usato dai

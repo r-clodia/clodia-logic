@@ -5,7 +5,8 @@ Il livello superiore è il PACK = [agent seeds] + [plugins] (vedi `packs.py`):
 un plugin può vivere anche "sciolto", fuori da qualunque pack.
 
 Sorgenti di enumerazione:
-- `base-pack`   → catalogo logic (git): `catalogs/skills/` + `catalogs/rules/`
+- `base-pack`   → pack bundled first-party (git): `catalogs/packs/base-pack/`
+                  (plugin `base-pack` con skill+rule; seed nativi in `agents/`)
 - `local-pack`  → entry FLAT del data catalog (skill/rule senza subdir)
 - plugin-subdir → `CLODIA_DATA/skills-catalog/<plugin>/` e
                   `CLODIA_DATA/rules-catalog/<plugin>/`
