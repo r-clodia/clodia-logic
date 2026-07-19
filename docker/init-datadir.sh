@@ -54,6 +54,15 @@ for seed in "$BUNDLE_ROOT"/catalogs/packs/base-pack/agents/*; do
         cp -R "$seed" "$target"
         mkdir -p "$target/memory"
         echo "Seed agent installato: $name"
+    elif grep -qE '^immutable:[[:space:]]*true' "$seed/agent.yaml" 2>/dev/null; then
+        # Seed IMMUTABILE (super/system): il bundle è la fonte di verità.
+        # Ri-sincronizza la DEFINIZIONE (agent.yaml, system-prompt.md, pfp)
+        # ad ogni boot, così un update del seed via rebuild si propaga senza
+        # intervento manuale. Preserva memory/ (stato runtime dell'agente).
+        for f in agent.yaml system-prompt.md pfp.png; do
+            [ -f "$seed/$f" ] && cp -f "$seed/$f" "$target/$f"
+        done
+        echo "Seed agent immutabile ri-sincronizzato: $name"
     fi
 done
 
