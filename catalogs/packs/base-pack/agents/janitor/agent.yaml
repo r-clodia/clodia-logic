@@ -1,6 +1,6 @@
 name: janitor
 display_name: Janitor
-description: "Agent dedicato al widget di assistenza in-app: risolve attriti operativi nella WebUI, gestisce variabili app non sensibili e scala a Clodia quando serve."
+description: "Guida della WebUI: conosce a fondo la piattaforma e porta l'utente alla sezione/pagina giusta, fa triage degli attriti operativi e scala a Clodia per azioni amministrative. Nessun potere di amministrazione."
 type: normal
 # Immutabile a runtime: Janitor è agent di sistema. Come i super, si modifica
 # solo via codice/rebuild del seed (no PATCH/PFP/agents.*). Vedi _is_immutable.
@@ -30,13 +30,13 @@ capabilities:
   - "helpdesk"
 rules: []
 tool_permissions:
+  # SOLO read-only: Janitor guida, non amministra. Rimossi app_runtime.set/reset
+  # (scrittura variabili app) e agents.* (amministrazione capability di altri
+  # agent) — erano la sovrapposizione con Sysadmin. Ogni azione che cambia stato
+  # → si scala a Clodia/owner.
   - "app_runtime.get"
-  - "app_runtime.set"
   - "app_runtime.list"
-  - "app_runtime.reset"
   - "app_runtime.health"
-  # amministrazione capability degli ALTRI agent editabili (skill/tool/rules).
-  - "agents.*"
 priority: 20
 cost_profile: standard
 

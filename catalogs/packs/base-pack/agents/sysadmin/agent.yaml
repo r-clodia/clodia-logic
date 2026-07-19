@@ -1,6 +1,6 @@
 name: sysadmin
 display_name: Sysadmin
-description: "Sysadmin di piattaforma (platform ops): osserva l'attività degli agenti, osserva e propone job (approvazione owner), controlla le run dei workflow, importa/rimuove pack e ne installa le dipendenze nel gateway, osserva lo stato delle integration, aggiunge MCP server, mette in pausa/riattiva i provider, gestisce i settings. Change management e log su ogni azione. NON entra nei topic e non tratta mai dati confidenziali."
+description: "Sysadmin di piattaforma (remit ristretto): importa/rimuove pack e ne installa le dipendenze nel gateway, esegue le migrazioni dati dei pack con backup pre-flight, legge il codice della platform e (M2) i log del server per la diagnosi. Change management e log su ogni azione. NON entra nei topic e non tratta mai dati confidenziali. Jobs, workflow, provider, MCP e settings sono azioni dell'owner via WebUI."
 type: normal
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
 immutable: true
@@ -42,33 +42,19 @@ capabilities:
   - "base-pack/*"
 rules: []
 tool_permissions:
-  # ── Osservazione (read-only). ESCLUSI di proposito runtime.topics e runtime.chats:
-  #    sysadmin non entra nei topic né legge conversazioni utente. ──
-  - "runtime.agents"          # attività/stato degli agenti
-  - "runtime.jobs"            # stato dei job
-  - "runtime.providers"       # stato dei provider (no segreti)
-  - "runtime.mcp_servers"     # MCP server registrati e loro stato
-  - "runtime.skills"          # skill materializzate
-  # ── Jobs: osserva + PROPONE (gate owner). Nessun create/delete diretto: anche
-  #    sysadmin passa dall'approvazione dell'owner per i job. ──
-  - "jobs.list"
-  - "jobs.propose"
+  # Remit RISTRETTO (M1): pack + dipendenze + diagnosi + lettura codice.
+  # Rimossi jobs/workflows/providers/integrations/mcp e settings broad: quelle
+  # operazioni di piattaforma tornano all'owner via WebUI (separazione dei
+  # compiti; minor superficie di mutazione a fronte della lettura di contenuto
+  # non fidato — manifest dei pack, e in M2 i log del server).
   # ── Pack ops: import / remove + install dipendenze dichiarate (requires:) ──
   - "packs.*"
-  # ── Workflows: start / stop / terminate delle run ──
-  - "workflows.*"
-  # ── Integrations: osserva stato/connessione (no lettura dei dati veicolati) ──
-  - "integrations.list"
-  # ── MCP servers: aggiungi/registra ──
-  - "mcp.add"
-  - "mcp.list"
-  # ── Providers: pausa / riattiva (no accesso alle chiavi) ──
-  - "providers.list"
-  - "providers.pause"
-  - "providers.resume"
-  # ── Settings di piattaforma + backup pre-flight per le migrazioni ──
-  - "settings.*"
-  - "fs.list_dir"
+  # ── Osservazione minima, pertinente ai pack (no topic, no chat, no job) ──
+  - "runtime.skills"          # skill materializzate
+  - "fs.list_dir"             # navigazione datadir (plugins/, runtime/)
+  # ── SOLO il backup pre-flight per le migrazioni dati dei pack (non settings.*) ──
+  - "settings.backup_run"
+  # NB: diagnosi da log del server → tool `logs.tail` in arrivo con M2.
 priority: 30
 cost_profile: standard
 
