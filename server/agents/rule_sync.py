@@ -36,7 +36,8 @@ from ..config import data_path, workspace_path
 
 LOG = logging.getLogger("agent-server.agents.rule_sync")
 
-LOGIC_CATALOG_DIR = workspace_path("catalogs/rules")
+# base-pack: le rule native vivono nel pack bundled `catalogs/packs/base-pack`.
+LOGIC_CATALOG_DIR = workspace_path("catalogs/packs/base-pack/plugins/base-pack/rules")
 DATA_CATALOG_DIR = data_path("rules-catalog")
 
 # Token wildcard = "tutte le rule del catalog" (vedi skill_sync.WILDCARDS).

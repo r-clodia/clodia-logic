@@ -34,15 +34,15 @@ touch "$DATADIR/boot/VIOLATION.md"
 mkdir -p "$DATADIR/secrets/keystore"
 [ -f "$DATADIR/keystore-policy.yaml" ] || printf 'credentials: {}\n' > "$DATADIR/keystore-policy.yaml"
 
-# Seed agent: installa gli agent NATIVI della piattaforma da catalogs/agents-seed
-# (clodia, ophelia — super; wainston — admin; mercuria — messaggero). Sono il
-# genoma clonato con ogni istanza. Eventuali agent aggiuntivi dell'istanza vivono
-# in CLODIA_DATA/agents/ e non stanno nel repo. Copia solo se manca, per non
-# sovrascrivere editing locale.
+# Seed agent: installa gli agent NATIVI della piattaforma dal base-pack
+# (catalogs/packs/base-pack/agents/): clodia, ophelia — super; sysadmin — admin;
+# messaggero; janitor. Sono il genoma clonato con ogni istanza. Eventuali agent
+# aggiuntivi dell'istanza vivono in CLODIA_DATA/agents/ e non stanno nel repo.
+# Copia solo se manca, per non sovrascrivere editing locale.
 # Terraformazione (Modular Distro): se esiste $DATADIR/native-seeds (un nome
 # per riga), vengono seminati SOLO i seed elencati (anche uno solo). File
 # assente = tutti (comportamento storico). Il file lo scrive clodia-build.
-for seed in "$BUNDLE_ROOT"/catalogs/agents-seed/*; do
+for seed in "$BUNDLE_ROOT"/catalogs/packs/base-pack/agents/*; do
     [ -d "$seed" ] || continue
     name="$(basename "$seed")"
     if [ -f "$DATADIR/native-seeds" ] && ! grep -qx "$name" "$DATADIR/native-seeds"; then
