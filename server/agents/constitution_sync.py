@@ -22,7 +22,9 @@ from ..config import data_path, workspace_path
 
 LOG = logging.getLogger("agent-server.agents.constitution_sync")
 
-LOGIC_CATALOG_DIR = workspace_path("catalogs/constitutions")
+# Le costituzioni sono preamboli al system-prompt dei seed: vivono nel base-pack
+# (bundled), come skill/rule/seed nativi.
+LOGIC_CATALOG_DIR = workspace_path("catalogs/packs/base-pack/constitutions")
 DATA_CATALOG_DIR = data_path("constitution-catalog")
 
 # valori che indicano "nessuna costituzione"

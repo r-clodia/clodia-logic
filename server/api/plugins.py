@@ -90,6 +90,15 @@ def _external_pack_names() -> set[str]:
     }
 
 
+def _base_pack_license() -> str:
+    """Licenza del base-pack, letta dalla sua pack.yaml bundled (fonte unica)."""
+    try:
+        p = workspace_path("catalogs/packs/base-pack/pack.yaml")
+        return str((yaml.safe_load(p.read_text(encoding="utf-8")) or {}).get("license") or "").strip()
+    except Exception:
+        return ""
+
+
 def _load_plugin_manifest(plugin: str) -> dict[str, Any]:
     path = plugin_import.PLUGINS_META_DIR / plugin / "plugin.yaml"
     if not path.is_file():
@@ -103,12 +112,16 @@ def _load_plugin_manifest(plugin: str) -> dict[str, Any]:
 
 
 def _skill_entry(name: str, path: Path) -> dict[str, Any]:
+    description = ""
+    license_ = ""
     try:
         fm, _body, _full = catalog._read_catalog_file(path)
         description = catalog._skill_description(fm)
+        license_ = str(fm.get("license") or "").strip()
     except Exception:
-        description = ""
-    return {"name": name, "description": description}
+        pass
+    # license "" = non dichiarata sulla skill → eredita l'umbrella del pack.
+    return {"name": name, "description": description, "license": license_}
 
 
 def _rule_entry(name: str, path: Path) -> dict[str, Any]:
@@ -225,6 +238,10 @@ def _plugin_item(name: str, bucket: dict[str, Any], external: set[str]) -> dict[
         "deletable": origin in ("external", "user", "imported"),
         "version": str(manifest.get("version") or "").strip(),
         "source": str(manifest.get("source") or "").strip(),
+        # licenza dichiarata del plugin (umbrella per le sue skill); il base-pack
+        # la legge dalla propria pack.yaml bundled (first-party AGPL).
+        "license": (str(manifest.get("license") or "").strip()
+                    or (_base_pack_license() if name == "base-pack" else "")),
         "skills": skills,
         "rules": rules,
         "mcp_servers": mcp_servers,
