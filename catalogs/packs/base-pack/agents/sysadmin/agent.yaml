@@ -54,7 +54,8 @@ tool_permissions:
   - "fs.list_dir"             # navigazione datadir (plugins/, runtime/)
   # ── SOLO il backup pre-flight per le migrazioni dati dei pack (non settings.*) ──
   - "settings.backup_run"
-  # NB: diagnosi da log del server → tool `logs.tail` in arrivo con M2.
+  # ── Diagnosi: lettura (read-only) degli ultimi log del server ──
+  - "logs.tail"
 priority: 30
 cost_profile: standard
 
