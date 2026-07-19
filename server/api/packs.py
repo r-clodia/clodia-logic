@@ -67,6 +67,39 @@ def _agent_entry(name: str, installed_plugins: set[str]) -> dict[str, Any]:
     }
 
 
+def _pack_provider_info(manifest: dict[str, Any]) -> dict[str, Any]:
+    """Provider dichiarati dal pack (schema M0b). Un pack può portarsi dietro
+    provider di inferenza (anche con adapter-code). Ogni provider DEVE dichiarare
+    `sovereignty` (seal + residenza + dpa + training): è dove escono i dati.
+    `dpa_missing` = esiste un provider senza profilo DPA/sovranità completo
+    → bloccante all'install + consenso owner obbligatorio."""
+    provs = manifest.get("providers") or []
+    out: list[dict[str, Any]] = []
+    dpa_missing = False
+    for p in provs:
+        if not isinstance(p, dict):
+            continue
+        sov = p.get("sovereignty") or {}
+        complete = bool(sov.get("seal")) and sov.get("dpa") is not None and bool(sov.get("residency"))
+        if not complete:
+            dpa_missing = True
+        out.append({
+            "name": p.get("name"),
+            "sdk": p.get("sdk"),
+            "base_url": p.get("base_url"),
+            # adapter-code = codice provider di terzi nel percorso di inferenza →
+            # review dinamica rigorosa (M4). null/assente = usa un sdk esistente.
+            "adapter_code": bool(p.get("adapter")),
+            "sovereignty": {
+                "seal": sov.get("seal"),
+                "residency": sov.get("residency"),
+                "dpa": bool(sov.get("dpa")),
+                "training": sov.get("training"),
+            },
+        })
+    return {"providers": out, "dpa_missing": dpa_missing}
+
+
 def _pack_license_info(umbrella: str, plugin_children: list) -> dict[str, Any]:
     """Licenza effettiva del pack. Umbrella = licenza del pack; ogni skill/plugin
     può override. Effettiva(skill) = skill.license or plugin.license or umbrella.
@@ -117,6 +150,7 @@ def _list_packs() -> list[dict[str, Any]]:
             plugin_items.get(p, {"name": p, "missing": True}) for p in plugin_names
         ]
         lic = _pack_license_info(manifest.get("license") or "", plugin_children)
+        prov = _pack_provider_info(manifest)
         out.append({
             "name": name,
             "description": str(manifest.get("description") or "").strip(),
@@ -130,6 +164,9 @@ def _list_packs() -> list[dict[str, Any]]:
             "license": lic["license"],
             "licenses": lic["licenses"],
             "license_missing": lic["license_missing"],
+            "providers": prov["providers"],
+            "dpa_missing": prov["dpa_missing"],
+            "third_party": bool(manifest.get("third_party")),
             "counts": {
                 "agents": len(agents),
                 "plugins": len(plugin_children),
@@ -154,6 +191,10 @@ def _list_packs() -> list[dict[str, Any]]:
             "license": lic["license"],
             "licenses": lic["licenses"],
             "license_missing": lic["license_missing"],
+            "license_note": item.get("license_note") or "",
+            "providers": [],
+            "dpa_missing": False,
+            "third_party": bool(item.get("third_party")),
             "counts": {"agents": 0, "plugins": 1},
         })
     out.sort(key=lambda x: (x["name"] != "base-pack", x["name"]))
