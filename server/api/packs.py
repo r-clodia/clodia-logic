@@ -67,6 +67,34 @@ def _agent_entry(name: str, installed_plugins: set[str]) -> dict[str, Any]:
     }
 
 
+def _pack_license_info(umbrella: str, plugin_children: list) -> dict[str, Any]:
+    """Licenza effettiva del pack. Umbrella = licenza del pack; ogni skill/plugin
+    può override. Effettiva(skill) = skill.license or plugin.license or umbrella.
+    `license_missing` = esiste una skill/plugin senza alcuna licenza nella catena
+    (→ non installabile: contenuto a licenza ignota)."""
+    umbrella = (umbrella or "").strip()
+    effective: set[str] = set()
+    missing = False
+    for pl in plugin_children or []:
+        pl_lic = str(pl.get("license") or "").strip()
+        skills = pl.get("skills") or []
+        if not skills:
+            eff = pl_lic or umbrella
+            if eff:
+                effective.add(eff)
+            else:
+                missing = True
+            continue
+        for sk in skills:
+            eff = str(sk.get("license") or "").strip() or pl_lic or umbrella
+            if eff:
+                effective.add(eff)
+            else:
+                missing = True
+    return {"license": umbrella, "licenses": sorted(effective),
+            "license_missing": missing}
+
+
 def _list_packs() -> list[dict[str, Any]]:
     plugin_items = {p["name"]: p for p in plugins_api.list_plugins()}
     installed_plugins = set(plugin_items)
@@ -88,6 +116,7 @@ def _list_packs() -> list[dict[str, Any]]:
         plugin_children = [
             plugin_items.get(p, {"name": p, "missing": True}) for p in plugin_names
         ]
+        lic = _pack_license_info(manifest.get("license") or "", plugin_children)
         out.append({
             "name": name,
             "description": str(manifest.get("description") or "").strip(),
@@ -98,6 +127,9 @@ def _list_packs() -> list[dict[str, Any]]:
             "virtual": False,
             # first-party (base-pack e riservati) → non rimovibile
             "deletable": name not in pack_import.RESERVED_PACK_NAMES,
+            "license": lic["license"],
+            "licenses": lic["licenses"],
+            "license_missing": lic["license_missing"],
             "counts": {
                 "agents": len(agents),
                 "plugins": len(plugin_children),
@@ -108,6 +140,7 @@ def _list_packs() -> list[dict[str, Any]]:
     for pname, item in plugin_items.items():
         if pname in referenced:
             continue
+        lic = _pack_license_info(item.get("license") or "", [item])
         out.append({
             "name": pname,
             "description": item.get("description") or "",
@@ -118,6 +151,9 @@ def _list_packs() -> list[dict[str, Any]]:
             "virtual": True,
             "deletable": bool(item.get("deletable", True))
             and pname not in pack_import.RESERVED_PACK_NAMES,
+            "license": lic["license"],
+            "licenses": lic["licenses"],
+            "license_missing": lic["license_missing"],
             "counts": {"agents": 0, "plugins": 1},
         })
     out.sort(key=lambda x: (x["name"] != "base-pack", x["name"]))
