@@ -291,6 +291,32 @@ def mint_session_token(agent: str, execution_id: str = "",
     return f"{TOKEN_PREFIX}.{body}.{sig}"
 
 
+CAP_PREFIX = "ccap1"
+
+
+def mint_capability(agent: str, instance: str, minutes: int, by: str,
+                    cap: str = "sudo") -> dict:
+    """Conia un capability-token SUDO firmato dalla **CA** (non dall'agente): è
+    la prova crittografica dell'approvazione umana `by`. Lo detiene/verifica il
+    gateway con la CA pubblica. Firmato dalla CA → un agente NON può
+    auto-emetterselo. Ritorna {token, jti, exp}.
+
+    `by` = principal umano approvatore (dentro il payload firmato → auditabile e
+    non falsificabile). `instance` = id-istanza (o "-" finché non plumbato)."""
+    import secrets
+    ca_key, _ = _load_ca()
+    now = int(time.time())
+    minutes = max(1, min(int(minutes or 15), 120))  # cap 2h
+    jti = secrets.token_hex(8)
+    payload = {
+        "cap": cap, "agent": agent, "instance": instance or "-",
+        "jti": jti, "iat": now, "exp": now + minutes * 60, "by": by,
+    }
+    body = _b64e(json.dumps(payload, separators=(",", ":")).encode())
+    sig = _b64e(ca_key.sign(body.encode()))
+    return {"token": f"{CAP_PREFIX}.{body}.{sig}", "jti": jti, "exp": payload["exp"]}
+
+
 def verify_session_token(token: str) -> dict:
     """Valida il token e ritorna il payload. Solleva PermissionError."""
     try:

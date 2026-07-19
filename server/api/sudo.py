@@ -64,12 +64,23 @@ async def approve(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    payload = {"agent": (body.get("agent") or "").strip(),
-               "instance": (body.get("instance") or "-").strip() or "-",
-               "minutes": body.get("minutes", 15)}
+    agent = (body.get("agent") or "").strip()
+    instance = (body.get("instance") or "-").strip() or "-"
+    minutes = body.get("minutes", 15)
+    # Conia la CAPABILITY firmata dalla CA: è la prova crittografica
+    # dell'approvazione di `principal` (l'admin). Il gateway la verifica con la CA
+    # pubblica → un agente non può auto-emettersi sudo. `by=principal` è nel
+    # payload firmato (auditabile, non falsificabile).
+    try:
+        cap = pki.mint_capability(agent, instance, minutes, by=principal)
+    except Exception as e:
+        LOG.error("mint_capability fallito per %s@%s: %s", agent, instance, e)
+        return JSONResponse({"error": "mint_failed", "detail": str(e)}, status_code=500)
+    payload = {"agent": agent, "instance": instance, "minutes": minutes,
+               "token": cap["token"]}
     r = _gw("POST", "/grant", principal, payload)
-    LOG.info("sudo approve %s@%s da %s → %s", payload["agent"], payload["instance"],
-             principal, r.status_code)
+    LOG.info("sudo approve %s@%s da %s (cap jti=%s) → %s", agent, instance,
+             principal, cap["jti"], r.status_code)
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
