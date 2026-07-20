@@ -382,10 +382,38 @@ def _kind_spec(kind: str):
 
 
 def _kind_clearance(kind: str) -> Optional[str]:
-    """Clearance (SEAL-N) dell'agent, per il claim nel token verso il gateway
-    (enforcement clearance≥tier). None se non dichiarata."""
+    """Clearance-TETTO dichiarata dall'agent in agent.yaml (il MASSIMO SEAL a cui
+    è abilitato). None se non dichiarata. NON è la clearance effettiva: quella la
+    calcola `_effective_clearance` combinandola col SEAL del provider."""
     spec = _kind_spec(kind)
     return getattr(spec, "clearance", None) if spec else None
+
+
+def _seal_num(s: Optional[str]) -> Optional[int]:
+    try:
+        return int(str(s).replace("SEAL-", "").strip()) if s else None
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _effective_clearance(kind: str) -> Optional[str]:
+    """Clearance EFFETTIVA per il token = min(tetto agente, SEAL del provider
+    effettivo). Il SEAL di un agente NON è statico: dipende dal provider su cui
+    gira (il dato va lì) — clodia su aws-region-eu (SEAL-2) è SEAL-2, su
+    anthropic-api (SEAL-1) è SEAL-1. Il tetto in agent.yaml è solo il massimo.
+    Tetto assente = nessun cap lato agente → vale il SEAL del provider."""
+    ceiling = _seal_num(_kind_clearance(kind))
+    prov_seal = None
+    try:
+        from ..api.providers import provider_seal
+        prov = agent_effective_provider(kind)
+        prov_seal = _seal_num(provider_seal(prov)) if prov else None
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("provider_seal non risolto per kind=%s: %s", kind, e)
+    ranks = [r for r in (ceiling, prov_seal) if r is not None]
+    if not ranks:
+        return None
+    return f"SEAL-{min(ranks)}"
 
 
 def known_kind(kind: str) -> bool:
@@ -715,7 +743,7 @@ class ChatSession:
         try:
             ct_token = pki.mint_session_token(self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
                                               principal=self.principal,
-                                              clearance=_kind_clearance(self.kind))
+                                              clearance=_effective_clearance(self.kind))
             # principal "cotto" nel token MCP di questo client: se cambia (l'utente
             # connesso cambia, o la sessione era partita anonima) va ri-coniato.
             self._token_principal = self.principal
@@ -809,7 +837,7 @@ class ChatSession:
         try:
             ct_token = pki.mint_session_token(
                 self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
-                principal=self.principal, clearance=_kind_clearance(self.kind))
+                principal=self.principal, clearance=_effective_clearance(self.kind))
         except Exception as e:  # noqa: BLE001 — un re-mint fallito non rompe il turno
             LOG.warning("re-mint token MCP (principal) fallito per kind=%s: %s", self.kind, e)
             return False
@@ -1447,7 +1475,7 @@ class CodexChatSession:
         try:
             env["CLODIA_TOOLS_TOKEN"] = pki.mint_session_token(
                 self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL, principal=self.principal,
-                clearance=_kind_clearance(self.kind))
+                clearance=_effective_clearance(self.kind))
         except Exception as e:  # noqa: BLE001
             LOG.warning("token clodia-tools (codex) non coniato per %s: %s", self.kind, e)
         run_cwd = str(self._spawn_dir or self.cwd)
@@ -1725,7 +1753,7 @@ class OpenCodeChatSession:
         try:
             tok = pki.mint_session_token(self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
                                          principal=self.principal,
-                                         clearance=_kind_clearance(self.kind))
+                                         clearance=_effective_clearance(self.kind))
             cfg["mcp"]["clodia-tools"] = {
                 "type": "local",
                 "command": ["npx", "-y", "mcp-remote", CLODIA_TOOLS_MCP_URL,
