@@ -116,6 +116,28 @@ def _require_job(job_id: int) -> dict:
     return job
 
 
+def _caller(request: Request) -> str:
+    from ..api.agents import _principal_from_request
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "autenticazione richiesta")
+    return principal
+
+
+def _require_job_owner(request: Request, job: dict) -> str:
+    """Agire su un job (modifica/cancella/esegui) è riservato al suo **OWNER** (o
+    a un admin come operatore). Un job legacy/di sistema (owner vuoto, es. il job
+    di backup) è gestibile solo da un admin — così un non-owner come Giovanni non
+    può cancellarlo."""
+    from ..api.admin import is_admin
+    principal = _caller(request)
+    if is_admin(principal):
+        return principal
+    if principal != (job.get("owner") or ""):
+        raise HTTPException(403, "solo l'owner del job (o un admin) può gestirlo")
+    return principal
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
@@ -131,7 +153,8 @@ async def api_get_job(job_id: int):
 
 
 @router.post("/clodia/jobs", status_code=201)
-async def api_create_job(req: JobCreate):
+async def api_create_job(req: JobCreate, request: Request):
+    owner = _caller(request)  # chi crea diventa owner (dev'essere autenticato)
     cron = _resolve_cron(req.cron_expr, req.schedule_text)
     _require_valid_agent(req.agent)
     try:
@@ -141,6 +164,7 @@ async def api_create_job(req: JobCreate):
             prompt=req.prompt,
             agent=req.agent,
             enabled=req.enabled,
+            owner=owner,
         )
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail=f"job name '{req.name}' already exists")
@@ -210,14 +234,14 @@ async def api_decide_proposal(pid: int, request: Request):
         body = {}
     choice = (body.get("choice") or "").strip().lower()
     try:
-        return proposals.apply_decision(prop, choice, body.get("comment", ""))
+        return proposals.apply_decision(prop, choice, body.get("comment", ""), owner=principal)
     except proposals.ProposalError as e:
         raise HTTPException(e.status, e.detail)
 
 
 @router.patch("/clodia/jobs/{job_id}")
-async def api_update_job(job_id: int, req: JobUpdate):
-    _require_job(job_id)
+async def api_update_job(job_id: int, req: JobUpdate, request: Request):
+    _require_job_owner(request, _require_job(job_id))
     cron = req.cron_expr
     if cron is None and req.schedule_text:
         cron = _resolve_cron(None, req.schedule_text)
@@ -247,8 +271,8 @@ async def api_update_job(job_id: int, req: JobUpdate):
 
 
 @router.delete("/clodia/jobs/{job_id}")
-async def api_delete_job(job_id: int):
-    _require_job(job_id)
+async def api_delete_job(job_id: int, request: Request):
+    _require_job_owner(request, _require_job(job_id))
     scheduler.unregister_job(job_id)
     deleted = db.delete_job(job_id)
     if not deleted:  # race
@@ -257,8 +281,8 @@ async def api_delete_job(job_id: int):
 
 
 @router.post("/clodia/jobs/{job_id}/run")
-async def api_run_job(job_id: int):
+async def api_run_job(job_id: int, request: Request):
     """Fire manuale immediato (bypassa il cron). Utile per test e debug."""
-    _require_job(job_id)
+    _require_job_owner(request, _require_job(job_id))
     result = await scheduler.fire_job(job_id)
     return {"job_id": job_id, **result}

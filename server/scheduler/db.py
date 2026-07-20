@@ -29,7 +29,7 @@ from ..config import data_path
 JOBS_DIR = data_path("jobs")
 
 _FIELDS = (
-    "id", "name", "cron_expr", "prompt", "agent", "enabled",
+    "id", "name", "cron_expr", "prompt", "agent", "enabled", "owner",
     "last_run_at", "last_status", "last_chat_id", "created_at", "updated_at",
 )
 
@@ -59,6 +59,8 @@ def _read(p: Path) -> Optional[dict]:
         return None
     d["enabled"] = bool(d.get("enabled", True))
     d["agent"] = d.get("agent") or _LEGACY_DEFAULT_AGENT
+    # Job legacy (pre-owner) → owner vuoto = di sistema: solo un admin può agirvi.
+    d["owner"] = d.get("owner") or ""
     return d
 
 
@@ -86,15 +88,17 @@ def _next_id() -> int:
 
 
 def create_job(name: str, cron_expr: str, prompt: str,
-               agent: str = "clodia", enabled: bool = True) -> dict:
+               agent: str = "clodia", enabled: bool = True,
+               owner: str = "") -> dict:
     """Crea un nuovo job. Solleva sqlite3.IntegrityError se 'name' è duplicato
-    (contratto invariato con api.py → HTTP 409)."""
+    (contratto invariato con api.py → HTTP 409). `owner` = principal umano che ne
+    è proprietario (solo lui, o un admin, può agirvi)."""
     if get_job_by_name(name) is not None:
         raise sqlite3.IntegrityError(f"job name '{name}' already exists")
     now = _now_iso()
     d = {
         "id": _next_id(), "name": name, "cron_expr": cron_expr, "prompt": prompt,
-        "agent": agent or "clodia",
+        "agent": agent or "clodia", "owner": owner or "",
         "enabled": bool(enabled), "last_run_at": None, "last_status": None,
         "last_chat_id": None, "created_at": now, "updated_at": now,
     }

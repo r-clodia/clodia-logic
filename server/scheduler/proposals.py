@@ -104,10 +104,10 @@ class ProposalError(Exception):
         super().__init__(detail)
 
 
-def apply_decision(prop: dict, choice: str, comment: str = "") -> dict:
+def apply_decision(prop: dict, choice: str, comment: str = "", owner: str = "") -> dict:
     """Applica la decisione dell'owner su una proposta (approva → crea+registra
     il job; annulla → rifiuta). Condivisa dal gate SINCRONO (popup in chat) e da
-    quello ASINCRONO (link firmato)."""
+    quello ASINCRONO (link firmato). `owner` = chi approva → diventa owner del job."""
     from . import db, scheduler
     import sqlite3
     if choice.startswith("approva"):
@@ -116,7 +116,7 @@ def apply_decision(prop: dict, choice: str, comment: str = "") -> dict:
             job = db.create_job(
                 name=prop["name"], cron_expr=prop["cron_expr"],
                 prompt=prop["prompt"], agent=prop["agent"],
-                enabled=bool(prop.get("enabled", True)))
+                enabled=bool(prop.get("enabled", True)), owner=owner)
         except sqlite3.IntegrityError:
             raise ProposalError(409, f"esiste già un job con nome '{prop['name']}'")
         if job.get("enabled"):
