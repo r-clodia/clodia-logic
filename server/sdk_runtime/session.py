@@ -248,6 +248,28 @@ async def _allow_all(
 
 _IS_ROOT = (os.getuid() == 0)
 
+# ── Contenimento runtime (M3, opt-in) ────────────────────────────────────────
+# Esegue il subprocess dell'SDK come utente NON-root, così il suo bash non può
+# leggere i segreti root-only (ca.key/identity.key/vault). L'orchestrator resta
+# root e conia i token. Selezione per-kind per un rollout sicuro:
+#   CLODIA_AGENT_SANDBOX_UID   uid non privilegiato (es. 65533). Vuoto = OFF.
+#   CLODIA_AGENT_SANDBOX_KINDS CSV dei kind da sandboxare, o "*" per tutti.
+_SANDBOX_UID = os.environ.get("CLODIA_AGENT_SANDBOX_UID", "").strip()
+_SANDBOX_KINDS = {
+    k.strip() for k in os.environ.get("CLODIA_AGENT_SANDBOX_KINDS", "").split(",") if k.strip()
+}
+_SANDBOX_WRAPPER = os.environ.get(
+    "CLODIA_AGENT_SANDBOX_WRAPPER", "/clodia/docker/agent-sandbox-exec.sh")
+
+
+def _sandbox_enabled(kind: str) -> bool:
+    return bool(_SANDBOX_UID) and (kind in _SANDBOX_KINDS or "*" in _SANDBOX_KINDS)
+
+
+def _bundled_cli_path() -> str:
+    import claude_agent_sdk as _sdk
+    return os.path.join(os.path.dirname(_sdk.__file__), "_bundled", "claude")
+
 # Backcompat alias: alcuni call site (e codice esterno) usano ancora
 # WORKSPACE_ROOT / SESSIONS_DIR. Restano agganciati a Clodia.
 WORKSPACE_ROOT = KIND_CWD["clodia"]
@@ -671,6 +693,21 @@ class ChatSession:
             }
         except Exception as e:
             LOG.warning("clodia-tools MCP HTTP non configurato per kind=%s: %s", self.kind, e)
+        # Contenimento runtime (opt-in per-kind): fa girare il CLI come non-root
+        # via wrapper, così il bash del subprocess non legge i segreti root-only.
+        if _sandbox_enabled(self.kind) and spawn_dir is not None:
+            opts_kwargs["cli_path"] = _SANDBOX_WRAPPER
+            child_env["CLODIA_AGENT_UID"] = _SANDBOX_UID
+            child_env["CLODIA_REAL_CLI"] = _bundled_cli_path()
+            child_env["HOME"] = str(spawn_dir)  # HOME scrivibile dal non-root
+            try:
+                import subprocess as _sp
+                # lo spawn dev'essere di proprietà del non-root (read/write scratch)
+                _sp.run(["chown", "-R", f"{_SANDBOX_UID}:{_SANDBOX_UID}", str(spawn_dir)],
+                        check=False)
+                LOG.info("sandbox runtime attiva per kind=%s (uid=%s)", self.kind, _SANDBOX_UID)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("chown spawn per sandbox fallito (kind=%s): %s", self.kind, e)
         self._opts_kwargs = opts_kwargs
         await self._open_client()
         # Auto-intro fire-and-forget: se il kind ne ha uno definito, lo
