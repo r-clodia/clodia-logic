@@ -502,9 +502,30 @@ def _scan(classification: str) -> list[dict]:
     return items
 
 
+def _require_topic_owner(request: Request, tier: str, name: str) -> str:
+    """Cambiare stato / archiviare un topic è azione da **OWNER** (chi amministra
+    il canale). Un partecipante NON owner non può. Un admin di piattaforma è
+    ammesso come operatore (necessario per i topic il cui owner è un agente, es.
+    contact_agent=clodia, dove nessun umano è owner). Solleva 401/403."""
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "autenticazione richiesta")
+    if admin.is_admin(principal):
+        return principal
+    try:
+        t = topics_client.open_topic(tier, name) or {}
+    except Exception:  # noqa: BLE001
+        t = {}
+    owner = (t.get("meta") or {}).get("owner")
+    if principal != owner:
+        raise HTTPException(403, "solo l'owner del topic può cambiarne stato o archiviarlo")
+    return principal
+
+
 @router.post("/api/topics/{tier}/{name}/archive")
-def archive_topic(tier: str, name: str):
-    """Archivia un topic (status=archived) via il gateway."""
+def archive_topic(tier: str, name: str, request: Request):
+    """Archivia un topic (status=archived) via il gateway. Solo l'owner (o admin)."""
+    _require_topic_owner(request, tier, name)
     try:
         return topics_client.archive_topic(tier, name)
     except topics_client.TopicsClientError as e:
@@ -513,7 +534,9 @@ def archive_topic(tier: str, name: str):
 
 @router.post("/api/topics/{tier}/{name}/status")
 async def set_topic_status(tier: str, name: str, request: Request):
-    """Imposta lo status del topic (await|active|archived|urgent) via il gateway."""
+    """Imposta lo status del topic (await|active|archived|urgent) via il gateway.
+    Solo l'owner (o admin)."""
+    _require_topic_owner(request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
