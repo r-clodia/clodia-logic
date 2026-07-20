@@ -14,6 +14,8 @@ set -eu
 
 : "${CLODIA_AGENT_UID:?CLODIA_AGENT_UID mancante}"
 : "${CLODIA_REAL_CLI:?CLODIA_REAL_CLI mancante}"
+# gid = gruppo del SEED (famiglia). Se assente, usa l'uid (gruppo privato).
+CLODIA_AGENT_GID="${CLODIA_AGENT_GID:-$CLODIA_AGENT_UID}"
 
-exec setpriv --reuid="$CLODIA_AGENT_UID" --regid="$CLODIA_AGENT_UID" \
+exec setpriv --reuid="$CLODIA_AGENT_UID" --regid="$CLODIA_AGENT_GID" \
      --clear-groups --inh-caps=-all "$CLODIA_REAL_CLI" "$@"

@@ -251,19 +251,53 @@ _IS_ROOT = (os.getuid() == 0)
 # ── Contenimento runtime (M3, opt-in) ────────────────────────────────────────
 # Esegue il subprocess dell'SDK come utente NON-root, così il suo bash non può
 # leggere i segreti root-only (ca.key/identity.key/vault). L'orchestrator resta
-# root e conia i token. Selezione per-kind per un rollout sicuro:
-#   CLODIA_AGENT_SANDBOX_UID   uid non privilegiato (es. 65533). Vuoto = OFF.
-#   CLODIA_AGENT_SANDBOX_KINDS CSV dei kind da sandboxare, o "*" per tutti.
-_SANDBOX_UID = os.environ.get("CLODIA_AGENT_SANDBOX_UID", "").strip()
+# root e conia i token. Modello Unix "famiglia/individuo":
+#   uid UNICO per SPAWN  → isola ogni istanza viva (scratch 700 privato).
+#   gid STABILE per SEED → istanze dello stesso seed condividono il "gruppo" del
+#                          seed (per dati di seed condivisi via g+r); seed diversi
+#                          restano isolati fra loro.
+#   CLODIA_AGENT_SANDBOX_UID   = BASE del pool uid (>0 abilita). Vuoto/0 = OFF.
+#   CLODIA_AGENT_SANDBOX_KINDS = CSV dei kind, o "*" per tutti.
+import threading as _threading
+import zlib as _zlib
+
+_SANDBOX_UID_BASE = int(os.environ.get("CLODIA_AGENT_SANDBOX_UID", "0") or "0")
+_SANDBOX_UID_SPAN = int(os.environ.get("CLODIA_AGENT_SANDBOX_UID_SPAN", "2000"))
+_SANDBOX_GID_BASE = (_SANDBOX_UID_BASE + _SANDBOX_UID_SPAN) if _SANDBOX_UID_BASE else 0
+_SANDBOX_GID_SPAN = 1000
 _SANDBOX_KINDS = {
     k.strip() for k in os.environ.get("CLODIA_AGENT_SANDBOX_KINDS", "").split(",") if k.strip()
 }
 _SANDBOX_WRAPPER = os.environ.get(
     "CLODIA_AGENT_SANDBOX_WRAPPER", "/clodia/docker/agent-sandbox-exec.sh")
+_uid_lock = _threading.Lock()
+_uids_in_use: set[int] = set()
 
 
 def _sandbox_enabled(kind: str) -> bool:
-    return bool(_SANDBOX_UID) and (kind in _SANDBOX_KINDS or "*" in _SANDBOX_KINDS)
+    return _SANDBOX_UID_BASE > 0 and (kind in _SANDBOX_KINDS or "*" in _SANDBOX_KINDS)
+
+
+def _seed_gid(kind: str) -> int:
+    """gid STABILE per seed: stesso valore per tutte le istanze del seed."""
+    return _SANDBOX_GID_BASE + (_zlib.crc32(kind.encode()) % _SANDBOX_GID_SPAN)
+
+
+def _alloc_uid() -> int:
+    """Alloca un uid libero dal pool per QUESTO spawn (isolamento per-istanza)."""
+    with _uid_lock:
+        for u in range(_SANDBOX_UID_BASE, _SANDBOX_UID_BASE + _SANDBOX_UID_SPAN):
+            if u not in _uids_in_use:
+                _uids_in_use.add(u)
+                return u
+    raise RuntimeError("nessun uid sandbox libero nel pool")
+
+
+def _free_uid(u: Optional[int]) -> None:
+    if u is None:
+        return
+    with _uid_lock:
+        _uids_in_use.discard(int(u))
 
 
 def _bundled_cli_path() -> str:
@@ -576,6 +610,7 @@ class ChatSession:
         self._last_usage: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
         self._spawn = None  # EphemeralWorkspace dello spawn webchat (cleanup a stop)
+        self._sandbox_uid: Optional[int] = None  # uid per-spawn allocato (sandbox)
         # Opzioni del client SDK calcolate in start(): riusate dal recovery per
         # ricreare il subprocess dopo un fallimento senza ricalcolare env/spawn.
         self._opts_kwargs: Optional[dict] = None
@@ -694,20 +729,25 @@ class ChatSession:
         except Exception as e:
             LOG.warning("clodia-tools MCP HTTP non configurato per kind=%s: %s", self.kind, e)
         # Contenimento runtime (opt-in per-kind): fa girare il CLI come non-root
-        # via wrapper, così il bash del subprocess non legge i segreti root-only.
+        # via wrapper. uid UNICO per questo spawn (isola l'istanza), gid del SEED
+        # (famiglia). Lo scratch è chownato uid:gid mode 700 → privato dell'istanza.
         if _sandbox_enabled(self.kind) and spawn_dir is not None:
+            uid = _alloc_uid()
+            gid = _seed_gid(self.kind)
+            self._sandbox_uid = uid
             opts_kwargs["cli_path"] = _SANDBOX_WRAPPER
-            child_env["CLODIA_AGENT_UID"] = _SANDBOX_UID
+            child_env["CLODIA_AGENT_UID"] = str(uid)
+            child_env["CLODIA_AGENT_GID"] = str(gid)
             child_env["CLODIA_REAL_CLI"] = _bundled_cli_path()
             child_env["HOME"] = str(spawn_dir)  # HOME scrivibile dal non-root
             try:
                 import subprocess as _sp
-                # lo spawn dev'essere di proprietà del non-root (read/write scratch)
-                _sp.run(["chown", "-R", f"{_SANDBOX_UID}:{_SANDBOX_UID}", str(spawn_dir)],
-                        check=False)
-                LOG.info("sandbox runtime attiva per kind=%s (uid=%s)", self.kind, _SANDBOX_UID)
+                # lo spawn è di proprietà del solo uid dell'istanza, modo 700
+                _sp.run(["chown", "-R", f"{uid}:{gid}", str(spawn_dir)], check=False)
+                _sp.run(["chmod", "-R", "700", str(spawn_dir)], check=False)
+                LOG.info("sandbox runtime kind=%s uid=%s gid=%s (spawn 700)", self.kind, uid, gid)
             except Exception as e:  # noqa: BLE001
-                LOG.warning("chown spawn per sandbox fallito (kind=%s): %s", self.kind, e)
+                LOG.warning("chown/chmod spawn per sandbox fallito (kind=%s): %s", self.kind, e)
         self._opts_kwargs = opts_kwargs
         await self._open_client()
         # Auto-intro fire-and-forget: se il kind ne ha uno definito, lo
@@ -822,6 +862,10 @@ class ChatSession:
             except Exception:  # noqa: BLE001
                 pass
             self._spawn = None
+        # rilascia l'uid per-spawn al pool (sandbox)
+        if self._sandbox_uid is not None:
+            _free_uid(self._sandbox_uid)
+            self._sandbox_uid = None
         await self._set_status(ClodiaStatus.STOPPED)
 
     async def send_user_message(self, content: str) -> str:
