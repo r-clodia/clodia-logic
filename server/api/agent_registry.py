@@ -635,6 +635,15 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
     schema (single source of truth — niente file-template da tenere allineato),
     poi reload. Gli agent nativi (clodia/ophelia/messaggero) sono seed nel repo."""
     gateway_pdp.require_authz(request, "agents.create")  # admin-only (PDP gateway)
+    # Gli AGENT SEED (agenti AI) si installano SOLO via pack (import): un seed è
+    # contenuto di pack, non un artefatto generato a runtime. Qui resta ammesso
+    # solo `type=human` (onboarding di un principal umano — un'identità, non un
+    # seed). Per un nuovo agente AI: crea un pack che contiene il seed e importalo.
+    if (body.type or "normal") != "human":
+        raise HTTPException(
+            400, "gli agent seed AI si installano solo via pack: crea un pack "
+                 "con il seed e importalo (sezione Packs → Importa). "
+                 "Qui è ammesso solo type=human (onboarding).")
     name = body.name.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,30}", name):
         raise HTTPException(400, "nome invalido (usa [a-z0-9_-], inizia con alfanumerico)")
