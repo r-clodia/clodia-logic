@@ -264,7 +264,8 @@ def mint_session_token(agent: str, execution_id: str = "",
                        principal: str | None = None,
                        clearance: str | None = None,
                        on_behalf: bool = False,
-                       human_role: str | None = None) -> str:
+                       human_role: str | None = None,
+                       chat: str | None = None) -> str:
     """Firmato dal RUNNER con la chiave privata dell'agente (mai esposta
     al workspace). Nel workspace entra solo il token risultante.
 
@@ -288,6 +289,8 @@ def mint_session_token(agent: str, execution_id: str = "",
         payload["principal"] = principal
     if clearance:
         payload["clearance"] = clearance
+    if chat:
+        payload["chat"] = chat  # chat_id della sessione (per postare in chat le decisioni sudo)
     # M-authz: chiamata ON-BEHALF di un umano → il gateway autorizza sul ruolo
     # umano (PDP unico), non sul carrier-agent. Claim firmati → non forgiabili.
     if on_behalf:

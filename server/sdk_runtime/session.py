@@ -743,7 +743,7 @@ class ChatSession:
         try:
             ct_token = pki.mint_session_token(self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
                                               principal=self.principal,
-                                              clearance=_effective_clearance(self.kind))
+                                              clearance=_effective_clearance(self.kind), chat=self.chat_id)
             # principal "cotto" nel token MCP di questo client: se cambia (l'utente
             # connesso cambia, o la sessione era partita anonima) va ri-coniato.
             self._token_principal = self.principal
@@ -837,7 +837,7 @@ class ChatSession:
         try:
             ct_token = pki.mint_session_token(
                 self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
-                principal=self.principal, clearance=_effective_clearance(self.kind))
+                principal=self.principal, clearance=_effective_clearance(self.kind), chat=self.chat_id)
         except Exception as e:  # noqa: BLE001 — un re-mint fallito non rompe il turno
             LOG.warning("re-mint token MCP (principal) fallito per kind=%s: %s", self.kind, e)
             return False
@@ -1475,7 +1475,7 @@ class CodexChatSession:
         try:
             env["CLODIA_TOOLS_TOKEN"] = pki.mint_session_token(
                 self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL, principal=self.principal,
-                clearance=_effective_clearance(self.kind))
+                clearance=_effective_clearance(self.kind), chat=self.chat_id)
         except Exception as e:  # noqa: BLE001
             LOG.warning("token clodia-tools (codex) non coniato per %s: %s", self.kind, e)
         run_cwd = str(self._spawn_dir or self.cwd)
@@ -1753,7 +1753,7 @@ class OpenCodeChatSession:
         try:
             tok = pki.mint_session_token(self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
                                          principal=self.principal,
-                                         clearance=_effective_clearance(self.kind))
+                                         clearance=_effective_clearance(self.kind), chat=self.chat_id)
             cfg["mcp"]["clodia-tools"] = {
                 "type": "local",
                 "command": ["npx", "-y", "mcp-remote", CLODIA_TOOLS_MCP_URL,

@@ -16,9 +16,26 @@ from fastapi.responses import JSONResponse
 
 from ..colony import pki
 from .agents import _principal_from_request
+from . import topics_client
 
 LOG = logging.getLogger("agent-server.api.sudo")
 router = APIRouter()
+
+
+def _post_outcome(chat: str | None, principal: str, text: str) -> None:
+    """Posta l'esito della decisione sudo NELLA CHAT d'origine, come l'utente che
+    ha deciso. Best-effort: non deve mai far fallire la decisione. `chat` è il
+    chat_id `chan:<tier>:<name>:<responder>`."""
+    if not chat or not chat.startswith("chan:"):
+        return
+    parts = chat.split(":")
+    if len(parts) < 3:
+        return
+    tier, name = parts[1], parts[2]
+    try:
+        topics_client.post_message(tier, name, principal, text, kind="human")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("post esito sudo in chat %s fallito: %s", chat, e)
 
 _TOKEN_TTL = 120
 _HTTP_TIMEOUT = 15
@@ -81,6 +98,8 @@ async def approve(request: Request):
     r = _gw("POST", "/grant", principal, payload)
     LOG.info("sudo approve %s@%s da %s (cap jti=%s) → %s", agent, instance,
              principal, cap["jti"], r.status_code)
+    if r.status_code == 200:
+        _post_outcome(body.get("chat"), principal, f"🔓 sudo approvato per @{agent} ({minutes} min)")
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
@@ -94,7 +113,9 @@ async def deny(request: Request):
         body = await request.json()
     except Exception:
         body = {}
-    payload = {"agent": (body.get("agent") or "").strip(),
-               "instance": (body.get("instance") or "-").strip() or "-"}
+    agent = (body.get("agent") or "").strip()
+    payload = {"agent": agent, "instance": (body.get("instance") or "-").strip() or "-"}
     r = _gw("POST", "/deny", principal, payload)
+    if r.status_code == 200:
+        _post_outcome(body.get("chat"), principal, f"⛔ sudo negato per @{agent}")
     return JSONResponse(r.json(), status_code=r.status_code)
