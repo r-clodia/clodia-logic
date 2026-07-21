@@ -180,7 +180,12 @@ def _can_access(clearance: str | None, tier: str | None) -> bool:
 
 
 def _tagged(text: str) -> str | None:
-    m = _TAG_RE.findall(text or "")
+    # Ignora le righe CITATE della reply (iniziano con ">"): contengono il testo
+    # dell'agente a cui si risponde, spesso con "@davide —" in testa → altrimenti
+    # _tagged prenderebbe quel @ e non il tag reale scritto dall'utente. Il tag
+    # dell'utente sta nel suo testo, non nella citazione.
+    own = "\n".join(ln for ln in (text or "").splitlines() if not ln.lstrip().startswith(">"))
+    m = _TAG_RE.findall(own)
     return m[0] if m else None
 
 
