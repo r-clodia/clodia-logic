@@ -231,14 +231,16 @@ def _list_packs() -> list[dict[str, Any]]:
         lic = _pack_license_info(manifest.get("license") or "", plugin_children)
         prov = _pack_provider_info(manifest)
         installed_ver = str(manifest.get("version") or "").strip()
-        up = manifest.get("upstream") if isinstance(manifest.get("upstream"), dict) else None
         out.append({
             "name": name,
             "description": str(manifest.get("description") or "").strip(),
             "version": installed_ver,
             # first-party con upstream → la UI mostra il tasto "Check update".
+            # has_upstream via _pack_upstream: legge il manifest installato E fa
+            # fallback al catalogo bundled (robusto se il manifest installato è
+            # stato registrato senza il campo upstream).
             "first_party": bool(manifest.get("first_party")),
-            "has_upstream": bool(up and up.get("repo")),
+            "has_upstream": bool(_pack_upstream(name)),
             "source": str(manifest.get("source") or "").strip(),
             "agents": agents,
             "plugins": plugin_children,
