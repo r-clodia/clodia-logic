@@ -626,7 +626,7 @@ class AgentCreate(BaseModel):
 # Agenti NATIVI della piattaforma: seed nel repo (catalogs/agents-seed), clonati
 # con ogni istanza. Nome riservato → non ricreabili via API. clodia/ophelia sono
 # anche super; messaggero (agente messaggero) è nativo ma normal.
-_NATIVE_AGENTS = {"clodia", "ophelia", "messaggero"}
+_NATIVE_AGENTS = {"clodia", "ophelia", "messaggero", "segretario"}
 
 
 @router.post("", status_code=201, response_model=AgentSpec)

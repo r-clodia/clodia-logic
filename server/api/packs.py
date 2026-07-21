@@ -28,10 +28,37 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..agents.loader import registry
+from ..config import workspace_path
 from . import catalog, gateway_pdp, pack_import, plugins as plugins_api
 
 LOG = logging.getLogger("agent-server.api.packs")
 router = APIRouter()
+
+
+def _bundle_catalog_dir(name: str):
+    """Path del pack `name` nel catalogo BUNDLED (spedito con clodia-logic) —
+    la versione DISPONIBILE per un pack first-party. None se non è bundled."""
+    d = workspace_path(f"catalogs/packs/{name}")
+    return d if (d / "pack.yaml").is_file() else None
+
+
+def _bundle_pack_version(name: str) -> str:
+    d = _bundle_catalog_dir(name)
+    if not d:
+        return ""
+    try:
+        m = yaml.safe_load((d / "pack.yaml").read_text(encoding="utf-8")) or {}
+        return str(m.get("version") or "").strip()
+    except Exception:  # noqa: BLE001
+        return ""
+
+
+def _version_tuple(v: str):
+    """SemVer grezzo per confronto: '6.4.0' → (6,4,0). Non-numerico → stringa."""
+    try:
+        return tuple(int(x) for x in v.split("-")[0].split("."))
+    except Exception:  # noqa: BLE001
+        return (v,)
 
 
 def _load_pack_manifest(path) -> dict[str, Any]:
@@ -151,10 +178,17 @@ def _list_packs() -> list[dict[str, Any]]:
         ]
         lic = _pack_license_info(manifest.get("license") or "", plugin_children)
         prov = _pack_provider_info(manifest)
+        installed_ver = str(manifest.get("version") or "").strip()
+        avail_ver = _bundle_pack_version(name)  # versione bundled (first-party)
+        update_available = bool(
+            avail_ver and installed_ver
+            and _version_tuple(avail_ver) > _version_tuple(installed_ver))
         out.append({
             "name": name,
             "description": str(manifest.get("description") or "").strip(),
-            "version": str(manifest.get("version") or "").strip(),
+            "version": installed_ver,
+            "available_version": avail_ver,
+            "update_available": update_available,
             "source": str(manifest.get("source") or "").strip(),
             "agents": agents,
             "plugins": plugin_children,
@@ -273,6 +307,31 @@ async def import_pack_url(payload: PackImportUrl, request: Request):
     plugins_api.invalidate_plugins()
     _maybe_trigger_pack_ops(result)
     return result
+
+
+@router.post("/clodia/packs/{name}/update")
+async def update_pack(name: str, request: Request):
+    """Aggiorna un pack first-party alla versione BUNDLED (ri-installa i seed e i
+    plugin dal catalogo spedito con clodia-logic, aggiornando il manifest). È
+    l'azione dietro il tasto 'Update' quando `update_available`. Idempotente."""
+    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
+    if not catalog._NAME_RE.fullmatch(name):
+        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    src = _bundle_catalog_dir(name)
+    if not src:
+        return JSONResponse(status_code=400, content={
+            "error": f"'{name}' non è un pack bundled: nessun aggiornamento disponibile"})
+    try:
+        result = pack_import.install_pack_from_root(src, source="bundle:catalog")
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=500,
+                            content={"error": f"update fallito: {str(e)[:160]}"})
+    plugins_api.invalidate_plugins()
+    try:
+        registry.load()  # rende visibili subito i nuovi seed
+    except Exception:  # noqa: BLE001
+        pass
+    return {"updated": name, "version": _bundle_pack_version(name), **(result or {})}
 
 
 @router.delete("/clodia/packs/{name}")

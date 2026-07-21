@@ -1,0 +1,48 @@
+# Seed "Segretario" — verbalizzatore del topic. Compito unico e ristretto:
+# mantenere summary.md (prima riga = TLDR + sezione "Prossimi passi") e le minute
+# del topic. NON è un responder di conversazione: il routing lo sceglie SOLO
+# quando si tratta di salvare/aggiornare lo stato del topic. Niente git, niente
+# email/web/fs generale: solo i verbi di scrittura-stato del topic di cui è
+# partecipante. Modello piccolo ed economico (24B EU-sovrano su Scaleway): il
+# task è regolare, non richiede ragionamento pesante.
+name: segretario
+display_name: Segretario
+description: "Segretario del topic: verbalizza le minute e mantiene summary/TLDR e prossimi passi. Non conversa; interviene quando si salva lo stato del topic."
+type: normal
+clearance: SEAL-2
+constitution: platform-core
+agent_sdk: opencode
+# Modello piccolo: summary/minute è un task strutturato e regolare. mistral-small
+# 24B su Scaleway (EU-sovrano, SEAL-2) — buona resa su italiano e struttura, costo
+# basso. Nessun git → tool-use minimo, il modello piccolo basta.
+model: mistral-small-3.2-24b-instruct-2506
+providers: [scaleway]
+provider_models: {}
+avatar_color: "#64748b"
+sandbox:
+  allow_read: ["{scratch}/**"]
+  deny_read: ["secrets/**"]
+  allow_write: ["{scratch}/**"]
+  allow_shell_cmds: []
+  deny_shell_patterns: ["*"]
+capabilities: []
+rules: []
+# SOLO scrittura-stato del topic di cui è partecipante: aprire/leggere lo stato
+# corrente e scrivere summary/minute/file. NIENTE topic.* completo (esclude
+# archive, delete_file, remote_* git, new/list/search).
+tool_permissions:
+  - topic.open
+  - topic.files
+  - topic.read_file
+  - topic.save_summary
+  - topic.add_minute
+  - topic.write_file
+memory:
+  dir: memory/
+system_prompt: system-prompt.md
+expertise: >-
+  Salvare e aggiornare lo stato di un topic: scrivere e mantenere il summary
+  (prima riga = TLDR sintetico) e la sezione prossimi passi, verbalizzare le
+  minute delle riunioni e delle decisioni, tenere ordinati i file del topic.
+  Interviene quando l'utente chiede di salvare lo stato, aggiornare il summary,
+  mettere a verbale, chiudere/riepilogare la sessione del topic.
