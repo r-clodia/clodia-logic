@@ -257,7 +257,12 @@ def _verify_cert(agent: str) -> Ed25519PublicKey:
     cn = cert.subject.get_attributes_for_oid(NameOID.COMMON_NAME)[0].value
     if cn != agent:
         raise PermissionError(f"certificato CN '{cn}' ≠ agent '{agent}'")
-    _ca_key, ca_cert = _load_ca()
+    # Verifica: serve SOLO la CA pubblica (ca.crt), non la privata. In modalità
+    # runtime-keyless (M3++) agent-server monta la sola ca.crt (bind ro), non
+    # ca.key → NON usare _load_ca() (pretende la privata). Basta il cert pubblico.
+    if not CA_CRT.is_file():
+        raise PermissionError("CA cert (ca.crt) assente: impossibile verificare la catena")
+    ca_cert = x509.load_pem_x509_certificate(CA_CRT.read_bytes())
     ca_pub = ca_cert.public_key()
     assert isinstance(ca_pub, Ed25519PublicKey)
     ca_pub.verify(cert.signature, cert.tbs_certificate_bytes)  # raises se non firma CA
