@@ -44,6 +44,12 @@ async def _typing(tier: str, name: str, agent: str, state: str) -> None:
 
 async def _channel_message(tier: str, name: str, author: str, kind: str) -> None:
     """Notifica best-effort che il canale ha nuovi messaggi persistiti."""
+    # Ogni messaggio (umano o AI) bumpa l'attività del topic → in RECENTS risale
+    # in cima anche quando un agente conclude un turno (non solo sui post umani).
+    try:
+        access_log.touch(tier, name)
+    except Exception:  # noqa: BLE001
+        pass
     try:
         await bus.publish(Event(
             type="channel_message",
