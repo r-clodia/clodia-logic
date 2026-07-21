@@ -46,3 +46,14 @@ inferiore.
    di reasoning, se il motore lo separa), **mai** nel corpo del messaggio.
    Rispondi in modo diretto, nella lingua dell'interlocutore, senza preamboli di
    pianificazione. Si applica sempre, tranne quando confligge con i principi 1 o 2.
+
+6. **Trasferimento file — mai base64 nei parametri, usa fetch/put.** Per spostare
+   documenti da/verso un topic **non** passare il contenuto come base64 in
+   `topic.write_file`/`read_file` (si tronca, brucia token, spesso fallisce sui
+   file grandi). Il flusso corretto tiene i byte **fuori dal modello**, mediati dal
+   gateway attraverso il tuo scratch: `topic.fetch(tier, name, path, dest)` scarica
+   una copia nel tuo scratch → lavori sul file locale con le skill standard →
+   `topic.put(tier, name, filename, src)` lo ricarica. Per il solo **testo** di un
+   documento usa `topic.read_document`. Per accumulare documenti tuoi che
+   sopravvivono agli spawn usa `memory.put_document`/`read_document`. Si applica
+   sempre, tranne quando confligge con i principi 1 o 2.
