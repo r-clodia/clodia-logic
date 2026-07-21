@@ -178,7 +178,22 @@ def issue_cert_for_pubkey(name: str, pubkey_pem: str, force: bool = False) -> Pa
     """Firma un certificato CA per una PUBKEY ed25519 generata ESTERNAMENTE (es.
     dal browser, derivata dalla masterkey). Il server NON vede mai la privkey:
     riceve solo la pubkey ed emette il cert. Usato per i principal UMANI (admin).
-    Scrive SOLO il cert (nessun identity.key lato server)."""
+    Scrive SOLO il cert (nessun identity.key lato server).
+
+    Se `CLODIA_ORCHESTRATOR_SECRET` è impostato, l'emissione è delegata al
+    **gateway** (unico detentore della CA key); fallback locale su errore."""
+    if (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip():
+        try:
+            import httpx
+            secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+            r = httpx.post(_gateway_mint_url(),
+                           json={"kind": "issue-cert", "agent": name,
+                                 "pubkey_pem": pubkey_pem, "force": bool(force)},
+                           headers={"X-Orchestrator-Secret": secret}, timeout=10.0)
+            r.raise_for_status()
+            return agent_cert_path(name)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("issue-cert via gateway fallito per %s (%s) → locale", name, e)
     if agent_cert_path(name).is_file() and not force:
         raise FileExistsError(f"principal '{name}' ha già un certificato")
     ca_key, ca_cert = _load_ca()
