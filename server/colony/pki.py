@@ -259,6 +259,47 @@ def _verify_cert(agent: str) -> Ed25519PublicKey:
 # ── Token di sessione ────────────────────────────────────────────────
 
 
+# ── Delega del minting al gateway (trust-anchor) ─────────────────────────────
+# Target M3++: le chiavi private NON vivono nel container dell'orchestrator. Se
+# `CLODIA_ORCHESTRATOR_SECRET` è impostato, il token si chiede al gateway
+# (`/internal/mint`) invece di firmarlo qui. Cache per-tupla-identità (TTL) per
+# evitare un round-trip HTTP a ogni chiamata (topics_client conia per-request).
+# Flag SPENTO = comportamento storico (firma locale): rollout sicuro/reversibile.
+_MINT_CACHE: dict[tuple, tuple[str, int]] = {}
+_MINT_CACHE_SKEW = 120  # ri-conia 2 min prima della scadenza
+
+
+def _gateway_mint_url() -> str:
+    mcp = os.environ.get("CLODIA_TOOLS_MCP_URL", "http://clodia-tools:7849/mcp/")
+    base = mcp.rstrip("/")
+    if base.endswith("/mcp"):
+        base = base[: -len("/mcp")]
+    return base + "/internal/mint"
+
+
+def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
+                      principal: Optional[str], clearance: Optional[str],
+                      on_behalf: bool, human_role: Optional[str],
+                      chat: Optional[str]) -> str:
+    key = (agent, execution_id, principal, clearance, on_behalf, human_role, chat)
+    now = int(time.time())
+    hit = _MINT_CACHE.get(key)
+    if hit and hit[1] - _MINT_CACHE_SKEW > now:
+        return hit[0]
+    import httpx
+    secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+    body = {"kind": "session", "agent": agent, "execution_id": execution_id,
+            "ttl_seconds": int(ttl_seconds), "principal": principal,
+            "clearance": clearance, "on_behalf": bool(on_behalf),
+            "human_role": human_role, "chat": chat}
+    r = httpx.post(_gateway_mint_url(), json=body,
+                   headers={"X-Orchestrator-Secret": secret}, timeout=8.0)
+    r.raise_for_status()
+    token = r.json()["token"]
+    _MINT_CACHE[key] = (token, now + int(ttl_seconds))
+    return token
+
+
 def mint_session_token(agent: str, execution_id: str = "",
                        ttl_seconds: int = SESSION_TTL_SECONDS,
                        principal: str | None = None,
@@ -269,6 +310,10 @@ def mint_session_token(agent: str, execution_id: str = "",
     """Firmato dal RUNNER con la chiave privata dell'agente (mai esposta
     al workspace). Nel workspace entra solo il token risultante.
 
+    Se `CLODIA_ORCHESTRATOR_SECRET` è impostato, il minting è delegato al
+    **gateway** (le chiavi private stanno solo lì); su errore si ripiega sulla
+    firma locale finché le chiavi sono ancora montate (rollout sicuro).
+
     `principal` (opz.): l'utente UMANO della sessione per conto del quale l'agent
     opera — propagato al gateway così `runtime.current_user` sa con chi l'agent
     sta parlando. Verificato a monte dal runner (token umano della webui).
@@ -276,6 +321,12 @@ def mint_session_token(agent: str, execution_id: str = "",
     `clearance` (opz.): la clearance dell'agent (SEAL-N) — propagata al gateway
     così può far rispettare clearance≥tier sull'accesso ai topic (difesa in
     profondità, asse livello). Firmata → non falsificabile dall'agent."""
+    if (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip():
+        try:
+            return _mint_via_gateway(agent, execution_id, ttl_seconds, principal,
+                                     clearance, on_behalf, human_role, chat)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mint via gateway fallito per %s (%s) → firma locale", agent, e)
     key_path = agent_key_path(agent)
     if not key_path.is_file():
         raise PermissionError(f"agent '{agent}' senza identità (eseguire pki issue)")

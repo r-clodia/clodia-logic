@@ -670,6 +670,13 @@ class ChatSession:
             "AGENT_CHAT_ID": self.chat_id,
             "AGENT_KIND": self.kind,
         }
+        # Segreti SOLO-orchestrator: mai nel child-env di uno spawn (un agent via
+        # bash farebbe `env` e li leggerebbe). Il secret di bootstrap del minting è
+        # la chiave per farsi coniare identità arbitrarie dal gateway → esporlo
+        # vanificherebbe il contenimento. GIT_TOKEN = PAT git, non compete a un
+        # agent sandboxato (le operazioni git passano dal gateway).
+        for _sk in ("CLODIA_ORCHESTRATOR_SECRET", "GIT_TOKEN"):
+            child_env.pop(_sk, None)
         # Mutua esclusione provider: rimuovi dall'env EREDITATO tutte le
         # credenziali provider note (ANTHROPIC_API_KEY, CLAUDE_CODE_OAUTH_TOKEN,
         # OPENAI_API_KEY). Senza questo, una chiave globale/residua nel container
