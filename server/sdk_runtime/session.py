@@ -2164,6 +2164,33 @@ class ChatManager:
                      len(reaped), ttl_seconds, ", ".join(reaped))
         return reaped
 
+    async def drop_all(self) -> list[str]:
+        """Ferma TUTTE le sessioni vive (restart di tutti gli agenti). La history
+        persiste su disco → al prossimo messaggio la chat rimaterializza il seed
+        AGGIORNATO. Salta le sessioni con un turno in corso (non tronca una
+        risposta a metà). Usato dopo un update di pack che cambia seed/skill/mcp.
+        Ritorna gli id fermati."""
+        async with self._lock:
+            victims = []
+            for cid, chat in list(self._chats.items()):
+                turn = getattr(chat, "_current_turn_task", None)
+                if turn is not None and not turn.done():
+                    continue  # turno in corso: non toccare
+                self._chats.pop(cid, None)
+                victims.append((cid, chat))
+        stopped: list[str] = []
+        for cid, chat in victims:
+            try:
+                await chat.stop()
+                stopped.append(cid)
+                await bus.publish(Event(type="chat_updated", payload=chat.to_dict(),
+                                        timestamp=datetime.now(timezone.utc)))
+            except Exception:  # noqa: BLE001
+                LOG.warning("drop_all: stop fallito per %s", cid, exc_info=True)
+        LOG.info("drop_all: fermate %d sessioni (restart agenti): %s",
+                 len(stopped), ", ".join(stopped) or "-")
+        return stopped
+
 
 def _new_chat_id() -> str:
     return datetime.now(timezone.utc).strftime("%Y%m%d-%H%M%S") + "-" + uuid.uuid4().hex[:6]

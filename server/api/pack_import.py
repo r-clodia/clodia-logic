@@ -214,12 +214,16 @@ def _marketplace_plugin_dirs(mp_root: Path, manifest: dict[str, Any]) -> list[Pa
     return out
 
 
-def _install_seed(sdir: Path) -> dict[str, Any]:
+def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
     """Installa e registra un agent seed. Ritorna {name, status, detail?}.
 
     status: installed | exists | error. Sequenza: copia → PKI (best-effort) →
     registry.load() con rollback se lo spec non valida → whitelist gateway
-    (best-effort)."""
+    (best-effort).
+
+    `force` (update first-party): SOVRASCRIVE la definizione di un seed esistente
+    (agent.yaml/system-prompt/pfp/skill), PRESERVANDO `memory/` (stato runtime);
+    consentito anche sui nativi (un update del base-pack rimpiazza i loro seed)."""
     try:
         raw = yaml.safe_load((sdir / "agent.yaml").read_text(encoding="utf-8")) or {}
     except Exception as e:
@@ -229,22 +233,28 @@ def _install_seed(sdir: Path) -> dict[str, Any]:
     if not _AGENT_NAME_RE.fullmatch(name):
         return {"name": name, "status": "error", "detail": "nome agente non valido"}
     dest = registry.base_dir / name
-    if name in _NATIVE_AGENTS:
+    if name in _NATIVE_AGENTS and not force:
         # I nativi (clodia/ophelia/messaggero) sono installati da init-datadir.sh,
         # non da pack. Se già presenti (caso normale, es. re-install del base-pack)
         # li si SALTA silenziosamente ("exists"); se assenti, è un pack che tenta
-        # di introdurre un nome nativo → errore.
+        # di introdurre un nome nativo → errore. Con force (update first-party) si
+        # rimpiazza comunque la definizione.
         if dest.exists():
             return {"name": name, "status": "exists"}
         return {"name": name, "status": "error",
                 "detail": "nome nativo della piattaforma, non installabile da pack"}
 
-    if dest.exists():
+    if dest.exists() and not force:
         # Non sovrascrivere un agente esistente (stesso principio di
         # init-datadir.sh: l'editing locale non si perde).
         return {"name": name, "status": "exists"}
 
-    shutil.copytree(sdir, dest, ignore=shutil.ignore_patterns(".git"))
+    if dest.exists() and force:
+        # Rimpiazza la DEFINIZIONE preservando memory/ (stato runtime dell'agente).
+        shutil.copytree(sdir, dest, dirs_exist_ok=True,
+                        ignore=shutil.ignore_patterns(".git", "memory"))
+    else:
+        shutil.copytree(sdir, dest, ignore=shutil.ignore_patterns(".git"))
     (dest / "memory").mkdir(exist_ok=True)
 
     registry.load()
@@ -274,18 +284,20 @@ def _install_seed(sdir: Path) -> dict[str, Any]:
 
 
 def install_pack_from_root(root: Path, *, source: str,
-                           allow_reserved: bool = False) -> dict[str, Any]:
+                           allow_reserved: bool = False,
+                           force: bool = False) -> dict[str, Any]:
     """Installa un archivio come PACK (o delega a plugin_import se non lo è).
 
     `allow_reserved`: consente di (re)installare un pack dal nome RISERVATO
-    (base-pack…) — usato SOLO dal path trusted di update dal bundle first-party."""
+    (base-pack…) — usato SOLO dal path trusted di update dal bundle first-party.
+    `force`: SOVRASCRIVE i seed esistenti (update first-party: replace)."""
     marketplace = None
     found = find_pack_root(root)
     if found is None:
         # directory di pack (repo clodia-packs): ogni packs/<n>/ è un pack a sé
         pack_dirs = find_packs_directory(root)
         if pack_dirs:
-            results = [install_pack_from_root(p, source=source, allow_reserved=allow_reserved) for p in pack_dirs]
+            results = [install_pack_from_root(p, source=source, allow_reserved=allow_reserved, force=force) for p in pack_dirs]
             return {"kind": "packs",
                     "packs": results,
                     "imported": [r.get("pack") or r.get("plugin") for r in results]}
@@ -336,7 +348,7 @@ def install_pack_from_root(root: Path, *, source: str,
         except PluginImportError as e:
             raise PackImportError(f"plugin '{pdir.name}': {e}")
 
-    agents = [_install_seed(sdir) for sdir in seed_dirs]
+    agents = [_install_seed(sdir, force=force) for sdir in seed_dirs]
     failed = [a for a in agents if a["status"] == "error"]
     if failed and not any(a["status"] in ("installed", "exists") for a in agents) \
             and not plugins:

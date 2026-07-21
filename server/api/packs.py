@@ -20,6 +20,7 @@ sia un plugin sciolto (Claude plugin / plugin.yaml / bare skills) e ritorna
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 from typing import Any
 
 import yaml
@@ -59,6 +60,57 @@ def _version_tuple(v: str):
         return tuple(int(x) for x in v.split("-")[0].split("."))
     except Exception:  # noqa: BLE001
         return (v,)
+
+
+# ── Check update / Update da GitHub (Opzione A) ──────────────────────────────
+def _pack_upstream(name: str) -> dict | None:
+    """`upstream: {repo, path, ref}` dal manifest installato (o dal catalogo
+    bundled come fallback). None se il pack non dichiara un upstream."""
+    candidates = [pack_import.PACKS_META_DIR / name / "pack.yaml",
+                  workspace_path(f"catalogs/packs/{name}/pack.yaml")]
+    for src in candidates:
+        if not src.is_file():
+            continue
+        try:
+            m = yaml.safe_load(src.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        up = m.get("upstream")
+        if isinstance(up, dict) and up.get("repo"):
+            return {"repo": str(up["repo"]).strip(),
+                    "path": str(up.get("path") or "").strip().strip("/"),
+                    "ref": str(up.get("ref") or "main").strip()}
+    return None
+
+
+def _github_token() -> str | None:
+    """PAT dal vault per i repo privati (clodia-packs). None se assente/pubblico."""
+    try:
+        from . import git_client
+        return git_client.read_credential("github_pat")
+    except Exception:  # noqa: BLE001
+        return None
+
+
+def _fetch_remote_pack_version(up: dict) -> str:
+    """Legge la versione del `pack.yaml` remoto via GitHub API contents (funziona
+    per repo pubblici e privati, token in header, mai nell'URL)."""
+    import base64 as _b64
+    import httpx
+    path = (up["path"] + "/pack.yaml").lstrip("/") if up["path"] else "pack.yaml"
+    url = f"https://api.github.com/repos/{up['repo']}/contents/{path}"
+    headers = {"Accept": "application/vnd.github.raw+json"}
+    tok = _github_token()
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    r = httpx.get(url, params={"ref": up["ref"]}, headers=headers, timeout=12.0)
+    r.raise_for_status()
+    # con Accept raw → corpo = contenuto del file; senza → JSON {content: b64}
+    text = r.text
+    if text.lstrip().startswith("{"):
+        text = _b64.b64decode(r.json().get("content") or "").decode("utf-8")
+    m = yaml.safe_load(text) or {}
+    return str(m.get("version") or "").strip()
 
 
 def _load_pack_manifest(path) -> dict[str, Any]:
@@ -179,16 +231,14 @@ def _list_packs() -> list[dict[str, Any]]:
         lic = _pack_license_info(manifest.get("license") or "", plugin_children)
         prov = _pack_provider_info(manifest)
         installed_ver = str(manifest.get("version") or "").strip()
-        avail_ver = _bundle_pack_version(name)  # versione bundled (first-party)
-        update_available = bool(
-            avail_ver and installed_ver
-            and _version_tuple(avail_ver) > _version_tuple(installed_ver))
+        up = manifest.get("upstream") if isinstance(manifest.get("upstream"), dict) else None
         out.append({
             "name": name,
             "description": str(manifest.get("description") or "").strip(),
             "version": installed_ver,
-            "available_version": avail_ver,
-            "update_available": update_available,
+            # first-party con upstream → la UI mostra il tasto "Check update".
+            "first_party": bool(manifest.get("first_party")),
+            "has_upstream": bool(up and up.get("repo")),
             "source": str(manifest.get("source") or "").strip(),
             "agents": agents,
             "plugins": plugin_children,
@@ -310,31 +360,98 @@ async def import_pack_url(payload: PackImportUrl, request: Request):
     return result
 
 
+@router.post("/clodia/packs/{name}/check-update")
+async def check_pack_update(name: str, request: Request):
+    """Controlla su GitHub (repo upstream del pack) se esiste una versione più
+    recente di quella installata. Ritorna {installed, remote, update_available}."""
+    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    if not catalog._NAME_RE.fullmatch(name):
+        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    up = _pack_upstream(name)
+    if not up:
+        return JSONResponse(status_code=400, content={
+            "error": f"'{name}' non dichiara un upstream: check update non disponibile"})
+    meta = pack_import.PACKS_META_DIR / name / "pack.yaml"
+    installed = ""
+    if meta.is_file():
+        try:
+            installed = str((yaml.safe_load(meta.read_text(encoding="utf-8")) or {}).get("version") or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
+    try:
+        remote = _fetch_remote_pack_version(up)
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=502, content={"error": f"check fallito: {str(e)[:160]}"})
+    upd = bool(remote and _version_tuple(remote) > _version_tuple(installed or "0"))
+    return {"name": name, "installed": installed, "remote": remote, "update_available": upd}
+
+
+def _download_upstream_tarball(up: dict, tmp: Path) -> Path:
+    import io
+    import tarfile
+    import httpx
+    url = f"https://api.github.com/repos/{up['repo']}/tarball/{up['ref']}"
+    headers = {}
+    tok = _github_token()
+    if tok:
+        headers["Authorization"] = f"Bearer {tok}"
+    r = httpx.get(url, headers=headers, timeout=120.0, follow_redirects=True)
+    r.raise_for_status()
+    with tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz") as tf:
+        tf.extractall(tmp)  # il tar GitHub ha un unico top-dir <repo>-<sha>/
+    tops = [c for c in tmp.iterdir() if c.is_dir()]
+    if not tops:
+        raise PackImportError("tarball vuoto")
+    root = tops[0] / up["path"] if up["path"] else tops[0]
+    if not (root / "pack.yaml").is_file():
+        raise PackImportError(f"path '{up['path']}' senza pack.yaml nel repo")
+    return root
+
+
 @router.post("/clodia/packs/{name}/update")
 async def update_pack(name: str, request: Request):
-    """Aggiorna un pack first-party alla versione BUNDLED (ri-installa i seed e i
-    plugin dal catalogo spedito con clodia-logic, aggiornando il manifest). È
-    l'azione dietro il tasto 'Update' quando `update_available`. Idempotente."""
+    """Aggiorna un pack first-party dal suo repo GitHub (upstream): scarica,
+    SOSTITUISCE seed/skill/mcp (force), aggiorna il manifest e RIAVVIA tutti gli
+    agenti (drop_all: le sessioni ripartono coi seed nuovi al prossimo messaggio)."""
     gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
-    src = _bundle_catalog_dir(name)
-    if not src:
+    up = _pack_upstream(name)
+    if not up:
         return JSONResponse(status_code=400, content={
-            "error": f"'{name}' non è un pack bundled: nessun aggiornamento disponibile"})
+            "error": f"'{name}' non dichiara un upstream: update non disponibile"})
+    import tempfile
+    from ..api.pack_import import PackImportError as _PIE
     try:
-        # Path TRUSTED (bundle first-party) → allow_reserved per i nomi come base-pack.
-        result = pack_import.install_pack_from_root(
-            src, source="bundle:catalog", allow_reserved=True)
+        with tempfile.TemporaryDirectory() as td:
+            root = _download_upstream_tarball(up, Path(td))
+            result = pack_import.install_pack_from_root(
+                root, source=f"github:{up['repo']}", allow_reserved=True, force=True)
+    except _PIE as e:
+        return JSONResponse(status_code=400, content={"error": f"update: {str(e)[:160]}"})
     except Exception as e:  # noqa: BLE001
-        return JSONResponse(status_code=500,
-                            content={"error": f"update fallito: {str(e)[:160]}"})
+        return JSONResponse(status_code=500, content={"error": f"update fallito: {str(e)[:160]}"})
     plugins_api.invalidate_plugins()
     try:
-        registry.load()  # rende visibili subito i nuovi seed
+        registry.load()
     except Exception:  # noqa: BLE001
         pass
-    return {"updated": name, "version": _bundle_pack_version(name), **(result or {})}
+    # Restart di tutti gli agenti: le sessioni vive ripartono coi seed aggiornati.
+    stopped = []
+    try:
+        from ..sdk_runtime.session import manager
+        stopped = await manager.drop_all()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("drop_all dopo update fallito: %s", e)
+    new_ver = ""
+    meta = pack_import.PACKS_META_DIR / name / "pack.yaml"
+    if meta.is_file():
+        try:
+            new_ver = str((yaml.safe_load(meta.read_text(encoding="utf-8")) or {}).get("version") or "").strip()
+        except Exception:  # noqa: BLE001
+            pass
+    return {"updated": name, "version": new_ver, "agents_restarted": len(stopped),
+            **(result or {})}
 
 
 @router.delete("/clodia/packs/{name}")

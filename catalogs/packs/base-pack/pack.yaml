@@ -7,6 +7,13 @@ description: >-
 version: 6.4.0
 license: AGPL-3.0-or-later
 first_party: true
+# Sorgente per Check update / Update (Opzione A): il pack si aggiorna dal suo
+# repo GitHub. base-pack vive nel motore (clodia-logic, pubblico); i pack di
+# clodia-packs dichiarano repo=r-clodia/clodia-packs path=packs/<nome>.
+upstream:
+  repo: r-clodia/clodia-logic
+  path: catalogs/packs/base-pack
+  ref: main
 # Elenco esplicito (oltre alla scoperta dalle dir agents/plugins): serve al
 # manifest registrato in datadir/packs così la view Packs mostra il contenuto
 # anche prima di un (re)install. install_pack_from_root li ri-scopre comunque.
