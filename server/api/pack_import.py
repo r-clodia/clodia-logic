@@ -66,7 +66,7 @@ PACKS_META_DIR = data_path("packs")
 
 _AGENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,30}")
 # Nomi nativi non installabili da pack (allineato ad agent_registry._NATIVE_AGENTS).
-_NATIVE_AGENTS = {"clodia", "ophelia", "messaggero", "segretario"}
+_NATIVE_AGENTS = {"clodia", "ophelia", "messaggero"}
 
 RESERVED_PACK_NAMES = plugin_import.RESERVED_PLUGIN_NAMES
 

@@ -138,9 +138,24 @@ def agent_cert_path(agent: str) -> Path:
 
 
 def issue_agent_identity(agent: str, force: bool = False) -> Path:
-    """Genera keypair + certificato firmato dalla CA per l'agente."""
+    """Genera keypair + certificato firmato dalla CA per l'agente.
+
+    Runtime-keyless (M3++): se `CLODIA_ORCHESTRATOR_SECRET` è impostato, l'emissione
+    è delegata al **gateway** (unico detentore della CA e delle identity key);
+    fallback locale su errore finché le chiavi sono ancora montate."""
     if agent_cert_path(agent).is_file() and agent_key_path(agent).is_file() and not force:
         return agent_cert_path(agent)
+    if (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip():
+        try:
+            import httpx
+            secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+            r = httpx.post(_gateway_mint_url(),
+                           json={"kind": "issue-identity", "agent": agent, "force": bool(force)},
+                           headers={"X-Orchestrator-Secret": secret}, timeout=10.0)
+            r.raise_for_status()
+            return agent_cert_path(agent)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("issue-identity via gateway fallito per %s (%s) → locale", agent, e)
     # Cert presente ma SENZA identity.key lato server = identità a chiave esterna
     # (principal umano: la privkey è nel browser). Rigenerare qui sovrascriverebbe
     # il cert con un keypair del server, invalidando la recovery key. Non farlo.
