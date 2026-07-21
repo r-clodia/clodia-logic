@@ -323,7 +323,9 @@ async def update_pack(name: str, request: Request):
         return JSONResponse(status_code=400, content={
             "error": f"'{name}' non è un pack bundled: nessun aggiornamento disponibile"})
     try:
-        result = pack_import.install_pack_from_root(src, source="bundle:catalog")
+        # Path TRUSTED (bundle first-party) → allow_reserved per i nomi come base-pack.
+        result = pack_import.install_pack_from_root(
+            src, source="bundle:catalog", allow_reserved=True)
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500,
                             content={"error": f"update fallito: {str(e)[:160]}"})

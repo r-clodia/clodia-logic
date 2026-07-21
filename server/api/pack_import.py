@@ -75,11 +75,13 @@ class PackImportError(SkillImportError):
     """Errore d'import pack gestito (→ 400 lato API)."""
 
 
-def _sanitize_pack_name(raw: Any) -> str:
+def _sanitize_pack_name(raw: Any, *, allow_reserved: bool = False) -> str:
     name = re.sub(r"[^a-z0-9_-]+", "-", str(raw or "").strip().lower()).strip("-")
     if not name or not catalog._NAME_RE.fullmatch(name):
         raise PackImportError(f"nome pack non valido: '{raw}'")
-    if name in RESERVED_PACK_NAMES:
+    # I nomi riservati (base-pack…) sono vietati agli import di TERZE PARTI
+    # (anti-spoofing), ma consentiti al path TRUSTED di update dal bundle first-party.
+    if name in RESERVED_PACK_NAMES and not allow_reserved:
         raise PackImportError(f"nome pack riservato: '{name}'")
     return name
 
@@ -226,11 +228,17 @@ def _install_seed(sdir: Path) -> dict[str, Any]:
     name = str(raw.get("name") or sdir.name).strip()
     if not _AGENT_NAME_RE.fullmatch(name):
         return {"name": name, "status": "error", "detail": "nome agente non valido"}
+    dest = registry.base_dir / name
     if name in _NATIVE_AGENTS:
+        # I nativi (clodia/ophelia/messaggero) sono installati da init-datadir.sh,
+        # non da pack. Se già presenti (caso normale, es. re-install del base-pack)
+        # li si SALTA silenziosamente ("exists"); se assenti, è un pack che tenta
+        # di introdurre un nome nativo → errore.
+        if dest.exists():
+            return {"name": name, "status": "exists"}
         return {"name": name, "status": "error",
                 "detail": "nome nativo della piattaforma, non installabile da pack"}
 
-    dest = registry.base_dir / name
     if dest.exists():
         # Non sovrascrivere un agente esistente (stesso principio di
         # init-datadir.sh: l'editing locale non si perde).
@@ -265,15 +273,19 @@ def _install_seed(sdir: Path) -> dict[str, Any]:
     return {"name": name, "status": "installed"}
 
 
-def install_pack_from_root(root: Path, *, source: str) -> dict[str, Any]:
-    """Installa un archivio come PACK (o delega a plugin_import se non lo è)."""
+def install_pack_from_root(root: Path, *, source: str,
+                           allow_reserved: bool = False) -> dict[str, Any]:
+    """Installa un archivio come PACK (o delega a plugin_import se non lo è).
+
+    `allow_reserved`: consente di (re)installare un pack dal nome RISERVATO
+    (base-pack…) — usato SOLO dal path trusted di update dal bundle first-party."""
     marketplace = None
     found = find_pack_root(root)
     if found is None:
         # directory di pack (repo clodia-packs): ogni packs/<n>/ è un pack a sé
         pack_dirs = find_packs_directory(root)
         if pack_dirs:
-            results = [install_pack_from_root(p, source=source) for p in pack_dirs]
+            results = [install_pack_from_root(p, source=source, allow_reserved=allow_reserved) for p in pack_dirs]
             return {"kind": "packs",
                     "packs": results,
                     "imported": [r.get("pack") or r.get("plugin") for r in results]}
@@ -302,7 +314,7 @@ def install_pack_from_root(root: Path, *, source: str) -> dict[str, Any]:
                 "plugins": [result], "wrapped": True}
 
     pack_root, manifest = found
-    pack = _sanitize_pack_name(manifest.get("name") or pack_root.name)
+    pack = _sanitize_pack_name(manifest.get("name") or pack_root.name, allow_reserved=allow_reserved)
     description = str(manifest.get("description") or "").strip()
     version = str(manifest.get("version") or "").strip()
 
