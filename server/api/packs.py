@@ -208,8 +208,9 @@ def _list_packs() -> list[dict[str, Any]]:
         })
     # Niente plugin sciolti (spec v0.3 §4b.3): ogni plugin senza pack è esposto
     # come pack VIRTUALE omonimo — il tree della webui mostra solo pack.
+    already = {p["name"] for p in out}
     for pname, item in plugin_items.items():
-        if pname in referenced:
+        if pname in referenced or pname in already:
             continue
         lic = _pack_license_info(item.get("license") or "", [item])
         out.append({
