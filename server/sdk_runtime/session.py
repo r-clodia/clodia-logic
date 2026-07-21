@@ -2164,7 +2164,7 @@ class ChatManager:
                      len(reaped), ttl_seconds, ", ".join(reaped))
         return reaped
 
-    async def drop_all(self) -> list[str]:
+    async def drop_all(self):
         """Ferma TUTTE le sessioni vive (restart di tutti gli agenti). La history
         persiste su disco → al prossimo messaggio la chat rimaterializza il seed
         AGGIORNATO. Salta le sessioni con un turno in corso (non tronca una
