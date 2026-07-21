@@ -398,7 +398,24 @@ def mint_capability(agent: str, instance: str, minutes: int, by: str,
     auto-emetterselo. Ritorna {token, jti, exp}.
 
     `by` = principal umano approvatore (dentro il payload firmato → auditabile e
-    non falsificabile). `instance` = id-istanza (o "-" finché non plumbato)."""
+    non falsificabile). `instance` = id-istanza (o "-" finché non plumbato).
+
+    Runtime-keyless (M3++): se `CLODIA_ORCHESTRATOR_SECRET` è impostato, la firma
+    (che richiede la CA) è delegata al **gateway** (kind 'capability'); fallback
+    locale su errore finché la CA è ancora montata."""
+    if (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip():
+        try:
+            import httpx
+            secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+            r = httpx.post(_gateway_mint_url(),
+                           json={"kind": "capability", "agent": agent,
+                                 "instance": instance, "minutes": minutes,
+                                 "by": by, "cap": cap},
+                           headers={"X-Orchestrator-Secret": secret}, timeout=10.0)
+            r.raise_for_status()
+            return r.json()
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("mint_capability via gateway fallito per %s (%s) → locale", agent, e)
     import secrets
     ca_key, _ = _load_ca()
     now = int(time.time())
