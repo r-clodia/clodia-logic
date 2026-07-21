@@ -344,7 +344,8 @@ def install_pack_from_root(root: Path, *, source: str,
     for pdir in plugin_dirs:
         try:
             plugins.append(plugin_import.install_plugin_from_root(
-                pdir, source=source, default_name=pdir.name))
+                pdir, source=source, default_name=pdir.name,
+                allow_reserved=allow_reserved))
         except PluginImportError as e:
             raise PackImportError(f"plugin '{pdir.name}': {e}")
 

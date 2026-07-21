@@ -64,12 +64,14 @@ class PluginImportError(SkillImportError):
     """Errore d'import plugin gestito (→ 400 lato API)."""
 
 
-def _sanitize_plugin_name(raw: Any) -> str:
+def _sanitize_plugin_name(raw: Any, *, allow_reserved: bool = False) -> str:
     """Normalizza il nome plugin (lower, separatori → '-') e lo valida."""
     name = re.sub(r"[^a-z0-9_-]+", "-", str(raw or "").strip().lower()).strip("-")
     if not name or not catalog._NAME_RE.fullmatch(name):
         raise PluginImportError(f"nome plugin non valido: '{raw}'")
-    if name in RESERVED_PLUGIN_NAMES:
+    # Riservati vietati agli import di terze parti; consentiti al path TRUSTED di
+    # update first-party (base-pack contiene un plugin 'base-pack').
+    if name in RESERVED_PLUGIN_NAMES and not allow_reserved:
         raise PluginImportError(f"nome plugin riservato: '{name}'")
     return name
 
@@ -348,11 +350,13 @@ def install_plugin_from_root(
     *,
     source: str,
     default_name: str | None = None,
+    allow_reserved: bool = False,
 ) -> dict[str, Any]:
     """Installa il contenuto di `root` come plugin. Ritorna il riepilogo.
 
     `default_name`: usato dal pack importer per le directory plugin senza
-    manifest proprio (il nome viene dal path nel pack, non da user-pack)."""
+    manifest proprio (il nome viene dal path nel pack, non da user-pack).
+    `allow_reserved`: consente nomi riservati (base-pack…) — path trusted di update."""
     found = _find_manifest(root)
     if found is None:
         if default_name is None:
@@ -368,7 +372,8 @@ def install_plugin_from_root(
     else:
         plugin_root, manifest, kind = found
 
-    plugin = _sanitize_plugin_name(manifest.get("name") or plugin_root.name)
+    plugin = _sanitize_plugin_name(manifest.get("name") or plugin_root.name,
+                                   allow_reserved=allow_reserved)
     description = str(manifest.get("description") or "").strip()
     version = str(manifest.get("version") or "").strip()
     mcp_servers = _manifest_mcp_servers(plugin_root, manifest, kind)
