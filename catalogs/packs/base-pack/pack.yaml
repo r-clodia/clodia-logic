@@ -7,3 +7,15 @@ description: >-
 version: 6.4.0
 license: AGPL-3.0-or-later
 first_party: true
+# Elenco esplicito (oltre alla scoperta dalle dir agents/plugins): serve al
+# manifest registrato in datadir/packs così la view Packs mostra il contenuto
+# anche prima di un (re)install. install_pack_from_root li ri-scopre comunque.
+agents:
+  - clodia
+  - ophelia
+  - messaggero
+  - janitor
+  - sysadmin
+  - segretario
+plugins:
+  - base-pack
