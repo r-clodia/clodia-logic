@@ -12,10 +12,12 @@ type: normal
 clearance: SEAL-2
 constitution: platform-core
 agent_sdk: opencode
-# Modello piccolo: summary/minute è un task strutturato e regolare. mistral-small
-# 24B su Scaleway (EU-sovrano, SEAL-2) — buona resa su italiano e struttura, costo
-# basso. Nessun git → tool-use minimo, il modello piccolo basta.
-model: mistral-small-3.2-24b-instruct-2506
+# Modello piccolo ottimizzato per task AGENTICI: gemma-4-26b-a4b-it su Scaleway
+# (EU-hosted, SEAL-2). Scelto perché il segretario DEVE invocare i verbi
+# (topic.save_summary/add_minute) da solo: verificato che con tool_choice=auto
+# chiama i tool, mentre mistral-small-24b in auto tendeva a rispondere in prosa
+# (chiacchierava invece di salvare lo stato). Costo basso, tool-use affidabile.
+model: gemma-4-26b-a4b-it
 providers: [scaleway]
 provider_models: {}
 avatar_color: "#64748b"
