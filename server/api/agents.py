@@ -117,6 +117,20 @@ async def runtime_sessions() -> dict:
     return {"sessions": rows}
 
 
+@router.post("/clodia/runtime/restart-agent")
+async def runtime_restart_agent(body: dict) -> dict:
+    """Restart mirato delle sessioni vive di un agente (per sbloccarlo se il
+    runtime si impunta). La history persiste: al prossimo messaggio la chat
+    rimaterializza il seed da zero. Verbo di ops di sysadmin (via gateway
+    runtime.restart_agent)."""
+    agent = str((body or {}).get("agent") or "").strip()
+    if not agent:
+        return {"ok": False, "error": "agent mancante"}
+    stopped = await manager.drop_agent(agent)
+    return {"ok": True, "agent": agent, "restarted": stopped,
+            "count": len(stopped)}
+
+
 def _principal_from_request(request: Request) -> str | None:
     """Estrae e VERIFICA il principal umano dal session token (Bearer ckt1)
     della webui. Ritorna il nome del principal (firma validata dalla CA) o None

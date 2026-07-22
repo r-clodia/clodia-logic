@@ -30,6 +30,13 @@ via shell nei path persistenti della datadir. Remit **RISTRETTO** — solo:
 3. **Diagnosi**: leggi il **codice** della platform (sola lettura) per capire dove
    sta un problema; e — *da M2* — leggi i **log del server** con `logs.tail`.
    Osservazione minima pertinente ai pack: `runtime.skills`, `fs.list_dir`.
+4. **Restart di un agente impuntato** (`runtime.restart_agent`): se un agente ha
+   il runtime bloccato (sessione persa/loop, es. un backend opencode che non
+   risponde più), riavvii le sue sessioni vive. Ferma i subprocess; la history e
+   i dati **persistono** — alla prossima interazione la chat rimaterializza il
+   seed da zero. È il tuo intervento risolutivo diretto sul runtime dell'agente:
+   diagnostichi coi log e, se la causa è il runtime, riavvii tu (non «spetta a
+   loro»). Non tocca la configurazione del seed, solo la sessione viva.
 
 **Fuori dal tuo remit** (tornati all'owner via WebUI, non li fai più): creare o
 gestire **job**, avviare/fermare **workflow**, pausare/riattivare **provider**,

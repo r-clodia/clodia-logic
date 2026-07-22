@@ -9,6 +9,7 @@ import asyncio
 import json
 import logging
 import os
+import re
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2163,6 +2164,35 @@ class ChatManager:
             LOG.info("reap_idle: evinte %d sessioni idle (>%.0fs): %s",
                      len(reaped), ttl_seconds, ", ".join(reaped))
         return reaped
+
+    async def drop_agent(self, agent: str):
+        """Ferma le sessioni vive del SEED `agent` (restart mirato di un agente:
+        es. per sbloccarlo se il runtime opencode si impunta). La history persiste
+        → al prossimo messaggio la chat rimaterializza il seed. Salta le sessioni
+        con un turno in corso. Ritorna gli id fermati."""
+        seed = re.sub(r"-\d+$", "", str(agent or "").strip())
+        async with self._lock:
+            victims = []
+            for cid, chat in list(self._chats.items()):
+                if re.sub(r"-\d+$", "", str(getattr(chat, "kind", ""))) != seed:
+                    continue
+                turn = getattr(chat, "_current_turn_task", None)
+                if turn is not None and not turn.done():
+                    continue
+                self._chats.pop(cid, None)
+                victims.append((cid, chat))
+        stopped: list[str] = []
+        for cid, chat in victims:
+            try:
+                await chat.stop()
+                stopped.append(cid)
+                await bus.publish(Event(type="chat_updated", payload=chat.to_dict(),
+                                        timestamp=datetime.now(timezone.utc)))
+            except Exception:  # noqa: BLE001
+                LOG.warning("drop_agent: stop fallito per %s", cid, exc_info=True)
+        LOG.info("drop_agent(%s): fermate %d sessioni: %s", agent, len(stopped),
+                 ", ".join(stopped) or "-")
+        return stopped
 
     async def drop_all(self):
         """Ferma TUTTE le sessioni vive (restart di tutti gli agenti). La history

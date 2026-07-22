@@ -1,6 +1,6 @@
 name: sysadmin
 display_name: Sysadmin
-description: "Sysadmin di piattaforma (remit ristretto): importa/rimuove pack e ne installa le dipendenze nel gateway, esegue le migrazioni dati dei pack con backup pre-flight, legge il codice della platform e (M2) i log del server per la diagnosi. Change management e log su ogni azione. NON entra nei topic e non tratta mai dati confidenziali. Jobs, workflow, provider, MCP e settings sono azioni dell'owner via WebUI."
+description: "Sysadmin di piattaforma (remit ristretto): importa/rimuove pack e ne installa le dipendenze nel gateway, esegue le migrazioni dati dei pack con backup pre-flight, legge il codice della platform e (M2) i log del server per la diagnosi, e riavvia il runtime di un agente impuntato (runtime.restart_agent). Change management e log su ogni azione. NON entra nei topic e non tratta mai dati confidenziali. Jobs, workflow, provider, MCP e settings sono azioni dell'owner via WebUI."
 type: normal
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
 immutable: true
@@ -56,6 +56,8 @@ tool_permissions:
   - "settings.backup_run"
   # ── Diagnosi: lettura (read-only) degli ultimi log del server ──
   - "logs.tail"
+  # ── Restart mirato del runtime di un agente impuntato (history/dati persistono) ──
+  - "runtime.restart_agent"
 priority: 30
 cost_profile: standard
 
