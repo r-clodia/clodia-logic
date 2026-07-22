@@ -2166,23 +2166,34 @@ class ChatManager:
         return reaped
 
     async def drop_agent(self, agent: str):
-        """Ferma le sessioni vive del SEED `agent` (restart mirato di un agente:
-        es. per sbloccarlo se il runtime opencode si impunta). La history persiste
-        → al prossimo messaggio la chat rimaterializza il seed. Salta le sessioni
-        con un turno in corso. Ritorna gli id fermati."""
+        """Ferma le sessioni vive del SEED `agent` (restart mirato per SBLOCCARE un
+        agente col runtime impuntato, es. opencode appeso su un ReadTimeout). A
+        differenza di drop_all NON salta i turni in corso — anzi li **cancella**:
+        una sessione bloccata ha proprio un turno appeso, ed è ciò che va ucciso.
+        La history persiste → al prossimo messaggio la chat rimaterializza il seed.
+        Ritorna gli id fermati."""
         seed = re.sub(r"-\d+$", "", str(agent or "").strip())
         async with self._lock:
             victims = []
             for cid, chat in list(self._chats.items()):
                 if re.sub(r"-\d+$", "", str(getattr(chat, "kind", ""))) != seed:
                     continue
-                turn = getattr(chat, "_current_turn_task", None)
-                if turn is not None and not turn.done():
-                    continue
                 self._chats.pop(cid, None)
                 victims.append((cid, chat))
         stopped: list[str] = []
         for cid, chat in victims:
+            # cancella un eventuale turno appeso (non troncare = irrilevante qui:
+            # è wedged). Best-effort abort lato runtime + cancel del task asyncio.
+            try:
+                interrupt = getattr(chat, "interrupt_current_turn", None)
+                if interrupt is not None:
+                    await interrupt()
+                else:
+                    turn = getattr(chat, "_current_turn_task", None)
+                    if turn is not None and not turn.done():
+                        turn.cancel()
+            except Exception:  # noqa: BLE001
+                LOG.warning("drop_agent: interrupt fallito per %s", cid, exc_info=True)
             try:
                 await chat.stop()
                 stopped.append(cid)
