@@ -162,15 +162,35 @@ def delete_job(job_id: int) -> bool:
     return False
 
 
+_RUNS_CAP = 100  # storico run tenuto per job (i più recenti)
+
+
 def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None) -> None:
-    """Aggiorna last_run_at / last_status / last_chat_id dopo un fire."""
+    """Registra un fire nello STORICO run del job (`runs`) e aggiorna i campi
+    `last_*`. Il fire è fire-and-forget: `status` = 'ok' (dispatch riuscito) o
+    'error: <msg>' (dispatch fallito) — durata/exit_code non si applicano (il
+    turno prosegue async sulla chat). Lo storico è cappato agli ultimi _RUNS_CAP."""
     d = get_job(job_id)
     if d is None:
         return
-    d["last_run_at"] = _now_iso()
+    ts = _now_iso()
+    ok = not str(status).startswith("error")
+    seq = int(d.get("run_seq") or 0) + 1
+    entry = {
+        "id": str(seq),
+        "ts": ts,
+        "stato": "ok" if ok else "error",
+        "chat_id": chat_id,
+        "error": None if ok else str(status).split("error:", 1)[-1].strip() or str(status),
+    }
+    runs = list(d.get("runs") or [])
+    runs.append(entry)
+    d["run_seq"] = seq
+    d["runs"] = runs[-_RUNS_CAP:]
+    d["last_run_at"] = ts
     d["last_status"] = status
     d["last_chat_id"] = chat_id
-    d["updated_at"] = d["last_run_at"]
+    d["updated_at"] = ts
     _write(d)
 
 
