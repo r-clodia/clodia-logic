@@ -93,7 +93,10 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     try:
         reply = await chat.send_user_message(prompt)
     except Exception as e:  # noqa: BLE001
-        LOG.warning("errore del risponditore %s su %s/%s: %s", responder, tier, name, e)
+        # repr(e) oltre a str(e): alcune eccezioni (opencode/provider) hanno
+        # messaggio vuoto → senza tipo+traceback la diagnosi è cieca.
+        LOG.warning("errore del risponditore %s su %s/%s: %r", responder, tier, name, e,
+                    exc_info=True)
         return None
     finally:
         await _typing(tier, name, responder, "stop")
