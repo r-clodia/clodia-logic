@@ -43,8 +43,10 @@ def declarations() -> dict[str, dict]:
         if not isinstance(meta, dict):
             continue
         req, ds = meta.get("requires") or {}, meta.get("datastores") or []
-        if req or ds:
-            found[manifest.parent.name] = {"requires": req, "datastores": ds}
+        rc = meta.get("rag_collections") or []
+        if req or ds or rc:
+            found[manifest.parent.name] = {"requires": req, "datastores": ds,
+                                           "rag_collections": rc}
     return found
 
 
@@ -58,11 +60,22 @@ def _reconcile_prompt(reason: str, decls: dict[str, dict]) -> str:
     for name, d in decls.items():
         req = ", ".join(f"{k}:{v}" for k, v in (d["requires"] or {}).items()) or "-"
         ds = ", ".join(x.get("path", "?") for x in d["datastores"]) or "-"
-        lines.append(f"- {name} → requires [{req}] · datastores [{ds}]")
+        rc = ", ".join(
+            f"{c.get('name')}({len(c.get('resources') or [])} risorse)"
+            for c in (d.get("rag_collections") or [])) or "-"
+        lines.append(f"- {name} → requires [{req}] · datastores [{ds}] · rag_collections [{rc}]")
     lines += [
         "",
         "Applica il tuo protocollo di riconciliazione (idempotente, path "
         "persistenti in $CLODIA_DATA/runtime) e chiudi con il report.",
+        "",
+        "Per le rag_collections: se una collection dichiarata non esiste ancora "
+        "(rag.collections), PROVISIONALA — crea/ingerisci le risorse iniziali via "
+        "rag.ingest (collection + doc_name + version; il corpus/indice è infra "
+        "pgvector, NON è nel pack). Le risorse con `url` vanno prima scaricate in "
+        "un topic e poi ingerite; quelle con `path` sono file del pack. Idempotente: "
+        "salta ciò che è già indicizzato. Se non hai gli strumenti per scaricare, "
+        "riporta le risorse mancanti nel report per l'intervento umano.",
     ]
     return "\n".join(lines)
 

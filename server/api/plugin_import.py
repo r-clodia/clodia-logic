@@ -205,6 +205,48 @@ def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
     return out
 
 
+def _sanitize_rag_collections(raw: Any) -> list[dict[str, Any]]:
+    """Dichiarazioni di COLLECTION RAG del pack (pack ops): lista di
+    {name, description?, tier?, resources: [{url|path, doc_name, version, type?, meta?}]}.
+    Il corpus/indice NON viaggia nel pack (è infra pgvector); qui c'è il
+    *metadato*: nome collection + risorse iniziali da scaricare e indicizzare al
+    setup. Il provisioning è dell'agente pack_ops (crea la collection + ingest via
+    rag.ingest — idempotente). Entry malformate scartate, non bloccano l'import.
+
+    `path` = file relativo confinato al pack (no assoluti/traversal); `url` = fonte
+    da scaricare. Almeno uno dei due per risorsa."""
+    out: list[dict[str, Any]] = []
+    if not isinstance(raw, list):
+        return out
+    for col in raw:
+        if not isinstance(col, dict) or not str(col.get("name") or "").strip():
+            continue
+        resources = []
+        for r in (col.get("resources") or []):
+            if not isinstance(r, dict):
+                continue
+            url = str(r.get("url") or "").strip()
+            path = str(r.get("path") or "").strip()
+            if path and (path.startswith(("/", "~")) or ".." in Path(path).parts):
+                path = ""  # scarta path non confinati, tiene eventualmente l'url
+            if not (url or path):
+                continue
+            resources.append({
+                "url": url, "path": path,
+                "doc_name": str(r.get("doc_name") or "").strip(),
+                "version": str(r.get("version") or "").strip(),
+                "type": str(r.get("type") or "pdf").strip(),
+                "meta": r.get("meta") if isinstance(r.get("meta"), dict) else {},
+            })
+        out.append({
+            "name": str(col["name"]).strip(),
+            "description": str(col.get("description") or ""),
+            "tier": str(col.get("tier") or "SEAL-0").strip(),
+            "resources": resources,
+        })
+    return out
+
+
 def _sanitize_requires(raw: Any) -> dict[str, list[str]]:
     """Dipendenze curated del plugin (pack ops): {bin|npm|pip|system: [str]}.
     Solo dichiarazione — l'esecuzione è dell'agente pack_ops (Sysadmin), che
@@ -311,6 +353,7 @@ def _write_plugin_manifest(
     source: str,
     mcp_servers: dict[str, Any],
     datastores: list[dict[str, Any]] | None = None,
+    rag_collections: list[dict[str, Any]] | None = None,
     requires: dict[str, list[str]] | None = None,
     topic_playbooks: dict[str, list[dict[str, str]]] | None = None,
     workflows: dict[str, dict] | None = None,
@@ -333,6 +376,8 @@ def _write_plugin_manifest(
     }
     if datastores:
         manifest["datastores"] = datastores
+    if rag_collections:
+        manifest["rag_collections"] = rag_collections
     if requires:
         manifest["requires"] = requires
     if topic_playbooks:
@@ -390,6 +435,7 @@ def install_plugin_from_root(
     skills = [_install_skill_into_plugin(d, plugin) for d in skill_dirs]
     rules = [_install_rule_into_plugin(f, plugin) for f in rule_files]
     datastores = _sanitize_datastores(manifest.get("datastores"))
+    rag_collections = _sanitize_rag_collections(manifest.get("rag_collections"))
     requires = _sanitize_requires(manifest.get("requires"))
     topic_playbooks = _sanitize_playbooks(manifest.get("topic_playbooks"))
     workflows = _sanitize_workflows(manifest.get("workflows"))
@@ -400,6 +446,7 @@ def install_plugin_from_root(
         source=source,
         mcp_servers=mcp_servers,
         datastores=datastores,
+        rag_collections=rag_collections,
         requires=requires,
         topic_playbooks=topic_playbooks,
         workflows=workflows,
