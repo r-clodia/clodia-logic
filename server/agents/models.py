@@ -128,6 +128,12 @@ class AgentSpec(BaseModel):
     # gpt-oss su scaleway, fallback haiku su Bedrock. I provider NON elencati usano
     # il `model` top-level. Vuoto = un solo model per tutti i provider (back-compat).
     provider_models: dict[str, str] = Field(default_factory=dict)
+    # Sforzo di reasoning per i modelli che lo supportano (es. glm-5.2 su
+    # Scaleway): "none" DISABILITA il reasoning → turni molto più rapidi, ~25×
+    # meno token, niente loop runaway (per gli esecutori di tool). Valori tipici:
+    # none | low | medium | high. Passato dal runtime opencode nelle options del
+    # provider. None = default del modello (reasoning attivo su glm-5.2).
+    reasoning_effort: Optional[str] = None
 
     # Timestamp di creazione (ISO 8601). Usato come tie-break di ANZIANITÀ nel
     # rango (a parità di tier, parla il più anziano: es. Clodia prima di Ophelia).

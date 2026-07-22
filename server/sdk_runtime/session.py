@@ -1755,6 +1755,13 @@ class OpenCodeChatSession:
             base = (provider_extra_env(self._provider) or {}).get("OPENAI_BASE_URL")
             if base:
                 opts["baseURL"] = base
+            # reasoning_effort del seed (es. glm-5.2 "none" → niente reasoning:
+            # turni rapidi, no runaway). Passato nelle options del provider
+            # opencode; ignorato dai modelli che non lo supportano.
+            _spec = _kind_spec(self.kind)
+            _reff = getattr(_spec, "reasoning_effort", None) if _spec else None
+            if _reff:
+                opts["reasoning_effort"] = _reff
             if opts:
                 cfg["provider"][self._provider] = {"options": opts}
         except Exception as e:  # noqa: BLE001
