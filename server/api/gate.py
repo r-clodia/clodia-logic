@@ -105,7 +105,7 @@ async def approve(request: Request):
     LOG.info("gate approve %s@%s:%s da %s (jti=%s) → %s", agent, instance, verb,
              principal, cap.get("jti"), r.status_code)
     if r.status_code == 200:
-        _post_outcome(body.get("chat"), principal, f"🔓 gate approvato per @{agent}: {verb}")
+        _post_outcome(body.get("chat"), principal, f"🔓 @{agent}: approvato l'uso di {verb} — l'agente procede")
     return JSONResponse(r.json(), status_code=r.status_code)
 
 
@@ -123,5 +123,5 @@ async def deny(request: Request):
     r = _gw("POST", "/deny", principal,
             {"agent": agent, "instance": (body.get("instance") or "-").strip() or "-", "verb": verb})
     if r.status_code == 200:
-        _post_outcome(body.get("chat"), principal, f"⛔ gate negato per @{agent}: {verb}")
+        _post_outcome(body.get("chat"), principal, f"⛔ @{agent}: negato l'uso di {verb}")
     return JSONResponse(r.json(), status_code=r.status_code)
