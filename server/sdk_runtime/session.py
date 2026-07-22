@@ -1668,6 +1668,12 @@ class CodexChatSession:
 
 
 OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
+# Timeout (s) di lettura del turno opencode `/message`. Un modello reasoning
+# verboso (es. glm-5.2) su task complessi può NON convergere e iterare finché
+# scade il read → la sessione resta "bloccata". Un cap più basso fa fallire in
+# fretta (fail-fast) con errore chiaro, e al timeout abortiamo il turno lato
+# opencode così la generazione runaway si ferma. Configurabile via env.
+_OPENCODE_TURN_TIMEOUT = float(os.environ.get("OPENCODE_TURN_TIMEOUT", "180"))
 
 
 class OpenCodeChatSession:
@@ -1776,7 +1782,20 @@ class OpenCodeChatSession:
 
     async def _http(self):
         import httpx
-        return httpx.AsyncClient(base_url=self._base_url, timeout=httpx.Timeout(600.0))
+        return httpx.AsyncClient(base_url=self._base_url,
+                                 timeout=httpx.Timeout(_OPENCODE_TURN_TIMEOUT))
+
+    async def _abort_oc(self) -> None:
+        """Abort best-effort del turno opencode in corso (ferma una generazione
+        runaway lato serve). Idempotente e silenzioso."""
+        if not (self._base_url and self._oc_session):
+            return
+        try:
+            import httpx
+            async with httpx.AsyncClient(timeout=10.0) as c:
+                await c.post(f"{self._base_url}/session/{self._oc_session}/abort")
+        except Exception:  # noqa: BLE001
+            pass
 
     async def _wait_ready(self) -> None:
         import httpx
@@ -1907,30 +1926,41 @@ class OpenCodeChatSession:
             "agent": "build",
             "parts": [{"type": "text", "text": content}],
         }
-        async with await self._http() as c:
-            r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
-            if r.status_code == 404 and "not found" in r.text.lower():
-                # La sessione OpenCode vive solo dentro il suo processo `opencode
-                # serve`: dopo un restart dell'agent-server l'id .ocsession di un
-                # processo precedente è invalido → 404. Ne creo una nuova e riprovo
-                # (perde la storia OpenCode-interna ma RISPONDE invece di fallire;
-                # il contesto arriva comunque dal prompt).
-                LOG.warning("opencode %s: sessione %s non trovata → ricreo",
-                            self.kind, self._oc_session)
-                sr = await c.post(f"{self._base_url}/session", json={})
-                nid = (sr.json() or {}).get("id") if sr.status_code < 400 else None
-                if nid:
-                    self._oc_session = nid
-                    try:
-                        self._ocsession_file.write_text(nid)
-                    except Exception:  # noqa: BLE001
-                        pass
-                    r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
-            if r.status_code >= 400:
-                activity_log.append(self.kind, "error",
-                                    {"error": f"opencode {r.status_code}", "chat_id": self.chat_id})
-                raise RuntimeError(f"opencode HTTP {r.status_code}: {r.text[:300]}")
-            data = r.json() or {}
+        try:
+            async with await self._http() as c:
+                r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
+                if r.status_code == 404 and "not found" in r.text.lower():
+                    # La sessione OpenCode vive solo dentro il suo processo `opencode
+                    # serve`: dopo un restart dell'agent-server l'id .ocsession di un
+                    # processo precedente è invalido → 404. Ne creo una nuova e riprovo
+                    # (perde la storia OpenCode-interna ma RISPONDE invece di fallire;
+                    # il contesto arriva comunque dal prompt).
+                    LOG.warning("opencode %s: sessione %s non trovata → ricreo",
+                                self.kind, self._oc_session)
+                    sr = await c.post(f"{self._base_url}/session", json={})
+                    nid = (sr.json() or {}).get("id") if sr.status_code < 400 else None
+                    if nid:
+                        self._oc_session = nid
+                        try:
+                            self._ocsession_file.write_text(nid)
+                        except Exception:  # noqa: BLE001
+                            pass
+                        r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
+                if r.status_code >= 400:
+                    activity_log.append(self.kind, "error",
+                                        {"error": f"opencode {r.status_code}", "chat_id": self.chat_id})
+                    raise RuntimeError(f"opencode HTTP {r.status_code}: {r.text[:300]}")
+                data = r.json() or {}
+        except (httpx.ReadTimeout, httpx.TimeoutException):
+            # Turno runaway: il modello non converge entro _OPENCODE_TURN_TIMEOUT.
+            # Fermo la generazione lato opencode e fallisco con errore chiaro (la
+            # sessione si recupera al prossimo messaggio) invece di restare appesa.
+            await self._abort_oc()
+            activity_log.append(self.kind, "error",
+                                {"error": "opencode turn timeout", "chat_id": self.chat_id})
+            raise RuntimeError(
+                f"turno opencode non concluso entro {int(_OPENCODE_TURN_TIMEOUT)}s "
+                f"(modello {self._model} non convergente) — turno interrotto")
         full = await self._handle_parts(data)
         activity_log.append(self.kind, "run_done",
                             {"reply": _snippet(full), "chat_id": self.chat_id,
