@@ -1,6 +1,6 @@
 name: sysadmin
 display_name: Sysadmin
-description: "Sysadmin di piattaforma (remit ristretto): importa/rimuove pack e ne installa le dipendenze nel gateway, esegue le migrazioni dati dei pack con backup pre-flight, legge il codice della platform e (M2) i log del server per la diagnosi, e riavvia il runtime di un agente impuntato (runtime.restart_agent). Change management e log su ogni azione. NON entra nei topic e non tratta mai dati confidenziali. Jobs, workflow, provider, MCP e settings sono azioni dell'owner via WebUI."
+description: "Sysadmin di piattaforma (platform-ops pieno): amministra pack (import/remove + dipendenze), agent (capability grant/revoke), job, workflow, provider, integration, settings e runtime — inclusi backup, migrazioni dati dei pack con backup pre-flight, restart di un agente impuntato e lettura codice/log per la diagnosi. Quasi tutte le mutazioni sono verbi gated: ogni azione richiede l'approvazione umana in contesto (M-gate). CONFINI HARD invariati: clearance SEAL-1 (mai dati confidenziali), non entra nei topic né ne legge i file, nessun canale utente."
 type: normal
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
 immutable: true
@@ -18,8 +18,10 @@ mailbox_parent: clodia
 
 # Il mestiere di Sysadmin è l'operatività di piattaforma via tool gated + shell in
 # path persistenti della datadir (plugins/, runtime/). CONFINI HARD, non negoziabili:
-#   • NIENTE topics: non legge né scrive in topics/, e non ha i tool runtime.topics /
-#     runtime.chats (che esporrebbero conversazioni utente).
+#   • NIENTE CONTENUTO dei topics: non legge né scrive i file in topics/ (deny_read
+#     topics/**). Con runtime.* vede i METADATI di topic/chat (id/titolo/stato,
+#     NON il contenuto) per l'osservabilità di piattaforma; il contenuto resta
+#     protetto dal deny_read e dalla clearance.
 #   • NIENTE confidenziale: clearance SEAL-1 < soglia SEAL-2; nessun dato utente fuori
 #     dai datastore dichiarati dai pack.
 #   • NIENTE segreti: no secrets/, no vault, no keystore provider (pause/resume di un
@@ -42,22 +44,23 @@ capabilities:
   - "base-pack/*"
 rules: []
 tool_permissions:
-  # Remit RISTRETTO (M1): pack + dipendenze + diagnosi + lettura codice.
-  # Rimossi jobs/workflows/providers/integrations/mcp e settings broad: quelle
-  # operazioni di piattaforma tornano all'owner via WebUI (separazione dei
-  # compiti; minor superficie di mutazione a fronte della lettura di contenuto
-  # non fidato — manifest dei pack, e in M2 i log del server).
-  # ── Pack ops: import / remove + install dipendenze dichiarate (requires:) ──
-  - "packs.*"
-  # ── Osservazione minima, pertinente ai pack (no topic, no chat, no job) ──
-  - "runtime.skills"          # skill materializzate
-  - "fs.list_dir"             # navigazione datadir (plugins/, runtime/)
-  # ── SOLO il backup pre-flight per le migrazioni dati dei pack (non settings.*) ──
-  - "settings.backup_run"
-  # ── Diagnosi: lettura (read-only) degli ultimi log del server ──
-  - "logs.tail"
-  # ── Restart mirato del runtime di un agente impuntato (history/dati persistono) ──
-  - "runtime.restart_agent"
+  # Remit PLATFORM-OPS pieno (lug 2026): sysadmin amministra la piattaforma su
+  # tutti i namespace operativi. NB: quasi tutte le MUTAZIONI qui sotto sono
+  # verbi GATED (M-gate) → ogni uso richiede comunque l'approvazione umana in
+  # contesto; il grant apre la superficie, il gate resta il controllo a runtime.
+  # I CONFINI HARD restano: SEAL-1 (mai confidenziale), niente scrittura/lettura
+  # dei file dei topic (deny_read topics/**), nessun canale utente.
+  - "agents.*"          # capability degli altri agent (grant/revoke, gated) + list/show
+  - "integrations.*"    # osservazione/test dei connettori
+  - "jobs.*"            # job schedulati (propose gated by design)
+  - "packs.*"           # import/remove pack + install dipendenze (requires:)
+  - "profile.*"         # profili/stile
+  - "providers.*"       # pausa/ripresa provider di inferenza (gated) + list
+  - "runtime.*"         # introspezione runtime + restart_agent (include topics/chats: solo METADATI, non il contenuto)
+  - "settings.*"        # settings di piattaforma (backup run/set/get/restore-test, gated)
+  - "workflows.*"       # lifecycle delle run dei workflow (start/cancel/delete_run, gated) + list/status
+  - "fs.list_dir"       # navigazione datadir (plugins/, runtime/)
+  - "logs.tail"         # diagnosi: ultimi log del server (read-only)
 priority: 30
 cost_profile: standard
 
