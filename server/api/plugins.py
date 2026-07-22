@@ -228,8 +228,21 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
         manifest.get("description")
         or _BUILTIN_DESCRIPTIONS.get(name, "")
     ).strip()
-    skills = sorted(bucket["skills"], key=lambda e: e["name"])
-    rules = sorted(bucket["rules"], key=lambda e: e["name"])
+    # Dedup per nome: una skill/rule può comparire due volte (es. base-pack la
+    # ha sia nel catalog bundled LOGIC_SKILLS_DIR sia materializzata nel
+    # data-catalog skills-catalog/base-pack). Nomi duplicati rompono la UI
+    # (keyed each per name). Tengo la prima occorrenza (ordinata).
+    def _dedupe(entries: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        seen: set[str] = set()
+        out: list[dict[str, Any]] = []
+        for e in sorted(entries, key=lambda e: e["name"]):
+            if e["name"] in seen:
+                continue
+            seen.add(e["name"])
+            out.append(e)
+        return out
+    skills = _dedupe(bucket["skills"])
+    rules = _dedupe(bucket["rules"])
     # Workflow e datastore dichiarati dal plugin (pack ops): esposti così il
     # pack si auto-descrive nella UI accanto a skill/rule/mcp.
     wf_raw = manifest.get("workflows") or {}
