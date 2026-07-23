@@ -3,6 +3,16 @@
 Changelog del pack `base-pack` (formato [Keep a Changelog](https://keepachangelog.com/),
 SemVer). La versione **in corso** è in cima. Vedi `pack.yaml` per la versione corrente.
 
+## [6.5.0] — 2026-07-23
+- **Consolidamento `janitor` + `sysadmin` in un unico seed `sysadmin`** (steward
+  di piattaforma). sysadmin assorbe il ruolo front-of-house di janitor: è l'agente
+  del **widget di assistenza** (guida WebUI, marker `goto`, guida integrazioni) E
+  esegue le **platform-ops** (a differenza di janitor NON scala: esegue, con le
+  mutazioni gated). Aggiunti `app_runtime.get/list/health` + capability `helpdesk`.
+  **`janitor` rimosso** dal base-pack. Default `helpdesk.agent` → `sysadmin`.
+- Setup di un pack: il seed sa leggere il `SETUP.md` del pack ed eseguirne il
+  provisioning (deps + MCP + `rag_collections`).
+
 ## [6.4.4] — 2026-07-23
 - **Skill `email-reconcile`**: routine job-driven per riconciliare la posta in
   ARRIVO nei topic in modo deterministico e sicuro — un topic riceve solo i reply

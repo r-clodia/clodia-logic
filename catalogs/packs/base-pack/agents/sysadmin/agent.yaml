@@ -1,6 +1,6 @@
 name: sysadmin
 display_name: Sysadmin
-description: "Sysadmin di piattaforma (platform-ops pieno): amministra pack (import/remove + dipendenze), agent (capability grant/revoke), job, workflow, provider, integration, settings e runtime — inclusi backup, migrazioni dati dei pack con backup pre-flight, restart di un agente impuntato e lettura codice/log per la diagnosi. Quasi tutte le mutazioni sono verbi gated: ogni azione richiede l'approvazione umana in contesto (M-gate). CONFINI HARD invariati: clearance SEAL-1 (mai dati confidenziali), non entra nei topic né ne legge i file, nessun canale utente."
+description: "Steward della piattaforma (guida WebUI + platform-ops): è l'agente del widget di assistenza — guida l'utente alla pagina giusta (marker goto), fa triage, guida il setup delle integrazioni — E amministra la piattaforma: pack (import/remove + dipendenze + setup), agent (capability grant/revoke), job, workflow, provider, integration, settings, runtime (backup, migrazioni dati, restart agente impuntato, lettura codice/log). A differenza del vecchio Janitor NON scala le azioni: le esegue, con quasi tutte le mutazioni GATED (approvazione umana in contesto, M-gate). CONFINI HARD: clearance SEAL-1 (mai dati confidenziali), non legge il CONTENUTO dei topic, nessun segreto. (Consolida janitor + sysadmin.)"
 type: normal
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
 immutable: true
@@ -42,6 +42,7 @@ sandbox:
 
 capabilities:
   - "base-pack/*"
+  - "helpdesk"          # è l'agente del widget di assistenza (canale SEAL-1 helpdesk)
 rules: []
 tool_permissions:
   # Remit PLATFORM-OPS pieno (lug 2026): sysadmin amministra la piattaforma su
@@ -61,6 +62,10 @@ tool_permissions:
   - "workflows.*"       # lifecycle delle run dei workflow (start/cancel/delete_run, gated) + list/status
   - "fs.list_dir"       # navigazione datadir (plugins/, runtime/)
   - "logs.tail"         # diagnosi: ultimi log del server (read-only)
+  # ── Front-of-house (ex janitor): lettura stato UI non sensibile per guidare ──
+  - "app_runtime.get"
+  - "app_runtime.list"
+  - "app_runtime.health"
 priority: 30
 cost_profile: standard
 

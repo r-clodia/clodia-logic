@@ -104,7 +104,7 @@ class IntegrationsConfig(BaseModel):
 class HelpdeskConfig(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    agent: str = "janitor"        # agente del popup (default janitor)
+    agent: str = "sysadmin"      # agente del popup (default sysadmin: steward, ex janitor+sysadmin)
 
 
 class PackOpsConfig(BaseModel):
