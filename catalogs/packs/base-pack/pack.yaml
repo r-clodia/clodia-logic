@@ -4,7 +4,7 @@ description: >-
   e rule native + gli agent seed di sistema (clodia, ophelia, messaggero,
   sysadmin, segretario). A differenza dei pack di terze parti è trusted per
   costruzione: non passa dal security-review gate e non è disinstallabile.
-version: 6.5.1
+version: 6.6.0
 license: AGPL-3.0-or-later
 first_party: true
 # Sorgente per Check update / Update (Opzione A): il pack si aggiorna dal suo

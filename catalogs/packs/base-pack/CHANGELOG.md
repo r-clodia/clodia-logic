@@ -3,6 +3,20 @@
 Changelog del pack `base-pack` (formato [Keep a Changelog](https://keepachangelog.com/),
 SemVer). La versione **in corso** è in cima. Vedi `pack.yaml` per la versione corrente.
 
+## [6.6.0] — 2026-07-23
+- **sysadmin — contesto-topic dal widget.** Quando l'utente apre l'assistenza
+  mentre sta su un topic, il widget comunica a sysadmin quale topic è (commento
+  nascosto in testa al messaggio) e sysadmin può ispezionarlo con il nuovo tool
+  **`runtime.inspect_topic(tier, name)`** (metadati + agenti + ultimi messaggi).
+  Vincolo **clearance**: solo se la SEAL effettiva di sysadmin ≥ tier del topic —
+  i confidenziali sopra la sua clearance restano invisibili (403). Rilassa il
+  confine "non legge mai il contenuto dei topic" → "solo entro la clearance".
+- **check-email**: il job va creato con `agent = messaggero` (te stesso), esplicito
+  in `jobs.propose`; il fire gira come messaggero (usa `topic.post_message`), non
+  come clodia (rinforzo skill + fix gateway: `jobs.propose` default executor = chiamante).
+- **janitor**: rimosso ogni residuo (seed orfano dismesso dalla colony); il widget
+  di assistenza risponde con **sysadmin**.
+
 ## [6.5.1] — 2026-07-23
 - **Skill `check-email`** (rimpiazza `email-reconcile`, senza ledger): messaggero,
   su richiesta, crea un **job** (intervallo T) che controlla una casella, filtra

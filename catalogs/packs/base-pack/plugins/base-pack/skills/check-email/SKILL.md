@@ -32,7 +32,10 @@ topic Z"). NON per leggere la posta una tantum (per quello basta `email.search`/
    - **topic di destinazione** (`tier/name`) e **@agente** da menzionare (di norma
      `@messaggero` — un altro spawn — o l'agente competente del topic).
 2. **Crea il job** con `jobs.propose` (l'owner lo approva — è gated by design):
-   - `agent = messaggero`, `schedule`/`cron` = intervallo T;
+   - **`agent = messaggero`** (te stesso): il fire deve girare come messaggero,
+     non come clodia — la routine usa `topic.post_message` (prerogativa messaggero)
+     e le tue capability email. Passalo SEMPRE esplicito in `jobs.propose`;
+   - `schedule`/`cron` = intervallo T;
    - `prompt` = la routine di check qui sotto, con i parametri risolti.
 3. **Conferma** all'utente: cosa controlli, ogni quanto, dove inietti, chi menzioni.
    Il job resta attivo finché l'owner lo disabilita.

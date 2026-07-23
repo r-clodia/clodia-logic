@@ -980,6 +980,46 @@ async def channel_trigger_internal(tier: str, name: str, request: Request) -> di
     return {"triggered": True}
 
 
+@router.post("/clodia/runtime/inspect-topic")
+async def runtime_inspect_topic(body: dict) -> dict:
+    """Introspezione di UN topic per un agente steward (es. sysadmin) che lo chiama
+    dal widget mentre l'utente lo sta guardando. Bypassa l'asse PARTICIPANT (lo
+    steward non è partecipante) ma NON quello CLEARANCE: se la SEAL effettiva del
+    chiamante è < tier del topic, il topic è del tutto INVISIBILE (403) — i
+    confidenziali sopra il suo livello restano ciechi (Prima Legge). Entro
+    clearance ritorna metadati + agenti + ultimi messaggi (autore/testo/kind/ts)."""
+    tier = str((body or {}).get("tier") or "").strip()
+    name = str((body or {}).get("name") or "").strip()
+    by = str((body or {}).get("by") or "").strip()
+    if not tier or not name or not by:
+        return {"ok": False, "error": "tier, name, by richiesti"}
+    by_spec = registry.get_by_name(by)
+    if by_spec is None:
+        raise HTTPException(404, f"agente '{by}' non registrato")
+    if not _can_access(_effective_clearance(by_spec), tier):
+        # invisibile per costruzione: non confermare nemmeno l'esistenza/il titolo
+        raise HTTPException(403, "topic oltre la tua clearance: non accessibile")
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "topic non trovato")
+    meta = topic.get("meta", {})
+    parts = meta.get("participants") or []
+    agents = [p for p in parts if registry.get_by_name(p) is not None]
+    try:
+        raw = topics_client.list_messages(tier, name, limit=40)
+    except Exception:  # noqa: BLE001
+        raw = []
+    msgs = [{"author": m.get("author"), "kind": m.get("kind"),
+             "text": m.get("text"), "ts": m.get("ts") or m.get("created_at")}
+            for m in raw]
+    return {"ok": True, "tier": tier, "name": name,
+            "meta": {"title": meta.get("title"), "status": meta.get("status"),
+                     "type": meta.get("type"), "owner": meta.get("owner"),
+                     "contact_agent": meta.get("contact_agent"),
+                     "participants": parts, "agents": agents},
+            "messages": msgs, "message_count": len(msgs)}
+
+
 @router.get("/clodia/channels/{tier}/{name}/files")
 async def channel_files(tier: str, name: str, request: Request, path: str = "") -> dict:
     topic = topics_client.open_topic(tier, name)
