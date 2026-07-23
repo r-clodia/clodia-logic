@@ -32,7 +32,9 @@ sandbox:
   allow_write: ["{scratch}/**"]
   allow_shell_cmds: []
   deny_shell_patterns: ["*"]
-capabilities: []
+# Skill base-pack mirata: riconciliazione inbound email → topic (job-driven,
+# ledger nella seed memory). Vedi skill email-reconcile.
+capabilities: [base-pack/email-reconcile]
 rules: []
 # Tool comms (la fruizione degli account/token resta gated dai grant del vault:
 # email account + telegram_bot_token delegati a Messaggero dalla sezione
