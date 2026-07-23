@@ -964,3 +964,58 @@ def download_topic_file(
         content=data, media_type=media_type,
         headers={"Content-Disposition": disposition},
     )
+
+
+@router.get("/topics/{tier}/{name}/download-all")
+def download_topic_all(request: Request, tier: str, name: str):
+    """Zip di TUTTI i file del topic (summary, meta, minute, files/) — export
+    completo. AUTENTICATO: sessione con membership del canale. Cap 50MB aggregati."""
+    from .channels import _require_member
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "topic non trovato")
+    _require_member(request, topic.get("meta", {}))
+    # walk ricorsivo dell'albero del topic (dir → ricorsione, file → raccolta)
+    paths: list[str] = []
+
+    def _walk(sub: str, depth: int = 0) -> None:
+        if depth > 12:  # guardia anti-loop
+            return
+        try:
+            entries = topics_client.list_files(tier, name, sub)
+        except topics_client.TopicsClientError as e:
+            raise HTTPException(502, f"gateway topics non disponibile: {str(e)[:160]}")
+        for e in entries:
+            kind, p = e.get("kind"), e.get("path")
+            if not p:
+                continue
+            if kind == "dir":
+                _walk(p, depth + 1)
+            elif kind == "file":
+                paths.append(p)
+
+    _walk("")
+    if not paths:
+        raise HTTPException(404, "topic senza file")
+    import io
+    import zipfile
+    buf = io.BytesIO()
+    total = 0
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
+        for p in paths:
+            try:
+                data = topics_client.get_file(tier, name, p)
+            except topics_client.TopicsClientError:
+                continue  # salta un file irrecuperabile, non bloccare l'export
+            if data is None:
+                continue
+            total += len(data)
+            if total > _DOWNLOAD_MAX_BYTES:
+                raise HTTPException(413, "topic troppo grande per lo zip (>50MB)")
+            z.writestr(p, data)
+    from fastapi.responses import Response
+    safe = name.encode("ascii", "ignore").decode("ascii").replace('"', "") or "topic"
+    return Response(
+        content=buf.getvalue(), media_type="application/zip",
+        headers={"Content-Disposition": f'attachment; filename="{safe}.zip"'},
+    )
