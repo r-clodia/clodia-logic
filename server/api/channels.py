@@ -176,11 +176,19 @@ _TAG_RE = re.compile(r"@([a-z0-9][a-z0-9_-]{0,30})")
 
 
 def _effective_clearance(spec) -> str:
-    """I super-agent (clodia/ophelia) sono full-power → clearance massima (P3).
-    Gli altri usano la clearance dichiarata (default P0)."""
+    """SEAL EFFETTIVA di un agente = quella del PROVIDER che usa (il dato va lì).
+    Il campo `clearance` del seed è solo una SEAL MINIMA dichiarata (floor), NON
+    l'effettiva. Super-agent (clodia/ophelia) → full-power (SEAL-4). Provider non
+    risolto → fallback alla minima dichiarata dal seed."""
     if getattr(spec, "type", None) == "super":
         return "SEAL-4"
-    return _norm(getattr(spec, "clearance", None))
+    try:
+        from ..sdk_runtime.session import agent_effective_provider
+        from .providers import provider_seal
+        ps = provider_seal(agent_effective_provider(spec.name))
+    except Exception:  # noqa: BLE001
+        ps = None
+    return _norm(ps) if ps else _norm(getattr(spec, "clearance", None))
 
 
 def _can_access(clearance: str | None, tier: str | None) -> bool:

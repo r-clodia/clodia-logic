@@ -383,9 +383,10 @@ def _kind_spec(kind: str):
 
 
 def _kind_clearance(kind: str) -> Optional[str]:
-    """Clearance-TETTO dichiarata dall'agent in agent.yaml (il MASSIMO SEAL a cui
-    è abilitato). None se non dichiarata. NON è la clearance effettiva: quella la
-    calcola `_effective_clearance` combinandola col SEAL del provider."""
+    """Clearance MINIMA dichiarata dall'agent in agent.yaml (floor di deployment:
+    la SEAL minima che il suo provider deve avere). None se non dichiarata. NON è
+    la clearance effettiva: quella è SEMPRE il SEAL del provider effettivo
+    (`_effective_clearance`) — il seed non è un tetto e non la riduce."""
     spec = _kind_spec(kind)
     return getattr(spec, "clearance", None) if spec else None
 
@@ -398,23 +399,26 @@ def _seal_num(s: Optional[str]) -> Optional[int]:
 
 
 def _effective_clearance(kind: str) -> Optional[str]:
-    """Clearance EFFETTIVA per il token = min(tetto agente, SEAL del provider
-    effettivo). Il SEAL di un agente NON è statico: dipende dal provider su cui
-    gira (il dato va lì) — clodia su aws-region-eu (SEAL-2) è SEAL-2, su
-    anthropic-api (SEAL-1) è SEAL-1. Il tetto in agent.yaml è solo il massimo.
-    Tetto assente = nessun cap lato agente → vale il SEAL del provider."""
-    ceiling = _seal_num(_kind_clearance(kind))
-    prov_seal = None
+    """Clearance EFFETTIVA (per il token) = SEAL del PROVIDER effettivo su cui gira
+    l'agente. Il SEAL di un agente NON è statico né definito dal seed: dipende dal
+    provider, perché il dato va lì — impiegato su Scaleway (SEAL-3) è SEAL-3, su
+    anthropic-api (SEAL-1) è SEAL-1. Il campo `clearance` del seed è solo una SEAL
+    MINIMA dichiarata (floor), NON un tetto: non riduce l'effettiva. Super-agent →
+    full-power (SEAL-4). Provider non risolto → fallback alla minima dichiarata."""
+    spec = _kind_spec(kind)
+    if spec is not None and getattr(spec, "type", None) == "super":
+        return "SEAL-4"
     try:
         from ..api.providers import provider_seal
         prov = agent_effective_provider(kind)
-        prov_seal = _seal_num(provider_seal(prov)) if prov else None
+        ps = provider_seal(prov) if prov else None
     except Exception as e:  # noqa: BLE001
         LOG.warning("provider_seal non risolto per kind=%s: %s", kind, e)
-    ranks = [r for r in (ceiling, prov_seal) if r is not None]
-    if not ranks:
-        return None
-    return f"SEAL-{min(ranks)}"
+        ps = None
+    if ps:
+        n = _seal_num(ps)
+        return f"SEAL-{n}" if n is not None else ps
+    return _kind_clearance(kind)  # fallback: la minima dichiarata dal seed
 
 
 def known_kind(kind: str) -> bool:
