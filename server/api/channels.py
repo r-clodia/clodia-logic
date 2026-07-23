@@ -955,6 +955,31 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     return topics_client.set_participant(tier, name, agent, add=add)
 
 
+@router.post("/clodia/channels/{tier}/{name}/trigger/internal")
+async def channel_trigger_internal(tier: str, name: str, request: Request) -> dict:
+    """Innesca il RISPONDITORE del topic su un messaggio già postato (via gateway).
+    Body: {text, by}. `text` = il testo appena iniettato (di norma con una
+    @menzione: il responder viene scelto dal tag). `by` = agente chiamante (deve
+    essere owner/partecipante/super del canale). Fire-and-forget: l'agente taggato
+    prende in carico il messaggio in un turno in background. Nessun principal
+    (endpoint interno) → il turno gira con authority di proxy (barriera azioni)."""
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    meta = topic.get("meta", {})
+    body = await request.json()
+    text = (body.get("text") or "").strip()
+    by = (body.get("by") or "").strip()
+    if not text:
+        raise HTTPException(400, "text richiesto")
+    by_spec = registry.get_by_name(by)
+    is_super = bool(by_spec and getattr(by_spec, "type", None) == "super")
+    if not (is_super or by == meta.get("owner") or by in (meta.get("participants") or [])):
+        raise HTTPException(403, f"'{by}' non è owner/partecipante/super di questo canale")
+    _spawn_bg(run_topic_turn(tier, name, meta, trigger_text=text, principal_hint="channel"))
+    return {"triggered": True}
+
+
 @router.get("/clodia/channels/{tier}/{name}/files")
 async def channel_files(tier: str, name: str, request: Request, path: str = "") -> dict:
     topic = topics_client.open_topic(tier, name)
