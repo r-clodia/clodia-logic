@@ -265,6 +265,23 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
          "pii": bool(d.get("pii")), "backup": bool(d.get("backup", True))}
         for d in ds_raw if isinstance(d, dict) and d.get("path")
     ] if isinstance(ds_raw, list) else []
+    # Collection RAG dichiarate dal plugin (provisioning al setup via pack_ops):
+    # esposte in UI così il pack mostra il corpus base + le risorse.
+    rc_raw = manifest.get("rag_collections") or []
+    rag_collections = [
+        {
+            "name": c.get("name"),
+            "description": c.get("description", ""),
+            "tier": c.get("tier", "SEAL-0"),
+            "resources": [
+                {"doc_name": r.get("doc_name", ""), "url": r.get("url", ""),
+                 "path": r.get("path", ""), "version": r.get("version", ""),
+                 "type": r.get("type", "")}
+                for r in (c.get("resources") or []) if isinstance(r, dict)
+            ],
+        }
+        for c in rc_raw if isinstance(c, dict) and c.get("name")
+    ] if isinstance(rc_raw, list) else []
     return {
         "name": name,
         "description": description,
@@ -286,12 +303,14 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
         "mcp_servers": mcp_servers,
         "workflows": workflows,
         "datastores": datastores,
+        "rag_collections": rag_collections,
         "counts": {
             "skills": len(skills),
             "rules": len(rules),
             "mcp_servers": len(mcp_servers),
             "workflows": len(workflows),
             "datastores": len(datastores),
+            "rag_collections": len(rag_collections),
         },
     }
 
