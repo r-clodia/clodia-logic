@@ -176,12 +176,11 @@ _TAG_RE = re.compile(r"@([a-z0-9][a-z0-9_-]{0,30})")
 
 
 def _effective_clearance(spec) -> str:
-    """SEAL EFFETTIVA di un agente = quella del PROVIDER che usa (il dato va lì).
-    Il campo `clearance` del seed è solo una SEAL MINIMA dichiarata (floor), NON
-    l'effettiva. Super-agent (clodia/ophelia) → full-power (SEAL-4). Provider non
-    risolto → fallback alla minima dichiarata dal seed."""
-    if getattr(spec, "type", None) == "super":
-        return "SEAL-4"
+    """SEAL EFFETTIVA di un agente = quella del PROVIDER che usa (il dato va lì),
+    per TUTTI — super inclusi (clodia/ophelia): NESSUNO tratta dati SEAL-3+ su un
+    provider SEAL-2-. Il campo `clearance` del seed è solo una SEAL MINIMA
+    dichiarata (floor), non l'effettiva. Provider non risolto → fallback alla
+    minima dichiarata dal seed."""
     try:
         from ..sdk_runtime.session import agent_effective_provider
         from .providers import provider_seal
@@ -243,16 +242,13 @@ def _provider_seal_ok(spec, tier: str | None) -> bool:
 def _eligibility(spec, tier: str | None) -> dict:
     """Idoneità di un AeI al tier del topic, per la UI.
     - umani: sempre idonei (non trattano dati via provider).
-    - normal: idoneo solo se clearance ≥ tier E provider.seal ≥ tier.
-    - super: sempre idoneo (eccezione clodia), ma `warn` se il provider è sotto
-      il tier → la UI lo mostra con ⚠️."""
+    - agenti (normal E super, clodia/ophelia inclusi): idoneo SOLO se la SEAL
+      EFFETTIVA (= quella del provider) ≥ tier. NESSUNA eccezione per i super:
+      nessuno tratta dati SEAL-3+ su un provider SEAL-2-. Stessa regola per tutti."""
     if not spec or spec.type not in ("super", "normal"):
         return {"eligible": True, "warn": False}
-    clr_ok = _can_access(_effective_clearance(spec), tier)
-    prov_ok = _provider_seal_ok(spec, tier)
-    if spec.type == "super":
-        return {"eligible": True, "warn": not prov_ok}
-    return {"eligible": bool(clr_ok and prov_ok), "warn": False}
+    ok = _can_access(_effective_clearance(spec), tier)  # effettiva = provider SEAL
+    return {"eligible": bool(ok), "warn": False}
 
 
 # --- Composizione squadra alla creazione di un topic ----------------------

@@ -403,11 +403,9 @@ def _effective_clearance(kind: str) -> Optional[str]:
     l'agente. Il SEAL di un agente NON è statico né definito dal seed: dipende dal
     provider, perché il dato va lì — impiegato su Scaleway (SEAL-3) è SEAL-3, su
     anthropic-api (SEAL-1) è SEAL-1. Il campo `clearance` del seed è solo una SEAL
-    MINIMA dichiarata (floor), NON un tetto: non riduce l'effettiva. Super-agent →
-    full-power (SEAL-4). Provider non risolto → fallback alla minima dichiarata."""
-    spec = _kind_spec(kind)
-    if spec is not None and getattr(spec, "type", None) == "super":
-        return "SEAL-4"
+    MINIMA dichiarata (floor), NON un tetto: non riduce l'effettiva. Vale per
+    TUTTI, super inclusi (clodia/ophelia): nessuno tratta dati SEAL-3+ su provider
+    SEAL-2-. Provider non risolto → fallback alla minima dichiarata."""
     try:
         from ..api.providers import provider_seal
         prov = agent_effective_provider(kind)
