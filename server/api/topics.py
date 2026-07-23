@@ -890,7 +890,8 @@ async def get_topic_file(
         raise HTTPException(500, f"errore lettura: {e}")
 
 
-_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB hard cap per il download
+_DOWNLOAD_MAX_BYTES = 50 * 1024 * 1024  # 50 MB hard cap per il download singolo
+_ZIP_ALL_MAX_BYTES = 500 * 1024 * 1024  # 500 MB cap per lo zip dell'intero topic
 
 
 def _download_scope(tier: str, name: str, path: str) -> str:
@@ -997,25 +998,38 @@ def download_topic_all(request: Request, tier: str, name: str):
     _walk("")
     if not paths:
         raise HTTPException(404, "topic senza file")
-    import io
+    # Zip su FILE TEMPORANEO (non in RAM): un topic può pesare centinaia di MB →
+    # BytesIO satura la memoria del server. FileResponse poi lo streama da disco.
+    import os
+    import tempfile
     import zipfile
-    buf = io.BytesIO()
+    tmp = tempfile.NamedTemporaryFile(suffix=".zip", delete=False)
     total = 0
-    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as z:
-        for p in paths:
-            try:
-                data = topics_client.get_file(tier, name, p)
-            except topics_client.TopicsClientError:
-                continue  # salta un file irrecuperabile, non bloccare l'export
-            if data is None:
-                continue
-            total += len(data)
-            if total > _DOWNLOAD_MAX_BYTES:
-                raise HTTPException(413, "topic troppo grande per lo zip (>50MB)")
-            z.writestr(p, data)
-    from fastapi.responses import Response
+    try:
+        with zipfile.ZipFile(tmp, "w", zipfile.ZIP_DEFLATED) as z:
+            for p in paths:
+                try:
+                    data = topics_client.get_file(tier, name, p)
+                except topics_client.TopicsClientError:
+                    continue  # salta un file irrecuperabile, non bloccare l'export
+                if data is None:
+                    continue
+                total += len(data)
+                if total > _ZIP_ALL_MAX_BYTES:
+                    raise HTTPException(413, "topic troppo grande per lo zip (>500MB)")
+                z.writestr(p, data)
+        tmp.close()
+    except BaseException:
+        tmp.close()
+        try:
+            os.unlink(tmp.name)
+        except OSError:
+            pass
+        raise
+    from fastapi.responses import FileResponse
+    from starlette.background import BackgroundTask
     safe = name.encode("ascii", "ignore").decode("ascii").replace('"', "") or "topic"
-    return Response(
-        content=buf.getvalue(), media_type="application/zip",
-        headers={"Content-Disposition": f'attachment; filename="{safe}.zip"'},
+    return FileResponse(
+        tmp.name, media_type="application/zip", filename=f"{safe}.zip",
+        background=BackgroundTask(lambda: os.unlink(tmp.name) if os.path.exists(tmp.name) else None),
     )
