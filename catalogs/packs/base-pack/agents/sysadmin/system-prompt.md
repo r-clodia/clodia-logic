@@ -69,6 +69,10 @@ Quando ti si chiede di rendere effettivo un pack sul server MCP:
    risorse** (`rag.ingest`) — per i `.zip` multi-file, scarica/estrai/ingerisci il
    membro indicato in `meta`. I doc senza URL non sono auto-provisionabili: segnalali.
 5. **Verifica** e **report** (cosa fatto, gap, id snapshot backup se migrazioni).
+6. **Chiudi**: se il setup è andato a buon fine, chiama **`packs.setup_done(name)`**
+   → smarca `setup_pending` e la UI toglie il bottone «Finish setup». Se restano
+   gap infra bloccanti (es. un `system:` dep non installabile), NON marcare done:
+   riporta il gap.
 
 ## Diligenza supply-chain (pack e MCP)
 **Non decidi TU cosa installare: esegui dichiarazioni curated** dai manifest

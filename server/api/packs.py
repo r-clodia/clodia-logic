@@ -207,6 +207,41 @@ def _pack_license_info(umbrella: str, plugin_children: list) -> dict[str, Any]:
             "license_missing": missing}
 
 
+def _pack_needs_setup(plugin_children: list) -> bool:
+    """True se il pack ha qualcosa da PROVISIONARE (roba che il sysadmin deve
+    rendere effettiva sul server MCP): server MCP da montare, collection RAG da
+    ingerire, o datastore dichiarati. Un pack di sole skill/agent non richiede setup."""
+    for c in plugin_children or []:
+        if not isinstance(c, dict):
+            continue
+        if c.get("mcp_servers") or c.get("rag_collections") or c.get("datastores"):
+            return True
+    return False
+
+
+def _setup_marker_path(name: str):
+    return pack_import.PACKS_META_DIR / name / ".setup_pending"
+
+
+def set_setup_pending(name: str, pending: bool) -> None:
+    """Marca/smarca il setup del pack come pendente (marker file nel meta)."""
+    p = _setup_marker_path(name)
+    try:
+        if pending:
+            p.parent.mkdir(parents=True, exist_ok=True)
+            p.write_text("", encoding="utf-8")
+        elif p.exists():
+            p.unlink()
+    except OSError:
+        pass
+
+
+def _setup_pending(name: str, plugin_children: list) -> bool:
+    """Setup pendente = il pack ha needs di setup E il marker è presente (setup
+    non ancora completato). Marker assente = setup fatto (o non necessario)."""
+    return _pack_needs_setup(plugin_children) and _setup_marker_path(name).is_file()
+
+
 def _list_packs() -> list[dict[str, Any]]:
     plugin_items = {p["name"]: p for p in plugins_api.list_plugins()}
     installed_plugins = set(plugin_items)
@@ -244,6 +279,10 @@ def _list_packs() -> list[dict[str, Any]]:
             "source": str(manifest.get("source") or "").strip(),
             "agents": agents,
             "plugins": plugin_children,
+            # Setup: il pack ha roba da provisionare (MCP/RAG/datastore) e il
+            # setup non è ancora stato eseguito (marker) → la UI mostra "Finish setup".
+            "needs_setup": _pack_needs_setup(plugin_children),
+            "setup_pending": _setup_pending(name, plugin_children),
             "virtual": False,
             # first-party (base-pack e riservati) → non rimovibile
             "deletable": name not in pack_import.RESERVED_PACK_NAMES,
@@ -272,6 +311,8 @@ def _list_packs() -> list[dict[str, Any]]:
             "source": item.get("source") or "",
             "agents": [],
             "plugins": [item],
+            "needs_setup": _pack_needs_setup([item]),
+            "setup_pending": _setup_pending(pname, [item]),
             "virtual": True,
             "deletable": bool(item.get("deletable", True))
             and pname not in pack_import.RESERVED_PACK_NAMES,
@@ -322,6 +363,17 @@ def _maybe_trigger_pack_ops(result: dict) -> None:
     skill non deve costare un run dell'agente sysadmin."""
     if not _has_pack_ops_declarations(result):
         return
+    # Setup pendente per il/i pack importati (roba da provisionare) → "Finish setup".
+    def _names(r: dict) -> list[str]:
+        if r.get("kind") == "packs":
+            out: list[str] = []
+            for sub in r.get("packs", []):
+                out += _names(sub)
+            return out
+        nm = r.get("pack") or r.get("name")
+        return [nm] if nm else []
+    for nm in _names(result):
+        set_setup_pending(nm, True)
     import asyncio
 
     from . import pack_ops
@@ -438,6 +490,9 @@ async def update_pack(name: str, request: Request):
         registry.load()
     except Exception:  # noqa: BLE001
         pass
+    # Setup pendente dopo un update: se il pack ha roba da provisionare (MCP/RAG/
+    # datastore) va rifatto il setup → marker (la UI mostra "Finish setup").
+    set_setup_pending(name, True)
     # Restart di tutti gli agenti: le sessioni vive ripartono coi seed aggiornati.
     stopped = []
     try:
@@ -454,6 +509,18 @@ async def update_pack(name: str, request: Request):
             pass
     return {"updated": name, "version": new_ver, "agents_restarted": len(stopped),
             **(result or {})}
+
+
+@router.post("/clodia/packs/{name}/setup-done")
+async def mark_pack_setup_done(name: str, request: Request):
+    """Marca il setup del pack come COMPLETATO (smarca il marker `setup_pending`).
+    Lo chiama il sysadmin/steward alla fine del task di setup (tool gateway
+    `packs.setup_done`), o l'admin manualmente. Admin-only (PDP gateway)."""
+    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    if not catalog._NAME_RE.fullmatch(name):
+        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    set_setup_pending(name, False)
+    return {"name": name, "setup_pending": False}
 
 
 @router.delete("/clodia/packs/{name}")
