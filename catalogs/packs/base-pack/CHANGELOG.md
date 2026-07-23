@@ -3,6 +3,15 @@
 Changelog del pack `base-pack` (formato [Keep a Changelog](https://keepachangelog.com/),
 SemVer). La versione **in corso** è in cima. Vedi `pack.yaml` per la versione corrente.
 
+## [6.5.1] — 2026-07-23
+- **Skill `check-email`** (rimpiazza `email-reconcile`, senza ledger): messaggero,
+  su richiesta, crea un **job** (intervallo T) che controlla una casella, filtra
+  per subject/mittente e, al match, **inietta nel topic** con `topic.post_message`
+  e una **@menzione** all'agente che deve prenderla in carico. Ogni fire = turno
+  breve, niente ascolto bloccante, niente stato da mantenere.
+- **messaggero**: capability `base-pack/check-email` (ex email-reconcile) +
+  `jobs.propose` (per creare il job) + `topic.*` (include `topic.post_message`).
+
 ## [6.5.0] — 2026-07-23
 - **Consolidamento `janitor` + `sysadmin` in un unico seed `sysadmin`** (steward
   di piattaforma). sysadmin assorbe il ruolo front-of-house di janitor: è l'agente

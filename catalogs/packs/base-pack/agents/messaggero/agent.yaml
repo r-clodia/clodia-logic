@@ -32,14 +32,16 @@ sandbox:
   allow_write: ["{scratch}/**"]
   allow_shell_cmds: []
   deny_shell_patterns: ["*"]
-# Skill base-pack mirata: riconciliazione inbound email → topic (job-driven,
-# ledger nella seed memory). Vedi skill email-reconcile.
-capabilities: [base-pack/email-reconcile]
+# Skill base-pack mirata: attesa di una email via job periodico che controlla la
+# casella, filtra il subject e inietta nel topic con @menzione. Vedi skill check-email.
+capabilities: [base-pack/check-email]
 rules: []
 # Tool comms (la fruizione degli account/token resta gated dai grant del vault:
 # email account + telegram_bot_token delegati a Messaggero dalla sezione
 # Connettori/Integrations). Enforcement effettivo nel gateway (config.yaml).
-tool_permissions: [email.*, telegram.*, topic.*]
+# topic.* include topic.post_message (prerogativa di messaggero+super). jobs.propose
+# per creare il job periodico di check-email (l'owner lo approva, gated by design).
+tool_permissions: [email.*, telegram.*, topic.*, jobs.propose]
 memory:
   dir: memory/
 system_prompt: system-prompt.md
