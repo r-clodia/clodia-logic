@@ -39,6 +39,34 @@ def _rate_ok(hid: str) -> bool:
     return True
 
 
+_SIG_WINDOW_S = 300  # anti-replay: la firma copre id.timestamp.body
+
+
+def _verify_signature(hid: str, ts: str, sig_b64: str, identity: str, raw: bytes) -> str:
+    """Verifica la firma Ed25519 della richiesta contro il cert CA dell'identità.
+    Ritorna il principal verificato, o solleva 401. Firma su `f"{id}.{ts}."` + body
+    grezzo. Timestamp unix (s) entro ±_SIG_WINDOW_S (anti-replay)."""
+    import base64
+    try:
+        t = int(ts)
+    except (TypeError, ValueError):
+        raise HTTPException(401, "timestamp non valido")
+    now = int(time.time())
+    if abs(now - t) > _SIG_WINDOW_S:
+        raise HTTPException(401, "timestamp fuori finestra (replay?)")
+    from ..colony import pki
+    try:
+        pub = pki._verify_cert(identity)  # CA + validità + revoca (raises)
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(401, f"identità non valida: {e}") from e
+    try:
+        sig = base64.b64decode(sig_b64)
+        pub.verify(sig, f"{hid}.{t}.".encode("utf-8") + raw)
+    except Exception:  # noqa: BLE001 — InvalidSignature o base64 malformato
+        raise HTTPException(401, "firma non valida")
+    return identity
+
+
 def _require_chat_owner(request: Request, tier: str, name: str) -> str:
     """Il principal deve essere owner della chat o admin di piattaforma."""
     principal = _principal_from_request(request)
@@ -98,6 +126,41 @@ async def delete_hook(hid: str, request: Request) -> dict:
     return {"deleted": db.delete(hid)}
 
 
+# ─── Identità firmatarie (F2): emissione/revoca cert CA per mittenti esterni ──
+# Un mittente esterno genera una coppia Ed25519, ci manda la SOLA pubkey (PEM) e
+# noi emettiamo un cert della CA per un `name`. Firmando le richieste, il webhook
+# entra con AUTORITÀ PIENA di quel principal. Solo admin (evita impersonation).
+@router.post("/clodia/hook-identities")
+async def enroll_identity(request: Request) -> dict:
+    principal = _principal_from_request(request)
+    if not admin.is_admin(principal):
+        raise HTTPException(403, "solo un admin può emettere identità firmatarie")
+    body = await request.json()
+    name = (body.get("name") or "").strip()
+    pem = (body.get("pubkey_pem") or "").strip()
+    force = bool(body.get("force"))
+    if not name or not pem:
+        raise HTTPException(400, "name e pubkey_pem richiesti")
+    from ..colony import pki
+    try:
+        pki.issue_cert_for_pubkey(name, pem, force=force)
+    except FileExistsError:
+        raise HTTPException(409, f"identità '{name}' esiste già (usa force per rigenerare)")
+    except Exception as e:  # noqa: BLE001
+        raise HTTPException(400, f"emissione cert fallita: {e}") from e
+    return {"ok": True, "name": name}
+
+
+@router.delete("/clodia/hook-identities/{name}")
+async def revoke_identity(name: str, request: Request) -> dict:
+    principal = _principal_from_request(request)
+    if not admin.is_admin(principal):
+        raise HTTPException(403, "solo un admin può revocare identità")
+    from ..colony import pki
+    pki.revoke(name)
+    return {"ok": True, "revoked": name}
+
+
 # ─── Ingress PUBBLICO (autorizzato dal segreto dell'hook) ────────────────────
 @router.post("/hooks/{hid}")
 async def ingress(hid: str, request: Request) -> dict:
@@ -109,8 +172,22 @@ async def ingress(hid: str, request: Request) -> dict:
     if not _rate_ok(hid):
         raise HTTPException(429, "too many requests")
 
-    raw = (await request.body()).decode("utf-8", "replace").strip()
-    payload = raw
+    raw = await request.body()
+
+    # F2 — FIRMA CA (opzionale): se la richiesta è firmata con un'identità emessa
+    # dalla CA della colony, il messaggio porta QUEL principal verificato →
+    # AUTORITÀ PIENA (come un utente loggato). Firma incompleta/errata → 401 (mai
+    # downgrade silenzioso). Nessun header di firma → percorso NON FIDATO (F1).
+    ident = request.headers.get("X-Hook-Identity", "").strip()
+    sig = request.headers.get("X-Hook-Signature", "").strip()
+    ts = request.headers.get("X-Hook-Timestamp", "").strip()
+    signed_principal = None
+    if ident or sig or ts:
+        if not (ident and sig and ts):
+            raise HTTPException(401, "firma incompleta: servono X-Hook-Identity, -Signature, -Timestamp")
+        signed_principal = _verify_signature(hid, ts, sig, ident, raw)
+
+    payload = raw.decode("utf-8", "replace").strip()
     if payload[:1] in ("{", "["):
         try:
             payload = json.dumps(json.loads(payload), ensure_ascii=False, separators=(",", ":"))
@@ -121,23 +198,33 @@ async def ingress(hid: str, request: Request) -> dict:
     tier, name, trig = row["tier"], row["name"], row.get("trigger_agent")
     text = f"@{trig} {payload}" if trig else payload
     src = request.client.host if request.client else None
+
+    # Autore + autorità in base alla firma.
+    if signed_principal:
+        author, kind, principal_hint = signed_principal, "human", signed_principal
+    else:
+        author, kind, principal_hint = row["author"], "external", "hook"
+
     try:
-        topics_client.post_message(tier, name, author=row["author"], text=text, kind="external")
+        topics_client.post_message(tier, name, author=author, text=text, kind=kind)
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"post_message fallita: {e}") from e
 
     triggered = False
     if trig:
-        # sveglia il responder in-process (l'ingress è già autorizzato dal segreto);
-        # principal_hint="hook" → nessuna autorità umana → azioni fuori-topic gated.
+        # sveglia il responder in-process (l'ingress è già autorizzato dal segreto).
+        # principal_hint: identità verificata → autorità piena; "hook" → nessuna
+        # autorità umana → azioni fuori-topic gated.
         try:
             from ..api.channels import run_topic_turn, _spawn_bg
             topic = topics_client.open_topic(tier, name)
             meta = (topic or {}).get("meta", {})
-            _spawn_bg(run_topic_turn(tier, name, meta, trigger_text=text, principal_hint="hook"))
+            _spawn_bg(run_topic_turn(tier, name, meta, trigger_text=text, principal_hint=principal_hint))
             triggered = True
         except Exception:  # noqa: BLE001 — il messaggio è comunque iniettato
             triggered = False
 
     db.touch(hid, src)
-    return {"ok": True, "injected": True, "triggered": triggered}
+    return {"ok": True, "injected": True, "triggered": triggered,
+            "authority": "identity" if signed_principal else "untrusted",
+            "principal": signed_principal}
