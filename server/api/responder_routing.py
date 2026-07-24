@@ -23,24 +23,26 @@ LOG = logging.getLogger("agent-server.responder_routing")
 
 EMBED_URL = os.environ.get("EU_RAG_SEARCH_URL", "http://192.168.1.45:7900").rstrip("/")
 
-# Soglie di routing (calibrabili). cosine su MiniLM multilingue normalizzato.
-# Con il match MULTI-VETTORE (max sui pezzi) i picchi sono più alti → soglia più
-# alta e margine più piccolo che nel vecchio profilo mediato.
-THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.50"))
-MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.03"))
+# Soglie di routing (calibrabili via env). Ora su multilingual-e5-small con prefissi
+# query/passage: le cosine sono più ALTE e compresse rispetto a MiniLM-paraphrase
+# → soglia assoluta più alta. Valori di partenza, da rifinire con l'osservazione.
+THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.78"))
+MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.02"))
 
 # cache profilo: {agent_name: (pieces_hash, [vettori per-pezzo])}
 _PROFILE_CACHE: dict[str, tuple[str, list[list[float]]]] = {}
 
 
-def embed_text(text: str) -> list[float] | None:
-    """Vettore MiniLM (normalizzato) del testo via /embed, o None se non
-    disponibile. Best-effort: qualunque errore → None (fallback a rango)."""
+def embed_text(text: str, role: str = "query") -> list[float] | None:
+    """Vettore (normalizzato) del testo via /embed_route (multilingual-e5-small,
+    retrieval-tuned), o None se non disponibile → fallback a rango. `role`:
+    'query' per il MESSAGGIO, 'passage' per i pezzi di PROFILO (prefissi e5)."""
     text = (text or "").strip()
     if not text:
         return None
     try:
-        url = f"{EMBED_URL}/embed?" + urllib.parse.urlencode({"text": text[:2000]})
+        url = f"{EMBED_URL}/embed_route?" + urllib.parse.urlencode(
+            {"text": text[:2000], "role": role})
         with urllib.request.urlopen(url, timeout=6) as r:
             data = json.loads(r.read())
         v = data.get("vector")
@@ -155,7 +157,7 @@ def _profile_vecs(spec) -> list[list[float]]:
     cached = _PROFILE_CACHE.get(spec.name)
     if cached and cached[0] == h:
         return cached[1]
-    vecs = [v for v in (embed_text(p) for p in pieces) if v]
+    vecs = [v for v in (embed_text(p, role="passage") for p in pieces) if v]
     if vecs:
         _PROFILE_CACHE[spec.name] = (h, vecs)
     return vecs

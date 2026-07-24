@@ -151,6 +151,17 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
              f"Esegui l'ordine con i tuoi strumenti e riferisci l'esito nel canale. "
              f"{_channel_files_hint(tier_real, name)}")
     LOG.info("delega a catena: %s → @%s (hop %d) su %s/%s", from_agent, delegate.name, hop + 1, tier, name)
+    # barra "🧭 Routing" coerente: mostra che il turno è passato al delegato (così
+    # l'utente non vede indicato from_agent mentre risponde delegate).
+    try:
+        await bus.publish(Event(
+            type="routing_decision",
+            payload={"tier": tier, "name": name, "mode": "delega",
+                     "reason": f"@{from_agent} ha delegato @{delegate.name}",
+                     "chosen": delegate.name, "candidates": [], "eligible": []},
+            timestamp=datetime.now(timezone.utc)))
+    except Exception:  # noqa: BLE001
+        pass
     await _run_and_post_response(tier, name, delegate.name, chat, order,
                                  principal=principal, hop=hop + 1)
 
@@ -692,8 +703,19 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         forced = registry.get_by_name(responder_hint)
         responder = forced if (forced and _can_access(_effective_clearance(forced), tier_real)) else None
     else:
+        # trace del routing → barra "🧭 Routing" anche per i path non-POST
+        # (trigger/hook/telegram): così la barra riflette CHI parte davvero.
+        routing: dict = {}
         responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""),
-                                    trigger_text or "")
+                                    trigger_text or "", trace=routing)
+        if routing.get("chosen"):
+            try:
+                await bus.publish(Event(
+                    type="routing_decision",
+                    payload={"tier": tier, "name": name, **routing},
+                    timestamp=datetime.now(timezone.utc)))
+            except Exception:  # noqa: BLE001
+                pass
     if responder is None:
         return None, None
     chat_id = f"chan:{tier}:{name}:{responder.name}"
