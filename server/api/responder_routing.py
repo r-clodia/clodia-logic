@@ -26,8 +26,8 @@ EMBED_URL = os.environ.get("EU_RAG_SEARCH_URL", "http://192.168.1.45:7900").rstr
 # Soglie di routing (calibrabili via env). Ora su multilingual-e5-small con prefissi
 # query/passage: le cosine sono più ALTE e compresse rispetto a MiniLM-paraphrase
 # → soglia assoluta più alta. Valori di partenza, da rifinire con l'osservazione.
-THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.78"))
-MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.02"))
+THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.80"))
+MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.015"))
 
 # cache profilo: {agent_name: (pieces_hash, [vettori per-pezzo])}
 _PROFILE_CACHE: dict[str, tuple[str, list[list[float]]]] = {}
