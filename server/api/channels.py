@@ -408,6 +408,17 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
     mode = _routing_mode()
     if message and mode == "relevance":
         specialists = [s for s in ai if s.type != "super"]
+        # 2a. CORREZIONI: se il messaggio somiglia a una correzione passata, instrada
+        # all'agente indicato dall'utente (few-shot k-NN) — ha priorità sulla rilevanza.
+        try:
+            ex = responder_routing.pick_by_exemplar(message, [s.name for s in specialists])
+        except Exception:  # noqa: BLE001
+            ex = None
+        if ex:
+            chosen = next((s for s in specialists if s.name == ex[0]), None)
+            if chosen:
+                return _record(chosen, f"correzione (sim {ex[1]})", "correction",
+                               [(chosen, ex[1])])
         try:
             scored = responder_routing.score_specialists(specialists, message)
             hit = responder_routing.decide(scored)
@@ -892,28 +903,39 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     return topic
 
 
-@router.post("/clodia/routing/vote")
-async def routing_vote(request: Request) -> dict:
-    """Voto 👍/👎 dell'utente su una decisione di routing (feedback supervisionato
-    per il tuning di soglia/margine). Salva scores+scelta+verdetto, NON il testo."""
+@router.post("/clodia/routing/correct")
+async def routing_correct(request: Request) -> dict:
+    """CORREZIONE del routing: l'utente indica l'agente che AVREBBE usato. Salviamo
+    un esempio (embedding dell'ultimo messaggio umano del topic + agente corretto),
+    così i prossimi messaggi simili vengono instradati a quell'agente. NON salva il
+    testo, solo il vettore."""
     principal = _principal_from_request(request)
     if not principal:
         raise HTTPException(401, "login richiesto")
     b = await request.json()
-    verdict = (b.get("verdict") or "").strip().lower()
-    if verdict not in ("up", "down"):
-        raise HTTPException(400, "verdict deve essere 'up' o 'down'")
+    tier = _norm(b.get("tier"))
+    name = (b.get("name") or "").strip()
+    correct_agent = (b.get("correct_agent") or "").strip()
+    if not name or not correct_agent:
+        raise HTTPException(400, "name e correct_agent richiesti")
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    _require_member(request, topic.get("meta", {}))
+    if registry.get_by_name(correct_agent) is None:
+        raise HTTPException(404, f"agente '{correct_agent}' non registrato")
+    # ultimo messaggio UMANO del topic = quello che ha innescato il routing
+    msgs = topics_client.list_messages(tier, name, limit=50)
+    human = next((m for m in reversed(msgs) if m.get("kind") == "human"), None)
+    if not human or not (human.get("text") or "").strip():
+        raise HTTPException(400, "nessun messaggio umano recente da cui imparare")
+    vec = responder_routing.embed_text(human["text"], role="query")
+    if not vec:
+        raise HTTPException(503, "embedder non disponibile")
     from . import routing_feedback
-    routing_feedback.record({
-        "tier": b.get("tier"),
-        "chosen": b.get("chosen"),
-        "mode": b.get("mode"),
-        "verdict": verdict,
-        "scores": [{"name": c.get("name"), "score": c.get("score")}
-                   for c in (b.get("candidates") or []) if isinstance(c, dict)],
-        "by": principal,
-    })
-    return {"ok": True}
+    routing_feedback.record_correction(vec, correct_agent,
+                                        router_chose=b.get("chosen"), tier=tier, by=principal)
+    return {"ok": True, "learned": correct_agent}
 
 
 @router.get("/clodia/channels/{tier}/{name}/eligibility")

@@ -1,9 +1,10 @@
-"""Feedback supervisionato sul routing del risponditore (voti 👍/👎).
+"""Correzioni supervisionate del routing (few-shot per il router).
 
-Ogni voto cattura il CONTESTO della decisione — scelto, modalità, punteggi dei
-candidati, verdetto — SENZA il testo del messaggio (privacy: i topic possono essere
-confidenziali; per il tuning di soglia/margine bastano gli score + il verdetto).
-Persistito append-only in CLODIA_DATA/routing/votes.jsonl.
+Quando l'utente indica CHI avrebbe fatto rispondere, salviamo un ESEMPIO:
+l'EMBEDDING del messaggio instradato (NON il testo → privacy: i topic possono
+essere confidenziali) + l'agente corretto. Al routing successivo, un messaggio molto
+simile a un esempio viene instradato all'agente corretto (override k-NN) → il router
+impara dalle correzioni. Persistito append-only in CLODIA_DATA/routing/corrections.jsonl.
 """
 from __future__ import annotations
 
@@ -12,30 +13,44 @@ from datetime import datetime, timezone
 
 from ..config import data_path
 
-_FILE = data_path("routing") / "votes.jsonl"
+_FILE = data_path("routing") / "corrections.jsonl"
+
+# cache in-memory degli esempi (ricaricata su record)
+_CACHE: list[dict] | None = None
 
 
-def record(vote: dict) -> None:
+def record_correction(embedding: list[float], correct_agent: str,
+                      router_chose: str | None = None, tier: str | None = None,
+                      by: str | None = None) -> None:
+    global _CACHE
+    if not embedding or not correct_agent:
+        return
     _FILE.parent.mkdir(parents=True, exist_ok=True)
-    row = {"ts": datetime.now(timezone.utc).isoformat(), **vote}
+    row = {"ts": datetime.now(timezone.utc).isoformat(),
+           "agent": correct_agent, "router_chose": router_chose,
+           "tier": tier, "by": by, "vec": [round(float(x), 6) for x in embedding]}
     with _FILE.open("a", encoding="utf-8") as f:
         f.write(json.dumps(row, ensure_ascii=False) + "\n")
+    _CACHE = None  # invalida
 
 
-def load() -> list[dict]:
+def load_exemplars() -> list[dict]:
+    """[{agent, vec}] da disco (cache in-memory)."""
+    global _CACHE
+    if _CACHE is not None:
+        return _CACHE
     try:
-        return [json.loads(ln) for ln in _FILE.read_text("utf-8").splitlines() if ln.strip()]
+        rows = [json.loads(ln) for ln in _FILE.read_text("utf-8").splitlines() if ln.strip()]
     except FileNotFoundError:
-        return []
+        rows = []
+    _CACHE = [{"agent": r.get("agent"), "vec": r.get("vec")} for r in rows
+             if r.get("agent") and r.get("vec")]
+    return _CACHE
 
 
 def stats() -> dict:
-    votes = load()
-    up = sum(1 for v in votes if v.get("verdict") == "up")
-    down = sum(1 for v in votes if v.get("verdict") == "down")
-    per_agent: dict[str, dict[str, int]] = {}
-    for v in votes:
-        a = v.get("chosen") or "?"
-        d = per_agent.setdefault(a, {"up": 0, "down": 0})
-        d[v.get("verdict", "?")] = d.get(v.get("verdict", "?"), 0) + 1
-    return {"total": len(votes), "up": up, "down": down, "per_agent": per_agent}
+    ex = load_exemplars()
+    per_agent: dict[str, int] = {}
+    for e in ex:
+        per_agent[e["agent"]] = per_agent.get(e["agent"], 0) + 1
+    return {"total_corrections": len(ex), "per_agent": per_agent}

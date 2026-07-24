@@ -205,6 +205,35 @@ def pick_by_relevance(specialists: list, message: str):
     return decide(score_specialists(specialists, message))
 
 
+# Somiglianza minima a una correzione passata perché scatti l'override: alta, perché
+# vogliamo instradare come la correzione SOLO su messaggi davvero simili (few-shot).
+EXEMPLAR_HIT = float(os.environ.get("RESPONDER_EXEMPLAR_HIT", "0.88"))
+
+
+def pick_by_exemplar(message: str, eligible_names: list[str]):
+    """Se il messaggio somiglia (≥ EXEMPLAR_HIT) a una CORREZIONE passata il cui
+    agente è oggi idoneo → (agent_name, sim). Altrimenti None. Il router impara così
+    dalle correzioni dell'utente (k-NN a 1)."""
+    from . import routing_feedback
+    ex = routing_feedback.load_exemplars()
+    if not ex:
+        return None
+    mv = embed_text(message, role="query")
+    if not mv:
+        return None
+    elig = set(eligible_names or [])
+    best_name, best_sim = None, 0.0
+    for e in ex:
+        if e["agent"] not in elig:
+            continue
+        sim = _cosine(mv, e["vec"])
+        if sim > best_sim:
+            best_name, best_sim = e["agent"], sim
+    if best_name and best_sim >= EXEMPLAR_HIT:
+        return best_name, round(best_sim, 3)
+    return None
+
+
 def invalidate_cache(name: str | None = None) -> None:
     if name is None:
         _PROFILE_CACHE.clear()
