@@ -59,7 +59,13 @@ def _read(p: Path) -> Optional[dict]:
     if "id" not in d:
         return None
     d["enabled"] = bool(d.get("enabled", True))
-    d["agent"] = d.get("agent") or _LEGACY_DEFAULT_AGENT
+    d["mode"] = d.get("mode") or "agentic"
+    # Default legacy agent SOLO per i job agentici: un job LOGICO non ha agent
+    # (nessun turno LLM) → resta vuoto, non coercizzato a 'looper'.
+    if d["mode"] == "logic":
+        d["agent"] = d.get("agent") or ""
+    else:
+        d["agent"] = d.get("agent") or _LEGACY_DEFAULT_AGENT
     # Job legacy (pre-owner) → owner vuoto = di sistema: solo un admin può agirvi.
     d["owner"] = d.get("owner") or ""
     return d
