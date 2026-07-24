@@ -12,6 +12,7 @@ from __future__ import annotations
 _WINDOWS: list[tuple[str, int]] = [
     ("gpt-4.1", 1_000_000),
     ("gpt-4o", 128_000),
+    ("gpt-5.4", 1_000_000),
     ("gpt-5", 400_000),
     ("gpt-oss", 128_000),
     ("codex", 200_000),
