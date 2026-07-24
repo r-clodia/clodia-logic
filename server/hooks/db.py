@@ -53,9 +53,11 @@ def _public(row: dict) -> dict:
 
 def create(tier: str, name: str, label: str, created_by: str,
            author: str | None = None, trigger_agent: str | None = None) -> tuple[dict, str]:
-    """Crea un hook per la chat (tier/name). Ritorna (vista_pubblica, segreto_in_chiaro).
-    Il segreto NON è più recuperabile dopo: mostralo all'utente una sola volta."""
-    rows = _load()
+    """Crea (o RIGENERA) l'hook della chat (tier/name). Ritorna (vista_pubblica,
+    segreto_in_chiaro). Un topic ha UN SOLO hook: eventuali hook preesistenti per
+    quella chat vengono rimossi (rotazione del segreto). Il segreto NON è più
+    recuperabile dopo: mostralo all'utente una sola volta."""
+    rows = [r for r in _load() if not (r["tier"] == tier and r["name"] == name)]
     hid = pysecrets.token_urlsafe(9)
     while any(r["id"] == hid for r in rows):
         hid = pysecrets.token_urlsafe(9)
