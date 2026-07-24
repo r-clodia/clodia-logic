@@ -640,6 +640,8 @@ class ChatSession:
         self._watchdog_fired: bool = False  # il watchdog ha ucciso il subprocess di questo turno
         self._last_usage: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
+        # occupazione ATTUALE della finestra di contesto (token dell'ultimo turno).
+        self._context_tokens: int = 0
         self._spawn = None  # EphemeralWorkspace dello spawn webchat (cleanup a stop)
         self._sandbox_uid: Optional[int] = None  # uid per-spawn allocato (sandbox)
         # Opzioni del client SDK calcolate in start(): riusate dal recovery per
@@ -1209,6 +1211,10 @@ class ChatSession:
                     "cache_creation_input_tokens": int(u.get("cache_creation_input_tokens", 0) or 0),
                     "cache_read_input_tokens": int(u.get("cache_read_input_tokens", 0) or 0),
                 }
+                # occupazione finestra = prompt totale dell'ULTIMO turno (input + cache)
+                self._context_tokens = (self._last_usage["input_tokens"]
+                                        + self._last_usage["cache_creation_input_tokens"]
+                                        + self._last_usage["cache_read_input_tokens"])
                 # cumulativo di sessione (per la vista "Agents Activity")
                 self._total_tokens["input"] += self._last_usage["input_tokens"]
                 self._total_tokens["output"] += self._last_usage["output_tokens"]
@@ -1281,6 +1287,7 @@ class ChatSession:
             "last_activity": self.last_activity.isoformat(),
             "principal": getattr(self, "principal", None),
             "last_usage": self._last_usage or {},
+            "context_tokens": getattr(self, "_context_tokens", 0),
             "total_tokens": self._total_tokens,
             "runtime": "claude",
             **_spawn_identity(self._spawn),
@@ -1318,6 +1325,8 @@ class CodexChatSession:
         self._thread_id: Optional[str] = None   # session id codex per il resume
         self._last_usage: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
+        # occupazione ATTUALE della finestra di contesto (token dell'ultimo turno).
+        self._context_tokens: int = 0
         self._spawn = None                       # EphemeralWorkspace dello spawn
         self._spawn_dir: Optional[Path] = None   # cwd dello spawn (con AGENTS.md governato)
         # Utente UMANO della chat (principal verificato dal token webui). Per
@@ -1526,6 +1535,11 @@ class CodexChatSession:
         # DELTA di QUESTO run, così la leaderboard può sommare i run_done senza
         # multi-contare (bug totali provider nella pagina Activity).
         run_usage = self._codex_run_usage_delta(self._last_usage)
+        # occupazione finestra = prompt dell'ULTIMO turno (il DELTA, non il cumulativo
+        # del thread che Codex riporta): input + cache di questo run.
+        if run_usage:
+            self._context_tokens = (int(run_usage.get("input_tokens", 0) or 0)
+                                    + int(run_usage.get("cache_read_input_tokens", 0) or 0))
         activity_log.append(self.kind, "run_done",
                             {"reply": _snippet(full), "chat_id": self.chat_id,
                              "usage": run_usage or None,
@@ -1663,6 +1677,7 @@ class CodexChatSession:
             "last_activity": self.last_activity.isoformat(),
             "principal": getattr(self, "principal", None),
             "last_usage": self._last_usage or {},
+            "context_tokens": getattr(self, "_context_tokens", 0),
             "total_tokens": self._total_tokens,
             "runtime": "codex",
             **_spawn_identity(self._spawn),
@@ -1710,6 +1725,8 @@ class OpenCodeChatSession:
         self._model: Optional[str] = None
         self._last_usage: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
+        # occupazione ATTUALE della finestra di contesto (token dell'ultimo turno).
+        self._context_tokens: int = 0
         self._spawn = None
         self._spawn_dir: Optional[Path] = None
         self.principal: Optional[str] = None
@@ -2006,6 +2023,8 @@ class OpenCodeChatSession:
                 "output_tokens": int(tok.get("output", 0) or 0),
                 "cache_read_input_tokens": int((cache.get("read") if isinstance(cache, dict) else 0) or 0),
             }
+            self._context_tokens = (self._last_usage["input_tokens"]
+                                    + self._last_usage["cache_read_input_tokens"])
             self._total_tokens["input"] += self._last_usage["input_tokens"]
             self._total_tokens["output"] += self._last_usage["output_tokens"]
             self._total_tokens["runs"] += 1
@@ -2067,6 +2086,7 @@ class OpenCodeChatSession:
             "last_activity": self.last_activity.isoformat(),
             "principal": getattr(self, "principal", None),
             "last_usage": self._last_usage or {},
+            "context_tokens": getattr(self, "_context_tokens", 0),
             "total_tokens": self._total_tokens,
             "runtime": "opencode",
             **_spawn_identity(self._spawn),

@@ -901,12 +901,23 @@ def _agent_context(tier: str, name: str, spec) -> dict | None:
         chat = manager.get(f"chan:{tier}:{name}:{spec.name}")
     except KeyError:
         return {"used": 0, "window": window, "pct": 0.0}
-    u = (chat.to_dict() or {}).get("last_usage") or {}
-    used = (int(u.get("input_tokens", 0) or 0)
-            + int(u.get("cache_read_input_tokens", 0) or 0)
-            + int(u.get("cache_creation_input_tokens", 0) or 0))
-    pct = round(min(1.0, used / window), 3) if window else 0.0
-    return {"used": used, "window": window, "pct": pct}
+    d = chat.to_dict() or {}
+    # `context_tokens` = prompt dell'ULTIMO turno (occupazione reale della finestra),
+    # corretto per runtime (Codex riporta il cumulativo → usiamo il delta). Fallback
+    # alla somma di last_usage per sessioni vecchie senza il campo.
+    used = d.get("context_tokens")
+    if used is None:
+        u = d.get("last_usage") or {}
+        used = (int(u.get("input_tokens", 0) or 0)
+                + int(u.get("cache_read_input_tokens", 0) or 0)
+                + int(u.get("cache_creation_input_tokens", 0) or 0))
+    used = int(used or 0)
+    # Un'occupazione > finestra è fisicamente impossibile (il modello rifiuterebbe):
+    # è un valore transiente/inaffidabile (es. primo turno Codex dopo un restart) →
+    # nascondi la barra invece di mostrare un falso 100%.
+    if used > window:
+        return None
+    return {"used": used, "window": window, "pct": round(used / window, 3)}
 
 
 def _require_owner(request: Request, meta: dict) -> str:
