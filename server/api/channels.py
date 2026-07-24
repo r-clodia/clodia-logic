@@ -894,7 +894,8 @@ def _agent_context(tier: str, name: str, spec) -> dict | None:
     token dell'ultimo turno (input + cache) / finestra del modello. None se non c'è
     ancora una sessione o se la finestra del modello è ignota (la UI nasconde la barra)."""
     from ..agents.model_context import model_context_window
-    window = model_context_window(getattr(spec, "model", None))
+    window = model_context_window(getattr(spec, "model", None),
+                                  getattr(spec, "agent_sdk", None))
     if not window:
         return None
     try:
