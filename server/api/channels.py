@@ -884,8 +884,29 @@ def channel_eligibility(tier: str, name: str, request: Request) -> dict:
     agents = []
     for spec in registry.list():
         e = _eligibility(spec, tier_real)
-        agents.append({"name": spec.name, "type": spec.type, **e})
+        agents.append({"name": spec.name, "type": spec.type,
+                       "context": _agent_context(tier, name, spec), **e})
     return {"tier": tier_real, "agents": agents}
+
+
+def _agent_context(tier: str, name: str, spec) -> dict | None:
+    """Occupazione ATTUALE della finestra di contesto dell'agente in QUESTO canale:
+    token dell'ultimo turno (input + cache) / finestra del modello. None se non c'è
+    ancora una sessione o se la finestra del modello è ignota (la UI nasconde la barra)."""
+    from ..agents.model_context import model_context_window
+    window = model_context_window(getattr(spec, "model", None))
+    if not window:
+        return None
+    try:
+        chat = manager.get(f"chan:{tier}:{name}:{spec.name}")
+    except KeyError:
+        return {"used": 0, "window": window, "pct": 0.0}
+    u = (chat.to_dict() or {}).get("last_usage") or {}
+    used = (int(u.get("input_tokens", 0) or 0)
+            + int(u.get("cache_read_input_tokens", 0) or 0)
+            + int(u.get("cache_creation_input_tokens", 0) or 0))
+    pct = round(min(1.0, used / window), 3) if window else 0.0
+    return {"used": used, "window": window, "pct": pct}
 
 
 def _require_owner(request: Request, meta: dict) -> str:
