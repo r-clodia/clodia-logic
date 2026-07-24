@@ -3,6 +3,16 @@
 Changelog del pack `base-pack` (formato [Keep a Changelog](https://keepachangelog.com/),
 SemVer). La versione **in corso** è in cima. Vedi `pack.yaml` per la versione corrente.
 
+## [6.7.0] — 2026-07-24
+- **sysadmin — accesso ai FILE dei topic con le regole comuni.** Rovescia il
+  divieto assoluto: sysadmin ora ha `topic.*` nelle tool_permissions e legge/scrive
+  i file dei topic (`topic.list_files/read_file/put_file/…`) **come gli altri agent**.
+  L'accesso è enforced dal gateway con il modello a due assi: **participant** del
+  topic + **clearance ≥ tier**; su un topic di cui non è participant scatta il
+  **gate cross-topic** (approvazione owner). Nessun raw-fs (come messaggero: il
+  canale ai file sono i tool). `topic.post_message` resta prerogativa di
+  super/messaggero. Charter/description/system-prompt aggiornati di conseguenza.
+
 ## [6.6.0] — 2026-07-23
 - **sysadmin — contesto-topic dal widget.** Quando l'utente apre l'assistenza
   mentre sta su un topic, il widget comunica a sysadmin quale topic è (commento

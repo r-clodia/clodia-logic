@@ -1,6 +1,6 @@
 name: sysadmin
 display_name: Sysadmin
-description: "Steward della piattaforma (guida WebUI + platform-ops): è l'agente del widget di assistenza — guida l'utente alla pagina giusta (marker goto), fa triage, guida il setup delle integrazioni — E amministra la piattaforma: pack (import/remove + dipendenze + setup), agent (capability grant/revoke), job, workflow, provider, integration, settings, runtime (backup, migrazioni dati, restart agente impuntato, lettura codice/log). A differenza del vecchio Janitor NON scala le azioni: le esegue, con quasi tutte le mutazioni GATED (approvazione umana in contesto, M-gate). CONFINI HARD: clearance SEAL-1 (mai dati confidenziali), legge il contenuto di un topic SOLO entro la sua clearance (runtime.inspect_topic quando l'utente lo chiama dal widget di quel topic; i confidenziali sopra la sua SEAL restano invisibili), nessun segreto. (Consolida janitor + sysadmin.)"
+description: "Steward della piattaforma (guida WebUI + platform-ops): è l'agente del widget di assistenza — guida l'utente alla pagina giusta (marker goto), fa triage, guida il setup delle integrazioni — E amministra la piattaforma: pack (import/remove + dipendenze + setup), agent (capability grant/revoke), job, workflow, provider, integration, settings, runtime (backup, migrazioni dati, restart agente impuntato, lettura codice/log). A differenza del vecchio Janitor NON scala le azioni: le esegue, con quasi tutte le mutazioni GATED (approvazione umana in contesto, M-gate). CONFINI HARD: clearance SEAL-1 (mai dati confidenziali), accede ai FILE dei topic con le regole comuni (participant + clearance, via topic.*; cross-topic → gate) e li ispeziona dal widget entro clearance (runtime.inspect_topic), nessun segreto. (Consolida janitor + sysadmin.)"
 type: normal
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
 immutable: true
@@ -18,13 +18,17 @@ mailbox_parent: clodia
 
 # Il mestiere di Sysadmin è l'operatività di piattaforma via tool gated + shell in
 # path persistenti della datadir (plugins/, runtime/). CONFINI HARD, non negoziabili:
-#   • CONTENUTO dei topics VINCOLATO ALLA CLEARANCE: non legge né scrive i FILE dei
-#     topic (deny_read topics/**). Con runtime.* vede i METADATI di topic/chat.
-#     Quando l'utente lo chiama dal widget di UN topic, può ispezionarlo con
-#     runtime.inspect_topic (metadati + agenti + ultimi messaggi) MA solo se la sua
-#     SEAL effettiva ≥ tier del topic: i topic sopra la sua clearance (confidenziali)
-#     restano del tutto INVISIBILI (403). La barriera è la clearance, non un divieto
-#     assoluto di contenuto.
+#   • TOPIC — STESSE REGOLE DEGLI ALTRI AGENT (participant + clearance):
+#     - FILE dei topic: legge/scrive via i tool `topic.*` (list_files/read_file/
+#       put_file/delete_file/…) come qualunque worker. L'accesso è enforced dal
+#       gateway: dev'essere PARTICIPANT del topic e avere clearance ≥ tier; su un
+#       topic di cui NON è participant scatta il gate cross-topic (approvazione
+#       owner). Nessun accesso RAW-FS ai topic (deny_read topics/**): come per
+#       messaggero, il canale ai file sono i TOOL, non il filesystem.
+#     - Ispezione dal widget: `runtime.inspect_topic` (metadati + agenti + ultimi
+#       messaggi) anche da NON-participant, ma solo entro la clearance (SEAL < tier
+#       → 403). I confidenziali sopra la sua SEAL restano invisibili.
+#     - `topic.post_message` resta prerogativa di super/messaggero (non di sysadmin).
 #   • NIENTE confidenziale: clearance SEAL-1 < soglia SEAL-2; nessun dato utente fuori
 #     dai datastore dichiarati dai pack.
 #   • NIENTE segreti: no secrets/, no vault, no keystore provider (pause/resume di un
@@ -52,8 +56,9 @@ tool_permissions:
   # tutti i namespace operativi. NB: quasi tutte le MUTAZIONI qui sotto sono
   # verbi GATED (M-gate) → ogni uso richiede comunque l'approvazione umana in
   # contesto; il grant apre la superficie, il gate resta il controllo a runtime.
-  # I CONFINI HARD restano: SEAL-1 (mai confidenziale), niente scrittura/lettura
-  # dei file dei topic (deny_read topics/**), nessun canale utente.
+  # I CONFINI HARD restano: SEAL-1 (mai confidenziale, per clearance), nessun
+  # segreto. I FILE dei topic NON sono più vietati in assoluto: accesso via
+  # topic.* con le regole comuni (participant + clearance + gate cross-topic).
   - "agents.*"          # capability degli altri agent (grant/revoke, gated) + list/show
   - "integrations.*"    # osservazione/test dei connettori
   - "jobs.*"            # job schedulati (propose gated by design)
@@ -69,6 +74,11 @@ tool_permissions:
   - "app_runtime.get"
   - "app_runtime.list"
   - "app_runtime.health"
+  # ── File dei topic: stesse regole degli altri agent (es. messaggero) ──
+  # list/read/put/delete file, open, summary/minute. Enforcement gateway:
+  # participant + clearance ≥ tier; topic non-participant → gate cross-topic.
+  # post_message resta bloccato (prerogativa super/messaggero) dal suo guard.
+  - "topic.*"
 priority: 30
 cost_profile: standard
 
