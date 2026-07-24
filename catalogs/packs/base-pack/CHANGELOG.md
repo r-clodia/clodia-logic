@@ -3,6 +3,14 @@
 Changelog del pack `base-pack` (formato [Keep a Changelog](https://keepachangelog.com/),
 SemVer). La versione **in corso** è in cima. Vedi `pack.yaml` per la versione corrente.
 
+## [6.8.0] — 2026-07-24
+- **Skill `multiagent-collaboration`**: codifica il gioco di squadra nei canali —
+  lavorare per OBIETTIVI (non comandi), e se mancano tool/grant/skill cercare nel
+  canale chi può aiutare (`runtime.agents`) e coinvolgerlo. Convenzione dei tag:
+  `@agente` = richiesta diretta (attiva, N tag → N agenti), `$agente` = menzione soft
+  (l'altro giudica se intervenire, altrimenti cenno breve). La convenzione è anche
+  iniettata in ogni turno di canale dal core (channels).
+
 ## [6.7.0] — 2026-07-24
 - **sysadmin — accesso ai FILE dei topic con le regole comuni.** Rovescia il
   divieto assoluto: sysadmin ora ha `topic.*` nelle tool_permissions e legge/scrive

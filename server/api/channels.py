@@ -117,53 +117,42 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
 
 async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str,
                           principal: str | None, hop: int) -> None:
-    """Se `reply_text` tagga un ALTRO agente AI partecipante IDONEO, ne innesca il
-    turno per eseguire l'ordine (nostromo → membro incaricato). Niente catena se
-    il tag è assente, è l'agente stesso, o non è un partecipante idoneo al tier."""
+    """Gioco di squadra: se nel suo reply un agente tagga ALTRI agenti idonei, ne
+    innesca il turno. N tag → N deleghe (in parallelo). @tag = incarico diretto,
+    $tag = coinvolgimento soft. Salta i tag verso sé stesso o non-partecipanti; il
+    limite hop (_MAX_DELEGATION_HOPS) evita loop."""
     topic = topics_client.open_topic(tier, name)
     if not topic:
         return
     meta = topic.get("meta", {})
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
-    # Primo @tag che è un PARTECIPANTE diverso dal mittente (evita falsi positivi
-    # come gli indirizzi email `x@dominio` che _tagged prenderebbe per primi).
-    tag = next((t for t in _TAG_RE.findall(reply_text or "")
-                if t in participants and t != from_agent), None)
-    if not tag:
+    hard, soft = _tags(reply_text or "")
+    plan: list[tuple[str, str]] = ([(t, "direct") for t in hard if t in participants and t != from_agent]
+                                   + [(t, "soft") for t in soft if t in participants and t != from_agent])
+    if not plan:
         return
-    # idoneità: _pick_responder col tag ritorna il delegato SOLO se idoneo al tier
-    delegate = _pick_responder(participants, tier_real, tag)
-    if delegate is None or delegate.name != tag:
-        return
-    chat_id = f"chan:{tier}:{name}:{delegate.name}"
-    try:
-        chat = manager.get(chat_id)
-    except KeyError:
+    started: list[str] = []
+    for tag, kind in plan:
+        # idoneità: _pick_responder col tag ritorna il delegato SOLO se idoneo al tier
+        delegate = _pick_responder(participants, tier_real, tag)
+        if delegate is None or delegate.name != tag or delegate.name in started:
+            continue
+        LOG.info("delega %s: %s → @%s (hop %d) su %s/%s",
+                 kind, from_agent, delegate.name, hop + 1, tier, name)
         try:
-            chat = await manager.create(chat_id=chat_id, kind=delegate.name)
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("delega: impossibile creare la sessione di %s: %s", delegate.name, e)
-            return
-    chat.principal = principal
-    order = (f"[Canale #{name} · {tier_real}] @{from_agent} ti ha taggato per ESEGUIRE "
-             f"un ordine (sei l'agente incaricato). Il suo messaggio:\n\n{reply_text}\n\n"
-             f"Esegui l'ordine con i tuoi strumenti e riferisci l'esito nel canale. "
-             f"{_channel_files_hint(tier_real, name)}")
-    LOG.info("delega a catena: %s → @%s (hop %d) su %s/%s", from_agent, delegate.name, hop + 1, tier, name)
-    # barra "🧭 Routing" coerente: mostra che il turno è passato al delegato (così
-    # l'utente non vede indicato from_agent mentre risponde delegate).
-    try:
-        await bus.publish(Event(
-            type="routing_decision",
-            payload={"tier": tier, "name": name, "mode": "delega",
-                     "reason": f"@{from_agent} ha delegato @{delegate.name}",
-                     "chosen": delegate.name, "candidates": [], "eligible": []},
-            timestamp=datetime.now(timezone.utc)))
-    except Exception:  # noqa: BLE001
-        pass
-    await _run_and_post_response(tier, name, delegate.name, chat, order,
-                                 principal=principal, hop=hop + 1)
+            await bus.publish(Event(type="routing_decision", payload={
+                "tier": tier, "name": name, "mode": "delega",
+                "reason": f"{from_agent} ha coinvolto {delegate.name} ({kind})",
+                "chosen": delegate.name, "candidates": [], "eligible": []},
+                timestamp=datetime.now(timezone.utc)))
+        except Exception:  # noqa: BLE001
+            pass
+        # riusa la stessa logica di turno multi-tag (direttiva direct/soft), il
+        # messaggio è il reply dell'agente delegante
+        if await _start_turn(tier, name, tier_real, delegate,
+                             principal or "channel", reply_text or "", kind, hop=hop + 1):
+            started.append(delegate.name)
 
 # I DM sono canali a 2 partecipanti (meta.kind="dm"): nome deterministico (i due
 # nomi ordinati) così "owner↔clodia" e "clodia↔owner" sono lo STESSO canale.
@@ -214,6 +203,97 @@ def _tagged(text: str) -> str | None:
     own = "\n".join(ln for ln in (text or "").splitlines() if not ln.lstrip().startswith(">"))
     m = _TAG_RE.findall(own)
     return m[0] if m else None
+
+
+# Tag SOFT ($agente): menzione senza richiesta d'azione — l'agente giudica se
+# intervenire. `@agente` resta la richiesta DIRETTA (hard).
+_SOFT_TAG_RE = re.compile(r"\$([a-z0-9][a-z0-9_-]{0,30})")
+
+
+def _tags(text: str) -> tuple[list[str], list[str]]:
+    """(hard @tag, soft $tag) dal testo — dedup, in ordine, escluse le righe citate.
+    N tag possono attivare N agenti. Un nome sia @ che $ → conta come hard."""
+    own = "\n".join(ln for ln in (text or "").splitlines() if not ln.lstrip().startswith(">"))
+    hard: list[str] = []
+    soft: list[str] = []
+    seen: set[str] = set()
+    for m in _TAG_RE.findall(own):
+        if m not in seen:
+            seen.add(m); hard.append(m)
+    for m in _SOFT_TAG_RE.findall(own):
+        if m not in seen:
+            seen.add(m); soft.append(m)
+    return hard, soft
+
+
+def _tag_directive(kind: str, author: str, text: str) -> str | None:
+    """Direttiva del turno in base al tipo di tag (goal-oriented + gioco di squadra)."""
+    if kind == "direct":
+        return (
+            f"[RICHIESTA DIRETTA] {author} ti ha taggato con @ in questo messaggio: è "
+            "una richiesta diretta A TE. Lavora per OBIETTIVI, non per comandi: capisci "
+            "il fine e portalo a casa con i tuoi strumenti. Se ti manca un tool/grant/"
+            "skill per completarlo, NON fermarti: guarda i partecipanti del canale "
+            "(runtime.agents mostra skill, grant e dominio di ciascuno), trova chi può "
+            "aiutarti e coinvolgilo — @agente per una richiesta diretta, $agente per un "
+            "coinvolgimento soft. Riferisci l'esito nel canale.\n\nMessaggio:\n" + text)
+    if kind == "soft":
+        return (
+            f"[MENZIONE SOFT] {author} ti ha citato con $ in questo messaggio: è una "
+            "CITAZIONE, non una richiesta d'azione. Intervieni SOLO se hai davvero "
+            "qualcosa di utile da aggiungere; altrimenti posta un CENNO BREVISSIMO di "
+            "una riga (es. \"👍 noto, nulla da aggiungere\"). Niente intervento completo "
+            "se non serve.\n\nMessaggio:\n" + text)
+    return None
+
+
+def _provider_below_tier_warning(spec, tier_real: str) -> dict:
+    """Warning UI quando un super-agent risponde con provider sotto il tier."""
+    from ..sdk_runtime.session import agent_effective_provider
+    from .providers import provider_seal
+    pid = agent_effective_provider(spec.name)
+    return {
+        "kind": "provider_below_tier", "tier": tier_real, "responder": spec.name,
+        "provider": pid, "provider_seal": provider_seal(pid),
+        "message": (f"Il provider in uso da {spec.name} ({pid or 'n/d'}, "
+                    f"{provider_seal(pid) or 'SEAL n/d'}) è sotto il tier {tier_real} "
+                    "di questo topic. I dati qui trattati richiederebbero un provider "
+                    f"con SEAL ≥ {tier_real}."),
+        "suggestions": [
+            "Attiva un provider con SEAL ≥ tier (es. aws-region-eu o scaleway) nella sezione Providers",
+            "Coinvolgi un agente il cui provider effettivo soddisfi il tier",
+        ],
+    }
+
+
+async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str,
+                      user_text: str, kind: str, hop: int = 0) -> bool:
+    """Avvia (fire-and-forget) un turno del responder `spec` con la direttiva del
+    tipo di tag (direct/soft/plain). Sessione persistente per (canale, agente).
+    Ritorna False se il provider non è connesso."""
+    chat_id = f"chan:{tier}:{name}:{spec.name}"
+    created = False
+    try:
+        chat = manager.get(chat_id)
+    except KeyError:
+        try:
+            chat = await manager.create(chat_id=chat_id, kind=spec.name)
+            created = True
+        except ProviderNotConnected:
+            return False
+    chat.principal = principal
+    directive = _tag_directive(kind, principal, user_text)
+    if created:
+        base = _history_prompt(name, tier_real,
+                               _context_messages(topics_client.list_messages(tier, name, limit=200)))
+        prompt = base + (f"\n\n─────\n{directive}" if directive else "")
+    else:
+        fallback = (f"[Canale #{name} · {tier_real}] @{principal}: {user_text}\n"
+                    f"({_channel_files_hint(tier_real, name)})")
+        prompt = _reused_turn_prompt(tier, name, spec.name, principal, directive or fallback)
+    _spawn_bg(_run_and_post_response(tier, name, spec.name, chat, prompt,
+                                     principal=principal, hop=hop))
+    return True
 
 
 def _channel_meta(body: dict, principal: str, name: str) -> dict:
@@ -460,6 +540,18 @@ def _channel_files_hint(tier: str, name: str) -> str:
 # Capacità UI del canale: l'interfaccia trasforma marcatori-commento invisibili
 # in pill cliccabili. L'agente DEVE conoscerli per offrire scelte rapide.
 _CHANNEL_CAPS = (
+    "COLLABORAZIONE (goal-oriented, gioco di squadra): lavora per OBIETTIVI, non per "
+    "comandi letterali — capisci il fine e portalo a casa. Se ti manca un tool, un "
+    "grant o una skill per completare la tua parte, NON fermarti: guarda i partecipanti "
+    "del canale (runtime.agents mostra dominio, skill e grant di ciascuno), trova chi "
+    "può aiutarti e coinvolgilo. Due tipi di menzione:\n"
+    "- `@agente` = RICHIESTA DIRETTA: gli chiedi di fare/rispondere (lo attiva). Puoi "
+    "  taggare PIÙ agenti nello stesso messaggio chiedendo cose diverse a ciascuno.\n"
+    "- `$agente` = MENZIONE SOFT: lo citi/informi senza pretendere un intervento; "
+    "  decide lui se rispondere o dare un cenno breve.\n"
+    "Non accentrare: se un altro agente è più competente per una parte, passagliela "
+    "con @; usa $ per tenere qualcuno nel giro senza obbligarlo.\n"
+    "\n"
     "Quando proponi all'utente una scelta tra opzioni, includi nel messaggio un "
     "marcatore HTML-commento (resta INVISIBILE nel testo, l'interfaccia lo rende "
     "come pill cliccabili):\n"
@@ -574,78 +666,60 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
     if not respond:
         return {"posted": True, "responder": None}
 
-    # 2. scegli il risponditore (tag o rango più alto, con clearance)
-    routing: dict = {}
-    responder = _pick_responder(participants, tier_real, _tagged(req.content),
-                                req.content, trace=routing)
-    if routing.get("chosen"):
-        # blocco "🧭 Routing" in chat: mostra candidati/punteggi e perché
+    # 2. DESTINATARI. @tag = richieste dirette (N → N agenti, in parallelo);
+    #    $tag = menzioni soft (l'agente giudica se intervenire). Nessun tag →
+    #    routing per rilevanza (singolo responder).
+    hard, soft = _tags(req.content)
+    targets: list[tuple[object, str]] = []
+    for nm in hard:
+        s = _pick_responder(participants, tier_real, nm)   # ritorna nm solo se idoneo
+        if s is not None and s.name == nm:
+            targets.append((s, "direct"))
+    for nm in soft:
+        s = _pick_responder(participants, tier_real, nm)
+        if s is not None and s.name == nm and not any(t[0].name == s.name for t in targets):
+            targets.append((s, "soft"))
+
+    if targets:
+        # barra 🧭: instradamento multi-tag
         try:
-            await bus.publish(Event(
-                type="routing_decision",
+            await bus.publish(Event(type="routing_decision", payload={
+                "tier": tier, "name": name, "mode": "tag",
+                "reason": "tag espliciti (@ diretto · $ soft)",
+                "chosen": ", ".join(f"{s.name}{' ·soft' if k == 'soft' else ''}" for s, k in targets),
+                "candidates": [], "eligible": [s.name for s, _ in targets],
+            }, timestamp=datetime.now(timezone.utc)))
+        except Exception:  # noqa: BLE001
+            pass
+        warning = None
+        started: list[str] = []
+        for s, kind in targets:
+            if (kind == "direct" and getattr(s, "type", None) == "super"
+                    and not _provider_seal_ok(s, tier_real) and warning is None):
+                warning = _provider_below_tier_warning(s, tier_real)
+            if await _start_turn(tier, name, tier_real, s, principal, req.content, kind):
+                started.append(s.name)
+        return {"posted": True, "queued": True, "responders": started, "warning": warning}
+
+    # nessun tag → routing per rilevanza (singolo, con barra)
+    routing: dict = {}
+    responder = _pick_responder(participants, tier_real, None, req.content, trace=routing)
+    if routing.get("chosen"):
+        try:
+            await bus.publish(Event(type="routing_decision",
                 payload={"tier": tier, "name": name, **routing},
-                timestamp=datetime.now(timezone.utc),
-            ))
+                timestamp=datetime.now(timezone.utc)))
         except Exception as e:  # noqa: BLE001
             LOG.debug("routing_decision non pubblicato: %s", e)
     if responder is None:
         return {"posted": True, "responder": None,
                 "note": "nessun agente AI partecipante con clearance e provider "
                         f"adeguati al tier {tier_real} del topic"}
-
-    # Eccezione super-agent: clodia risponde anche se il suo provider è sotto il
-    # tier (per i normal sarebbe stato escluso da _pick_responder). In quel caso
-    # avvisiamo lo user — la UI mostra un popup che suggerisce di attivare un altro
-    # agente o un provider con SEAL ≥ tier.
-    warning = None
-    if responder.type == "super" and not _provider_seal_ok(responder, tier_real):
-        from ..sdk_runtime.session import agent_effective_provider
-        from .providers import provider_seal
-        pid = agent_effective_provider(responder.name)
-        warning = {
-            "kind": "provider_below_tier",
-            "tier": tier_real,
-            "responder": responder.name,
-            "provider": pid,
-            "provider_seal": provider_seal(pid),
-            "message": (f"Il provider in uso da {responder.name} "
-                        f"({pid or 'n/d'}, {provider_seal(pid) or 'SEAL n/d'}) è "
-                        f"sotto il tier {tier_real} di questo topic. I dati qui "
-                        f"trattati richiederebbero un provider con SEAL ≥ {tier_real}."),
-            "suggestions": [
-                "Attiva un provider con SEAL ≥ tier (es. aws-region-eu o scaleway) "
-                "nella sezione Providers",
-                "Coinvolgi un agente il cui provider effettivo soddisfi il tier",
-            ],
-        }
-
-    # 3. turno: sessione persistente per (canale, responder), riuso del runtime
-    chat_id = f"chan:{tier}:{name}:{responder.name}"
-    created = False
-    try:
-        chat = manager.get(chat_id)
-    except KeyError:
-        try:
-            chat = await manager.create(chat_id=chat_id, kind=responder.name)
-            created = True
-        except ProviderNotConnected as e:
-            raise HTTPException(409, str(e))
-    chat.principal = principal
-    # primo turno: dai il contesto del canale; poi solo il nuovo messaggio (l'SDK
-    # mantiene il filo del risponditore).
-    if created:
-        prompt = _history_prompt(name, tier_real, _context_messages(topics_client.list_messages(tier, name, limit=200)))
-    else:
-        fallback = (f"[Canale #{name} · {tier_real}] @{principal}: {req.content}\n"
-                    f"({_channel_files_hint(tier_real, name)} "
-                    f"Per offrire scelte rapide usa <!-- choices=A,B,C --> o "
-                    f"<!-- choices-multi=A,B,C -->.)")
-        # se altri agenti/umani hanno scritto dal suo ultimo turno, glieli passa
-        prompt = _reused_turn_prompt(tier, name, responder.name, principal, fallback)
-    _spawn_bg(_run_and_post_response(tier, name, responder.name, chat, prompt,
-                                     principal=principal, hop=0))
-    return {"posted": True, "queued": True, "responder": responder.name,
-            "warning": warning}
+    warning = (_provider_below_tier_warning(responder, tier_real)
+               if (responder.type == "super" and not _provider_seal_ok(responder, tier_real))
+               else None)
+    await _start_turn(tier, name, tier_real, responder, principal, req.content, "plain")
+    return {"posted": True, "queued": True, "responder": responder.name, "warning": warning}
 
 
 @router.post("/clodia/channels/{tier}/{name}/interrupt")
