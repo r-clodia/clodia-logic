@@ -892,6 +892,30 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     return topic
 
 
+@router.post("/clodia/routing/vote")
+async def routing_vote(request: Request) -> dict:
+    """Voto 👍/👎 dell'utente su una decisione di routing (feedback supervisionato
+    per il tuning di soglia/margine). Salva scores+scelta+verdetto, NON il testo."""
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "login richiesto")
+    b = await request.json()
+    verdict = (b.get("verdict") or "").strip().lower()
+    if verdict not in ("up", "down"):
+        raise HTTPException(400, "verdict deve essere 'up' o 'down'")
+    from . import routing_feedback
+    routing_feedback.record({
+        "tier": b.get("tier"),
+        "chosen": b.get("chosen"),
+        "mode": b.get("mode"),
+        "verdict": verdict,
+        "scores": [{"name": c.get("name"), "score": c.get("score")}
+                   for c in (b.get("candidates") or []) if isinstance(c, dict)],
+        "by": principal,
+    })
+    return {"ok": True}
+
+
 @router.get("/clodia/channels/{tier}/{name}/eligibility")
 def channel_eligibility(tier: str, name: str, request: Request) -> dict:
     """Idoneità di ogni AeI registrato rispetto al tier del topic.
