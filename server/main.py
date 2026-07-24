@@ -264,6 +264,9 @@ def create_app() -> FastAPI:
     app.include_router(files.router)
     if prof.features.topics != "off":
         app.include_router(topics.router)
+        # Chat Hooks: iniezione di messaggi in una chat via hook/webhook (F1).
+        from .hooks import api as hooks_api
+        app.include_router(hooks_api.router)
     if prof.features.workflows:
         from .workflows import api as workflows_api
         app.include_router(workflows_api.router)
