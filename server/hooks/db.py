@@ -52,7 +52,8 @@ def _public(row: dict) -> dict:
 
 
 def create(tier: str, name: str, label: str, created_by: str,
-           author: str | None = None, trigger_agent: str | None = None) -> tuple[dict, str]:
+           author: str | None = None, trigger_agent: str | None = None,
+           rate_per_min: int = 30) -> tuple[dict, str]:
     """Crea (o RIGENERA) l'hook della chat (tier/name). Ritorna (vista_pubblica,
     segreto_in_chiaro). Un topic ha UN SOLO hook: eventuali hook preesistenti per
     quella chat vengono rimossi (rotazione del segreto). Il segreto NON è più
@@ -77,6 +78,8 @@ def create(tier: str, name: str, label: str, created_by: str,
         "last_used": None,
         "last_source": None,
         "uses": 0,
+        "rate_per_min": int(rate_per_min),
+        "events": [],   # audit-log per hook (ultimi N ingress)
     }
     rows.append(row)
     _save(rows)
@@ -123,12 +126,25 @@ def delete(hid: str) -> bool:
     return True
 
 
-def touch(hid: str, source: str | None) -> None:
+_EVENTS_CAP = 20
+
+
+def record_event(hid: str, status: str, source: str | None = None,
+                 authority: str | None = None, principal: str | None = None,
+                 note: str | None = None) -> None:
+    """Appende un evento all'audit-log dell'hook (cap _EVENTS_CAP). Se status=='ok'
+    aggiorna anche last_used/last_source/uses."""
     rows = _load()
     for r in rows:
         if r["id"] == hid:
-            r["last_used"] = _now()
-            r["last_source"] = source
-            r["uses"] = int(r.get("uses", 0)) + 1
+            ev = {"ts": _now(), "status": status, "source": source,
+                  "authority": authority, "principal": principal, "note": note}
+            evs = r.get("events") or []
+            evs.append(ev)
+            r["events"] = evs[-_EVENTS_CAP:]
+            if status == "ok":
+                r["last_used"] = ev["ts"]
+                r["last_source"] = source
+                r["uses"] = int(r.get("uses", 0)) + 1
             _save(rows)
             return

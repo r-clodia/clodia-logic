@@ -22,16 +22,15 @@ from ..api.agents import _principal_from_request
 
 router = APIRouter()
 
-# Rate-limit in-memory molto semplice (F1): max N richieste / finestra per hook.
-_RL_WINDOW_S = 10.0
-_RL_MAX = 5
+# Rate-limit in-memory: sliding window 60s, soglia PER-HOOK (rate_per_min).
+_RL_WINDOW_S = 60.0
 _rl: dict[str, list[float]] = {}
 
 
-def _rate_ok(hid: str) -> bool:
+def _rate_ok(hid: str, per_min: int) -> bool:
     now = time.monotonic()
     hits = [t for t in _rl.get(hid, []) if now - t < _RL_WINDOW_S]
-    if len(hits) >= _RL_MAX:
+    if len(hits) >= max(1, int(per_min)):
         _rl[hid] = hits
         return False
     hits.append(now)
@@ -97,8 +96,12 @@ async def create_hook(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(400, "label richiesta")
     trig = (body.get("trigger_agent") or "").strip() or None
     author = (body.get("author") or "").strip() or None
+    try:
+        rpm = int(body.get("rate_per_min") or 30)
+    except (TypeError, ValueError):
+        rpm = 30
     pub, secret = db.create(tier, name, label, created_by=principal,
-                            author=author, trigger_agent=trig)
+                            author=author, trigger_agent=trig, rate_per_min=rpm)
     base = str(request.base_url).rstrip("/")
     return {
         "hook": pub,
@@ -169,7 +172,9 @@ async def ingress(hid: str, request: Request) -> dict:
     if not row:
         # non confermare l'esistenza: stessa risposta per id ignoto/segreto errato/disabilitato
         raise HTTPException(401, "unauthorized")
-    if not _rate_ok(hid):
+    src = request.client.host if request.client else None
+    if not _rate_ok(hid, row.get("rate_per_min", 30)):
+        db.record_event(hid, "rate_limited", source=src)
         raise HTTPException(429, "too many requests")
 
     raw = await request.body()
@@ -184,8 +189,13 @@ async def ingress(hid: str, request: Request) -> dict:
     signed_principal = None
     if ident or sig or ts:
         if not (ident and sig and ts):
+            db.record_event(hid, "bad_signature", source=src, note="firma incompleta")
             raise HTTPException(401, "firma incompleta: servono X-Hook-Identity, -Signature, -Timestamp")
-        signed_principal = _verify_signature(hid, ts, sig, ident, raw)
+        try:
+            signed_principal = _verify_signature(hid, ts, sig, ident, raw)
+        except HTTPException as e:
+            db.record_event(hid, "bad_signature", source=src, principal=ident, note=str(e.detail)[:80])
+            raise
 
     payload = raw.decode("utf-8", "replace").strip()
     if payload[:1] in ("{", "["):
@@ -197,7 +207,6 @@ async def ingress(hid: str, request: Request) -> dict:
 
     tier, name, trig = row["tier"], row["name"], row.get("trigger_agent")
     text = f"@{trig} {payload}" if trig else payload
-    src = request.client.host if request.client else None
 
     # Autore + autorità in base alla firma.
     if signed_principal:
@@ -224,7 +233,9 @@ async def ingress(hid: str, request: Request) -> dict:
         except Exception:  # noqa: BLE001 — il messaggio è comunque iniettato
             triggered = False
 
-    db.touch(hid, src)
+    db.record_event(hid, "ok", source=src,
+                    authority="identity" if signed_principal else "untrusted",
+                    principal=signed_principal)
     return {"ok": True, "injected": True, "triggered": triggered,
             "authority": "identity" if signed_principal else "untrusted",
             "principal": signed_principal}
