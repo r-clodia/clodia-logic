@@ -184,6 +184,49 @@ def _fire_job_threadsafe(job_id: int) -> None:
     asyncio.run_coroutine_threadsafe(fire_job(job_id), _loop)
 
 
+def _call_logic_run(verb: str, args: dict) -> dict:
+    """Esegue UN verbo di un job logico via l'endpoint interno del gateway
+    (orchestrator-secret, allowlist, NO gate). Sincrono → chiamare in un thread."""
+    import os
+    import requests
+    base = (os.environ.get("CLODIA_TOOLS_URL")
+            or os.environ.get("CLODIA_TOOLS_MCP_URL", "http://clodia-tools:7849/mcp/")
+            .replace("/mcp/", "").rstrip("/"))
+    secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+    r = requests.post(f"{base.rstrip('/')}/internal/logic-run",
+                      json={"verb": verb, "args": args or {}},
+                      headers={"X-Orchestrator-Secret": secret}, timeout=900)
+    r.raise_for_status()
+    return r.json()
+
+
+async def _fire_logic_job(job: dict) -> dict:
+    """Esegue il PIANO di un job logico (lista di {verb, args}) step-by-step, senza
+    LLM. Aggiorna last_run. Fermarsi al primo step fallito."""
+    plan = job.get("plan") or []
+    LOG.info("Firing job LOGICO id=%s name=%s (%d step)", job["id"], job["name"], len(plan))
+    steps: list[dict] = []
+    try:
+        if not plan:
+            raise RuntimeError("job logico senza piano (plan vuoto)")
+        for st in plan:
+            verb = (st or {}).get("verb")
+            args = (st or {}).get("args") or {}
+            if not verb:
+                raise RuntimeError("step senza 'verb'")
+            res = await asyncio.to_thread(_call_logic_run, verb, args)
+            steps.append({"verb": verb, "ok": res.get("ok")})
+            if not res.get("ok"):
+                raise RuntimeError(f"step '{verb}' fallito: {res.get('error')}")
+        db.mark_run(job["id"], status="ok", chat_id=None)
+        LOG.info("job LOGICO id=%s ok (%s)", job["id"], steps)
+        return {"chat_id": None, "status": "ok", "steps": steps}
+    except Exception as e:  # noqa: BLE001
+        LOG.error("job LOGICO id=%s fallito: %s", job["id"], e)
+        db.mark_run(job["id"], status=f"error: {e}", chat_id=None)
+        return {"chat_id": None, "status": f"error: {e}", "steps": steps}
+
+
 async def fire_job(job_id: int) -> dict:
     """Spawna una chat effimera dell'agent indicato dal job e le consegna il
     prompt in fire-and-forget.
@@ -202,6 +245,11 @@ async def fire_job(job_id: int) -> dict:
     if job is None:
         LOG.warning("fire_job: job %s non trovato (forse appena cancellato)", job_id)
         return {"chat_id": None, "status": "error: job not found"}
+
+    # JOB LOGICO: piano deterministico di verbi, nessun turno LLM né gate
+    # (pre-autorizzato alla creazione). Esegue via l'endpoint interno del gateway.
+    if (job.get("mode") or "agentic") == "logic":
+        return await _fire_logic_job(job)
 
     agent = job.get("agent") or "clodia"
     if not known_kind(agent):

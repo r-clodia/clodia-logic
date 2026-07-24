@@ -89,16 +89,21 @@ def _next_id() -> int:
 
 def create_job(name: str, cron_expr: str, prompt: str,
                agent: str = "clodia", enabled: bool = True,
-               owner: str = "") -> dict:
+               owner: str = "", mode: str = "agentic",
+               plan: list | None = None) -> dict:
     """Crea un nuovo job. Solleva sqlite3.IntegrityError se 'name' è duplicato
     (contratto invariato con api.py → HTTP 409). `owner` = principal umano che ne
-    è proprietario (solo lui, o un admin, può agirvi)."""
+    è proprietario (solo lui, o un admin, può agirvi).
+
+    `mode`: 'agentic' (default, turno LLM sul `prompt`) o 'logic' (esegue `plan`,
+    lista di {verb, args}, senza LLM né gate — pre-autorizzato dalla creazione)."""
     if get_job_by_name(name) is not None:
         raise sqlite3.IntegrityError(f"job name '{name}' already exists")
     now = _now_iso()
     d = {
         "id": _next_id(), "name": name, "cron_expr": cron_expr, "prompt": prompt,
         "agent": agent or "clodia", "owner": owner or "",
+        "mode": mode or "agentic", "plan": plan or [],
         "enabled": bool(enabled), "last_run_at": None, "last_status": None,
         "last_chat_id": None, "created_at": now, "updated_at": now,
     }
