@@ -30,6 +30,7 @@ JOBS_DIR = data_path("jobs")
 
 _FIELDS = (
     "id", "name", "cron_expr", "prompt", "agent", "enabled", "owner",
+    "mode", "plan",
     "last_run_at", "last_status", "last_chat_id", "created_at", "updated_at",
 )
 
