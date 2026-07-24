@@ -276,8 +276,10 @@ async def fire_job(job_id: int) -> dict:
         # Fire-and-forget: il turno parte in background sulla chat.
         # Lo scheduler non blocca aspettando la risposta del Looper.
         await chat.send_user_message_async(job["prompt"])
-        db.mark_run(job_id, status="ok", chat_id=chat_id)
-        return {"chat_id": chat_id, "status": "ok"}
+        # fire-and-forget: il turno prosegue async → NON è un "ok" reale, è un
+        # 'dispatched' (l'esito del turno non è tracciato qui). Evita falsi successi.
+        db.mark_run(job_id, status="dispatched (turno avviato in background)", chat_id=chat_id)
+        return {"chat_id": chat_id, "status": "dispatched"}
     except Exception as e:
         LOG.exception("Errore firing job %s: %s", job_id, e)
         db.mark_run(job_id, status=f"error: {e}", chat_id=chat_id)

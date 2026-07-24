@@ -30,7 +30,7 @@ JOBS_DIR = data_path("jobs")
 
 _FIELDS = (
     "id", "name", "cron_expr", "prompt", "agent", "enabled", "owner",
-    "mode", "plan",
+    "mode", "plan", "runs", "run_seq",
     "last_run_at", "last_status", "last_chat_id", "created_at", "updated_at",
 )
 
@@ -101,10 +101,12 @@ def create_job(name: str, cron_expr: str, prompt: str,
     if get_job_by_name(name) is not None:
         raise sqlite3.IntegrityError(f"job name '{name}' already exists")
     now = _now_iso()
+    _mode = mode or "agentic"
     d = {
         "id": _next_id(), "name": name, "cron_expr": cron_expr, "prompt": prompt,
-        "agent": agent or "clodia", "owner": owner or "",
-        "mode": mode or "agentic", "plan": plan or [],
+        # job logico → nessun agent (non c'è turno LLM); agentico → agent o clodia
+        "agent": ("" if _mode == "logic" else (agent or "clodia")), "owner": owner or "",
+        "mode": _mode, "plan": plan or [],
         "enabled": bool(enabled), "last_run_at": None, "last_status": None,
         "last_chat_id": None, "created_at": now, "updated_at": now,
     }
@@ -180,14 +182,24 @@ def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None) -> None
     if d is None:
         return
     ts = _now_iso()
-    ok = not str(status).startswith("error")
+    s = str(status)
+    # stato a 3 valori: 'error' (fallito), 'dispatched' (job agentico: turno avviato
+    # in background, esito NON tracciato sincronicamente), 'ok' (esito reale ok —
+    # tipico dei job LOGICI che attendono davvero l'esecuzione).
+    if s.startswith("error"):
+        stato = "error"
+    elif s.startswith("dispatched"):
+        stato = "dispatched"
+    else:
+        stato = "ok"
     seq = int(d.get("run_seq") or 0) + 1
     entry = {
         "id": str(seq),
         "ts": ts,
-        "stato": "ok" if ok else "error",
+        "stato": stato,
         "chat_id": chat_id,
-        "error": None if ok else str(status).split("error:", 1)[-1].strip() or str(status),
+        "error": s.split("error:", 1)[-1].strip() or s if stato == "error" else None,
+        "note": s if stato == "dispatched" else None,
     }
     runs = list(d.get("runs") or [])
     runs.append(entry)
