@@ -27,26 +27,24 @@ class AgentFeedbackTest(TestCase):
                     by="owner",
                     comment="Troppo generica",
                 )
-                self.assertEqual(row["status"], "pending")
+                self.assertEqual(row["status"], "learned")
+                self.assertEqual(row["lesson"], "Troppo generica")
                 self.assertTrue((Path(tmp) / "memory" / "feedback-lessons.json").is_file())
-
-                learned = feedback.complete("helper", row["id"], "Usa esempi concreti.")
-                self.assertEqual(learned["status"], "learned")
                 self.assertEqual(
                     feedback.list_for("helper", topic="SEAL-1/demo")[0]["lesson"],
-                    "Usa esempi concreti.",
+                    "Troppo generica",
                 )
-                self.assertIn("Usa esempi concreti.", feedback.prompt_section("helper"))
+                self.assertIn("Troppo generica", feedback.prompt_section("helper"))
                 memory = memory_path.read_text()
                 self.assertIn("Nota esistente.", memory)
                 self.assertIn("## Lesson learned dal feedback umano", memory)
-                self.assertIn("Usa esempi concreti.", memory)
+                self.assertIn("Troppo generica", memory)
                 feedback.prompt_section("helper")
                 self.assertEqual(memory_path.read_text().count("## Lesson learned"), 1)
 
                 self.assertTrue(feedback.delete("helper", row["id"]))
                 self.assertEqual(feedback.list_for("helper"), [])
-                self.assertNotIn("Usa esempi concreti.", memory_path.read_text())
+                self.assertNotIn("Troppo generica", memory_path.read_text())
 
     def test_feedback_for_other_topic_is_filtered(self) -> None:
         with TemporaryDirectory() as tmp:
@@ -58,11 +56,25 @@ class AgentFeedbackTest(TestCase):
             with patch.object(feedback.registry, "get_by_name", return_value=spec):
                 feedback.create(
                     agent="helper", message_id="a", topic="SEAL-0/one",
-                    rating="thumbs_up", by="owner",
+                    rating="thumbs_up", by="owner", comment="Utile",
                 )
                 feedback.create(
                     agent="helper", message_id="b", topic="SEAL-0/two",
-                    rating="thumbs_up", by="owner",
+                    rating="thumbs_up", by="owner", comment="Chiaro",
                 )
                 rows = feedback.list_for("helper", topic="SEAL-0/one")
                 self.assertEqual([r["message_id"] for r in rows], ["a"])
+
+    def test_empty_comment_is_rejected(self) -> None:
+        with TemporaryDirectory() as tmp:
+            spec = SimpleNamespace(
+                name="helper",
+                agent_dir=tmp,
+                memory=SimpleNamespace(dir="memory/"),
+            )
+            with patch.object(feedback.registry, "get_by_name", return_value=spec):
+                with self.assertRaisesRegex(ValueError, "comment obbligatorio"):
+                    feedback.create(
+                        agent="helper", message_id="a", topic="SEAL-0/one",
+                        rating="thumbs_up", by="owner", comment="  ",
+                    )
