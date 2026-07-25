@@ -61,6 +61,7 @@ class RuntimeSessionsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["spawn_id"], "clodia-5")
         self.assertEqual(row["spawn_instance"], "5")
         self.assertEqual(row["state"], "idle")
+        self.assertEqual(res["metrics"]["managed_sessions"], 1)
 
     async def test_materialized_spawn_without_manager_session_stays_idle(self) -> None:
         (agents.SPAWNS_ROOT / "ophelia-7" / "scratch").mkdir(parents=True)

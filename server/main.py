@@ -169,12 +169,15 @@ async def _lifespan(app: FastAPI):
     # Configurabile: TTL idle e cadenza tick via env; TTL<=0 disabilita.
     async def _idle_reaper_loop():
         ttl = float(os.environ.get("CLODIA_SESSION_IDLE_TTL_SEC", "1800"))       # 30 min
+        hard_ttl = float(os.environ.get("CLODIA_SESSION_HARD_TTL_SEC", "3600"))
         interval = float(os.environ.get("CLODIA_SESSION_REAP_TICK_SEC", "300"))  # 5 min
         if ttl <= 0:
             LOG.info("idle reaper disabilitato (CLODIA_SESSION_IDLE_TTL_SEC<=0)")
             return
-        LOG.info("idle reaper attivo: ttl=%.0fs tick=%.0fs", ttl, interval)
+        LOG.info("idle reaper attivo: ttl=%.0fs hard_ttl=%.0fs tick=%.0fs",
+                 ttl, hard_ttl, interval)
         from .agents.workspace import sweep_orphan_spawns
+        from .sdk_runtime.process_reaper import sweep_orphan_runtime_processes
         while True:
             await asyncio.sleep(interval)
             try:
@@ -184,11 +187,24 @@ async def _lifespan(app: FastAPI):
             # Sweep degli spawn orfani a runtime (crash/sessione evinta senza
             # cleanup): rimuove solo dir NON di sessioni vive e vecchie almeno
             # `ttl` (protegge spawn recenti/di job non tracciati dal manager).
+            live = manager.live_spawn_dirs()
             try:
-                live = manager.live_spawn_dirs()
                 await asyncio.to_thread(sweep_orphan_spawns, live, ttl)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("sweep spawn orfani (reaper): %s", e)
+            # Fallback sul process table: recupera subprocess Claude sfuggiti
+            # al registry dopo crash o stop incompleto. La policy è volutamente
+            # stretta (discendenti del server + cwd non appartenente a chat vive).
+            if hard_ttl > 0:
+                try:
+                    stats = await asyncio.to_thread(
+                        sweep_orphan_runtime_processes, live, hard_ttl
+                    )
+                    if stats["reaped"]:
+                        LOG.warning("runtime reaper: terminati %d processi orfani",
+                                    stats["reaped"])
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("sweep processi runtime orfani: %s", e)
     reaper_task = asyncio.create_task(_idle_reaper_loop())
 
     yield
