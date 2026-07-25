@@ -70,6 +70,7 @@ tool_permissions:
   - "workflows.*"       # lifecycle delle run dei workflow (start/cancel/delete_run, gated) + list/status
   - "fs.list_dir"       # navigazione datadir (plugins/, runtime/)
   - "logs.tail"         # diagnosi: ultimi log del server (read-only)
+  - "web.post"          # POST HTTP generica, sempre gated per singola invocazione
   # ── GitHub: codice r-clodia in lettura + gestione issue ──
   # Grant espliciti invece di github.*: sysadmin può diagnosticare consultando
   # repository e release e gestire il ciclo di vita delle issue, senza ottenere

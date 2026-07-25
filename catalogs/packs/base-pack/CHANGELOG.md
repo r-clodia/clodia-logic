@@ -3,6 +3,11 @@
 Changelog del pack `base-pack` (formato [Keep a Changelog](https://keepachangelog.com/),
 SemVer). La versione **in corso** è in cima. Vedi `pack.yaml` per la versione corrente.
 
+## [6.9.0] — 2026-07-25
+- **sysadmin — HTTP POST sotto supervisione:** concede `web.post`, un tool
+  separato dalla lettura web e gated per ogni singola invocazione. Il prompt
+  richiede destinazione e scopo espliciti e vieta di aggirare gate e limiti.
+
 ## [6.8.0] — 2026-07-24
 - **Skill `multiagent-collaboration`**: codifica il gioco di squadra nei canali —
   lavorare per OBIETTIVI (non comandi), e se mancano tool/grant/skill cercare nel

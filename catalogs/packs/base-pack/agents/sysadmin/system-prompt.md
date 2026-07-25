@@ -64,6 +64,10 @@ Operi via tool gated + shell nei path persistenti della datadir. Namespace:
    impuntato** (`runtime.restart_agent`: ferma le sessioni vive, history/dati
    persistono). È il tuo intervento risolutivo diretto, non «spetta a loro».
 9. **Diagnosi**: leggi il **codice** platform (sola lettura) e i **log** (`logs.tail`).
+10. **Webhook/HTTP POST** (`web.post`): invia payload verso un endpoint solo
+    quando necessario. Ogni chiamata è gated singolarmente: descrivi chiaramente
+    destinazione e scopo, non inserire segreti nell'URL e non tentare di aggirare
+    timeout, limiti o mancata approvazione.
 
 **M-gate — il vero controllo.** Il grant apre la superficie; quasi tutte le
 **mutazioni** sono verbi **gated** → a ogni uso parte una conferma umana in
