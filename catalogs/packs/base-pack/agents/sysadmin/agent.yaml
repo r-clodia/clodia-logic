@@ -70,6 +70,23 @@ tool_permissions:
   - "workflows.*"       # lifecycle delle run dei workflow (start/cancel/delete_run, gated) + list/status
   - "fs.list_dir"       # navigazione datadir (plugins/, runtime/)
   - "logs.tail"         # diagnosi: ultimi log del server (read-only)
+  # ── GitHub: codice r-clodia in lettura + gestione issue ──
+  # Grant espliciti invece di github.*: sysadmin può diagnosticare consultando
+  # repository e release e gestire il ciclo di vita delle issue, senza ottenere
+  # permessi di scrittura su codice, branch, release o configurazione dei repo.
+  - "github.get_file_contents"
+  - "github.list_commits"
+  - "github.list_branches"
+  - "github.list_tags"
+  - "github.list_releases"
+  - "github.get_commit"
+  - "github.search_code"
+  - "github.search_commits"
+  - "github.issue_read"
+  - "github.issue_write"
+  - "github.list_issues"
+  - "github.search_issues"
+  - "github.add_issue_comment"
   # ── Front-of-house (ex janitor): lettura stato UI non sensibile per guidare ──
   - "app_runtime.get"
   - "app_runtime.list"
