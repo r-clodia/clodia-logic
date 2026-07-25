@@ -15,6 +15,7 @@ from sse_starlette.sse import EventSourceResponse
 from ..core.events import bus
 from ..sdk_runtime.session import manager
 from ..agents.workspace import SPAWNS_ROOT
+from ..sdk_runtime.process_reaper import runtime_process_metrics
 
 router = APIRouter()
 LOG = logging.getLogger("agent-server.api.agents")
@@ -114,7 +115,13 @@ async def runtime_sessions() -> dict:
     for row in _spawn_rows():
         if row["spawn_id"] not in seen_spawns:
             rows.append(row)
-    return {"sessions": rows}
+    return {
+        "sessions": rows,
+        "metrics": {
+            "managed_sessions": len(manager.list()),
+            **runtime_process_metrics(),
+        },
+    }
 
 
 @router.post("/clodia/runtime/restart-agent")
