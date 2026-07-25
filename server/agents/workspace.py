@@ -253,7 +253,9 @@ class EphemeralWorkspace:
         # così l'agente parla i termini del cliente (es. topic → pratica).
         from ..instance_profile import vocabulary_prompt_section
         vocab_section = vocabulary_prompt_section()
-        parts = [p.strip() for p in (constitution, prompt_body, vocab_section)
+        from .feedback import prompt_section_for_spec
+        lessons_section = prompt_section_for_spec(self.spec)
+        parts = [p.strip() for p in (constitution, prompt_body, vocab_section, lessons_section)
                  if p and p.strip()]
         fused = ("\n\n---\n\n".join(parts) + "\n") if parts else ""
         (self.dir / "system-prompt.md").write_text(fused, encoding="utf-8")

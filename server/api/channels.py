@@ -23,6 +23,7 @@ from ..sdk_runtime.session import manager, ProviderNotConnected
 from . import topics_client
 from . import access_log
 from . import responder_routing
+from ..agents import feedback as agent_feedback
 from .agents import _principal_from_request
 
 router = APIRouter()
@@ -58,6 +59,33 @@ async def _channel_message(tier: str, name: str, author: str, kind: str) -> None
         ))
     except Exception as e:  # noqa: BLE001
         LOG.debug("channel_message event non pubblicato: %s", e)
+
+
+async def _derive_feedback_lesson(agent: str, row: dict, output: str) -> None:
+    """Chiede all'agente stesso una lesson concisa, senza postarla nel topic."""
+    chat_id = f"feedback:{agent}"
+    try:
+        try:
+            chat = manager.get(chat_id)
+        except KeyError:
+            chat = await manager.create(chat_id=chat_id, kind=agent)
+        chat.principal = "feedback"
+        prompt = (
+            "[Feedback strutturato su un tuo output]\n"
+            f"Valutazione: {row['rating']}\n"
+            f"Output valutato:\n{output[:6000]}\n"
+            f"Commento utente: {row.get('comment') or '(nessuno)'}\n\n"
+            "Ricava UNA lesson learned concreta e riutilizzabile per migliorare "
+            "risposte future. Rispondi solo con la lesson, in massimo 3 frasi; "
+            "non rivolgerti all'utente e non eseguire azioni esterne."
+        )
+        lesson = await chat.send_user_message(prompt)
+        if not lesson.strip():
+            raise ValueError("lesson vuota")
+        agent_feedback.complete(agent, row["id"], lesson)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("lesson feedback %s/%s fallita: %s", agent, row["id"], e)
+        agent_feedback.fail(agent, row["id"], str(e))
 
 
 # Riferimenti FORTI ai task dei turni in background: senza, l'event loop NON
@@ -1010,6 +1038,83 @@ async def routing_correct(request: Request) -> dict:
     routing_feedback.record_correction(vec, correct_agent,
                                         router_chose=b.get("chosen"), tier=tier, by=principal)
     return {"ok": True, "learned": correct_agent}
+
+
+@router.post("/clodia/channels/{tier}/{name}/messages/{message_id}/feedback")
+async def channel_message_feedback(tier: str, name: str, message_id: str,
+                                   request: Request) -> dict:
+    """Registra 👍/👎 e avvia la derivazione asincrona della lesson."""
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "login richiesto")
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    meta = topic.get("meta", {})
+    _require_member(request, meta)
+    body = await request.json()
+    rating = str(body.get("rating") or "").strip()
+    if rating not in {"thumbs_up", "thumbs_down"}:
+        raise HTTPException(400, "rating deve essere thumbs_up o thumbs_down")
+    message = next((m for m in topics_client.list_messages(tier, name, limit=500)
+                    if str(m.get("id")) == message_id), None)
+    if not message or message.get("kind") != "ai":
+        raise HTTPException(404, "messaggio agente non trovato")
+    agent = str(message.get("author") or "")
+    if registry.get_by_name(agent) is None:
+        raise HTTPException(404, "agente autore non registrato")
+    row = agent_feedback.create(
+        agent=agent, message_id=message_id, topic=f"{tier}/{name}",
+        rating=rating, by=principal, comment=str(body.get("comment") or ""))
+    await bus.publish(Event(
+        type=f"feedback.{rating}",
+        payload={"id": row["id"], "message_id": message_id, "tier": tier,
+                 "name": name, "agent": agent, "by": principal,
+                 "comment": row["comment"]},
+        timestamp=datetime.now(timezone.utc),
+    ))
+    _spawn_bg(_derive_feedback_lesson(agent, row, str(message.get("text") or "")))
+    return {"accepted": True, "feedback": row}
+
+
+@router.get("/clodia/channels/{tier}/{name}/feedback-lessons")
+async def channel_feedback_lessons(tier: str, name: str, request: Request) -> dict:
+    """Lesson dei partecipanti AI, consultabili dall'owner del topic."""
+    principal = _principal_from_request(request)
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    meta = topic.get("meta", {})
+    if not principal or principal != meta.get("owner"):
+        raise HTTPException(403, "solo l'owner può consultare le lesson")
+    topic_key = f"{tier}/{name}"
+    lessons = []
+    for agent in meta.get("participants", []):
+        if registry.get_by_name(agent) is not None:
+            lessons.extend(agent_feedback.list_for(agent, topic=topic_key))
+    lessons.sort(key=lambda r: r.get("created_at", ""), reverse=True)
+    return {"lessons": lessons}
+
+
+@router.delete("/clodia/channels/{tier}/{name}/feedback-lessons/{lesson_id}")
+async def channel_feedback_lesson_delete(tier: str, name: str, lesson_id: str,
+                                         request: Request) -> dict:
+    """Cancella una lesson del topic; solo l'owner può farlo."""
+    principal = _principal_from_request(request)
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    meta = topic.get("meta", {})
+    if not principal or principal != meta.get("owner"):
+        raise HTTPException(403, "solo l'owner può cancellare le lesson")
+    topic_key = f"{tier}/{name}"
+    for agent in meta.get("participants", []):
+        if registry.get_by_name(agent) is None:
+            continue
+        if any(r.get("id") == lesson_id for r in agent_feedback.list_for(agent, topic=topic_key)):
+            if agent_feedback.delete(agent, lesson_id):
+                return {"deleted": lesson_id}
+    raise HTTPException(404, "lesson non trovata")
 
 
 @router.get("/clodia/channels/{tier}/{name}/eligibility")
