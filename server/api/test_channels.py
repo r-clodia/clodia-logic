@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import unittest
+from unittest.mock import AsyncMock
 
 from ..agents.models import AgentSpec
 from ..core.models import MessageRequest
@@ -73,6 +74,55 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(meta["contact_agent"], "helpdesk")
         self.assertEqual(meta["participants"], ["owner", "helpdesk"])
         self.assertEqual(meta["type"], "infra")
+
+
+class ParticipantJoinTests(unittest.IsolatedAsyncioTestCase):
+    async def test_new_agent_is_forced_to_introduce_itself(self) -> None:
+        agent = _a("worker", "normal", "P1", "2026-02-01T00:00:00Z")
+        original_get = channels.registry.get_by_name
+        original_run = channels.run_topic_turn
+        original_spawn = channels._spawn_bg
+        queued = []
+        run = AsyncMock(return_value=("worker", "ciao"))
+        try:
+            channels.registry.get_by_name = lambda name: agent if name == "worker" else None
+            channels.run_topic_turn = run
+            channels._spawn_bg = lambda coroutine: queued.append(coroutine)
+
+            result = {"participants": ["owner", "worker"], "added": True}
+            did_queue = channels._queue_join_introduction(
+                "P1", "ops", {"participants": ["owner"]}, "worker", result
+            )
+
+            self.assertTrue(did_queue)
+            self.assertEqual(len(queued), 1)
+            await queued[0]
+            kwargs = run.await_args.kwargs
+            self.assertEqual(kwargs["responder_hint"], "worker")
+            self.assertIn("presentati in una sola riga", kwargs["directive"])
+        finally:
+            channels.registry.get_by_name = original_get
+            channels.run_topic_turn = original_run
+            channels._spawn_bg = original_spawn
+
+    async def test_idempotent_or_human_add_does_not_trigger(self) -> None:
+        human = _a("owner", "human", role="superadmin")
+        original_get = channels.registry.get_by_name
+        original_spawn = channels._spawn_bg
+        try:
+            channels.registry.get_by_name = lambda _name: human
+            channels._spawn_bg = lambda _coroutine: self.fail("non deve accodare")
+            self.assertFalse(channels._queue_join_introduction(
+                "P1", "ops", {}, "owner",
+                {"participants": ["owner"], "added": True},
+            ))
+            self.assertFalse(channels._queue_join_introduction(
+                "P1", "ops", {}, "worker",
+                {"participants": ["owner", "worker"], "added": False},
+            ))
+        finally:
+            channels.registry.get_by_name = original_get
+            channels._spawn_bg = original_spawn
 
 
 class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):

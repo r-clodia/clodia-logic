@@ -1072,6 +1072,29 @@ def _require_owner(request: Request, meta: dict) -> str:
     return principal
 
 
+def _queue_join_introduction(
+    tier: str, name: str, meta: dict, agent: str, result: dict
+) -> bool:
+    """Avvia il saluto del nuovo agent senza rallentare la mutation HTTP.
+
+    Il gateway ha già scritto il messaggio di sistema. Qui inneschiamo soltanto
+    principal agentici appena aggiunti, forzando proprio loro come responder;
+    inviti idempotenti e principal umani non generano turni.
+    """
+    spec = registry.get_by_name(agent)
+    if not result.get("added") or spec is None or getattr(spec, "type", None) == "human":
+        return False
+    updated_meta = {**meta, "participants": list(result.get("participants") or [])}
+    _spawn_bg(run_topic_turn(
+        tier, name, updated_meta,
+        trigger_text=f"@{agent} sei appena entrato nel topic",
+        principal_hint="channel",
+        responder_hint=agent,
+        directive="Sei appena entrato in questo topic: presentati in una sola riga.",
+    ))
+    return True
+
+
 @router.post("/clodia/channels/{tier}/{name}/participants")
 async def channel_add_participant(tier: str, name: str, request: Request) -> dict:
     topic = topics_client.open_topic(tier, name)
@@ -1085,7 +1108,11 @@ async def channel_add_participant(tier: str, name: str, request: Request) -> dic
     # No partecipanti inesistenti: dev'essere un agent/umano registrato.
     if registry.get_by_name(agent) is None:
         raise HTTPException(404, f"'{agent}' non esiste: invita un agent/utente registrato")
-    return topics_client.set_participant(tier, name, agent, add=True)
+    result = topics_client.set_participant(tier, name, agent, add=True)
+    result["introduction_queued"] = _queue_join_introduction(
+        tier, name, topic.get("meta", {}), agent, result
+    )
+    return result
 
 
 @router.delete("/clodia/channels/{tier}/{name}/participants")
@@ -1127,7 +1154,11 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     # l'agente aggiunto dev'essere registrato
     if registry.get_by_name(agent) is None:
         raise HTTPException(404, f"'{agent}' non esiste: aggiungi un agent/utente registrato")
-    return topics_client.set_participant(tier, name, agent, add=add)
+    result = topics_client.set_participant(tier, name, agent, add=add)
+    result["introduction_queued"] = (
+        _queue_join_introduction(tier, name, meta, agent, result) if add else False
+    )
+    return result
 
 
 @router.post("/clodia/channels/{tier}/{name}/trigger/internal")
