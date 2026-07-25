@@ -11,6 +11,9 @@ from . import registry
 
 _FILE = "feedback-lessons.json"
 _LOCK = threading.Lock()
+_MEMORY_FILE = "MEMORY.md"
+_LESSONS_START = "<!-- clodia:feedback-lessons:start -->"
+_LESSONS_END = "<!-- clodia:feedback-lessons:end -->"
 
 
 def _path(agent: str) -> Path:
@@ -35,6 +38,49 @@ def _write(path: Path, rows: list[dict]) -> None:
     tmp = path.with_suffix(".tmp")
     tmp.write_text(json.dumps(rows, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
     tmp.replace(path)
+
+
+def _replace_managed_block(body: str, block: str) -> str:
+    start = body.find(_LESSONS_START)
+    end = body.find(_LESSONS_END)
+    if start >= 0 and end >= start:
+        end += len(_LESSONS_END)
+        merged = body[:start].rstrip() + "\n\n" + block + body[end:]
+    else:
+        merged = body.rstrip() + ("\n\n" if body.strip() else "") + block
+    return merged.rstrip() + "\n"
+
+
+def _sync_memory(path: Path, rows: list[dict]) -> Path:
+    """Rende MEMORY.md la fonte leggibile delle lesson apprese.
+
+    Il JSON resta il registro strutturato per stato, audit e API, ma il prompt
+    legge esclusivamente MEMORY.md.
+    """
+    learned = [
+        row for row in rows
+        if row.get("status") == "learned" and str(row.get("lesson") or "").strip()
+    ]
+    lines = [
+        f"- <!-- feedback:{row.get('id', '')} --> {str(row['lesson']).strip()}"
+        for row in learned
+    ]
+    content = (
+        f"{_LESSONS_START}\n"
+        "## Lesson learned dal feedback umano\n\n"
+        + ("\n".join(lines) if lines else "_Nessuna lesson appresa._")
+        + f"\n{_LESSONS_END}"
+    )
+    memory_path = path.with_name(_MEMORY_FILE)
+    previous = (
+        memory_path.read_text(encoding="utf-8")
+        if memory_path.is_file()
+        else "# Memory Index\n"
+    )
+    tmp = memory_path.with_suffix(".tmp")
+    tmp.write_text(_replace_managed_block(previous, content), encoding="utf-8")
+    tmp.replace(memory_path)
+    return memory_path
 
 
 def create(*, agent: str, message_id: str, topic: str, rating: str,
@@ -70,6 +116,7 @@ def complete(agent: str, lesson_id: str, lesson: str) -> dict | None:
         found["status"] = "learned"
         found["learned_at"] = datetime.now(timezone.utc).isoformat()
         _write(path, rows)
+        _sync_memory(path, rows)
         return found
 
 
@@ -100,6 +147,7 @@ def delete(agent: str, lesson_id: str) -> bool:
         if len(kept) == len(rows):
             return False
         _write(path, kept)
+        _sync_memory(path, kept)
         return True
 
 
@@ -109,19 +157,14 @@ def prompt_section(agent: str, *, limit: int = 30) -> str:
 
 
 def prompt_section_for_spec(spec, *, limit: int = 30) -> str:
-    """Variante usabile durante la materializzazione, anche nei test con spec ad hoc."""
+    """MEMORY.md da inserire nel prompt; il JSON non è mai letto direttamente."""
     if spec is None or not getattr(spec, "agent_dir", None):
         return ""
     mem_rel = spec.memory.dir if getattr(spec, "memory", None) else "memory/"
-    learned = [
-        r for r in _read(Path(spec.agent_dir) / mem_rel / _FILE)
-        if r.get("status") == "learned" and r.get("lesson")
-    ]
-    if not learned:
+    path = Path(spec.agent_dir) / mem_rel / _FILE
+    with _LOCK:
+        memory_path = _sync_memory(path, _read(path))
+        body = memory_path.read_text(encoding="utf-8").strip()
+    if not body:
         return ""
-    lines = "\n".join(f"- {r['lesson'].strip()}" for r in reversed(learned[:limit]))
-    return (
-        "## Lesson learned dal feedback umano\n\n"
-        "Applica queste indicazioni alle risposte future quando pertinenti:\n\n"
-        f"{lines}"
-    )
+    return "## Memoria persistente del seed\n\n" + body
