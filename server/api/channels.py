@@ -1113,6 +1113,45 @@ async def routing_correct(request: Request) -> dict:
     return {"ok": True, "learned": correct_agent}
 
 
+@router.post("/clodia/routing/feedback")
+async def routing_feedback_record(request: Request) -> dict:
+    """Registra un segnale sulla scelta del router, distinto dal feedback output."""
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "login richiesto")
+    body = await request.json()
+    tier = _norm(body.get("tier"))
+    name = (body.get("name") or "").strip()
+    kind = (body.get("kind") or "").strip()
+    chosen = (body.get("chosen") or "").strip()
+    correct_agent = (body.get("correct_agent") or "").strip() or None
+    if not name or not chosen or kind not in {"confirm", "correction"}:
+        raise HTTPException(400, "name, chosen e kind (confirm|correction) richiesti")
+    if kind == "correction" and not correct_agent:
+        raise HTTPException(400, "correct_agent richiesto per una correzione")
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    _require_member(request, topic.get("meta", {}))
+    for agent in {chosen, correct_agent} - {None}:
+        if registry.get_by_name(agent) is None:
+            raise HTTPException(404, f"agente '{agent}' non registrato")
+    messages = topics_client.list_messages(tier, name, limit=50)
+    human = next((m for m in reversed(messages) if m.get("kind") == "human"), None)
+    if not human or not (human.get("text") or "").strip():
+        raise HTTPException(400, "nessun messaggio umano recente da cui imparare")
+    vec = responder_routing.embed_text(human["text"], role="query")
+    if not vec:
+        raise HTTPException(503, "embedder non disponibile")
+    from . import routing_feedback
+    routing_feedback.record_feedback(
+        vec, kind=kind, chosen_agent=chosen, correct_agent=correct_agent,
+        tier=tier, by=principal,
+    )
+    return {"ok": True, "kind": kind,
+            "learned": chosen if kind == "confirm" else correct_agent}
+
+
 @router.post("/clodia/channels/{tier}/{name}/messages/{message_id}/feedback")
 async def channel_message_feedback(tier: str, name: str, message_id: str,
                                    request: Request) -> dict:
