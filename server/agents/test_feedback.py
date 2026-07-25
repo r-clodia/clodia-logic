@@ -16,6 +16,9 @@ class AgentFeedbackTest(TestCase):
                 memory=SimpleNamespace(dir="memory/"),
             )
             with patch.object(feedback.registry, "get_by_name", return_value=spec):
+                memory_path = Path(tmp) / "memory" / "MEMORY.md"
+                memory_path.parent.mkdir(parents=True)
+                memory_path.write_text("# Memory Index\n\nNota esistente.\n")
                 row = feedback.create(
                     agent="helper",
                     message_id="msg-1",
@@ -34,9 +37,16 @@ class AgentFeedbackTest(TestCase):
                     "Usa esempi concreti.",
                 )
                 self.assertIn("Usa esempi concreti.", feedback.prompt_section("helper"))
+                memory = memory_path.read_text()
+                self.assertIn("Nota esistente.", memory)
+                self.assertIn("## Lesson learned dal feedback umano", memory)
+                self.assertIn("Usa esempi concreti.", memory)
+                feedback.prompt_section("helper")
+                self.assertEqual(memory_path.read_text().count("## Lesson learned"), 1)
 
                 self.assertTrue(feedback.delete("helper", row["id"]))
                 self.assertEqual(feedback.list_for("helper"), [])
+                self.assertNotIn("Usa esempi concreti.", memory_path.read_text())
 
     def test_feedback_for_other_topic_is_filtered(self) -> None:
         with TemporaryDirectory() as tmp:
