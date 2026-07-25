@@ -85,51 +85,30 @@ def _sync_memory(path: Path, rows: list[dict]) -> Path:
 
 def create(*, agent: str, message_id: str, topic: str, rating: str,
            by: str, comment: str = "") -> dict:
+    clean_comment = comment.strip()
+    if not clean_comment:
+        raise ValueError("comment obbligatorio per il feedback")
+    now = datetime.now(timezone.utc).isoformat()
     row = {
         "id": str(uuid.uuid4()),
-        "created_at": datetime.now(timezone.utc).isoformat(),
+        "created_at": now,
         "agent": agent,
         "message_id": message_id,
         "topic": topic,
         "rating": rating,
-        "comment": comment.strip()[:1000],
+        "comment": clean_comment,
         "by": by,
-        "status": "pending",
-        "lesson": None,
+        "status": "learned",
+        "lesson": clean_comment,
+        "learned_at": now,
     }
     path = _path(agent)
     with _LOCK:
         rows = _read(path)
         rows.append(row)
         _write(path, rows)
-    return row
-
-
-def complete(agent: str, lesson_id: str, lesson: str) -> dict | None:
-    path = _path(agent)
-    with _LOCK:
-        rows = _read(path)
-        found = next((r for r in rows if r.get("id") == lesson_id), None)
-        if found is None:
-            return None
-        found["lesson"] = lesson.strip()[:4000]
-        found["status"] = "learned"
-        found["learned_at"] = datetime.now(timezone.utc).isoformat()
-        _write(path, rows)
         _sync_memory(path, rows)
-        return found
-
-
-def fail(agent: str, lesson_id: str, detail: str) -> None:
-    path = _path(agent)
-    with _LOCK:
-        rows = _read(path)
-        found = next((r for r in rows if r.get("id") == lesson_id), None)
-        if found is None:
-            return
-        found["status"] = "error"
-        found["error"] = detail[:300]
-        _write(path, rows)
+    return row
 
 
 def list_for(agent: str, *, topic: str | None = None) -> list[dict]:
