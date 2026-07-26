@@ -218,7 +218,15 @@ class MessageFeedbackTests(unittest.IsolatedAsyncioTestCase):
             "create": channels.agent_feedback.create,
             "publish": channels.bus.publish,
             "spawn": channels._spawn_bg,
+            "generate": channels._generate_feedback_lesson,
         }
+        # Lesson generata dal passaggio sincrono (issue #39); None = vet rifiuta.
+        self.generated: str | None = "In situazioni analoghe, continua a: usare esempi."
+
+        async def generate(*_args, **_kwargs):
+            return self.generated
+
+        channels._generate_feedback_lesson = generate
         channels._principal_from_request = lambda _request: "owner"
         channels._require_member = lambda *_args, **_kwargs: None
         channels.topics_client.open_topic = lambda *_args: {
@@ -231,7 +239,10 @@ class MessageFeedbackTests(unittest.IsolatedAsyncioTestCase):
 
         def create(**kwargs):
             self.created.append(kwargs)
-            return {"id": "f1", "status": "learned", "lesson": kwargs["comment"], **kwargs}
+            lesson = kwargs.get("lesson")
+            final = lesson if lesson is not None else kwargs["comment"]
+            return {**kwargs, "id": "f1",
+                    "status": "learned" if final else "recorded", "lesson": final}
 
         async def publish(_event):
             return None
@@ -249,6 +260,7 @@ class MessageFeedbackTests(unittest.IsolatedAsyncioTestCase):
         channels.agent_feedback.create = self._originals["create"]
         channels.bus.publish = self._originals["publish"]
         channels._spawn_bg = self._originals["spawn"]
+        channels._generate_feedback_lesson = self._originals["generate"]
 
     @staticmethod
     def request(body: dict):
@@ -265,14 +277,95 @@ class MessageFeedbackTests(unittest.IsolatedAsyncioTestCase):
                 )
         self.assertEqual(self.created, [])
 
-    async def test_comment_is_persisted_verbatim_without_background_task(self) -> None:
+    async def test_raw_comment_and_generated_lesson_coexist(self) -> None:
+        # #39: commento grezzo conservato per audit, lesson GENERATA (≠ commento)
+        # iniettata; generazione sincrona, nessun task in background.
         result = await channels.channel_message_feedback(
             "P0", "ops", "m1",
             self.request({"rating": "thumbs_up", "comment": "  Usa più esempi.  "}),
         )
         self.assertTrue(result["accepted"])
-        self.assertEqual(self.created[0]["comment"], "Usa più esempi.")
-        self.assertEqual(result["feedback"]["lesson"], "Usa più esempi.")
+        self.assertEqual(self.created[0]["comment"], "Usa più esempi.")  # audit grezzo
+        self.assertEqual(self.created[0]["lesson"], self.generated)      # generata
+        self.assertNotEqual(self.created[0]["lesson"], self.created[0]["comment"])
+        self.assertEqual(result["feedback"]["status"], "learned")
+
+    async def test_rejected_lesson_is_audit_only(self) -> None:
+        # Vet rifiuta (None) → riga solo-audit: commento conservato, niente
+        # iniezione (lesson vuota, status recorded).
+        self.generated = None
+        result = await channels.channel_message_feedback(
+            "P0", "ops", "m1",
+            self.request({"rating": "thumbs_down", "comment": "Troppo vago."}),
+        )
+        self.assertTrue(result["accepted"])
+        self.assertEqual(self.created[0]["comment"], "Troppo vago.")
+        self.assertEqual(self.created[0]["lesson"], "")
+        self.assertEqual(result["feedback"]["status"], "recorded")
+
+
+class GenerateFeedbackLessonTests(unittest.IsolatedAsyncioTestCase):
+    """Il generatore sincrono: rating-aware + vet prima di persistere."""
+
+    async def asyncSetUp(self) -> None:
+        self._orig_get = channels.manager.get
+        self._orig_create = channels.manager.create
+        self.prompts: list[str] = []
+        self.replies: list[str] = []
+        test = self
+
+        class FakeChat:
+            principal = ""
+
+            async def send_user_message(self, prompt: str) -> str:
+                test.prompts.append(prompt)
+                return test.replies.pop(0) if test.replies else ""
+
+        async def create(**_kwargs):
+            return FakeChat()
+
+        channels.manager.get = lambda _cid: (_ for _ in ()).throw(KeyError(_cid))
+        channels.manager.create = create
+
+    async def asyncTearDown(self) -> None:
+        channels.manager.get = self._orig_get
+        channels.manager.create = self._orig_create
+
+    async def test_thumbs_up_generates_reinforcement_then_vets(self) -> None:
+        self.replies = [
+            "In situazioni analoghe, continua a: fornire esempi concreti.",
+            '{"ok": true, "lesson": "In situazioni analoghe, continua a: dare esempi."}',
+        ]
+        out = await channels._generate_feedback_lesson(
+            "clodia", "thumbs_up", "buoni esempi", "output valutato")
+        self.assertEqual(out, "In situazioni analoghe, continua a: dare esempi.")
+        self.assertIn("continua a", self.prompts[0])  # rating-aware (👍)
+
+    async def test_thumbs_down_generates_correction(self) -> None:
+        self.replies = [
+            "In situazioni analoghe, evita di: rispondere senza citare la fonte.",
+            '{"ok": true, "lesson": "In situazioni analoghe, evita di: omettere le fonti."}',
+        ]
+        out = await channels._generate_feedback_lesson(
+            "clodia", "thumbs_down", "manca la fonte", "output")
+        self.assertIn("evita di", out)
+        self.assertIn("evita di", self.prompts[0])  # rating-aware (👎)
+
+    async def test_no_lesson_returns_none_without_vet(self) -> None:
+        self.replies = ["NO_LESSON"]  # nessun vet: se venisse chiamato, pop→""
+        out = await channels._generate_feedback_lesson(
+            "clodia", "thumbs_up", "ok", "output")
+        self.assertIsNone(out)
+        self.assertEqual(len(self.prompts), 1)  # solo generazione, niente vet
+
+    async def test_vet_rejection_returns_none(self) -> None:
+        self.replies = [
+            "Per Acme Srl usa il fatturato 3,2M.",  # candidata sporca
+            '{"ok": false, "lesson": ""}',
+        ]
+        out = await channels._generate_feedback_lesson(
+            "clodia", "thumbs_up", "commento", "output")
+        self.assertIsNone(out)
 
 
 if __name__ == "__main__":
