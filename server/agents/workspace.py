@@ -151,6 +151,8 @@ class EphemeralWorkspace:
         task_id: Optional[str] = None,
         shared_subdir: Optional[str] = None,
         execution_id: Optional[str] = None,
+        extra_capabilities: Optional[list[str]] = None,
+        extra_rules: Optional[list[str]] = None,
     ) -> None:
         self.spec = spec
         # Senza task_id esplicito (es. webchat) → indice sequenziale proc-like
@@ -164,6 +166,8 @@ class EphemeralWorkspace:
         # agent che lavorano sequenzialmente la stessa card si scambiano
         # artefatti tramite quella dir senza dover allegarli a Trello.
         self.shared_subdir = shared_subdir
+        self.extra_capabilities = list(extra_capabilities or [])
+        self.extra_rules = list(extra_rules or [])
 
     def create(self) -> Path:
         """Materializza il workspace su disco. Ritorna il path creato."""
@@ -195,7 +199,7 @@ class EphemeralWorkspace:
         # loro skill come attributi innati. Capabilities effettive = proprie +
         # union delle capabilities dei parents (un livello). La wildcard "*" è
         # gestita a valle da materialize_capabilities.
-        caps = list(self.spec.capabilities)
+        caps = list(self.spec.capabilities) + self.extra_capabilities
         if self.spec.parents:
             from .loader import registry as _registry
             for pname in self.spec.parents:
@@ -218,9 +222,8 @@ class EphemeralWorkspace:
         # come esporle al suo agente.
         from . import rule_sync
         rules_target = agent_root / "rules"
-        r_copied, r_unresolved = rule_sync.materialize_rules(
-            self.spec.rules, rules_target
-        )
+        effective_rules = list(dict.fromkeys(list(self.spec.rules) + self.extra_rules))
+        r_copied, r_unresolved = rule_sync.materialize_rules(effective_rules, rules_target)
         if r_copied or r_unresolved:
             LOG.info(
                 "rule_sync agent=%s: %d copiate, unresolved=%s",

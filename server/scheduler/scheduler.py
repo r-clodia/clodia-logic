@@ -259,7 +259,7 @@ async def fire_job(job_id: int) -> dict:
     LOG.info("Firing job id=%s name=%s agent=%s", job_id, job["name"], agent)
     chat_id: Optional[str] = None
     try:
-        chat = await manager.create(kind=agent)
+        chat = await manager.create(kind=agent, run_id=f"job:{job_id}")
         chat_id = chat.chat_id
         # Titolo custom: lo spec richiede "[CRON] <job-name>". Va impostato
         # PRIMA di consegnare il prompt — `_record()` sovrascrive il titolo

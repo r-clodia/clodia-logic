@@ -315,8 +315,11 @@ def _gateway_mint_url() -> str:
 def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
                       principal: Optional[str], clearance: Optional[str],
                       on_behalf: bool, human_role: Optional[str],
-                      chat: Optional[str]) -> str:
-    key = (agent, execution_id, principal, clearance, on_behalf, human_role, chat)
+                      chat: Optional[str],
+                      scoped_tools: Optional[list[str]]) -> str:
+    scoped_key = tuple(scoped_tools or ())
+    key = (agent, execution_id, int(ttl_seconds), principal, clearance, on_behalf,
+           human_role, chat, scoped_key)
     now = int(time.time())
     hit = _MINT_CACHE.get(key)
     if hit and hit[1] - _MINT_CACHE_SKEW > now:
@@ -326,7 +329,8 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
     body = {"kind": "session", "agent": agent, "execution_id": execution_id,
             "ttl_seconds": int(ttl_seconds), "principal": principal,
             "clearance": clearance, "on_behalf": bool(on_behalf),
-            "human_role": human_role, "chat": chat}
+            "human_role": human_role, "chat": chat,
+            "scoped_tools": list(scoped_key)}
     r = httpx.post(_gateway_mint_url(), json=body,
                    headers={"X-Orchestrator-Secret": secret}, timeout=8.0)
     r.raise_for_status()
@@ -341,7 +345,8 @@ def mint_session_token(agent: str, execution_id: str = "",
                        clearance: str | None = None,
                        on_behalf: bool = False,
                        human_role: str | None = None,
-                       chat: str | None = None) -> str:
+                       chat: str | None = None,
+                       scoped_tools: list[str] | None = None) -> str:
     """Firmato dal RUNNER con la chiave privata dell'agente (mai esposta
     al workspace). Nel workspace entra solo il token risultante.
 
@@ -356,10 +361,14 @@ def mint_session_token(agent: str, execution_id: str = "",
     `clearance` (opz.): la clearance dell'agent (SEAL-N) — propagata al gateway
     così può far rispettare clearance≥tier sull'accesso ai topic (difesa in
     profondità, asse livello). Firmata → non falsificabile dall'agent."""
+    scoped_tools = list(dict.fromkeys(scoped_tools or []))
+    if any(t in ("*", "agents") or t.startswith("agents.") for t in scoped_tools):
+        raise PermissionError("scoped_tools non può concedere wildcard o tool agents.*")
     if (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip():
         try:
             return _mint_via_gateway(agent, execution_id, ttl_seconds, principal,
-                                     clearance, on_behalf, human_role, chat)
+                                     clearance, on_behalf, human_role, chat,
+                                     scoped_tools)
         except Exception as e:  # noqa: BLE001
             LOG.warning("mint via gateway fallito per %s (%s) → firma locale", agent, e)
     key_path = agent_key_path(agent)
@@ -377,6 +386,8 @@ def mint_session_token(agent: str, execution_id: str = "",
         payload["clearance"] = clearance
     if chat:
         payload["chat"] = chat  # chat_id della sessione (per postare in chat le decisioni sudo)
+    if scoped_tools:
+        payload["scoped_tools"] = scoped_tools
     # M-authz: chiamata ON-BEHALF di un umano → il gateway autorizza sul ruolo
     # umano (PDP unico), non sul carrier-agent. Claim firmati → non forgiabili.
     if on_behalf:
@@ -428,6 +439,31 @@ def mint_capability(agent: str, instance: str, minutes: int, by: str,
     body = _b64e(json.dumps(payload, separators=(",", ":")).encode())
     sig = _b64e(ca_key.sign(body.encode()))
     return {"token": f"{CAP_PREFIX}.{body}.{sig}", "jti": jti, "exp": payload["exp"]}
+
+
+def verify_capability(token: str) -> dict:
+    """Validate a CA-signed capability token without requiring the CA private key."""
+    try:
+        prefix, body, sig = token.strip().split(".")
+        if prefix != CAP_PREFIX:
+            raise ValueError("prefisso capability sconosciuto")
+        payload = json.loads(_b64d(body))
+    except Exception as e:
+        raise PermissionError(f"capability malformata: {e}")
+    if not CA_CRT.is_file():
+        raise PermissionError("CA cert non disponibile")
+    pub = x509.load_pem_x509_certificate(CA_CRT.read_bytes()).public_key()
+    if not isinstance(pub, Ed25519PublicKey):
+        raise PermissionError("CA non Ed25519")
+    try:
+        pub.verify(_b64d(sig), body.encode())
+    except Exception as e:
+        raise PermissionError("firma capability non valida") from e
+    if not str(payload.get("cap") or "").strip():
+        raise PermissionError("capability senza cap")
+    if int(payload.get("exp", 0)) < time.time():
+        raise PermissionError("capability scaduta")
+    return payload
 
 
 def verify_session_token(token: str) -> dict:

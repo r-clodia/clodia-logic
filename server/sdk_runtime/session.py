@@ -337,7 +337,7 @@ def _seed_governance_text(kind: str) -> Optional[str]:
         return None
 
 
-def _materialize_spawn(kind: str):
+def _materialize_spawn(kind: str, runtime_override: Optional[dict] = None):
     """Materializza uno SPAWN dal seed dell'agent `kind` (modello /spawns): copia
     seed + costituzione fusa + skill (catalog + apprese) + memory (symlink) +
     scratch in clodia-data/spawns/<name>-<n>. Ritorna (EphemeralWorkspace, Path)
@@ -348,7 +348,12 @@ def _materialize_spawn(kind: str):
         spec = registry.get_by_name(kind)
         if spec is None or not spec.agent_dir:
             return None, None
-        ws = EphemeralWorkspace(spec)
+        override = runtime_override or {}
+        ws = EphemeralWorkspace(
+            spec,
+            extra_capabilities=override.get("capabilities"),
+            extra_rules=override.get("rules"),
+        )
         return ws, ws.create()
     except Exception as e:  # noqa: BLE001 — lo spawn non deve impedire lo start
         LOG.warning("spawn non materializzato per %s: %s", kind, e)
@@ -591,6 +596,58 @@ def agent_runtime_sdk(kind: str) -> str:
     return (getattr(spec, "agent_sdk", None) or "claude") if spec else "claude"
 
 
+def _runtime_provider(kind: str, override: Optional[dict]) -> Optional[str]:
+    return (override or {}).get("provider") or agent_effective_provider(kind)
+
+
+def _runtime_model(kind: str, override: Optional[dict]) -> Optional[str]:
+    model = (override or {}).get("model")
+    provider = _runtime_provider(kind, override)
+    if not model:
+        spec = _kind_spec(kind)
+        per_provider = getattr(spec, "provider_models", None) or {} if spec else {}
+        model = per_provider.get(provider) or _resolve_model(kind)
+    try:
+        from ..api.providers import bedrock_model_id
+        return bedrock_model_id(provider, model) or model
+    except Exception:  # noqa: BLE001
+        return model
+
+
+def _runtime_sdk(kind: str, override: Optional[dict]) -> str:
+    provider = (override or {}).get("provider")
+    if provider:
+        from ..api.providers import provider_sdk
+        return provider_sdk(provider) or agent_runtime_sdk(kind)
+    return agent_runtime_sdk(kind)
+
+
+def _runtime_token_ttl(override: Optional[dict]) -> int:
+    """Never let a signed scoped grant outlive its earliest source overlay."""
+    expiries = [
+        float(row.get("expires_at") or 0)
+        for row in (override or {}).get("records", [])
+        if float(row.get("expires_at") or 0) > 0
+    ]
+    if not expiries:
+        return _CLODIA_TOOLS_TOKEN_TTL
+    remaining = int(min(expiries) - time.time())
+    return max(1, min(_CLODIA_TOOLS_TOKEN_TTL, remaining))
+
+
+def _ensure_runtime_provider(kind: str, override: Optional[dict]) -> None:
+    if not override or not (override.get("provider") or override.get("model")):
+        _ensure_provider_connected(kind)
+        return
+    from ..api.providers import connected_provider_ids, provider_supports_model
+    provider = _runtime_provider(kind, override)
+    model = _runtime_model(kind, override)
+    if not provider or provider not in connected_provider_ids():
+        raise ProviderNotConnected(kind, provider or "nessuno")
+    if not provider_supports_model(provider, model):
+        raise RuntimeError(f"provider '{provider}' incompatibile con modello '{model}'")
+
+
 def provider_connected_for(kind: str) -> bool:
     """True se almeno un provider compatibile del kind è collegato (o nessun
     candidato determinabile → passa). Fail-open su errore infra."""
@@ -623,7 +680,8 @@ class ChatSession:
     """Una singola chat con un agente (Clodia o Ada): subprocess claude
     + history dedicata sotto la cartella sessions/ del kind."""
 
-    def __init__(self, chat_id: str, kind: str = DEFAULT_KIND, title: str = "") -> None:
+    def __init__(self, chat_id: str, kind: str = DEFAULT_KIND, title: str = "",
+                 runtime_override: Optional[dict] = None) -> None:
         if not known_kind(kind):
             raise ValueError(f"unknown agent kind: {kind}")
         self.chat_id = chat_id
@@ -653,6 +711,7 @@ class ChatSession:
         # principal "cotto" nel token MCP del client attualmente avviato (per
         # capire quando ri-coniare se l'utente connesso cambia).
         self._token_principal: Optional[str] = None
+        self._runtime_override = runtime_override or {}
 
     @property
     def cwd(self) -> Path:
@@ -697,7 +756,7 @@ class ChatSession:
             # compatibile collegato): con provider distinti per DPA/costo, due
             # credenziali dello stesso SDK collegate insieme non devono
             # sovrapporsi. Kind non determinabile → fallback a tutti (back-compat).
-            eff = agent_effective_provider(self.kind)
+            eff = _runtime_provider(self.kind, getattr(self, "_runtime_override", None))
             if eff:
                 child_env.update(provider_env(eff))
             elif not agent_candidates(self.kind):
@@ -716,7 +775,7 @@ class ChatSession:
         # quel workspace come cwd. Mirror del runtime colonia: system_prompt dal
         # file, .claude/ (skill+settings) caricato di default. Niente CLAUDE.md nel
         # workspace → nessun conflitto. Lo spawn è pulito a stop().
-        self._spawn, spawn_dir = _materialize_spawn(self.kind)
+        self._spawn, spawn_dir = _materialize_spawn(self.kind, self._runtime_override)
         cwd = str(spawn_dir) if spawn_dir else str(self.cwd)
         opts_kwargs = {"cwd": cwd, "env": child_env, "include_partial_messages": True,
                        "max_buffer_size": _STREAM_LIMIT}
@@ -735,7 +794,7 @@ class ChatSession:
         # altrimenti quello dichiarato; su Bedrock tradotto nell'inference-profile
         # EU (claude-sonnet-4-5 → eu.anthropic.claude-sonnet-4-6). No-op sui
         # provider non-Bedrock / senza override.
-        model_override = agent_effective_model(self.kind)
+        model_override = _runtime_model(self.kind, self._runtime_override)
         if model_override:
             opts_kwargs["model"] = model_override
         permission_mode_override = _resolve_permission_mode(self.kind)
@@ -753,9 +812,11 @@ class ChatSession:
         # disco). Solo per i kind con identità PKI (clodia); per gli altri il
         # mint fallisce → si salta senza rompere.
         try:
-            ct_token = pki.mint_session_token(self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
+            ct_token = pki.mint_session_token(self.kind, ttl_seconds=_runtime_token_ttl(
+                                              self._runtime_override),
                                               principal=self.principal,
-                                              clearance=_effective_clearance(self.kind), chat=self.chat_id)
+                                              clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                                              scoped_tools=self._runtime_override.get("tools"))
             # principal "cotto" nel token MCP di questo client: se cambia (l'utente
             # connesso cambia, o la sessione era partita anonima) va ri-coniato.
             self._token_principal = self.principal
@@ -818,7 +879,7 @@ class ChatSession:
             return False
         try:
             from ..api.providers import provider_env
-            eff = agent_effective_provider(self.kind)
+            eff = _runtime_provider(self.kind, getattr(self, "_runtime_override", None))
             if not eff:
                 return False
             fresh = provider_env(eff)
@@ -848,8 +909,10 @@ class ChatSession:
             return False  # kind senza MCP clodia-tools
         try:
             ct_token = pki.mint_session_token(
-                self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
-                principal=self.principal, clearance=_effective_clearance(self.kind), chat=self.chat_id)
+                self.kind, ttl_seconds=_runtime_token_ttl(
+                    getattr(self, "_runtime_override", None)),
+                principal=self.principal, clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                scoped_tools=self._runtime_override.get("tools"))
         except Exception as e:  # noqa: BLE001 — un re-mint fallito non rompe il turno
             LOG.warning("re-mint token MCP (principal) fallito per kind=%s: %s", self.kind, e)
             return False
@@ -974,7 +1037,7 @@ class ChatSession:
                         activity_log.append(self.kind, "run_done",
                                             {"reply": _snippet(full), "chat_id": self.chat_id,
                                              "usage": self._last_usage or None,
-                             "provider": agent_effective_provider(self.kind)})
+                             "provider": _runtime_provider(self.kind, self._runtime_override)})
                         await self._set_status(ClodiaStatus.IDLE)
                         return full
                     except asyncio.CancelledError:
@@ -1290,6 +1353,7 @@ class ChatSession:
             "context_tokens": getattr(self, "_context_tokens", 0),
             "total_tokens": self._total_tokens,
             "runtime": "claude",
+            "scoped_override": self._runtime_override,
             **_spawn_identity(self._spawn),
         }
 
@@ -1308,7 +1372,8 @@ class CodexChatSession:
     JSONL di codex sono tradotti negli stessi Event del Claude SDK.
     """
 
-    def __init__(self, chat_id: str, kind: str = "ophelia", title: str = "") -> None:
+    def __init__(self, chat_id: str, kind: str = "ophelia", title: str = "",
+                 runtime_override: Optional[dict] = None) -> None:
         if not known_kind(kind):
             raise ValueError(f"unknown agent kind: {kind}")
         self.chat_id = chat_id
@@ -1332,6 +1397,7 @@ class CodexChatSession:
         # Utente UMANO della chat (principal verificato dal token webui). Per
         # codex il token gateway è coniato per-turno → sempre col principal corrente.
         self.principal: Optional[str] = None
+        self._runtime_override = runtime_override or {}
 
     @property
     def cwd(self) -> Path:
@@ -1372,7 +1438,7 @@ class CodexChatSession:
         # scratch). Per codex l'AGENTS.md dello spawn include già la governance
         # (costituzione+identità), che codex auto-carica dalla cwd. I turni girano
         # nello scratch dello spawn. Lo spawn è pulito a stop().
-        self._spawn, self._spawn_dir = _materialize_spawn(self.kind)
+        self._spawn, self._spawn_dir = _materialize_spawn(self.kind, self._runtime_override)
         if self._spawn_dir is None:
             # fallback (seed assente dal registry): governance nella cwd stabile
             self.cwd.mkdir(parents=True, exist_ok=True)
@@ -1485,6 +1551,9 @@ class CodexChatSession:
         cmd = [CODEX_BIN, "exec"]
         if self._thread_id:
             cmd += ["resume", self._thread_id]
+        runtime_model = _runtime_model(self.kind, self._runtime_override)
+        if runtime_model:
+            cmd += ["--model", runtime_model]
         # niente -C: il workdir è già imposto via cwd= sul subprocess (e `resume`
         # non accetta -C). --skip-git-repo-check: il workspace non è un repo git.
         cmd += ["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]
@@ -1493,8 +1562,10 @@ class CodexChatSession:
         # → runtime.current_user resta sempre allineato senza restart.
         try:
             env["CLODIA_TOOLS_TOKEN"] = pki.mint_session_token(
-                self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL, principal=self.principal,
-                clearance=_effective_clearance(self.kind), chat=self.chat_id)
+                self.kind, ttl_seconds=_runtime_token_ttl(self._runtime_override),
+                principal=self.principal,
+                clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                scoped_tools=self._runtime_override.get("tools"))
         except Exception as e:  # noqa: BLE001
             LOG.warning("token clodia-tools (codex) non coniato per %s: %s", self.kind, e)
         run_cwd = str(self._spawn_dir or self.cwd)
@@ -1543,7 +1614,7 @@ class CodexChatSession:
         activity_log.append(self.kind, "run_done",
                             {"reply": _snippet(full), "chat_id": self.chat_id,
                              "usage": run_usage or None,
-                             "provider": agent_effective_provider(self.kind)})
+                             "provider": _runtime_provider(self.kind, self._runtime_override)})
         return full
 
     def _codex_run_usage_delta(self, cumulative: dict | None) -> dict | None:
@@ -1680,6 +1751,7 @@ class CodexChatSession:
             "context_tokens": getattr(self, "_context_tokens", 0),
             "total_tokens": self._total_tokens,
             "runtime": "codex",
+            "scoped_override": self._runtime_override,
             **_spawn_identity(self._spawn),
         }
 
@@ -1705,7 +1777,8 @@ class OpenCodeChatSession:
     (`{env:…}`) così non finiscono su disco. Vedi project_opencode_runtime_spike.
     """
 
-    def __init__(self, chat_id: str, kind: str = "messaggero", title: str = "") -> None:
+    def __init__(self, chat_id: str, kind: str = "messaggero", title: str = "",
+                 runtime_override: Optional[dict] = None) -> None:
         if not known_kind(kind):
             raise ValueError(f"unknown agent kind: {kind}")
         self.chat_id = chat_id
@@ -1730,6 +1803,7 @@ class OpenCodeChatSession:
         self._spawn = None
         self._spawn_dir: Optional[Path] = None
         self.principal: Optional[str] = None
+        self._runtime_override = runtime_override or {}
 
     @property
     def cwd(self) -> Path:
@@ -1758,8 +1832,8 @@ class OpenCodeChatSession:
     def _write_config(self, cwd: Path) -> dict:
         """Scrive <cwd>/opencode.json (provider + MCP gateway) e ritorna l'env con
         le credenziali (referenziate via {env:…} nel config, così non su disco)."""
-        self._provider = agent_effective_provider(self.kind)
-        self._model = agent_effective_model(self.kind)
+        self._provider = _runtime_provider(self.kind, self._runtime_override)
+        self._model = _runtime_model(self.kind, self._runtime_override)
         env = {**os.environ}
         cfg: dict = {"$schema": "https://opencode.ai/config.json", "provider": {}, "mcp": {}}
         # credenziale del provider effettivo (apikey provider, es. scaleway)
@@ -1791,9 +1865,11 @@ class OpenCodeChatSession:
         # perché l'endpoint interno è http:// (rete docker, non esposto). Il token
         # (col principal + clearance) va nell'header del bridge.
         try:
-            tok = pki.mint_session_token(self.kind, ttl_seconds=_CLODIA_TOOLS_TOKEN_TTL,
+            tok = pki.mint_session_token(self.kind, ttl_seconds=_runtime_token_ttl(
+                                         self._runtime_override),
                                          principal=self.principal,
-                                         clearance=_effective_clearance(self.kind), chat=self.chat_id)
+                                         clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                                         scoped_tools=self._runtime_override.get("tools"))
             cfg["mcp"]["clodia-tools"] = {
                 "type": "local",
                 "command": ["npx", "-y", "mcp-remote", CLODIA_TOOLS_MCP_URL,
@@ -1838,7 +1914,7 @@ class OpenCodeChatSession:
 
     async def start(self) -> None:
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
-        self._spawn, self._spawn_dir = _materialize_spawn(self.kind)
+        self._spawn, self._spawn_dir = _materialize_spawn(self.kind, self._runtime_override)
         run_cwd = Path(self._spawn_dir or self.cwd)
         if self._spawn_dir is None:
             run_cwd.mkdir(parents=True, exist_ok=True)
@@ -1991,7 +2067,7 @@ class OpenCodeChatSession:
         activity_log.append(self.kind, "run_done",
                             {"reply": _snippet(full), "chat_id": self.chat_id,
                              "usage": self._last_usage or None,
-                             "provider": agent_effective_provider(self.kind)})
+                             "provider": _runtime_provider(self.kind, self._runtime_override)})
         return full
 
     async def _handle_parts(self, data: dict) -> str:
@@ -2089,15 +2165,16 @@ class OpenCodeChatSession:
             "context_tokens": getattr(self, "_context_tokens", 0),
             "total_tokens": self._total_tokens,
             "runtime": "opencode",
+            "scoped_override": self._runtime_override,
             **_spawn_identity(self._spawn),
         }
 
 
-def _runtime_class(kind: str):
+def _runtime_class(kind: str, runtime_override: Optional[dict] = None):
     """Classe di runtime per il kind = SDK del provider EFFETTIVO (fallback
     cross-SDK): opencode → OpenCodeChatSession, codex → CodexChatSession,
     altrimenti ChatSession (claude)."""
-    sdk = agent_runtime_sdk(kind)
+    sdk = _runtime_sdk(kind, runtime_override)
     if sdk == "opencode":
         return OpenCodeChatSession
     if sdk == "codex":
@@ -2135,16 +2212,19 @@ class ChatManager:
                 out.add(str(sd))
         return out
 
-    async def create(self, chat_id: Optional[str] = None, kind: str = DEFAULT_KIND) -> ChatSession:
+    async def create(self, chat_id: Optional[str] = None, kind: str = DEFAULT_KIND,
+                     run_id: Optional[str] = None) -> ChatSession:
         async with self._lock:
             # Enforcement: un agent col provider scollegato non è disponibile —
             # né per chat (qui) né per job (fire_job passa di qui). Choke point unico.
-            _ensure_provider_connected(kind)
             cid = chat_id or _new_chat_id()
+            from .. import scoped_overrides
+            runtime_override = scoped_overrides.resolve(kind, chat_id=cid, run_id=run_id)
+            _ensure_runtime_provider(kind, runtime_override)
             if cid in self._chats:
                 raise ValueError(f"chat '{cid}' already exists")
-            cls = _runtime_class(kind)
-            chat = cls(cid, kind=kind)
+            cls = _runtime_class(kind, runtime_override)
+            chat = cls(cid, kind=kind, runtime_override=runtime_override)
             # Pre-popola titolo dalla history se esiste su disco
             existing = chat.read_history()
             if existing:
