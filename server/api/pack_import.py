@@ -329,6 +329,11 @@ def install_pack_from_root(root: Path, *, source: str,
     pack = _sanitize_pack_name(manifest.get("name") or pack_root.name, allow_reserved=allow_reserved)
     description = str(manifest.get("description") or "").strip()
     version = str(manifest.get("version") or "").strip()
+    # Preserva `upstream` (repo/path/ref) dal pack.yaml sorgente: è ciò che abilita
+    # il Check-update (_pack_upstream legge dal manifest installato). Senza, un pack
+    # first-party installato via questo path perde l'aggiornabilità.
+    _up = manifest.get("upstream")
+    upstream = _up if isinstance(_up, dict) and _up.get("repo") else None
 
     if marketplace is not None:
         plugin_dirs = _marketplace_plugin_dirs(pack_root, manifest)
@@ -359,15 +364,18 @@ def install_pack_from_root(root: Path, *, source: str,
 
     meta_dir = PACKS_META_DIR / pack
     meta_dir.mkdir(parents=True, exist_ok=True)
+    _meta = {
+        "name": pack,
+        "description": description,
+        "version": version,
+        "source": source,
+        "agents": [a["name"] for a in agents if a["status"] != "error"],
+        "plugins": [p["plugin"] for p in plugins],
+    }
+    if upstream is not None:
+        _meta["upstream"] = upstream
     (meta_dir / "pack.yaml").write_text(
-        yaml.safe_dump({
-            "name": pack,
-            "description": description,
-            "version": version,
-            "source": source,
-            "agents": [a["name"] for a in agents if a["status"] != "error"],
-            "plugins": [p["plugin"] for p in plugins],
-        }, allow_unicode=True, sort_keys=False),
+        yaml.safe_dump(_meta, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
     LOG.info("pack '%s' importato: %d agent, %d plugin", pack, len(agents), len(plugins))

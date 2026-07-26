@@ -139,6 +139,27 @@ class PacksApiTest(unittest.TestCase):
             (self.packs_meta / "my-pack" / "pack.yaml").read_text(encoding="utf-8"))
         self.assertEqual(manifest["agents"], ["testbot"])
         self.assertEqual(sorted(manifest["plugins"]), ["bare-plugin", "inner-plugin"])
+        # senza upstream nel sorgente → nessun campo upstream nel manifest
+        self.assertNotIn("upstream", manifest)
+
+    def test_import_preserves_upstream_for_check_update(self) -> None:
+        # Un pack first-party con `upstream` deve conservarlo nel manifest
+        # installato: è ciò che abilita il Check-update (_pack_upstream).
+        z = _zip_bytes({
+            "up-pack/pack.yaml": (
+                "name: up-pack\ndescription: d\nversion: 1.0.0\n"
+                "upstream:\n  repo: r-clodia/clodia-packs\n"
+                "  path: packs/up-pack\n  ref: main\n"),
+            "up-pack/agents/upbot/agent.yaml": _agent_yaml("upbot"),
+            "up-pack/agents/upbot/system-prompt.md": "# Upbot\n",
+        })
+        pack_import.import_pack_zip(z, source="up-pack.zip")
+        manifest = yaml.safe_load(
+            (self.packs_meta / "up-pack" / "pack.yaml").read_text(encoding="utf-8"))
+        self.assertEqual(manifest["upstream"],
+                         {"repo": "r-clodia/clodia-packs",
+                          "path": "packs/up-pack", "ref": "main"})
+        self.assertIsNotNone(packs._pack_upstream("up-pack"))
 
     def test_list_packs_exposes_soft_missing_plugins(self) -> None:
         pack_import.import_pack_zip(self._pack_zip(), source="my-pack.zip")
