@@ -78,3 +78,36 @@ class AgentFeedbackTest(TestCase):
                         agent="helper", message_id="a", topic="SEAL-0/one",
                         rating="thumbs_up", by="owner", comment="  ",
                     )
+
+    def test_generated_lesson_coexists_with_raw_comment(self) -> None:
+        # #39: comment grezzo per audit, lesson generata iniettata. Solo la lesson
+        # finisce in MEMORY.md; il commento resta nel record JSON.
+        with TemporaryDirectory() as tmp:
+            spec = SimpleNamespace(name="helper", agent_dir=tmp,
+                                   memory=SimpleNamespace(dir="memory/"))
+            with patch.object(feedback.registry, "get_by_name", return_value=spec):
+                row = feedback.create(
+                    agent="helper", message_id="a", topic="SEAL-0/one",
+                    rating="thumbs_up", by="owner",
+                    comment="Per Acme il fatturato è 3,2M",
+                    lesson="In situazioni analoghe, continua a: citare la fonte.")
+                self.assertEqual(row["comment"], "Per Acme il fatturato è 3,2M")
+                self.assertEqual(row["lesson"],
+                                 "In situazioni analoghe, continua a: citare la fonte.")
+                self.assertEqual(row["status"], "learned")
+                memory = (Path(tmp) / "memory" / "MEMORY.md").read_text()
+                self.assertIn("continua a: citare la fonte.", memory)
+                self.assertNotIn("Acme", memory)  # il commento grezzo NON è iniettato
+
+    def test_empty_generated_lesson_is_audit_only(self) -> None:
+        with TemporaryDirectory() as tmp:
+            spec = SimpleNamespace(name="helper", agent_dir=tmp,
+                                   memory=SimpleNamespace(dir="memory/"))
+            with patch.object(feedback.registry, "get_by_name", return_value=spec):
+                row = feedback.create(
+                    agent="helper", message_id="a", topic="SEAL-0/one",
+                    rating="thumbs_down", by="owner", comment="Vago", lesson="")
+                self.assertEqual(row["status"], "recorded")
+                self.assertEqual(row["lesson"], "")
+                memory = (Path(tmp) / "memory" / "MEMORY.md").read_text()
+                self.assertNotIn("Vago", memory)  # niente iniezione

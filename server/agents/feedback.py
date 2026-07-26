@@ -84,10 +84,17 @@ def _sync_memory(path: Path, rows: list[dict]) -> Path:
 
 
 def create(*, agent: str, message_id: str, topic: str, rating: str,
-           by: str, comment: str = "") -> dict:
+           by: str, comment: str = "", lesson: str | None = None) -> dict:
+    """Registra un feedback. `comment` = testo grezzo dell'utente (audit, sempre
+    conservato). `lesson` = testo METODOLOGICO astratto da iniettare nel prompt
+    (issue #39): se passato convive col comment (audit) ma è LUI a finire in
+    MEMORY.md; se None si ricade sul comment verbatim (compat #36 / chiamanti
+    diretti). Una lesson vuota (es. vet che rifiuta) → riga solo-audit, non
+    iniettata."""
     clean_comment = comment.strip()
     if not clean_comment:
         raise ValueError("comment obbligatorio per il feedback")
+    final_lesson = lesson.strip() if lesson is not None else clean_comment
     now = datetime.now(timezone.utc).isoformat()
     row = {
         "id": str(uuid.uuid4()),
@@ -98,8 +105,8 @@ def create(*, agent: str, message_id: str, topic: str, rating: str,
         "rating": rating,
         "comment": clean_comment,
         "by": by,
-        "status": "learned",
-        "lesson": clean_comment,
+        "status": "learned" if final_lesson else "recorded",
+        "lesson": final_lesson,
         "learned_at": now,
     }
     path = _path(agent)
