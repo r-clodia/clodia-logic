@@ -48,10 +48,20 @@ class PkiTests(PkiBase):
         pki.init_ca()
         pki.issue_agent_identity("dairio")
         self.assertTrue(pki.has_identity("dairio"))
-        token = pki.mint_session_token("dairio", execution_id="exec123")
+        token = pki.mint_session_token(
+            "dairio", execution_id="exec123",
+            scoped_tools=["email.send", "email.send", "fs.read"],
+        )
         payload = pki.verify_session_token(token)
         self.assertEqual(payload["agent"], "dairio")
         self.assertEqual(payload["execution_id"], "exec123")
+        self.assertEqual(payload["scoped_tools"], ["email.send", "fs.read"])
+
+    def test_session_token_rejects_scoped_admin_tools(self):
+        pki.init_ca()
+        pki.issue_agent_identity("dairio")
+        with self.assertRaises(PermissionError):
+            pki.mint_session_token("dairio", scoped_tools=["agents.grant_tool"])
 
     def test_external_key_cert_not_overwritten(self):
         """Un principal a chiave esterna (umano): cert emesso da pubkey, nessuna

@@ -18,7 +18,7 @@ import re
 import shutil
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Literal, Optional
 
 _CLR_LEGACY = {"P0": "SEAL-0", "P1": "SEAL-1", "P2": "SEAL-2", "P3": "SEAL-3"}
 _CLR_VALID = ("SEAL-0", "SEAL-1", "SEAL-2", "SEAL-3", "SEAL-4")
@@ -32,13 +32,15 @@ import yaml
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from ..agents import activity_log, pause as pause_mod, rank as rank_mod, registry
 from ..agents.models import AgentSpec
+from ..colony import pki
+from .. import scoped_overrides
 from .providers import (connected_provider_ids, candidate_providers, effective_provider,
                         provider_seal, provider_override, set_provider_override,
-                        provider_paused)
+                        provider_paused, provider_supports_model)
 from .provider_store import ProviderStoreError
 from . import admin, contacts, gateway_pdp, imagegen_client
 from .agents import _principal_from_request
@@ -460,6 +462,141 @@ class AgentCapsPatch(BaseModel):
     capabilities: Optional[list[str]] = None
     rules: Optional[list[str]] = None
     tool_permissions: Optional[list[str]] = None
+
+
+class ScopedOverrideCreate(BaseModel):
+    scope_kind: Literal["topic", "chat", "run"]
+    scope_id: str = Field(min_length=1, max_length=256)
+    ttl_minutes: int = Field(default=15, ge=1, le=scoped_overrides.MAX_TTL_MINUTES)
+    capabilities: list[str] = Field(default_factory=list)
+    rules: list[str] = Field(default_factory=list)
+    tools: list[str] = Field(default_factory=list)
+    model: Optional[str] = None
+    provider: Optional[str] = None
+    reason: str = Field(default="", max_length=500)
+    approval_token: str = Field(min_length=1)
+
+
+class ScopedOverrideRevoke(BaseModel):
+    approval_token: str = Field(min_length=1)
+
+
+def _verified_gate(token: str, caller: str, verb: str) -> dict:
+    try:
+        payload = pki.verify_capability(token)
+    except PermissionError as exc:
+        raise HTTPException(403, str(exc)) from exc
+    if payload.get("agent") != caller or payload.get("cap") != f"gate:{verb}":
+        raise HTTPException(403, "approvazione firmata non valida per caller o azione")
+    return payload
+
+
+def _scope_seal(scope_kind: str, scope_id: str) -> str:
+    if scope_kind == "run":
+        return "SEAL-0"
+    raw = scope_id if scope_kind == "topic" else scoped_overrides.topic_from_chat_id(scope_id)
+    if not raw:
+        return "SEAL-0"
+    tier = (raw.split("/", 1)[0] if "/" in raw else "").upper()
+    return tier if tier in _CLR_VALID else "SEAL-0"
+
+
+@router.post("/{name}/scoped-overrides")
+async def create_scoped_override(
+    name: str, body: ScopedOverrideCreate, request: Request,
+) -> dict:
+    """Concede un overlay runtime approvato, scoped e con TTL; non muta il seed."""
+    caller = _principal_from_request(request)
+    if not _agent_can_admin(caller):
+        raise HTTPException(403, "richiede un super-agent o il permesso 'agents.*'")
+    approval = _verified_gate(body.approval_token, caller, "agents.grant_scoped")
+    spec = registry.get_by_name(name)
+    if spec is None:
+        raise HTTPException(404, f"agent '{name}' non trovato")
+    if getattr(spec, "type", None) == "human":
+        raise HTTPException(400, "un principal umano non ha un runtime da modificare")
+
+    _validate_catalog_refs(body.capabilities, "skill")
+    _validate_catalog_refs(body.rules, "rule")
+    for tool in body.tools:
+        if tool in ("*", "agents") or tool.startswith("agents."):
+            raise HTTPException(400, "tool amministrativi e wildcard non sono concedibili")
+
+    provider = (body.provider or "").strip() or None
+    model = (body.model or "").strip() or None
+    if provider or model:
+        from ..sdk_runtime.session import agent_effective_provider
+        provider = provider or agent_effective_provider(name)
+        provider_models = getattr(spec, "provider_models", None) or {}
+        model = model or provider_models.get(provider) or getattr(spec, "model", None)
+        if not provider or provider not in connected_provider_ids():
+            raise HTTPException(409, "provider override non collegato o non disponibile")
+        if not provider_supports_model(provider, model):
+            raise HTTPException(400, f"il provider '{provider}' non supporta '{model}'")
+        required = _norm_clearance(_scope_seal(body.scope_kind, body.scope_id))
+        actual = _norm_clearance(provider_seal(provider))
+        if _CLR_VALID.index(actual) < _CLR_VALID.index(required):
+            raise HTTPException(403, f"provider {actual} insufficiente per scope {required}")
+
+    try:
+        scoped_overrides.normalize_scope(body.scope_kind, body.scope_id)
+        if not any((body.capabilities, body.rules, body.tools, model, provider)):
+            raise ValueError("override vuoto")
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    if not scoped_overrides.consume_approval(
+        str(approval.get("jti") or ""), float(approval.get("exp") or 0)):
+        raise HTTPException(409, "approvazione già usata o priva di JTI")
+    try:
+        row = scoped_overrides.create(
+            agent=name, scope_kind=body.scope_kind, scope_id=body.scope_id,
+            ttl_minutes=body.ttl_minutes, capabilities=body.capabilities,
+            rules=body.rules, tools=body.tools, model=model, provider=provider,
+            reason=body.reason, requested_by=caller,
+            approved_by=str(approval.get("by") or caller),
+            approval_jti=str(approval.get("jti") or ""),
+        )
+    except ValueError as exc:
+        raise HTTPException(400, str(exc)) from exc
+    activity_log.append(name, "scoped_override_granted", {
+        "override_id": row["id"], "scope_kind": row["scope_kind"],
+        "scope_id": row["scope_id"], "expires_at": row["expires_at"],
+        "requested_by": caller,
+    })
+    return {**row, "applies": "next_session"}
+
+
+@router.get("/{name}/scoped-overrides")
+async def get_scoped_overrides(name: str, request: Request) -> dict:
+    caller = _principal_from_request(request)
+    if caller != name and not _agent_can_admin(caller):
+        raise HTTPException(403, "override visibili solo al target o a un agent admin")
+    if registry.get_by_name(name) is None:
+        raise HTTPException(404, f"agent '{name}' non trovato")
+    return {"agent": name, "items": scoped_overrides.list_active(name)}
+
+
+@router.delete("/{name}/scoped-overrides/{override_id}")
+async def revoke_scoped_override(
+    name: str, override_id: str, body: ScopedOverrideRevoke, request: Request,
+) -> dict:
+    caller = _principal_from_request(request)
+    if not _agent_can_admin(caller):
+        raise HTTPException(403, "richiede un super-agent o il permesso 'agents.*'")
+    approval = _verified_gate(body.approval_token, caller, "agents.revoke_scoped")
+    if not any(row.get("id") == override_id for row in scoped_overrides.list_active(name)):
+        raise HTTPException(404, "override scoped non trovato")
+    if not scoped_overrides.consume_approval(
+        str(approval.get("jti") or ""), float(approval.get("exp") or 0)):
+        raise HTTPException(409, "approvazione già usata o priva di JTI")
+    row = scoped_overrides.revoke(override_id, agent=name)
+    if row is None:
+        raise HTTPException(404, "override scoped non trovato")
+    activity_log.append(name, "scoped_override_revoked", {
+        "override_id": override_id, "requested_by": caller,
+        "approved_by": approval.get("by"),
+    })
+    return {"revoked": True, "item": row}
 
 
 @router.patch("/{name}/caps", response_model=AgentSpec)
