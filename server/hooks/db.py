@@ -1,12 +1,9 @@
-"""Store dei Chat Hook (F1).
+"""Store dei Chat Hook.
 
-Un *hook* è una capability opaca legata a UNA chat (topic/DM): chi conosce il
-segreto può iniettare un messaggio in quella chat via `POST /hooks/{id}`. Il
+Un *hook* è legato a UNA chat (topic/DM): il suo id è lo slug globale del topic
+e chi conosce il segreto può iniettare un messaggio via `POST /hooks/{id}`. Il
 segreto si mostra UNA volta alla creazione; a riposo se ne tiene solo l'hash
 (sha256). Persistito sotto CLODIA_DATA/hooks/hooks.json.
-
-F1 = solo bearer (segreto). L'autorità del messaggio iniettato è *non fidata*
-(vedi api.py); la firma con identità CA (autorità piena) arriva in F2.
 """
 from __future__ import annotations
 
@@ -22,6 +19,10 @@ _DIR: Path = data_path("hooks")
 _FILE: Path = _DIR / "hooks.json"
 
 
+class HookConflictError(RuntimeError):
+    """Lo slug è già associato a un topic in un altro tier."""
+
+
 def _now() -> str:
     return datetime.now(timezone.utc).isoformat()
 
@@ -32,11 +33,34 @@ def _hash(secret: str) -> str:
 
 def _load() -> list[dict]:
     try:
-        return json.loads(_FILE.read_text("utf-8"))
+        rows = json.loads(_FILE.read_text("utf-8"))
     except FileNotFoundError:
         return []
-    except Exception:  # noqa: BLE001 — file corrotto: non perdere il servizio
-        return []
+    if not isinstance(rows, list):
+        raise ValueError("hooks.json deve contenere una lista")
+
+    # Migrazione one-shot dal vecchio id opaco allo slug. Non scegliamo mai quale
+    # collisione conservare: il duplicato deve essere risolto esplicitamente.
+    changed = False
+    owners: dict[str, tuple[str, str]] = {}
+    for row in rows:
+        slug = str(row.get("name") or "")
+        topic = (str(row.get("tier") or ""), slug)
+        previous = owners.get(slug)
+        if previous and previous != topic:
+            raise HookConflictError(
+                f"slug hook globale duplicato '{slug}': "
+                f"{previous[0]}/{previous[1]} e {topic[0]}/{topic[1]}")
+        owners[slug] = topic
+        if row.get("id") != slug:
+            row["id"] = slug
+            changed = True
+        if "trigger_agent" in row:
+            row.pop("trigger_agent", None)
+            changed = True
+    if changed:
+        _save(rows)
+    return rows
 
 
 def _save(rows: list[dict]) -> None:
@@ -52,25 +76,27 @@ def _public(row: dict) -> dict:
 
 
 def create(tier: str, name: str, label: str, created_by: str,
-           author: str | None = None, trigger_agent: str | None = None,
+           author: str | None = None,
            rate_per_min: int = 30) -> tuple[dict, str]:
     """Crea (o RIGENERA) l'hook della chat (tier/name). Ritorna (vista_pubblica,
     segreto_in_chiaro). Un topic ha UN SOLO hook: eventuali hook preesistenti per
     quella chat vengono rimossi (rotazione del segreto). Il segreto NON è più
     recuperabile dopo: mostralo all'utente una sola volta."""
-    rows = [r for r in _load() if not (r["tier"] == tier and r["name"] == name)]
-    hid = pysecrets.token_urlsafe(9)
-    while any(r["id"] == hid for r in rows):
-        hid = pysecrets.token_urlsafe(9)
+    all_rows = _load()
+    conflict = next(
+        (r for r in all_rows if r["name"] == name and r["tier"] != tier), None)
+    if conflict:
+        raise HookConflictError(
+            f"slug '{name}' già usato da {conflict['tier']}/{conflict['name']}")
+    rows = [r for r in all_rows if not (r["tier"] == tier and r["name"] == name)]
     secret = pysecrets.token_urlsafe(24)
     lbl = (label or "hook").strip()[:60]
     row = {
-        "id": hid,
+        "id": name,
         "tier": tier,
         "name": name,
         "label": lbl,
         "author": (author or f"hook:{lbl}").strip()[:80],
-        "trigger_agent": (trigger_agent or None),
         "secret_hash": _hash(secret),
         "enabled": True,
         "created_by": created_by,
@@ -84,6 +110,17 @@ def create(tier: str, name: str, label: str, created_by: str,
     rows.append(row)
     _save(rows)
     return _public(row), secret
+
+
+def ensure(tier: str, name: str, label: str, created_by: str,
+           rate_per_min: int = 30) -> tuple[dict, str | None]:
+    """Assicura l'hook automatico senza ruotare un segreto già esistente."""
+    rows = _load()
+    existing = next(
+        (r for r in rows if r["tier"] == tier and r["name"] == name), None)
+    if existing:
+        return _public(existing), None
+    return create(tier, name, label, created_by, rate_per_min=rate_per_min)
 
 
 def list_for_chat(tier: str, name: str) -> list[dict]:
