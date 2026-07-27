@@ -155,12 +155,17 @@ async def ensure_hook(request: Request) -> dict:
 
 @router.post("/clodia/hooks/{tier}/{name}/invoke/internal")
 async def invoke_local(tier: str, name: str, request: Request) -> dict:
-    """Invocazione locale: participant-check, nessun segreto, wake del caller."""
+    """Invocazione locale: l'identità del chiamante viene dal session token
+    firmato (verificato dalla CA via `_principal_from_request`), MAI da un campo
+    `caller` del body — che sarebbe auto-dichiarato e impersonabile su un listener
+    LAN-exposed. Nessun segreto, participant-check + eccezione messaggero."""
+    caller = _principal_from_request(request)
+    if not caller:
+        raise HTTPException(401, "identità non autenticata (session token richiesto)")
     body = await request.json()
-    caller = (body.get("caller") or "").strip()
     payload = str(body.get("payload") or "").strip()
-    if not caller or not payload:
-        raise HTTPException(400, "caller e payload richiesti")
+    if not payload:
+        raise HTTPException(400, "payload richiesto")
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "topic non trovato")
