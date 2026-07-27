@@ -843,8 +843,10 @@ async def channel_create(request: Request) -> dict:
     if not name:
         raise HTTPException(400, "nome richiesto")
     meta = _channel_meta(body, principal, name)
+    hook_enabled = bool(body.get("hook_enabled", True))
     try:
-        created = topics_client.create_topic(tier, name, meta)
+        created = topics_client.create_topic(
+            tier, name, meta, hook_enabled=hook_enabled)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"creazione canale fallita: {str(e)[:160]}")
     # Benvenuto con action pills (playbook dei pack, per tipo, filtrate sulle
