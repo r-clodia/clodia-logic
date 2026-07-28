@@ -9,7 +9,7 @@ schedulato; quando parte materializza uno spawn dell'executor.
 
 Schema job (jobs/<id>.yaml):
     id, name, cron_expr, prompt, agent, enabled, last_run_at, last_status,
-    last_chat_id, created_at, updated_at
+    last_chat_id, topic_tier, topic_name, created_at, updated_at
 
 `agent` = nome dell'agent (kind) che lo scheduler spawna al fire del job;
 risolto dinamicamente (statico clodia/ada/looper/ophelia o seed del registry).
@@ -30,7 +30,7 @@ JOBS_DIR = data_path("jobs")
 
 _FIELDS = (
     "id", "name", "cron_expr", "prompt", "agent", "enabled", "owner",
-    "mode", "plan", "runs", "run_seq",
+    "mode", "plan", "topic_tier", "topic_name", "runs", "run_seq",
     "last_run_at", "last_status", "last_chat_id", "created_at", "updated_at",
 )
 
@@ -62,7 +62,7 @@ def _read(p: Path) -> Optional[dict]:
     d["mode"] = d.get("mode") or "agentic"
     # Default legacy agent SOLO per i job agentici: un job LOGICO non ha agent
     # (nessun turno LLM) → resta vuoto, non coercizzato a 'looper'.
-    if d["mode"] == "logic":
+    if d["mode"] in ("logic", "topic_trigger"):
         d["agent"] = d.get("agent") or ""
     else:
         d["agent"] = d.get("agent") or _LEGACY_DEFAULT_AGENT
@@ -97,7 +97,8 @@ def _next_id() -> int:
 def create_job(name: str, cron_expr: str, prompt: str,
                agent: str = "clodia", enabled: bool = True,
                owner: str = "", mode: str = "agentic",
-               plan: list | None = None) -> dict:
+               plan: list | None = None, topic_tier: str = "",
+               topic_name: str = "") -> dict:
     """Crea un nuovo job. Solleva sqlite3.IntegrityError se 'name' è duplicato
     (contratto invariato con api.py → HTTP 409). `owner` = principal umano che ne
     è proprietario (solo lui, o un admin, può agirvi).
@@ -110,9 +111,12 @@ def create_job(name: str, cron_expr: str, prompt: str,
     _mode = mode or "agentic"
     d = {
         "id": _next_id(), "name": name, "cron_expr": cron_expr, "prompt": prompt,
-        # job logico → nessun agent (non c'è turno LLM); agentico → agent o clodia
-        "agent": ("" if _mode == "logic" else (agent or "clodia")), "owner": owner or "",
+        # Job logico/topic → agent opzionale o assente; agentico → agent o clodia.
+        "agent": (agent or "") if _mode in ("logic", "topic_trigger")
+                 else (agent or "clodia"),
+        "owner": owner or "",
         "mode": _mode, "plan": plan or [],
+        "topic_tier": topic_tier or "", "topic_name": topic_name or "",
         "enabled": bool(enabled), "last_run_at": None, "last_status": None,
         "last_chat_id": None, "created_at": now, "updated_at": now,
     }
@@ -134,6 +138,39 @@ def get_job_by_name(name: str) -> Optional[dict]:
 
 def list_jobs() -> list[dict]:
     return _all()
+
+
+def get_topic_trigger(tier: str, name: str) -> Optional[dict]:
+    """Return the single cron trigger attached to a topic, if configured."""
+    return next((
+        job for job in _all()
+        if job.get("mode") == "topic_trigger"
+        and job.get("topic_tier") == tier
+        and job.get("topic_name") == name
+    ), None)
+
+
+def create_topic_trigger(
+    tier: str,
+    name: str,
+    cron_expr: str,
+    prompt: str,
+    *,
+    agent: str = "",
+    owner: str = "",
+) -> dict:
+    if get_topic_trigger(tier, name) is not None:
+        raise sqlite3.IntegrityError(f"topic trigger '{tier}/{name}' already exists")
+    return create_job(
+        name=f"topic-trigger:{tier}/{name}"[:200],
+        cron_expr=cron_expr,
+        prompt=prompt,
+        agent=agent,
+        owner=owner,
+        mode="topic_trigger",
+        topic_tier=tier,
+        topic_name=name,
+    )
 
 
 def update_job(

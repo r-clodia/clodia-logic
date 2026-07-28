@@ -1,4 +1,4 @@
-"""APScheduler integration: spawn di chat Looper effimere al fire dei cron.
+"""APScheduler integration per job agentici, logici e trigger dei topic.
 
 Architettura:
 - BackgroundScheduler con jobstore in-memory; la fonte di verità dei job è
@@ -8,9 +8,8 @@ Architettura:
 - Il modulo conserva una reference al loop asyncio di FastAPI per fare
   bridging dal thread APScheduler (`run_coroutine_threadsafe`) verso le
   coroutine del ChatManager.
-- `fire_job` crea una chat kind='looper', le impone il titolo `[CRON] <name>`
-  e le invia il prompt in fire-and-forget. Persiste last_run_at, last_status,
-  last_chat_id sul DB.
+- `fire_job` esegue un piano logico, crea una chat agentica oppure posta il
+  prompt nel topic associato, secondo il mode del record.
 """
 import asyncio
 import logging
@@ -227,6 +226,36 @@ async def _fire_logic_job(job: dict) -> dict:
         return {"chat_id": None, "status": f"error: {e}", "steps": steps}
 
 
+async def _fire_topic_trigger(job: dict) -> dict:
+    """Post the configured prompt into its topic and use channel routing."""
+    from ..api import channels
+
+    tier = str(job.get("topic_tier") or "")
+    name = str(job.get("topic_name") or "")
+    if not tier or not name:
+        raise RuntimeError("topic trigger senza tier/name")
+    prompt = str(job.get("prompt") or "").strip()
+    agent = str(job.get("agent") or "").strip()
+    content = f"@{agent} {prompt}" if agent else prompt
+    result = await channels.post_channel_message(
+        tier,
+        name,
+        content,
+        "scheduler",
+        kind="system",
+        trusted_internal=True,
+    )
+    status = "dispatched (messaggio postato nel topic)"
+    db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")
+    return {
+        "chat_id": f"topic:{tier}/{name}",
+        "status": "dispatched",
+        "topic": f"{tier}/{name}",
+        "responder": result.get("responder"),
+        "responders": result.get("responders"),
+    }
+
+
 async def fire_job(job_id: int) -> dict:
     """Spawna una chat effimera dell'agent indicato dal job e le consegna il
     prompt in fire-and-forget.
@@ -250,6 +279,13 @@ async def fire_job(job_id: int) -> dict:
     # (pre-autorizzato alla creazione). Esegue via l'endpoint interno del gateway.
     if (job.get("mode") or "agentic") == "logic":
         return await _fire_logic_job(job)
+    if job.get("mode") == "topic_trigger":
+        try:
+            return await _fire_topic_trigger(job)
+        except Exception as e:  # noqa: BLE001
+            LOG.exception("Errore firing topic trigger %s: %s", job_id, e)
+            db.mark_run(job_id, status=f"error: {e}", chat_id=None)
+            return {"chat_id": None, "status": f"error: {e}"}
 
     agent = job.get("agent") or "clodia"
     if not known_kind(agent):

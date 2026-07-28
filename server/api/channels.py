@@ -641,37 +641,47 @@ async def _drop_channel_sessions(tier: str, name: str, participants: list[str]) 
     return deleted
 
 
-@router.post("/clodia/channels/{tier}/{name}/post")
-async def channel_post(tier: str, name: str, req: MessageRequest, request: Request,
-                       respond: bool = True) -> dict:
-    """Posta un messaggio umano nel canale e fa rispondere l'agente designato."""
-    principal = _principal_from_request(request)
-    if not principal:
-        raise HTTPException(401, "login richiesto per scrivere nel canale")
+async def post_channel_message(
+    tier: str,
+    name: str,
+    content: str,
+    principal: str,
+    *,
+    respond: bool = True,
+    kind: str = "human",
+    trusted_internal: bool = False,
+) -> dict:
+    """Persist a channel message and enqueue responders through normal routing.
+
+    HTTP posts use the membership check. Trusted internal producers such as the
+    topic scheduler may bypass that check, but still run with an unprivileged
+    synthetic principal and through the same responder selection and queue.
+    """
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
-    if principal not in participants and principal != meta.get("owner"):
+    if (not trusted_internal and principal not in participants
+            and principal != meta.get("owner")):
         raise HTTPException(403, "non sei partecipante di questo canale")
 
-    # 1. registra il messaggio umano nel canale
-    topics_client.post_message(tier, name, principal, req.content, kind="human")
-    await _channel_message(tier, name, principal, "human")
+    # 1. registra il messaggio nel canale
+    topics_client.post_message(tier, name, principal, content, kind=kind)
+    await _channel_message(tier, name, principal, kind)
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
-    # log dell'azione umana nella sua tab Logs (gli umani non eseguono turni)
+    # Log dell'azione nella tab Logs (gli autori senza runtime non hanno run).
     activity_log.append(principal, "message_sent",
                         {"channel": f"{tier}/{name}",
-                         "text": " ".join((req.content or "").split())[:160]})
+                         "text": " ".join((content or "").split())[:160]})
     if not respond:
         return {"posted": True, "responder": None}
 
     # 2. DESTINATARI. @tag = richieste dirette (N → N agenti, in parallelo);
     #    $tag = menzioni soft (l'agente giudica se intervenire). Nessun tag →
     #    routing per rilevanza (singolo responder).
-    hard, soft = _tags(req.content)
+    hard, soft = _tags(content)
     targets: list[tuple[object, str]] = []
     for nm in hard:
         s = _pick_responder(participants, tier_real, nm)   # ritorna nm solo se idoneo
@@ -699,13 +709,13 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
             if (kind == "direct" and getattr(s, "type", None) == "super"
                     and not _provider_seal_ok(s, tier_real) and warning is None):
                 warning = _provider_below_tier_warning(s, tier_real)
-            if await _start_turn(tier, name, tier_real, s, principal, req.content, kind):
+            if await _start_turn(tier, name, tier_real, s, principal, content, kind):
                 started.append(s.name)
         return {"posted": True, "queued": True, "responders": started, "warning": warning}
 
     # nessun tag → routing per rilevanza (singolo, con barra)
     routing: dict = {}
-    responder = _pick_responder(participants, tier_real, None, req.content, trace=routing)
+    responder = _pick_responder(participants, tier_real, None, content, trace=routing)
     if routing.get("chosen"):
         try:
             await bus.publish(Event(type="routing_decision",
@@ -720,8 +730,20 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
     warning = (_provider_below_tier_warning(responder, tier_real)
                if (responder.type == "super" and not _provider_seal_ok(responder, tier_real))
                else None)
-    await _start_turn(tier, name, tier_real, responder, principal, req.content, "plain")
+    await _start_turn(tier, name, tier_real, responder, principal, content, "plain")
     return {"posted": True, "queued": True, "responder": responder.name, "warning": warning}
+
+
+@router.post("/clodia/channels/{tier}/{name}/post")
+async def channel_post(tier: str, name: str, req: MessageRequest, request: Request,
+                       respond: bool = True) -> dict:
+    """Posta un messaggio umano nel canale e fa rispondere l'agente designato."""
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "login richiesto per scrivere nel canale")
+    return await post_channel_message(
+        tier, name, req.content, principal, respond=respond,
+    )
 
 
 @router.post("/clodia/channels/{tier}/{name}/interrupt")
