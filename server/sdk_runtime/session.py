@@ -1359,6 +1359,31 @@ class ChatSession:
 
 
 CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+_CODEX_MODEL_REJECTION_MARKERS = (
+    "not supported",
+    "unsupported",
+    "not available",
+    "does not exist",
+    "unknown model",
+    "invalid model",
+)
+
+
+def _codex_model_rejected(message: str) -> bool:
+    text = (message or "").lower()
+    return "model" in text and any(marker in text for marker in _CODEX_MODEL_REJECTION_MARKERS)
+
+
+def _codex_event_error(ev: dict) -> str:
+    """Extract the useful message from Codex JSONL failure event variants."""
+    payload = ev.get("error") or ev.get("message")
+    if not payload and ev.get("type") == "item.completed":
+        item = ev.get("item") or {}
+        if item.get("type") == "error":
+            payload = item.get("message") or item.get("error")
+    if isinstance(payload, dict):
+        payload = payload.get("message") or payload.get("detail") or json.dumps(payload)
+    return str(payload or "")
 
 
 class CodexChatSession:
@@ -1548,15 +1573,64 @@ class CodexChatSession:
         activity_log.append(self.kind, "run_started",
                             {"prompt": _snippet(content), "principal": self.principal,
                              "chat_id": self.chat_id})
+        runtime_model = _runtime_model(self.kind, self._runtime_override)
+        original_thread_id = self._thread_id
+        parts, errors, returncode, stderr = await self._run_codex_once(content, runtime_model)
+        failure = self._codex_failure(parts, errors, returncode, stderr)
+        explicit_model = bool(self._runtime_override.get("model"))
+        if failure and runtime_model and not explicit_model and _codex_model_rejected(failure):
+            LOG.warning(
+                "modello codex %s rifiutato per %s; retry col modello predefinito: %s",
+                runtime_model, self.kind, failure,
+            )
+            activity_log.append(self.kind, "model_fallback", {
+                "requested_model": runtime_model,
+                "fallback_model": "codex-default",
+                "reason": _snippet(failure),
+                "chat_id": self.chat_id,
+                "provider": _runtime_provider(self.kind, self._runtime_override),
+            })
+            self._restore_codex_thread(original_thread_id)
+            parts, errors, returncode, stderr = await self._run_codex_once(content, None)
+            failure = self._codex_failure(parts, errors, returncode, stderr)
+        if failure:
+            activity_log.append(self.kind, "error",
+                                {"error": f"codex exit {returncode}: {_snippet(failure)}",
+                                 "chat_id": self.chat_id})
+            raise RuntimeError(f"codex exit {returncode}: {failure}")
+        full = "".join(parts)
+        # Codex (`exec resume`) riporta l'usage CUMULATIVO del thread: registra il
+        # DELTA di QUESTO run, così la leaderboard può sommare i run_done senza
+        # multi-contare (bug totali provider nella pagina Activity).
+        run_usage = self._codex_run_usage_delta(self._last_usage)
+        # occupazione finestra = prompt dell'ULTIMO turno (il DELTA, non il cumulativo
+        # del thread che Codex riporta): input + cache di questo run.
+        if run_usage:
+            self._context_tokens = (int(run_usage.get("input_tokens", 0) or 0)
+                                    + int(run_usage.get("cache_read_input_tokens", 0) or 0))
+        activity_log.append(self.kind, "run_done",
+                            {"reply": _snippet(full), "chat_id": self.chat_id,
+                             "usage": run_usage or None,
+                             "provider": _runtime_provider(self.kind, self._runtime_override)})
+        return full
+
+    def _codex_cmd(self, runtime_model: Optional[str]) -> list[str]:
         cmd = [CODEX_BIN, "exec"]
         if self._thread_id:
             cmd += ["resume", self._thread_id]
-        runtime_model = _runtime_model(self.kind, self._runtime_override)
         if runtime_model:
             cmd += ["--model", runtime_model]
         # niente -C: il workdir è già imposto via cwd= sul subprocess (e `resume`
         # non accetta -C). --skip-git-repo-check: il workspace non è un repo git.
         cmd += ["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]
+        # `-` rende esplicito il contratto stdin sia per exec sia per exec resume.
+        cmd.append("-")
+        return cmd
+
+    async def _run_codex_once(
+        self, content: str, runtime_model: Optional[str],
+    ) -> tuple[list[str], list[str], int | None, str]:
+        cmd = self._codex_cmd(runtime_model)
         env = {**os.environ, "CODEX_HOME": str(self._codex_home)}
         # token gateway coniato PER-TURNO col principal corrente (utente connesso)
         # → runtime.current_user resta sempre allineato senza restart.
@@ -1575,14 +1649,20 @@ class CodexChatSession:
             env=env, cwd=run_cwd, limit=_STREAM_LIMIT,
         )
         self._proc = proc
-        # prompt via stdin (evita parsing del prompt come argomento)
+        # Prompt via stdin: evita il parsing come argomento e chiude esplicitamente
+        # il writer per consegnare EOF al CLI.
         try:
             proc.stdin.write(content.encode())
             await proc.stdin.drain()
             proc.stdin.close()
+            await proc.stdin.wait_closed()
         except (BrokenPipeError, ConnectionResetError):
             pass
         parts: list[str] = []
+        errors: list[str] = []
+        stderr_task = None
+        if proc.stderr is not None:
+            stderr_task = asyncio.create_task(proc.stderr.read())
         assert proc.stdout is not None
         async for raw in proc.stdout:
             line = raw.decode(errors="replace").strip()
@@ -1592,30 +1672,38 @@ class CodexChatSession:
                 ev = json.loads(line)
             except json.JSONDecodeError:
                 continue
-            await self._handle_event(ev, parts)
+            await self._handle_event(ev, parts, errors)
         await proc.wait()
-        if proc.returncode not in (0, None) and not parts:
-            err = ""
-            if proc.stderr is not None:
-                err = (await proc.stderr.read()).decode(errors="replace")[:300]
-            activity_log.append(self.kind, "error",
-                                {"error": f"codex exit {proc.returncode}", "chat_id": self.chat_id})
-            raise RuntimeError(f"codex exit {proc.returncode}: {err or 'nessun output'}")
-        full = "".join(parts)
-        # Codex (`exec resume`) riporta l'usage CUMULATIVO del thread: registra il
-        # DELTA di QUESTO run, così la leaderboard può sommare i run_done senza
-        # multi-contare (bug totali provider nella pagina Activity).
-        run_usage = self._codex_run_usage_delta(self._last_usage)
-        # occupazione finestra = prompt dell'ULTIMO turno (il DELTA, non il cumulativo
-        # del thread che Codex riporta): input + cache di questo run.
-        if run_usage:
-            self._context_tokens = (int(run_usage.get("input_tokens", 0) or 0)
-                                    + int(run_usage.get("cache_read_input_tokens", 0) or 0))
-        activity_log.append(self.kind, "run_done",
-                            {"reply": _snippet(full), "chat_id": self.chat_id,
-                             "usage": run_usage or None,
-                             "provider": _runtime_provider(self.kind, self._runtime_override)})
-        return full
+        stderr = ""
+        if stderr_task is not None:
+            stderr = (await stderr_task).decode(errors="replace")
+        return parts, errors, proc.returncode, stderr
+
+    @staticmethod
+    def _codex_failure(
+        parts: list[str], errors: list[str], returncode: int | None, stderr: str,
+    ) -> str:
+        if parts or (returncode in (0, None) and not errors):
+            return ""
+        if errors:
+            return errors[-1][:1000]
+        useful_stderr = "\n".join(
+            line for line in stderr.splitlines()
+            if line.strip() and line.strip() != "Reading prompt from stdin..."
+        )
+        return (useful_stderr or stderr.strip() or "nessun output")[:1000]
+
+    def _restore_codex_thread(self, thread_id: Optional[str]) -> None:
+        """Discard a failed attempt's thread before retrying the same user turn."""
+        self._thread_id = thread_id
+        try:
+            if thread_id:
+                self.sessions_dir.mkdir(parents=True, exist_ok=True)
+                self._thread_file.write_text(thread_id)
+            else:
+                self._thread_file.unlink(missing_ok=True)
+        except OSError:
+            pass
 
     def _codex_run_usage_delta(self, cumulative: dict | None) -> dict | None:
         """Codex riporta l'usage CUMULATIVO del thread (`exec resume`). Ritorna il
@@ -1633,7 +1721,9 @@ class CodexChatSession:
         self._usage_cumulative = cur
         return delta
 
-    async def _handle_event(self, ev: dict, parts: list[str]) -> None:
+    async def _handle_event(
+        self, ev: dict, parts: list[str], errors: Optional[list[str]] = None,
+    ) -> None:
         t = ev.get("type")
         if t == "thread.started":
             tid = ev.get("thread_id")
@@ -1673,6 +1763,10 @@ class CodexChatSession:
                              "input_summary": str(summary)[:200]},
                     timestamp=datetime.now(timezone.utc),
                 ))
+            elif itype == "error" and errors is not None:
+                message = _codex_event_error(ev)
+                if message:
+                    errors.append(message)
         elif t == "turn.completed":
             u = ev.get("usage") or {}
             self._last_usage = {
@@ -1686,10 +1780,11 @@ class CodexChatSession:
                 timestamp=datetime.now(timezone.utc),
             ))
         elif t in ("error", "turn.failed"):
-            msg = ev.get("error") or ev.get("message") or json.dumps(ev)[:200]
-            if isinstance(msg, dict):
-                msg = msg.get("message") or json.dumps(msg)[:200]
-            await self._publish_error(str(msg))
+            message = _codex_event_error(ev) or json.dumps(ev)[:1000]
+            if errors is not None:
+                errors.append(message)
+            else:
+                await self._publish_error(message)
 
     async def _set_status(self, status: ClodiaStatus) -> None:
         self.status = status
