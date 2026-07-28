@@ -17,6 +17,7 @@ from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
 from . import db, scheduler, nl_schedule
+from ..api import topics_client
 from ..sdk_runtime.session import available_kinds, known_kind, provider_connected_for
 
 router = APIRouter()
@@ -56,6 +57,12 @@ class JobUpdate(BaseModel):
     prompt: Optional[str] = None
     agent: Optional[str] = Field(None, min_length=1, max_length=100)
     enabled: Optional[bool] = None
+
+
+class TopicCronTriggerUpsert(BaseModel):
+    cron_expr: str = Field(..., min_length=1, max_length=200)
+    prompt: str = Field(..., min_length=1)
+    agent: Optional[str] = Field(None, max_length=100)
 
 
 # ---------------------------------------------------------------------------
@@ -111,7 +118,7 @@ def _require_valid_agent(agent: str) -> None:
 
 def _require_job(job_id: int) -> dict:
     job = db.get_job(job_id)
-    if job is None:
+    if job is None or job.get("mode") == "topic_trigger":
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
     return job
 
@@ -138,13 +145,81 @@ def _require_job_owner(request: Request, job: dict) -> str:
     return principal
 
 
+def _require_topic_owner(request: Request, tier: str, name: str) -> tuple[str, dict]:
+    from ..api.admin import is_admin
+
+    principal = _caller(request)
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "topic non trovato")
+    meta = topic.get("meta", {})
+    if principal != meta.get("owner") and not is_admin(principal):
+        raise HTTPException(403, "solo l'owner del topic può gestire i trigger")
+    return principal, meta
+
+
 # ---------------------------------------------------------------------------
 # Endpoint
 # ---------------------------------------------------------------------------
 
+@router.get("/clodia/channels/{tier}/{name}/cron-trigger")
+async def api_get_topic_cron_trigger(tier: str, name: str, request: Request):
+    _require_topic_owner(request, tier, name)
+    return {"trigger": db.get_topic_trigger(tier, name)}
+
+
+@router.put("/clodia/channels/{tier}/{name}/cron-trigger")
+async def api_put_topic_cron_trigger(
+    tier: str, name: str, req: TopicCronTriggerUpsert, request: Request,
+):
+    owner, meta = _require_topic_owner(request, tier, name)
+    cron = _resolve_cron(req.cron_expr, None)
+    # Floor di frequenza per i topic trigger: ogni fire è un turno agentico, una
+    # cadenza troppo alta creerebbe un backlog illimitato (issue #46/#25).
+    floor_err = scheduler.validate_cron_expr(
+        cron, min_interval_minutes=scheduler.TOPIC_TRIGGER_MIN_INTERVAL_MIN)
+    if floor_err:
+        raise HTTPException(422, f"invalid cron_expr: {floor_err}")
+    prompt = req.prompt.strip()
+    if not prompt:
+        raise HTTPException(422, "prompt richiesto")
+    agent = (req.agent or "").strip()
+    if agent:
+        _require_valid_agent(agent)
+        if agent not in (meta.get("participants") or []):
+            raise HTTPException(422, f"agent '{agent}' non partecipa al topic")
+    existing = db.get_topic_trigger(tier, name)
+    if existing:
+        trigger = db.update_job(
+            existing["id"], cron_expr=cron, prompt=prompt, agent=agent, enabled=True,
+        )
+    else:
+        try:
+            trigger = db.create_topic_trigger(
+                tier, name, cron, prompt, agent=agent, owner=owner,
+            )
+        except sqlite3.IntegrityError:
+            raise HTTPException(409, "questo topic ha già un trigger cron")
+    if trigger is None:
+        raise HTTPException(404, "trigger cron non trovato")
+    scheduler.register_job(trigger)
+    return {"trigger": trigger}
+
+
+@router.delete("/clodia/channels/{tier}/{name}/cron-trigger")
+async def api_delete_topic_cron_trigger(tier: str, name: str, request: Request):
+    _require_topic_owner(request, tier, name)
+    trigger = db.get_topic_trigger(tier, name)
+    if not trigger:
+        raise HTTPException(404, "trigger cron non configurato")
+    scheduler.unregister_job(trigger["id"])
+    db.delete_job(trigger["id"])
+    return {"deleted": True}
+
+
 @router.get("/clodia/jobs")
 async def api_list_jobs():
-    return db.list_jobs()
+    return [job for job in db.list_jobs() if job.get("mode") != "topic_trigger"]
 
 
 @router.get("/clodia/jobs/{job_id}")

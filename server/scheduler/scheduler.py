@@ -1,4 +1,4 @@
-"""APScheduler integration: spawn di chat Looper effimere al fire dei cron.
+"""APScheduler integration per job agentici, logici e trigger dei topic.
 
 Architettura:
 - BackgroundScheduler con jobstore in-memory; la fonte di verità dei job è
@@ -8,13 +8,12 @@ Architettura:
 - Il modulo conserva una reference al loop asyncio di FastAPI per fare
   bridging dal thread APScheduler (`run_coroutine_threadsafe`) verso le
   coroutine del ChatManager.
-- `fire_job` crea una chat kind='looper', le impone il titolo `[CRON] <name>`
-  e le invia il prompt in fire-and-forget. Persiste last_run_at, last_status,
-  last_chat_id sul DB.
+- `fire_job` esegue un piano logico, crea una chat agentica oppure posta il
+  prompt nel topic associato, secondo il mode del record.
 """
 import asyncio
 import logging
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
@@ -45,19 +44,52 @@ _loop: Optional[asyncio.AbstractEventLoop] = None
 # Validazione cron
 # ---------------------------------------------------------------------------
 
-def validate_cron_expr(expr: str) -> Optional[str]:
+# Intervallo minimo fra due fire per i TOPIC TRIGGER (issue #46): ogni fire è un
+# turno agentico → una frequenza troppo alta creerebbe un backlog illimitato di
+# turni (stesso vettore del job test */5 che saturò agent-server, #25). Ai job
+# globali NON si applica (possono avere ragioni legittime per essere più densi).
+TOPIC_TRIGGER_MIN_INTERVAL_MIN = 10
+
+
+def min_cron_gap_minutes(expr: str, samples: int = 30) -> float:
+    """Minimo intervallo in minuti fra fire consecutivi di `expr`. `inf` se
+    produce meno di 2 fire nell'orizzonte campionato. Cattura `*/1`, `* * * * *`,
+    `0,5 * * * *`, ecc. — non solo il campo minuti."""
+    trig = CronTrigger.from_crontab(expr.strip(), timezone=_SCHED_TZ)
+    now = datetime.now(_SCHED_TZ)
+    times: list[datetime] = []
+    prev = None
+    for _ in range(samples):
+        nxt = trig.get_next_fire_time(prev, now if prev is None else prev + timedelta(seconds=1))
+        if nxt is None:
+            break
+        times.append(nxt)
+        prev = nxt
+    if len(times) < 2:
+        return float("inf")
+    return min((times[i + 1] - times[i]).total_seconds() / 60.0
+               for i in range(len(times) - 1))
+
+
+def validate_cron_expr(expr: str, *, min_interval_minutes: int = 0) -> Optional[str]:
     """Valida un'espressione cron a 5 campi.
 
     Ritorna None se valida, stringa con motivo dell'errore altrimenti.
-    Granularità minima: 1 minuto (lo accetta CronTrigger nativamente).
+    Con `min_interval_minutes > 0` rifiuta anche cron che firano più spesso di
+    quel floor (per i topic trigger: floor = TOPIC_TRIGGER_MIN_INTERVAL_MIN).
     """
     if not isinstance(expr, str) or not expr.strip():
         return "cron_expr empty"
     try:
         CronTrigger.from_crontab(expr.strip(), timezone=_SCHED_TZ)
-        return None
     except (ValueError, TypeError) as e:
         return str(e)
+    if min_interval_minutes > 0:
+        gap = min_cron_gap_minutes(expr)
+        if gap < min_interval_minutes:
+            return (f"intervallo minimo {min_interval_minutes} min: questo cron "
+                    f"fira ogni ~{gap:.0f} min")
+    return None
 
 
 # ---------------------------------------------------------------------------
@@ -109,12 +141,17 @@ def register_job(job: dict) -> None:
     if _scheduler is None:
         raise RuntimeError("scheduler not started")
     trigger = CronTrigger.from_crontab(job["cron_expr"], timezone=_SCHED_TZ)
+    # Topic trigger: max_instances=1 → APScheduler non avvia un fire se il
+    # precedente è ancora in esecuzione (belt; lo skip-if-busy vero è sul turno
+    # del responder in _fire_topic_trigger).
+    max_instances = 1 if job.get("mode") == "topic_trigger" else 3
     _scheduler.add_job(
         _fire_job_threadsafe,
         trigger=trigger,
         id=_job_key(job["id"]),
         replace_existing=True,
         coalesce=True,
+        max_instances=max_instances,
         misfire_grace_time=60,
         args=[job["id"]],
         name=job["name"],
@@ -227,6 +264,54 @@ async def _fire_logic_job(job: dict) -> dict:
         return {"chat_id": None, "status": f"error: {e}", "steps": steps}
 
 
+async def _fire_topic_trigger(job: dict) -> dict:
+    """Post the configured prompt into its topic and use channel routing."""
+    from ..api import channels
+
+    tier = str(job.get("topic_tier") or "")
+    name = str(job.get("topic_name") or "")
+    if not tier or not name:
+        raise RuntimeError("topic trigger senza tier/name")
+    prompt = str(job.get("prompt") or "").strip()
+    agent = str(job.get("agent") or "").strip()
+    # SKIP-IF-BUSY (issue #46): se il turno precedente del responder è ancora in
+    # corso, NON triggerare il successivo. Per un agente esplicito lo verifichiamo
+    # PRIMA di postare (salta l'intero fire, niente prompt-stale accumulato); per
+    # il caso routed lo demandiamo a post_channel_message (skip_if_busy).
+    if agent and channels._responder_busy(tier, name, agent):
+        status = "skipped (turno precedente ancora in corso)"
+        db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")
+        return {"chat_id": f"topic:{tier}/{name}", "status": "skipped",
+                "topic": f"{tier}/{name}", "skipped": [agent]}
+    content = f"@{agent} {prompt}" if agent else prompt
+    result = await channels.post_channel_message(
+        tier,
+        name,
+        content,
+        "scheduler",
+        kind="system",
+        trusted_internal=True,
+        skip_if_busy=True,
+    )
+    started = result.get("responders") or (
+        [result["responder"]] if result.get("responder") else [])
+    if not started and result.get("skipped"):
+        status = "skipped (turno precedente ancora in corso)"
+        outcome = "skipped"
+    else:
+        status = "dispatched (messaggio postato nel topic)"
+        outcome = "dispatched"
+    db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")
+    return {
+        "chat_id": f"topic:{tier}/{name}",
+        "status": outcome,
+        "topic": f"{tier}/{name}",
+        "responder": result.get("responder"),
+        "responders": result.get("responders"),
+        "skipped": result.get("skipped") or [],
+    }
+
+
 async def fire_job(job_id: int) -> dict:
     """Spawna una chat effimera dell'agent indicato dal job e le consegna il
     prompt in fire-and-forget.
@@ -250,6 +335,13 @@ async def fire_job(job_id: int) -> dict:
     # (pre-autorizzato alla creazione). Esegue via l'endpoint interno del gateway.
     if (job.get("mode") or "agentic") == "logic":
         return await _fire_logic_job(job)
+    if job.get("mode") == "topic_trigger":
+        try:
+            return await _fire_topic_trigger(job)
+        except Exception as e:  # noqa: BLE001
+            LOG.exception("Errore firing topic trigger %s: %s", job_id, e)
+            db.mark_run(job_id, status=f"error: {e}", chat_id=None)
+            return {"chat_id": None, "status": f"error: {e}"}
 
     agent = job.get("agent") or "clodia"
     if not known_kind(agent):
