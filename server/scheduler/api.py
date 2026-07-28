@@ -174,6 +174,12 @@ async def api_put_topic_cron_trigger(
 ):
     owner, meta = _require_topic_owner(request, tier, name)
     cron = _resolve_cron(req.cron_expr, None)
+    # Floor di frequenza per i topic trigger: ogni fire è un turno agentico, una
+    # cadenza troppo alta creerebbe un backlog illimitato (issue #46/#25).
+    floor_err = scheduler.validate_cron_expr(
+        cron, min_interval_minutes=scheduler.TOPIC_TRIGGER_MIN_INTERVAL_MIN)
+    if floor_err:
+        raise HTTPException(422, f"invalid cron_expr: {floor_err}")
     prompt = req.prompt.strip()
     if not prompt:
         raise HTTPException(422, "prompt richiesto")

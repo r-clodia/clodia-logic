@@ -641,6 +641,18 @@ async def _drop_channel_sessions(tier: str, name: str, participants: list[str]) 
     return deleted
 
 
+def _responder_busy(tier: str, name: str, agent: str) -> bool:
+    """True se il responder ha già un turno IN CORSO su questo canale (lock della
+    ChatSession tenuto). Usato dai topic trigger per NON accodare un nuovo turno
+    se il precedente non è ancora finito (skip-if-busy)."""
+    try:
+        chat = manager.get(f"chan:{tier}:{name}:{agent}")
+    except KeyError:
+        return False
+    lock = getattr(chat, "_lock", None)
+    return bool(lock is not None and lock.locked())
+
+
 async def post_channel_message(
     tier: str,
     name: str,
@@ -650,6 +662,7 @@ async def post_channel_message(
     respond: bool = True,
     kind: str = "human",
     trusted_internal: bool = False,
+    skip_if_busy: bool = False,
 ) -> dict:
     """Persist a channel message and enqueue responders through normal routing.
 
@@ -705,13 +718,18 @@ async def post_channel_message(
             pass
         warning = None
         started: list[str] = []
+        skipped: list[str] = []
         for s, kind in targets:
+            if skip_if_busy and _responder_busy(tier, name, s.name):
+                skipped.append(s.name)
+                continue
             if (kind == "direct" and getattr(s, "type", None) == "super"
                     and not _provider_seal_ok(s, tier_real) and warning is None):
                 warning = _provider_below_tier_warning(s, tier_real)
             if await _start_turn(tier, name, tier_real, s, principal, content, kind):
                 started.append(s.name)
-        return {"posted": True, "queued": True, "responders": started, "warning": warning}
+        return {"posted": True, "queued": True, "responders": started,
+                "skipped": skipped, "warning": warning}
 
     # nessun tag → routing per rilevanza (singolo, con barra)
     routing: dict = {}
@@ -727,11 +745,16 @@ async def post_channel_message(
         return {"posted": True, "responder": None,
                 "note": "nessun agente AI partecipante con clearance e provider "
                         f"adeguati al tier {tier_real} del topic"}
+    if skip_if_busy and _responder_busy(tier, name, responder.name):
+        return {"posted": True, "responder": None, "skipped": [responder.name],
+                "note": f"responder '{responder.name}' occupato: turno precedente "
+                        "ancora in corso, fire saltato"}
     warning = (_provider_below_tier_warning(responder, tier_real)
                if (responder.type == "super" and not _provider_seal_ok(responder, tier_real))
                else None)
     await _start_turn(tier, name, tier_real, responder, principal, content, "plain")
-    return {"posted": True, "queued": True, "responder": responder.name, "warning": warning}
+    return {"posted": True, "queued": True, "responder": responder.name,
+            "skipped": [], "warning": warning}
 
 
 @router.post("/clodia/channels/{tier}/{name}/post")

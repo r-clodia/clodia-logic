@@ -104,6 +104,47 @@ class TopicTriggerApiTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual([job["name"] for job in jobs], ["globale"])
 
+    async def test_put_rejects_cron_below_10_minute_floor(self):
+        # issue #46: ogni fire è un turno agentico → floor di 10 min.
+        for expr in ("*/1 * * * *", "*/5 * * * *", "0,3,6,9 * * * *"):
+            body = api.TopicCronTriggerUpsert(
+                cron_expr=expr, prompt="controlla", agent="clodia")
+            with mock.patch.object(api, "_caller", return_value="davide"), \
+                 mock.patch.object(api.topics_client, "open_topic", return_value=self.topic), \
+                 mock.patch.object(api, "_require_valid_agent"):
+                with self.assertRaises(Exception) as ctx:
+                    await api.api_put_topic_cron_trigger("SEAL-1", "ops", body, object())
+                self.assertEqual(getattr(ctx.exception, "status_code", None), 422)
+        self.assertEqual(db.list_jobs(), [])  # niente creato
+
+    async def test_put_rejects_invalid_cron(self):
+        body = api.TopicCronTriggerUpsert(
+            cron_expr="non-una-cron", prompt="x", agent="clodia")
+        with mock.patch.object(api, "_caller", return_value="davide"), \
+             mock.patch.object(api.topics_client, "open_topic", return_value=self.topic), \
+             mock.patch.object(api, "_require_valid_agent"):
+            with self.assertRaises(Exception) as ctx:
+                await api.api_put_topic_cron_trigger("SEAL-1", "ops", body, object())
+            self.assertEqual(getattr(ctx.exception, "status_code", None), 422)
+
+    async def test_non_owner_cannot_manage_trigger(self):
+        # owner=davide; un participant non-owner (clodia) o estraneo → 403 su
+        # GET/PUT/DELETE.
+        body = api.TopicCronTriggerUpsert(
+            cron_expr="*/10 * * * *", prompt="x", agent="clodia")
+        for caller in ("clodia", "estraneo"):
+            with mock.patch.object(api, "_caller", return_value=caller), \
+                 mock.patch.object(api.topics_client, "open_topic", return_value=self.topic), \
+                 mock.patch("server.api.admin.is_admin", return_value=False):
+                for coro in (
+                    api.api_get_topic_cron_trigger("SEAL-1", "ops", object()),
+                    api.api_put_topic_cron_trigger("SEAL-1", "ops", body, object()),
+                    api.api_delete_topic_cron_trigger("SEAL-1", "ops", object()),
+                ):
+                    with self.assertRaises(Exception) as ctx:
+                        await coro
+                    self.assertEqual(getattr(ctx.exception, "status_code", None), 403)
+
 
 class TopicTriggerFireTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
@@ -131,6 +172,7 @@ class TopicTriggerFireTests(unittest.IsolatedAsyncioTestCase):
             "scheduler",
             kind="system",
             trusted_internal=True,
+            skip_if_busy=True,
         )
         self.assertEqual(result["status"], "dispatched")
         self.assertEqual(db.get_job(trigger["id"])["last_status"],
@@ -146,6 +188,24 @@ class TopicTriggerFireTests(unittest.IsolatedAsyncioTestCase):
             await scheduler.fire_job(trigger["id"])
 
         self.assertEqual(post.await_args.args[2], "routing standard")
+
+    async def test_fire_skips_when_responder_busy(self):
+        # skip-if-busy: turno precedente del responder ancora in corso → il fire
+        # è saltato, NESSUN messaggio postato e NESSUN nuovo turno.
+        trigger = db.create_topic_trigger(
+            "SEAL-1", "ops", "*/10 * * * *", "controlla", agent="clodia",
+        )
+        from ..api import channels
+        post = mock.AsyncMock()
+        with mock.patch.object(channels, "_responder_busy", return_value=True), \
+             mock.patch.object(channels, "post_channel_message", post):
+            result = await scheduler.fire_job(trigger["id"])
+
+        post.assert_not_awaited()
+        self.assertEqual(result["status"], "skipped")
+        self.assertEqual(result["skipped"], ["clodia"])
+        self.assertEqual(db.get_job(trigger["id"])["last_status"],
+                         "skipped (turno precedente ancora in corso)")
 
 
 if __name__ == "__main__":
