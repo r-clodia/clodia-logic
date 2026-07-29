@@ -97,6 +97,10 @@ if [ -f "$AS_DIR/server/colony/pki.py" ]; then
         echo "[entrypoint] datadir non inizializzato -> init-datadir"
         bash /clodia/docker/init-datadir.sh /datadir || echo "[entrypoint] WARN: init-datadir fallito"
     fi
+    # Migrazioni idempotenti sul datadir ESISTENTE (base-pack diet, ecc.): SEMPRE,
+    # non solo su datadir vuoto — è qui che si riparano i deployment già avviati.
+    echo "[entrypoint] migrazioni datadir (idempotenti)..."
+    bash /clodia/docker/migrate-datadir.sh /datadir || echo "[entrypoint] WARN: migrate-datadir fallito"
     echo "[entrypoint] bootstrap PKI (idempotente)..."
     ( cd "$AS_DIR" && CLODIA_DATA=/datadir python3 -m server.colony.pki init-ca 2>/dev/null \
         && CLODIA_DATA=/datadir python3 -m server.colony.pki issue-all 2>/dev/null ) \
