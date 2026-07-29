@@ -25,6 +25,7 @@ class ResponderTests(unittest.TestCase):
             "clodia": _a("clodia", "super", "P3", "2026-01-01T00:00:00Z"),
             "ophelia": _a("ophelia", "super", "P3", "2026-01-01T00:00:01Z"),
             "worker": _a("worker", "normal", "P1", "2026-02-01T00:00:00Z"),
+            "accountant": _a("accountant", "normal", "P1", "2026-02-01T00:00:01Z"),
             "owner": _a("owner", "human", role="superadmin"),
         }
         self._orig = channels.registry.get_by_name
@@ -60,6 +61,151 @@ class ResponderTests(unittest.TestCase):
     def test_tag_parse(self) -> None:
         self.assertEqual(channels._tagged("ehi @worker puoi farlo?"), "worker")
         self.assertIsNone(channels._tagged("nessun tag qui"))
+
+    def test_decompose_structured_multi_intent_messages(self) -> None:
+        self.assertEqual(
+            channels._decompose_intents(
+                "- Aggiorna il summary del topic\n"
+                "- Invia il preventivo al cliente"
+            ),
+            ["Aggiorna il summary del topic", "Invia il preventivo al cliente"],
+        )
+        self.assertEqual(
+            channels._decompose_intents(
+                "Puoi aggiornare il summary? Puoi inviare il preventivo?"
+            ),
+            ["Puoi aggiornare il summary?", "Puoi inviare il preventivo?"],
+        )
+        self.assertEqual(
+            channels._decompose_intents(
+                "Aggiorna il summary del topic e anche prepara il preventivo finale"
+            ),
+            ["Aggiorna il summary del topic", "prepara il preventivo finale"],
+        )
+        self.assertEqual(
+            channels._decompose_intents("Aggiorna il summary del topic"),
+            ["Aggiorna il summary del topic"],
+        )
+
+    def test_soft_fallback_returns_multiple_specialists(self) -> None:
+        scored = [
+            (self.agents["worker"], 0.70),
+            (self.agents["accountant"], 0.68),
+        ]
+        trace = {}
+        with (
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.responder_routing, "pick_by_exemplar", return_value=None
+            ),
+            patch.object(
+                channels.responder_routing, "score_specialists",
+                return_value=scored,
+            ),
+            patch.object(channels.responder_routing, "decide", return_value=None),
+            patch.object(channels.responder_routing, "THRESHOLD", 0.75),
+            patch.object(channels.responder_routing, "FALLBACK_SOFT_RATIO", 0.87),
+        ):
+            picked = channels._pick_responder(
+                ["clodia", "worker", "accountant"],
+                "P0",
+                None,
+                "richiesta ambigua",
+                trace=trace,
+                multi=True,
+            )
+
+        self.assertEqual([spec.name for spec in picked], ["worker", "accountant"])
+        self.assertEqual(trace["mode"], "relevance-multi")
+        self.assertEqual(trace["chosen"], "worker, accountant")
+        self.assertEqual(trace["chosen_agents"], ["worker", "accountant"])
+
+    def test_multi_intent_plan_routes_and_batches_by_agent(self) -> None:
+        def score(_specialists, intent):
+            if "summary" in intent:
+                return [
+                    (self.agents["worker"], 0.91),
+                    (self.agents["accountant"], 0.30),
+                ]
+            return [
+                (self.agents["accountant"], 0.92),
+                (self.agents["worker"], 0.25),
+            ]
+
+        trace = {}
+        with (
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.responder_routing, "pick_by_exemplar", return_value=None
+            ),
+            patch.object(
+                channels.responder_routing, "score_specialists", side_effect=score
+            ),
+            patch.object(
+                channels.responder_routing, "decide",
+                side_effect=lambda scored: scored[0],
+            ),
+        ):
+            plan = channels._routing_plan(
+                ["clodia", "worker", "accountant"],
+                "P0",
+                "- Aggiorna il summary del topic\n"
+                "- Invia il preventivo al cliente",
+                trace=trace,
+            )
+
+        self.assertEqual(
+            [(spec.name, prompt) for spec, prompt in plan],
+            [
+                ("worker", "Aggiorna il summary del topic"),
+                ("accountant", "Invia il preventivo al cliente"),
+            ],
+        )
+        self.assertEqual(trace["mode"], "multi-intent")
+        self.assertEqual(trace["chosen_agents"], ["worker", "accountant"])
+        self.assertEqual(
+            [route["chosen"] for route in trace["routes"]],
+            ["worker", "accountant"],
+        )
+
+    def test_multi_intent_unmatched_tasks_go_to_coordinator(self) -> None:
+        def score(_specialists, intent):
+            if "summary" in intent:
+                return [(self.agents["worker"], 0.91)]
+            return [(self.agents["worker"], 0.20)]
+
+        with (
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.responder_routing, "pick_by_exemplar", return_value=None
+            ),
+            patch.object(
+                channels.responder_routing, "score_specialists", side_effect=score
+            ),
+            patch.object(
+                channels.responder_routing, "decide",
+                side_effect=lambda scored: (
+                    scored[0] if scored and scored[0][1] >= 0.75 else None
+                ),
+            ),
+        ):
+            plan = channels._routing_plan(
+                ["clodia", "worker", "accountant"],
+                "P0",
+                "- Aggiorna il summary del topic\n"
+                "- Organizza la richiesta non classificata",
+            )
+
+        self.assertEqual(
+            [(spec.name, prompt) for spec, prompt in plan],
+            [
+                ("worker", "Aggiorna il summary del topic"),
+                ("clodia", "Organizza la richiesta non classificata"),
+            ],
+        )
 
     def test_channel_alias_expansion_is_exact_and_case_insensitive(self) -> None:
         profile = SimpleNamespace(channel_aliases={
@@ -244,6 +390,49 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(
             self.posts,
             [("owner", "aggiorniamo summary e tldr del topic", "human")],
+        )
+
+    async def test_channel_post_queues_routing_plan_per_agent(self) -> None:
+        worker = _a("worker", "normal", "P1")
+        accountant = _a("accountant", "normal", "P1")
+        start = AsyncMock(return_value=True)
+
+        def routing_plan(_participants, _tier, _message, trace=None):
+            if trace is not None:
+                trace.update({
+                    "mode": "multi-intent",
+                    "chosen": "worker, accountant",
+                })
+            return [
+                (worker, "Aggiorna il summary"),
+                (accountant, "Invia il preventivo"),
+            ]
+
+        with (
+            patch.object(
+                channels,
+                "_routing_plan",
+                side_effect=routing_plan,
+            ),
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+        ):
+            result = await channels.post_channel_message(
+                "P0",
+                "ops",
+                "Aggiorna il summary e anche invia il preventivo",
+                "owner",
+            )
+
+        self.assertEqual(result["responders"], ["worker", "accountant"])
+        self.assertEqual(start.await_count, 2)
+        self.assertEqual(
+            [call.args[5] for call in start.await_args_list],
+            ["Aggiorna il summary", "Invia il preventivo"],
+        )
+        self.assertEqual(
+            [call.args[6] for call in start.await_args_list],
+            ["routed", "routed"],
         )
 
 
