@@ -88,13 +88,23 @@ espone `missing_plugins` per il warning in UI. `hard: true` è dichiarativo
 **Delete** (`DELETE /clodia/packs/{name}`): rimuove i plugin del pack, i suoi
 agenti non nativi e il manifest.
 
-## MCP server dei plugin: esposti, mai auto-montati
+## MCP server dei plugin: auto-mount SOLO da fonti fidate
 
-Config esposte dal catalogo con secret mascherati; il mount sul gateway resta
-un'azione esplicita dell'owner dalla sezione Tools (Prima Legge: uno zip
-importato non deve attivare endpoint o processi arbitrari). I seed invece
-vengono registrati all'import: sono agenti della piattaforma, non endpoint
-esterni — e restano inerti finché non gli si parla o non li si schedula.
+Config esposte dal catalogo con secret mascherati. Montare un MCP server = avviare
+il processo/URL dichiarato nel manifest (`command`/`args`) → è esecuzione di
+codice. Regola (Prima Legge: uno zip importato non deve attivare processi
+arbitrari):
+
+- **Import da fonte esterna** (zip/URL di pack o plugin): il mount NON è
+  automatico. I server dichiarati sono segnalati in `mcp_mount.pending`; l'owner
+  li monta esplicitamente dalla sezione Tools, dopo la review del
+  security-engineer. La barriera umana import≠esecuzione resta.
+- **Update di un pack first-party** dal proprio upstream (codice nostro): il
+  mount è automatico (`trusted`). Se il gateway rifiuta o il server non parte,
+  l'esito non è nascosto: `mcp_mount.failed` con plugin, server e dettaglio.
+
+I seed invece vengono registrati all'import: sono agenti della piattaforma, non
+endpoint esterni, e restano inerti finché non gli si parla o non li si schedula.
 
 ## API
 

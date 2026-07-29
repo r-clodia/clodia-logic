@@ -30,7 +30,7 @@ from pydantic import BaseModel
 
 from ..agents.loader import registry
 from ..config import workspace_path
-from . import catalog, gateway_pdp, pack_import, plugins as plugins_api
+from . import catalog, gateway_pdp, pack_import, pack_mcp_mount, plugins as plugins_api
 
 LOG = logging.getLogger("agent-server.api.packs")
 router = APIRouter()
@@ -384,7 +384,7 @@ def _maybe_trigger_pack_ops(result: dict) -> None:
 @router.post("/clodia/packs/import")
 async def import_pack_zip(request: Request, file: UploadFile = File(...)):
     """Import unificato da .zip: pack (agents+plugins) o plugin sciolto."""
-    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
+    principal = gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
     from .skill_import import SkillImportError
     data = await file.read()
     try:
@@ -393,6 +393,7 @@ async def import_pack_zip(request: Request, file: UploadFile = File(...)):
         return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"error": f"import fallito: {str(e)[:160]}"})
+    pack_mcp_mount.auto_mount_imported_mcp(result, principal)
     plugins_api.invalidate_plugins()
     _maybe_trigger_pack_ops(result)
     return result
@@ -401,7 +402,7 @@ async def import_pack_zip(request: Request, file: UploadFile = File(...)):
 @router.post("/clodia/packs/import-url")
 async def import_pack_url(payload: PackImportUrl, request: Request):
     """Import unificato da URL (git repo o .zip remoto)."""
-    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
+    principal = gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
     from .skill_import import SkillImportError
     try:
         result = pack_import.import_pack_url(payload.url)
@@ -409,6 +410,7 @@ async def import_pack_url(payload: PackImportUrl, request: Request):
         return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"error": f"import fallito: {str(e)[:160]}"})
+    pack_mcp_mount.auto_mount_imported_mcp(result, principal)
     plugins_api.invalidate_plugins()
     _maybe_trigger_pack_ops(result)
     return result
@@ -467,7 +469,7 @@ async def update_pack(name: str, request: Request):
     """Aggiorna un pack first-party dal suo repo GitHub (upstream): scarica,
     SOSTITUISCE seed/skill/mcp (force), aggiorna il manifest e RIAVVIA tutti gli
     agenti (drop_all: le sessioni ripartono coi seed nuovi al prossimo messaggio)."""
-    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
+    principal = gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     up = _pack_upstream(name)
@@ -485,6 +487,9 @@ async def update_pack(name: str, request: Request):
         return JSONResponse(status_code=400, content={"error": f"update: {str(e)[:160]}"})
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"error": f"update fallito: {str(e)[:160]}"})
+    # update di un pack FIRST-PARTY dal proprio upstream = codice nostro → mount
+    # automatico consentito (fonte trusted). Gli import da zip/URL restano opt-in.
+    pack_mcp_mount.auto_mount_imported_mcp(result, principal, trusted=True)
     plugins_api.invalidate_plugins()
     try:
         registry.load()

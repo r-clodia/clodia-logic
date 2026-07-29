@@ -11,7 +11,7 @@ from pathlib import Path
 
 import yaml
 
-from . import catalog, plugin_import, plugins
+from . import catalog, gateway_pdp, pack_mcp_mount, plugin_import, plugins
 
 
 def _zip_bytes(files: dict[str, str]) -> bytes:
@@ -171,6 +171,87 @@ class PluginsApiTest(unittest.TestCase):
         item = self._by_name("my-plugin")
         self.assertEqual(item["origin"], "imported")
         self.assertEqual(item["mcp_servers"][0]["transport"], "stdio")
+
+    def test_auto_mount_imported_mcp_success(self) -> None:
+        (self.plugins_meta / "studio-legale").mkdir()
+        (self.plugins_meta / "studio-legale" / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "studio-legale",
+                "mcp_servers": {
+                    "normattiva": {
+                        "command": "python3",
+                        "args": ["/datadir/plugins/studio-legale/mcp/normattiva_mcp.py"],
+                    }
+                },
+            }),
+            encoding="utf-8",
+        )
+        calls = []
+        old_tool = gateway_pdp.gw_tool
+        try:
+            gateway_pdp.gw_tool = lambda tool, args, principal: (
+                calls.append((tool, args, principal)) or
+                (200, {"result": {"registered": ["normattiva"]}})
+            )
+            result = {"plugin": "studio-legale", "mcp_servers": ["normattiva"]}
+            pack_mcp_mount.auto_mount_imported_mcp(result, "davide", trusted=True)
+        finally:
+            gateway_pdp.gw_tool = old_tool
+
+        self.assertEqual(calls[0][0], "mcp.add")
+        self.assertEqual(calls[0][2], "davide")
+        self.assertIn("normattiva", calls[0][1]["config"]["mcpServers"])
+        self.assertEqual(result["mcp_mount"]["mounted"], ["normattiva"])
+        self.assertEqual(result["mcp_mount"]["failed"], [])
+
+    def test_auto_mount_untrusted_source_stays_pending(self) -> None:
+        # Prima Legge: import da fonte esterna (default trusted=False) NON deve
+        # montare (nessuna chiamata mcp.add) → i server restano `pending`.
+        (self.plugins_meta / "studio-legale").mkdir()
+        (self.plugins_meta / "studio-legale" / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "studio-legale",
+                "mcp_servers": {"normattiva": {"command": "python3", "args": ["x.py"]}},
+            }),
+            encoding="utf-8",
+        )
+        calls = []
+        old_tool = gateway_pdp.gw_tool
+        try:
+            gateway_pdp.gw_tool = lambda *a, **k: (calls.append(a) or (200, {}))
+            result = {"plugin": "studio-legale", "mcp_servers": ["normattiva"]}
+            pack_mcp_mount.auto_mount_imported_mcp(result, "davide")  # trusted=False
+        finally:
+            gateway_pdp.gw_tool = old_tool
+
+        self.assertEqual(calls, [])  # mcp.add MAI chiamato
+        self.assertEqual(result["mcp_mount"]["pending"], ["normattiva"])
+        self.assertEqual(result["mcp_mount"]["mounted"], [])
+        self.assertIn("note", result["mcp_mount"])
+
+    def test_auto_mount_imported_mcp_reports_failure(self) -> None:
+        (self.plugins_meta / "studio-legale").mkdir()
+        (self.plugins_meta / "studio-legale" / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "studio-legale",
+                "mcp_servers": {"normattiva": {"command": "python3", "args": ["missing.py"]}},
+            }),
+            encoding="utf-8",
+        )
+        old_tool = gateway_pdp.gw_tool
+        try:
+            gateway_pdp.gw_tool = lambda *_args, **_kwargs: (
+                400,
+                {"detail": "server 'normattiva': timeout"},
+            )
+            result = {"plugin": "studio-legale", "mcp_servers": ["normattiva"]}
+            pack_mcp_mount.auto_mount_imported_mcp(result, "davide", trusted=True)
+        finally:
+            gateway_pdp.gw_tool = old_tool
+
+        self.assertEqual(result["mcp_mount"]["mounted"], [])
+        self.assertEqual(result["mcp_mount"]["failed"][0]["plugin"], "studio-legale")
+        self.assertIn("timeout", result["mcp_mount"]["failed"][0]["error"])
 
     def test_import_plugin_yaml_zip_with_rules(self) -> None:
         data = _zip_bytes({
