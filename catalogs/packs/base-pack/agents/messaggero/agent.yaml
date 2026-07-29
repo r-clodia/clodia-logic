@@ -32,9 +32,9 @@ sandbox:
   allow_write: ["{scratch}/**"]
   allow_shell_cmds: []
   deny_shell_patterns: ["*"]
-# Skill base-pack mirata: attesa di una email via job periodico che controlla la
+# Skill comms-pack mirata: attesa di una email via job periodico che controlla la
 # casella, filtra il subject e inietta nel topic con @menzione. Vedi skill check-email.
-capabilities: [base-pack/check-email]
+capabilities: [comms-pack/check-email, comms-pack/telegram-1to1]
 rules: []
 # Tool comms (la fruizione degli account/token resta gated dai grant del vault:
 # email account + telegram_bot_token delegati a Messaggero dalla sezione

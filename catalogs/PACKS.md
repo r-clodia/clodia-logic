@@ -112,7 +112,13 @@ esterni — e restano inerti finché non gli si parla o non li si schedula.
 In `agent.yaml`, skills e rules usano la grammatica plugin-aware (invariata):
 
 ```yaml
-capabilities: ["base-pack/*", "eu-project-design/*"]
+capabilities:
+  - base-pack/topic-management
+  - base-pack/topic-files
+  - base-pack/topic-drive-sync
+  - base-pack/multiagent-collaboration
+  - base-pack/team-composition
+  - eu-project-design/*
 rules: ["secrets-handling", "acme-pack/*"]
 ```
 

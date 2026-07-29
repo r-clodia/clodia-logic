@@ -66,14 +66,16 @@ for seed in "$BUNDLE_ROOT"/catalogs/packs/base-pack/agents/*; do
     fi
 done
 
-# Registra il manifest del base-pack in CLODIA_DATA/packs/base-pack (così compare
-# nella view Packs con la sua versione, e il confronto con la versione bundled
-# abilita il tasto Update). Copia il pack.yaml del catalogo bundled.
-if [ -f "$BUNDLE_ROOT/catalogs/packs/base-pack/pack.yaml" ]; then
-    mkdir -p "$DATADIR/packs/base-pack"
-    cp -f "$BUNDLE_ROOT/catalogs/packs/base-pack/pack.yaml" "$DATADIR/packs/base-pack/pack.yaml"
-    echo "Manifest base-pack registrato in packs/"
-fi
+# Registra i manifest dei pack first-party bundled in CLODIA_DATA/packs/ (così
+# compaiono nella view Packs con la loro versione e il confronto con la versione
+# bundled abilita il tasto Update). Copia i pack.yaml del catalogo bundled.
+for pack_manifest in "$BUNDLE_ROOT"/catalogs/packs/*/pack.yaml; do
+    [ -f "$pack_manifest" ] || continue
+    pack_name="$(basename "$(dirname "$pack_manifest")")"
+    mkdir -p "$DATADIR/packs/$pack_name"
+    cp -f "$pack_manifest" "$DATADIR/packs/$pack_name/pack.yaml"
+    echo "Manifest $pack_name registrato in packs/"
+done
 
 # trusted.json per WhatsApp (vuoto — da popolare con il LID di owner)
 echo '{}' > "$DATADIR/daemon-state/whatsapp/trusted.json"

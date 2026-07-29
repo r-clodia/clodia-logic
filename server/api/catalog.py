@@ -33,6 +33,7 @@ from ..agents.rule_sync import DATA_CATALOG_DIR as DATA_RULES_DIR
 from ..agents.rule_sync import LOGIC_CATALOG_DIR as LOGIC_RULES_DIR
 from ..agents.skill_sync import DATA_CATALOG_DIR as DATA_SKILLS_DIR
 from ..agents.skill_sync import LOGIC_CATALOG_DIR as LOGIC_SKILLS_DIR
+from ..agents.skill_sync import LOGIC_PACKS_ROOT
 
 LOG = logging.getLogger("agent-server.api.catalog")
 router = APIRouter()
@@ -255,7 +256,7 @@ def _paths_for(
     name→lista di (pack_label|None, path): per le skill supporta i pack-subdir
     (più pack possono avere lo stesso nome); per le rule è una sola variante."""
     if kind == "skill":
-        logic = _iter_skill_paths(LOGIC_SKILLS_DIR)
+        logic = _iter_logic_skill_paths()
         if LOGIC_SKILLS_DIR.resolve() == DATA_SKILLS_DIR.resolve():
             return logic, {}
         return logic, _iter_data_skill_paths(DATA_SKILLS_DIR)
@@ -263,6 +264,31 @@ def _paths_for(
     if LOGIC_RULES_DIR.resolve() == DATA_RULES_DIR.resolve():
         return logic, {}
     return logic, _iter_data_rule_paths(DATA_RULES_DIR)
+
+
+def _iter_logic_skill_paths() -> dict[str, Path]:
+    out = _iter_skill_paths(LOGIC_SKILLS_DIR)
+    try:
+        LOGIC_SKILLS_DIR.resolve().relative_to(LOGIC_PACKS_ROOT.resolve())
+        bundled = True
+    except ValueError:
+        bundled = False
+    if bundled and LOGIC_PACKS_ROOT.is_dir():
+        for packdir in sorted(LOGIC_PACKS_ROOT.iterdir()):
+            if not packdir.is_dir() or packdir.name == "base-pack":
+                continue
+            plugin_skills = packdir / "plugins" / packdir.name / "skills"
+            for name, path in _iter_skill_paths(plugin_skills).items():
+                out.setdefault(name, path)
+    return out
+
+
+def _logic_pack_for_path(path: Path) -> str:
+    try:
+        rel = path.resolve().relative_to(LOGIC_PACKS_ROOT.resolve())
+    except ValueError:
+        return "base-pack"
+    return rel.parts[0] if rel.parts else "base-pack"
 
 
 def _item_from_path(
@@ -331,11 +357,12 @@ def _list_catalog(kind: CatalogKind) -> list[dict[str, Any]]:
         effective_path = data_variants[0][1] if in_data else logic[name]
         variants: list[dict[str, Any]] = []
         if in_logic:
+            logic_pack = _logic_pack_for_path(logic[name])
             variants.append(
-                _variant(origin="logic", path=logic[name], pack="base-pack",
+                _variant(origin="logic", path=logic[name], pack=logic_pack,
                          active=not in_data)
             )
-        effective_pack = "base-pack"
+        effective_pack = _logic_pack_for_path(logic[name]) if in_logic else "local-pack"
         for idx, (pack_label, path) in enumerate(data_variants):
             try:
                 fm, _b, _f = _read_catalog_file(path)
@@ -396,11 +423,12 @@ def _resolve_detail(kind: CatalogKind, name: str) -> dict[str, Any]:
     )
     variants: list[dict[str, Any]] = []
     if in_logic:
+        logic_pack = _logic_pack_for_path(logic[name])
         variants.append(
-            _variant(origin="logic", path=logic[name], pack="base-pack",
+            _variant(origin="logic", path=logic[name], pack=logic_pack,
                      active=not in_data)
         )
-    pack = "base-pack"
+    pack = _logic_pack_for_path(logic[name]) if in_logic else "local-pack"
     for idx, (pack_label, vpath) in enumerate(data_variants):
         try:
             vfm, _vb, _vf = _read_catalog_file(vpath)

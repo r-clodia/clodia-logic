@@ -18,8 +18,8 @@ sandbox:
   allow_shell_cmds: ["git", "gh", "python3", "node", "npm"]
   deny_shell_patterns: ["rm -rf *", "sudo *", "git push * main *--force*"]
 
-# super-agent: tutto il catalog (vedi clodia). Wildcard espansa al materialize.
-capabilities: ["base-pack/*", "openai-curated-pack/*"]
+# super-agent: primitive di piattaforma + pack first-party di ruolo.
+capabilities: ["base-pack/*", "editorial-pack/*", "comms-pack/*", "openai-curated-pack/*"]
 rules: ["*"]
 tool_permissions: ["*"]
 
