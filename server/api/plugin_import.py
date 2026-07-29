@@ -20,10 +20,9 @@ Destinazioni:
 - rules   → `CLODIA_DATA/rules-catalog/<plugin>/<rule>.md`
 - manifest (metadata + mcp_servers) → `CLODIA_DATA/plugins/<plugin>/plugin.yaml`
 
-Gli MCP server dichiarati dal plugin NON vengono montati automaticamente sul
-gateway (Prima Legge: nessun processo/endpoint arbitrario attivato da uno zip
-importato): sono esposti dal catalogo e il mount resta un'azione esplicita
-dell'owner dalla sezione Tools.
+Gli MCP server dichiarati dal plugin vengono salvati nel manifest. Il layer API
+di import, già autorizzato dall'owner/admin, prova poi il mount automatico via
+gateway `mcp.add`; se fallisce, il risultato espone un warning strutturato.
 
 Sicurezza: riusa le guardie di skill_import (zip-slip, limiti dimensione,
 clone shallow con timeout).

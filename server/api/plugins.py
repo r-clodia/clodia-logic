@@ -19,8 +19,9 @@ Origine (`origin`): `logic` (base-pack), `local` (local-pack), `external`
 (installato al setup da catalogs/external-packs.yaml), `user` (user-pack),
 `imported` (importato via zip/URL). Cancellabili solo external/user/imported.
 
-Gli MCP server dei plugin sono ESPOSTI (config con secret mascherati), mai
-montati automaticamente sul gateway: il mount è un'azione esplicita dell'owner.
+Gli MCP server dei plugin sono esposti dal catalogo e, all'import via API,
+montati automaticamente sul gateway quando possibile; eventuali fallimenti
+restano visibili nel risultato dell'import.
 """
 from __future__ import annotations
 
@@ -36,7 +37,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..config import workspace_path
-from . import catalog, gateway_pdp, plugin_import
+from . import catalog, gateway_pdp, pack_mcp_mount, plugin_import
 from .plugin_import import RESERVED_PLUGIN_NAMES
 
 LOG = logging.getLogger("agent-server.api.plugins")
@@ -351,7 +352,7 @@ async def get_plugin(name: str):
 @router.post("/clodia/plugins/import")
 async def import_plugin_zip(request: Request, file: UploadFile = File(...)):
     """Importa un plugin da .zip (Claude plugin, plugin.yaml o bare skills)."""
-    gateway_pdp.require_authz(request, "mcp.add")  # admin-only (un plugin porta MCP/skill)
+    principal = gateway_pdp.require_authz(request, "mcp.add")  # admin-only (un plugin porta MCP/skill)
     from .skill_import import SkillImportError
     data = await file.read()
     try:
@@ -360,6 +361,7 @@ async def import_plugin_zip(request: Request, file: UploadFile = File(...)):
         return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"error": f"import fallito: {str(e)[:160]}"})
+    pack_mcp_mount.auto_mount_imported_mcp(result, principal)
     invalidate_plugins()
     return result
 
@@ -367,7 +369,7 @@ async def import_plugin_zip(request: Request, file: UploadFile = File(...)):
 @router.post("/clodia/plugins/import-url")
 async def import_plugin_url(payload: PluginImportUrl, request: Request):
     """Importa un plugin da URL (git repo o .zip remoto)."""
-    gateway_pdp.require_authz(request, "mcp.add")  # admin-only (un plugin porta MCP/skill)
+    principal = gateway_pdp.require_authz(request, "mcp.add")  # admin-only (un plugin porta MCP/skill)
     from .skill_import import SkillImportError
     try:
         result = plugin_import.import_plugin_url(payload.url)
@@ -375,6 +377,7 @@ async def import_plugin_url(payload: PluginImportUrl, request: Request):
         return JSONResponse(status_code=400, content={"error": str(e)})
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"error": f"import fallito: {str(e)[:160]}"})
+    pack_mcp_mount.auto_mount_imported_mcp(result, principal)
     invalidate_plugins()
     return result
 
