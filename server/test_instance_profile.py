@@ -93,6 +93,16 @@ class InstanceProfileTest(unittest.TestCase):
         ip.load(force=True)
         self.assertEqual(ip.vocabulary_prompt_section(), "")
 
+    def test_channel_aliases_loaded_and_exposed(self) -> None:
+        self._write(
+            "channel_aliases:\n"
+            "  save: aggiorniamo summary e tldr del topic\n"
+            "  $status: dammi lo stato del progetto\n"
+        )
+        aliases = ip.load(force=True).channel_aliases
+        self.assertEqual(aliases["save"], "aggiorniamo summary e tldr del topic")
+        self.assertEqual(ip.public_view()["channel_aliases"], aliases)
+
     def test_cache_and_force(self) -> None:
         p1 = ip.load(force=True)
         self._write("edition: nuova\n")
