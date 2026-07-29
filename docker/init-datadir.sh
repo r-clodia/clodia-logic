@@ -77,6 +77,41 @@ for pack_manifest in "$BUNDLE_ROOT"/catalogs/packs/*/pack.yaml; do
     echo "Manifest $pack_name registrato in packs/"
 done
 
+# Migrazione capabilities (base-pack diet): sui datadir ESISTENTI gli agenti non
+# immutabili non vengono ri-sincronizzati dal bundle, quindi le loro capabilities
+# resterebbero appese a skill spostate in editorial-pack/comms-pack → skill perse
+# (es. messaggero perde check-email, clodia/ophelia perdono editoriale/comms).
+# Rewrite idempotente e string-based (preserva commenti/formato dei .yaml):
+#  1) ri-referenzia le skill spostate al nuovo pack;
+#  2) chi ha `base-pack/*` riceve anche `editorial-pack/*` + `comms-pack/*`, così
+#     mantiene il comportamento pre-diet (base-pack/* prima le includeva tutte).
+if [ -d "$DATADIR/agents" ]; then
+    python3 - "$DATADIR/agents" <<'PYMIG'
+import glob, os, sys
+base = sys.argv[1]
+MOVED = {
+    "check-email": "comms-pack", "telegram-1to1": "comms-pack", "helpdesk": "comms-pack",
+    "article-spec": "editorial-pack", "editorial-review": "editorial-pack",
+    "fact-check": "editorial-pack",
+}
+for f in glob.glob(os.path.join(base, "*", "agent.yaml")):
+    txt = open(f, encoding="utf-8").read()
+    orig = txt
+    for skill, pack in MOVED.items():
+        txt = txt.replace(f"base-pack/{skill}", f"{pack}/{skill}")
+    if "base-pack/*" in txt and "editorial-pack/*" not in txt:
+        for q in ('"base-pack/*"', "'base-pack/*'"):
+            if q in txt:
+                repl = q[0] + "base-pack/*" + q[0] + ", " + q[0] + "editorial-pack/*" \
+                    + q[0] + ", " + q[0] + "comms-pack/*" + q[0]
+                txt = txt.replace(q, repl, 1)
+                break
+    if txt != orig:
+        open(f, "w", encoding="utf-8").write(txt)
+        print(f"Capabilities migrate (base-pack diet): {os.path.basename(os.path.dirname(f))}")
+PYMIG
+fi
+
 # trusted.json per WhatsApp (vuoto — da popolare con il LID di owner)
 echo '{}' > "$DATADIR/daemon-state/whatsapp/trusted.json"
 
