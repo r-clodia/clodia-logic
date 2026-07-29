@@ -87,6 +87,45 @@ class ResponderTests(unittest.TestCase):
             ["Aggiorna il summary del topic"],
         )
 
+    def test_decompose_caps_fan_out_and_skips_oversized(self) -> None:
+        # Cap duro: 20 bullet corti → _MAX_INTENTS intent, coda accorpata
+        # nell'ultimo (nessun sotto-task perso, niente amplificazione).
+        many = "\n".join(f"- t{i}" for i in range(20))
+        capped = channels._decompose_intents(many)
+        self.assertEqual(len(capped), channels._MAX_INTENTS)
+        self.assertIn("t19", capped[-1])
+        # Messaggio oltre la soglia di lunghezza → NON si decompone (un solo
+        # intent), così un input costruito ad arte non genera fan-out patologico.
+        oversized = "x" * (channels._MAX_DECOMPOSE_CHARS + 1)
+        self.assertEqual(channels._decompose_intents(oversized), [oversized])
+
+    def test_multi_fallback_filters_ineligible_before_scoring(self) -> None:
+        # In un canale P2, worker (clearance P1) NON deve nemmeno arrivare allo
+        # scoring del fan-out multi: l'idoneità (clearance ≥ tier) filtra prima.
+        seen: dict = {}
+
+        def score(specialists, _message):
+            seen["names"] = [s.name for s in specialists]
+            return []
+
+        with (
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.responder_routing, "pick_by_exemplar", return_value=None
+            ),
+            patch.object(
+                channels.responder_routing, "score_specialists", side_effect=score
+            ),
+            patch.object(channels.responder_routing, "decide", return_value=None),
+        ):
+            channels._pick_responder(
+                ["clodia", "worker"], "P2", None, "richiesta ambigua",
+                trace={}, multi=True,
+            )
+
+        self.assertIn("names", seen)
+        self.assertNotIn("worker", seen["names"])  # P1 escluso su canale P2
+
     def test_soft_fallback_returns_multiple_specialists(self) -> None:
         scored = [
             (self.agents["worker"], 0.70),

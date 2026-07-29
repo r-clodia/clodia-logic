@@ -231,6 +231,22 @@ _BULLET_INTENT_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
 _INTENT_CONNECTOR_RE = re.compile(
     r"\b(?:e\s+anche|inoltre|poi|dopodiché)\b", re.IGNORECASE
 )
+# Ogni intent = un turno di routing con una embed_text() BLOCCANTE. Senza un
+# tetto, un messaggio con molti bullet (es. 2000 righe) genererebbe migliaia di
+# embed seriali che congelano l'event loop (DoS). Cap duro + guardia lunghezza:
+# oltre la soglia NON si decompone (si tratta come singolo intent).
+_MAX_INTENTS = int(os.environ.get("ROUTER_MAX_INTENTS", "6"))
+_MAX_DECOMPOSE_CHARS = int(os.environ.get("ROUTER_MAX_DECOMPOSE_CHARS", "4000"))
+
+
+def _cap_intents(intents: list[str]) -> list[str]:
+    """Limita il fan-out a _MAX_INTENTS; l'eccedenza confluisce nell'ultimo
+    intent (nessun sotto-task perso, ma niente amplificazione illimitata)."""
+    if len(intents) <= _MAX_INTENTS:
+        return intents
+    head = intents[: _MAX_INTENTS - 1]
+    tail = " ".join(intents[_MAX_INTENTS - 1 :])
+    return head + [tail]
 
 
 def _decompose_intents(message: str) -> list[str]:
@@ -238,6 +254,10 @@ def _decompose_intents(message: str) -> list[str]:
     text = (message or "").strip()
     if not text:
         return [message]
+    # Messaggio troppo lungo → non decomporre (evita fan-out patologico da input
+    # costruito ad arte): un solo intent, routing come su main.
+    if len(text) > _MAX_DECOMPOSE_CHARS:
+        return [text]
 
     bullets = []
     for line in text.splitlines():
@@ -245,16 +265,16 @@ def _decompose_intents(message: str) -> list[str]:
         if match:
             bullets.append(match.group(1).strip())
     if len(bullets) >= 2:
-        return bullets
+        return _cap_intents(bullets)
 
     questions = [part.strip() for part in re.findall(r"[^?]+\?", text)
                  if len(part.strip()) > 10]
     if len(questions) >= 2:
-        return questions
+        return _cap_intents(questions)
 
     parts = [part.strip(" \t\r\n,;.") for part in _INTENT_CONNECTOR_RE.split(text)]
     if len(parts) >= 2 and all(len(part) > 10 for part in parts):
-        return parts
+        return _cap_intents(parts)
     return [text]
 
 
@@ -640,7 +660,8 @@ def _routing_plan(participants: list[str], tier: str, message: str,
             "threshold": responder_routing.THRESHOLD,
             "margin": responder_routing.MARGIN,
             "candidates": [
-                {"name": name, "score": score, "super": False}
+                {"name": name, "score": round(score, 3),
+                 "super": getattr(registry.get_by_name(name), "type", None) == "super"}
                 for name, score in sorted(
                     candidate_scores.items(), key=lambda item: item[1], reverse=True
                 )
