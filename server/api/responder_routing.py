@@ -28,6 +28,10 @@ EMBED_URL = os.environ.get("EU_RAG_SEARCH_URL", "http://192.168.1.45:7900").rstr
 # → soglia assoluta più alta. Valori di partenza, da rifinire con l'osservazione.
 THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.80"))
 MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.015"))
+# Rapporto della soglia soft rispetto a quella hard: deve stare in (0, 1], altrimenti
+# soft_threshold ≥ THRESHOLD e il multi-fallback diventa codice morto senza avviso.
+FALLBACK_SOFT_RATIO = min(1.0, max(
+    0.01, float(os.environ.get("RESPONDER_FALLBACK_SOFT_RATIO", "0.87"))))
 
 # cache profilo: {agent_name: (pieces_hash, [vettori per-pezzo])}
 _PROFILE_CACHE: dict[str, tuple[str, list[list[float]]]] = {}
@@ -196,6 +200,12 @@ def decide(scored: list):
     if len(scored) > 1 and (best_score - scored[1][1]) < MARGIN:
         return None
     return best, best_score
+
+
+def soft_matches(scored: list) -> list[tuple]:
+    """Specialisti sopra la soglia morbida usata dal fallback multi-match."""
+    soft_threshold = THRESHOLD * FALLBACK_SOFT_RATIO
+    return [(spec, score) for spec, score in scored if score >= soft_threshold]
 
 
 def pick_by_relevance(specialists: list, message: str):

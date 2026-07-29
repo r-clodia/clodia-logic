@@ -1,10 +1,10 @@
 """Runtime del canale (Fase 2) — i topic come canali Slack-like.
 
-Un **post umano** (o un **@tag**) innesca UN solo risponditore: l'AI taggato se
-presente, altrimenti il partecipante AI di **rango più alto** (rank.py), filtrato
-per **clearance** (`T.privacy ≤ agente.clearance`). Il turno RIUSA il runtime
-delle chat (ChatSession/CodexChatSession: spawn, provider, principal, log); la
-risposta viene postata nel canale (`.messages/`). Niente catene AI→AI automatiche.
+Un **post umano** può innescare uno o più risponditori: i tag espliciti hanno
+priorità, altrimenti il routing semantico assegna il messaggio o i suoi
+sotto-intenti agli specialisti idonei. Il turno RIUSA il runtime delle chat
+(ChatSession/CodexChatSession: spawn, provider, principal, log); le risposte
+vengono postate nel canale (`.messages/`).
 """
 from __future__ import annotations
 
@@ -227,6 +227,57 @@ def _tags(text: str) -> tuple[list[str], list[str]]:
     return hard, soft
 
 
+_BULLET_INTENT_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
+_INTENT_CONNECTOR_RE = re.compile(
+    r"\b(?:e\s+anche|inoltre|poi|dopodiché)\b", re.IGNORECASE
+)
+# Ogni intent = un turno di routing con una embed_text() BLOCCANTE. Senza un
+# tetto, un messaggio con molti bullet (es. 2000 righe) genererebbe migliaia di
+# embed seriali che congelano l'event loop (DoS). Cap duro + guardia lunghezza:
+# oltre la soglia NON si decompone (si tratta come singolo intent).
+_MAX_INTENTS = int(os.environ.get("ROUTER_MAX_INTENTS", "6"))
+_MAX_DECOMPOSE_CHARS = int(os.environ.get("ROUTER_MAX_DECOMPOSE_CHARS", "4000"))
+
+
+def _cap_intents(intents: list[str]) -> list[str]:
+    """Limita il fan-out a _MAX_INTENTS; l'eccedenza confluisce nell'ultimo
+    intent (nessun sotto-task perso, ma niente amplificazione illimitata)."""
+    if len(intents) <= _MAX_INTENTS:
+        return intents
+    head = intents[: _MAX_INTENTS - 1]
+    tail = " ".join(intents[_MAX_INTENTS - 1 :])
+    return head + [tail]
+
+
+def _decompose_intents(message: str) -> list[str]:
+    """Split only messages with clear structural multi-intent signals."""
+    text = (message or "").strip()
+    if not text:
+        return [message]
+    # Messaggio troppo lungo → non decomporre (evita fan-out patologico da input
+    # costruito ad arte): un solo intent, routing come su main.
+    if len(text) > _MAX_DECOMPOSE_CHARS:
+        return [text]
+
+    bullets = []
+    for line in text.splitlines():
+        match = _BULLET_INTENT_RE.match(line)
+        if match:
+            bullets.append(match.group(1).strip())
+    if len(bullets) >= 2:
+        return _cap_intents(bullets)
+
+    questions = [part.strip() for part in re.findall(r"[^?]+\?", text)
+                 if len(part.strip()) > 10]
+    if len(questions) >= 2:
+        return _cap_intents(questions)
+
+    parts = [part.strip(" \t\r\n,;.") for part in _INTENT_CONNECTOR_RE.split(text)]
+    if len(parts) >= 2 and all(len(part) > 10 for part in parts):
+        return _cap_intents(parts)
+    return [text]
+
+
 def _tag_directive(kind: str, author: str, text: str) -> str | None:
     """Direttiva del turno in base al tipo di tag (goal-oriented + gioco di squadra)."""
     if kind == "direct":
@@ -245,6 +296,13 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "qualcosa di utile da aggiungere; altrimenti posta un CENNO BREVISSIMO di "
             "una riga (es. \"👍 noto, nulla da aggiungere\"). Niente intervento completo "
             "se non serve.\n\nMessaggio:\n" + text)
+    if kind == "routed":
+        return (
+            f"[ROUTING AUTOMATICO] {author} ha inviato una richiesta multi-agente. "
+            "Ti è stata assegnata la parte seguente perché attinente al tuo dominio. "
+            "Concentrati SOLO su questa parte, coordinandoti con gli altri partecipanti "
+            "se necessario; non duplicare il lavoro sugli altri sotto-task.\n\n"
+            "Parte assegnata:\n" + text)
     return None
 
 
@@ -440,7 +498,8 @@ def suggest_team(tier: str, description: str) -> dict:
 
 
 def _pick_responder(participants: list[str], tier: str, tagged: str | None,
-                    message: str = "", trace: dict | None = None):
+                    message: str = "", trace: dict | None = None,
+                    multi: bool = False):
     """Chi risponde in un canale. Priorità:
     1. agente TAGGATO (@nome), se idoneo — override esplicito;
     2. routing per RILEVANZA: lo specialista (non-super) il cui dominio matcha il
@@ -482,6 +541,29 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         })
         return chosen
 
+    def _record_multi(chosen: list, scored):
+        if trace is not None:
+            trace.update({
+                "tier": tier,
+                "mode": "relevance-multi",
+                "reason": "multi-match fallback",
+                "chosen": ", ".join(s.name for s in chosen),
+                "chosen_agents": [s.name for s in chosen],
+                "threshold": responder_routing.THRESHOLD,
+                "soft_threshold": (
+                    responder_routing.THRESHOLD
+                    * responder_routing.FALLBACK_SOFT_RATIO
+                ),
+                "margin": responder_routing.MARGIN,
+                "candidates": [
+                    {"name": s.name, "score": round(sc, 3),
+                     "super": s.type == "super"}
+                    for s, sc in (scored or [])
+                ],
+                "eligible": [s.name for s in ai],
+            })
+        return chosen
+
     if tagged:
         t = next((s for s in ai if s.name == tagged), None)
         if t:
@@ -507,8 +589,87 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
             scored, hit = [], None
         if hit:
             return _record(hit[0], "relevance", "relevance", scored)
+        soft_hits = responder_routing.soft_matches(scored)
+        if multi and len(soft_hits) >= 2:
+            return _record_multi([spec for spec, _score in soft_hits], scored)
         return _record(rank_mod.highest(ai), "fallback-rank", "relevance", scored)
     return _record(rank_mod.highest(ai), "rank", "rank")
+
+
+def _routing_plan(participants: list[str], tier: str, message: str,
+                  trace: dict | None = None) -> list[tuple[object, str]]:
+    """Build a per-agent plan, batching unmatched intents on the coordinator."""
+    intents = _decompose_intents(message)
+    if len(intents) == 1:
+        picked = _pick_responder(
+            participants, tier, None, message, trace=trace, multi=True
+        )
+        responders = picked if isinstance(picked, list) else [picked]
+        return [(spec, message) for spec in responders if spec is not None]
+
+    grouped: dict[str, tuple[object, list[str]]] = {}
+    unmatched: list[str] = []
+    routes: list[dict] = []
+    candidate_scores: dict[str, float] = {}
+    eligible: list[str] = []
+
+    for intent in intents:
+        intent_trace: dict = {}
+        picked = _pick_responder(
+            participants, tier, None, intent, trace=intent_trace
+        )
+        mode = intent_trace.get("mode")
+        if picked is not None and mode in ("relevance", "correction"):
+            grouped.setdefault(picked.name, (picked, []))[1].append(intent)
+            chosen = picked.name
+        else:
+            unmatched.append(intent)
+            chosen = None
+        routes.append({"intent": intent, "chosen": chosen, "mode": mode})
+        for row in intent_trace.get("candidates", []):
+            candidate_scores[row["name"]] = max(
+                candidate_scores.get(row["name"], 0.0), row["score"]
+            )
+        for agent in intent_trace.get("eligible", []):
+            if agent not in eligible:
+                eligible.append(agent)
+
+    if unmatched:
+        coordinator = _pick_responder(participants, tier, None)
+        if coordinator is not None:
+            grouped.setdefault(coordinator.name, (coordinator, []))[1].extend(unmatched)
+            for route in routes:
+                if route["chosen"] is None:
+                    route["chosen"] = coordinator.name
+                    route["mode"] = "fallback-rank"
+
+    plan = []
+    for spec, assigned in grouped.values():
+        prompt = assigned[0] if len(assigned) == 1 else "\n".join(
+            f"- {intent}" for intent in assigned
+        )
+        plan.append((spec, prompt))
+
+    if trace is not None:
+        trace.update({
+            "tier": tier,
+            "mode": "multi-intent",
+            "reason": f"{len(intents)} sotto-task instradati",
+            "chosen": ", ".join(spec.name for spec, _prompt in plan),
+            "chosen_agents": [spec.name for spec, _prompt in plan],
+            "threshold": responder_routing.THRESHOLD,
+            "margin": responder_routing.MARGIN,
+            "candidates": [
+                {"name": name, "score": round(score, 3),
+                 "super": getattr(registry.get_by_name(name), "type", None) == "super"}
+                for name, score in sorted(
+                    candidate_scores.items(), key=lambda item: item[1], reverse=True
+                )
+            ],
+            "eligible": eligible,
+            "routes": routes,
+        })
+    return plan
 
 
 def _routing_mode() -> str:
@@ -733,6 +894,7 @@ async def post_channel_message(
                 "tier": tier, "name": name, "mode": "tag",
                 "reason": "tag espliciti (@ diretto · $ soft)",
                 "chosen": ", ".join(f"{s.name}{' ·soft' if k == 'soft' else ''}" for s, k in targets),
+                "chosen_agents": [s.name for s, _kind in targets],
                 "candidates": [], "eligible": [s.name for s, _ in targets],
             }, timestamp=datetime.now(timezone.utc)))
         except Exception:  # noqa: BLE001
@@ -752,9 +914,9 @@ async def post_channel_message(
         return {"posted": True, "queued": True, "responders": started,
                 "skipped": skipped, "warning": warning}
 
-    # nessun tag → routing per rilevanza (singolo, con barra)
+    # nessun tag → routing per rilevanza, anche multi-intento
     routing: dict = {}
-    responder = _pick_responder(participants, tier_real, None, content, trace=routing)
+    plan = _routing_plan(participants, tier_real, content, trace=routing)
     if routing.get("chosen"):
         try:
             await bus.publish(Event(type="routing_decision",
@@ -762,20 +924,33 @@ async def post_channel_message(
                 timestamp=datetime.now(timezone.utc)))
         except Exception as e:  # noqa: BLE001
             LOG.debug("routing_decision non pubblicato: %s", e)
-    if responder is None:
+    if not plan:
         return {"posted": True, "responder": None,
                 "note": "nessun agente AI partecipante con clearance e provider "
                         f"adeguati al tier {tier_real} del topic"}
-    if skip_if_busy and _responder_busy(tier, name, responder.name):
-        return {"posted": True, "responder": None, "skipped": [responder.name],
-                "note": f"responder '{responder.name}' occupato: turno precedente "
-                        "ancora in corso, fire saltato"}
-    warning = (_provider_below_tier_warning(responder, tier_real)
-               if (responder.type == "super" and not _provider_seal_ok(responder, tier_real))
-               else None)
-    await _start_turn(tier, name, tier_real, responder, principal, content, "plain")
-    return {"posted": True, "queued": True, "responder": responder.name,
-            "skipped": [], "warning": warning}
+    warning = None
+    started: list[str] = []
+    skipped: list[str] = []
+    routed = routing.get("mode") in ("multi-intent", "relevance-multi")
+    for responder, assigned in plan:
+        if skip_if_busy and _responder_busy(tier, name, responder.name):
+            skipped.append(responder.name)
+            continue
+        if (responder.type == "super" and not _provider_seal_ok(responder, tier_real)
+                and warning is None):
+            warning = _provider_below_tier_warning(responder, tier_real)
+        if await _start_turn(
+            tier, name, tier_real, responder, principal, assigned,
+            "routed" if routed else "plain",
+        ):
+            started.append(responder.name)
+    if len(plan) == 1:
+        responder = plan[0][0]
+        return {"posted": True, "queued": True,
+                "responder": responder.name if started else None,
+                "skipped": skipped, "warning": warning}
+    return {"posted": True, "queued": True, "responders": started,
+            "skipped": skipped, "warning": warning}
 
 
 @router.post("/clodia/channels/{tier}/{name}/post")
