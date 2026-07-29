@@ -3,7 +3,8 @@ from __future__ import annotations
 
 import asyncio
 import unittest
-from unittest.mock import AsyncMock
+from types import SimpleNamespace
+from unittest.mock import AsyncMock, patch
 
 from ..agents.models import AgentSpec
 from ..core.models import MessageRequest
@@ -59,6 +60,31 @@ class ResponderTests(unittest.TestCase):
     def test_tag_parse(self) -> None:
         self.assertEqual(channels._tagged("ehi @worker puoi farlo?"), "worker")
         self.assertIsNone(channels._tagged("nessun tag qui"))
+
+    def test_channel_alias_expansion_is_exact_and_case_insensitive(self) -> None:
+        profile = SimpleNamespace(channel_aliases={
+            "save": "aggiorniamo summary e tldr",
+            "$status": "dammi lo stato",
+            None: "non deve essere usato",
+            "broken": 42,
+        })
+        with patch.object(channels._iprofile, "load", return_value=profile):
+            self.assertEqual(
+                channels._expand_aliases("  $SAVE\n"),
+                "aggiorniamo summary e tldr",
+            )
+            self.assertEqual(channels._expand_aliases("$status"), "dammi lo stato")
+            self.assertEqual(channels._expand_aliases("$unknown"), "$unknown")
+            self.assertEqual(channels._expand_aliases("$broken"), "$broken")
+            self.assertEqual(channels._expand_aliases("$save ora"), "$save ora")
+            self.assertEqual(channels._expand_aliases("usa $save"), "usa $save")
+
+    def test_alias_does_not_interfere_with_soft_agent_tags(self) -> None:
+        profile = SimpleNamespace(channel_aliases={"save": "salva il topic"})
+        with patch.object(channels._iprofile, "load", return_value=profile):
+            content = channels._expand_aliases("$clodia controlla")
+        self.assertEqual(content, "$clodia controlla")
+        self.assertEqual(channels._tags(content), ([], ["clodia"]))
 
     def test_channel_meta_defaults_to_clodia(self) -> None:
         meta = channels._channel_meta({"title": "Aiuto"}, "owner", "support")
@@ -204,6 +230,21 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
                 break
             await asyncio.sleep(0.01)
         self.assertEqual(self.posts[-1], ("clodia", "risposta", "ai"))
+
+    async def test_channel_post_persists_expanded_alias(self) -> None:
+        profile = SimpleNamespace(channel_aliases={
+            "save": "aggiorniamo summary e tldr del topic",
+        })
+        with patch.object(channels._iprofile, "load", return_value=profile):
+            result = await channels.post_channel_message(
+                "P0", "ops", "$save", "owner", respond=False,
+            )
+
+        self.assertEqual(result, {"posted": True, "responder": None})
+        self.assertEqual(
+            self.posts,
+            [("owner", "aggiorniamo summary e tldr del topic", "human")],
+        )
 
 
 class MessageFeedbackTests(unittest.IsolatedAsyncioTestCase):

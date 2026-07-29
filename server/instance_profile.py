@@ -144,6 +144,9 @@ class InstanceProfile(BaseModel):
     # Default dei topic appena creati (enforcement nel gateway):
     # {participants: [clodia, ...]}.
     topics_defaults: dict = Field(default_factory=dict)
+    # Macro instance-wide per i messaggi dei canali: $simbolo → prompt completo.
+    # Le chiavi possono essere configurate con o senza il dollaro iniziale.
+    channel_aliases: dict = Field(default_factory=dict)
     # Pack esterni di skill da installare al boot (spec v0.3 §4b.2):
     # None/assente = tutti (comportamento storico full); lista = solo quelli
     # (anche vuota: nessun pack esterno, solo base-pack).
@@ -214,6 +217,7 @@ def public_view() -> dict:
         "pack_ops": {"agent": p.pack_ops.agent},
         "vocabulary": p.vocabulary,
         "topics_defaults": p.topics_defaults,
+        "channel_aliases": p.channel_aliases,
         "integrations": {
             "allow_manual_mcp": p.integrations.allow_manual_mcp,
             "connectors": p.integrations.connectors,
