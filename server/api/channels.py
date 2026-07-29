@@ -344,7 +344,8 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     directive = _tag_directive(kind, principal, user_text)
     if created:
         base = _history_prompt(name, tier_real,
-                               _context_messages(topics_client.list_messages(tier, name, limit=200)))
+                               _context_messages(topics_client.list_messages(tier, name, limit=200)),
+                               topic_agents_md=_topic_agents_md(tier, name))
         prompt = base + (f"\n\n─────\n{directive}" if directive else "")
     else:
         fallback = (f"[Canale #{name} · {tier_real}] @{principal}: {user_text}\n"
@@ -749,10 +750,27 @@ _CHANNEL_CAPS = (
 )
 
 
-def _history_prompt(name: str, tier: str, messages: list[dict]) -> str:
+def _topic_agents_md(tier: str, name: str) -> str | None:
+    try:
+        data = topics_client.read_file(tier, name, "files/AGENTS.md")
+    except topics_client.TopicsClientError:
+        return None
+    try:
+        text = data.decode("utf-8").strip()
+    except UnicodeDecodeError:
+        return None
+    return text or None
+
+
+def _history_prompt(name: str, tier: str, messages: list[dict],
+                    topic_agents_md: str | None = None) -> str:
     lines = [_fmt_msg(m) for m in messages[-15:]]
+    topic_boot = ""
+    if topic_agents_md:
+        topic_boot = "\n\nIstruzioni del topic da files/AGENTS.md:\n" + topic_agents_md
     return (f"[Canale #{name} · {tier}] Sei un partecipante. "
             + _channel_files_hint(tier, name) + "\n\n" + _CHANNEL_CAPS
+            + topic_boot
             + "\n\nStorico recente:\n"
             + "\n".join(lines)
             + "\n\nRispondi all'ultimo messaggio come parte della conversazione del canale.")
@@ -1059,7 +1077,8 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     chat.principal = principal_hint or "channel"  # proxy: nessuna autorità
     if created:
         prompt = _history_prompt(name, tier_real,
-                                 _context_messages(topics_client.list_messages(tier, name, limit=200)))
+                                 _context_messages(topics_client.list_messages(tier, name, limit=200)),
+                                 topic_agents_md=_topic_agents_md(tier, name))
     else:
         fallback = (f"[Canale #{name} · {tier_real}] nuovo messaggio nel gruppo. "
                     f"{_channel_files_hint(tier_real, name)}")

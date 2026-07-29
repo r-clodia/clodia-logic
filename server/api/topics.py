@@ -117,17 +117,24 @@ def _read_contact_agent(topic_dir: Path) -> str:
     return DEFAULT_CONTACT_AGENT
 
 
-#: Stato del topic. La webui filtra di default gli `archived` (toggle per
-#: mostrarli). `active|await|idle` sono tutti "non archiviati" e mostrati.
-TOPIC_STATES = ("active", "await", "idle", "archived")
+#: Stato del topic nello schema v2. La webui filtra di default gli `archived`
+#: (toggle per mostrarli). Gli altri stati restano visibili.
+TOPIC_STATES = ("active", "on-hold", "done", "archived")
 DEFAULT_STATUS = "active"
 #: Mappa i valori legacy italiani al nuovo vocabolario.
-_LEGACY_STATUS = {"attivo": "active", "in_attesa": "await", "completato": "idle"}
+_LEGACY_STATUS = {
+    "attivo": "active",
+    "await": "on-hold",
+    "idle": "active",
+    "urgent": "active",
+    "in_attesa": "on-hold",
+    "completato": "done",
+}
 
 
 def _read_status(topic_dir: Path) -> str:
     """Stato del topic da meta.yaml (`status`), normalizzato al vocabolario
-    active|await|idle|archived. Default `active`. Tollera i valori legacy IT."""
+    active|on-hold|done|archived. Default `active`. Tollera i valori legacy."""
     meta = topic_dir / "meta.yaml"
     if meta.is_file():
         try:
@@ -534,7 +541,7 @@ def archive_topic(tier: str, name: str, request: Request):
 
 @router.post("/api/topics/{tier}/{name}/status")
 async def set_topic_status(tier: str, name: str, request: Request):
-    """Imposta lo status del topic (await|active|archived|urgent) via il gateway.
+    """Imposta lo status del topic (active|on-hold|done|archived) via il gateway.
     Solo l'owner (o admin)."""
     _require_topic_owner(request, tier, name)
     try:
@@ -543,6 +550,21 @@ async def set_topic_status(tier: str, name: str, request: Request):
         body = {}
     try:
         return topics_client.set_status(tier, name, (body or {}).get("status", ""))
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
+@router.post("/api/topics/{tier}/{name}/deadline")
+async def set_topic_deadline(tier: str, name: str, request: Request):
+    """Imposta la deadline del topic (YYYY-MM-DD|null) via il gateway.
+    Solo l'owner (o admin)."""
+    _require_topic_owner(request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    try:
+        return topics_client.set_deadline(tier, name, (body or {}).get("deadline"))
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, str(e))
 
@@ -623,6 +645,7 @@ async def list_topics(request: Request) -> list[dict]:
         "owner": r.get("owner"),
         "participants": r.get("participants", []),
         "status": r.get("status", "active"),
+        "deadline": r.get("deadline"),
         # scadenza più vicina fra i todo (action_points) con data → badge in card
         "next_deadline": r.get("next_deadline"),
         "storage": r.get("storage"),
