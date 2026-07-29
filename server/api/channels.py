@@ -79,6 +79,29 @@ def _spawn_bg(coro) -> None:
 _MAX_DELEGATION_HOPS = 2
 
 
+def _message_key(msg: dict) -> tuple:
+    mid = msg.get("id")
+    if mid:
+        return ("id", mid)
+    return (
+        "fallback",
+        msg.get("ts"),
+        msg.get("author"),
+        msg.get("kind"),
+        msg.get("text"),
+    )
+
+
+def _new_ai_messages(before: list[dict], after: list[dict], author: str) -> list[dict]:
+    seen = {_message_key(m or {}) for m in before}
+    return [
+        m for m in after
+        if (m or {}).get("author") == author
+        and (m or {}).get("kind") == "ai"
+        and _message_key(m or {}) not in seen
+    ]
+
+
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
                                  principal: str | None = None, hop: int = 0) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
@@ -90,6 +113,11 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     innesca il turno dell'incaricato (catena capitano→incaricato), fino a
     `_MAX_DELEGATION_HOPS` salti per evitare loop.
     """
+    try:
+        before_messages = topics_client.list_messages(tier, name, limit=500)
+    except Exception:  # noqa: BLE001
+        before_messages = []
+
     await _typing(tier, name, responder, "start")
     try:
         reply = await chat.send_user_message(prompt)
@@ -101,6 +129,28 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         return None
     finally:
         await _typing(tier, name, responder, "stop")
+
+    posted_during_turn: list[dict] = []
+    try:
+        posted_during_turn = _new_ai_messages(
+            before_messages,
+            topics_client.list_messages(tier, name, limit=500),
+            responder,
+        )
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("lettura messaggi post-turno %s/%s da %s fallita: %s",
+                  tier, name, responder, e)
+
+    if posted_during_turn:
+        LOG.info("risposta finale di %s su %s/%s soppressa: %d messaggi gia' postati via tool",
+                 responder, tier, name, len(posted_during_turn))
+        if hop < _MAX_DELEGATION_HOPS:
+            for msg in posted_during_turn:
+                try:
+                    await _maybe_delegate(tier, name, responder, msg.get("text") or "", principal, hop)
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
+        return posted_during_turn[-1].get("text") or reply
 
     try:
         topics_client.post_message(tier, name, responder, reply, kind="ai")
