@@ -1,0 +1,6 @@
+{
+  "name": "comms-pack",
+  "description": "Skill first-party per comunicazioni e supporto: check-email, telegram-1to1, helpdesk.",
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later"
+}

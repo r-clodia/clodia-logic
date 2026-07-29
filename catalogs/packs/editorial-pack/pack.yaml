@@ -1,0 +1,14 @@
+name: editorial-pack
+description: >-
+  Pack first-party con skill editoriali condivise: spec articolo, fact-check e
+  review editoriale. Separato dal base-pack per non caricare competenze di ruolo
+  nel contesto di ogni agente.
+version: 1.0.0
+license: AGPL-3.0-or-later
+first_party: true
+upstream:
+  repo: r-clodia/clodia-logic
+  path: catalogs/packs/editorial-pack
+  ref: main
+plugins:
+  - editorial-pack

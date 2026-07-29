@@ -3,6 +3,16 @@
 Changelog del pack `base-pack` (formato [Keep a Changelog](https://keepachangelog.com/),
 SemVer). La versione **in corso** è in cima. Vedi `pack.yaml` per la versione corrente.
 
+## [7.0.0] — 2026-07-29
+- **Base-pack a dieta:** `base-pack/*` espande ora solo alle primitive
+  trasversali di piattaforma: `topic-management`, `topic-files`,
+  `topic-drive-sync`, `multiagent-collaboration`, `team-composition`.
+- **Nuovi pack first-party:** spostate le skill editoriali in `editorial-pack`
+  (`article-spec`, `fact-check`, `editorial-review`) e quelle comunicazione/
+  supporto in `comms-pack` (`check-email`, `telegram-1to1`, `helpdesk`).
+- **Seed nativi de-wildcardati per ruolo:** super-agent con pack first-party
+  espliciti, `sysadmin` con `comms-pack/helpdesk`, `messaggero` con skill comms.
+
 ## [6.9.0] — 2026-07-25
 - **sysadmin — HTTP POST sotto supervisione:** concede `web.post`, un tool
   separato dalla lettura web e gated per ogni singola invocazione. Il prompt

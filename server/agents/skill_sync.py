@@ -36,8 +36,9 @@ from ..config import data_path, workspace_path
 
 LOG = logging.getLogger("agent-server.agents.skill_sync")
 
-# base-pack: le skill native vivono nel pack bundled `catalogs/packs/base-pack`
-# (convenzione pack). Restano lette in place dal bundle git (nomi bare).
+# Pack first-party: le skill native vivono nei pack bundled `catalogs/packs/*`.
+# `base-pack` resta speciale solo per compatibilita' coi nomi bare storici.
+LOGIC_PACKS_ROOT = workspace_path("catalogs/packs")
 LOGIC_CATALOG_DIR = workspace_path("catalogs/packs/base-pack/plugins/base-pack/skills")
 DATA_CATALOG_DIR = data_path("skills-catalog")
 
@@ -48,6 +49,14 @@ WILDCARDS = {"*", "**", "**/*"}
 
 def _is_skill_dir(p: Path) -> bool:
     return p.is_dir() and (p / "SKILL.md").is_file()
+
+
+def _logic_catalog_is_bundled() -> bool:
+    try:
+        LOGIC_CATALOG_DIR.resolve().relative_to(LOGIC_PACKS_ROOT.resolve())
+        return True
+    except ValueError:
+        return False
 
 
 def _datastore_map(pack: str) -> dict[str, str]:
@@ -113,6 +122,9 @@ def _resolve_skill_source(cap: str) -> Optional[Path]:
     Data ha precedenza su logic."""
     if "/" in cap:
         pack, _, skill = cap.partition("/")
+        logic_src = LOGIC_PACKS_ROOT / pack / "plugins" / pack / "skills" / skill
+        if _is_skill_dir(logic_src):
+            return logic_src
         src = DATA_CATALOG_DIR / pack / skill
         return src if _is_skill_dir(src) else None
     # bare: data flat
@@ -127,9 +139,19 @@ def _resolve_skill_source(cap: str) -> Optional[Path]:
             cand = packdir / cap
             if _is_skill_dir(cand):
                 return cand
-    # logic (base-pack)
+    # logic (base-pack first, then other first-party packs)
     src = LOGIC_CATALOG_DIR / cap
-    return src if _is_skill_dir(src) else None
+    if _is_skill_dir(src):
+        return src
+    if _logic_catalog_is_bundled() and LOGIC_PACKS_ROOT.is_dir():
+        for packdir in sorted(LOGIC_PACKS_ROOT.iterdir()):
+            if not packdir.is_dir() or packdir.name == "base-pack":
+                continue
+            plugin_skills = packdir / "plugins" / packdir.name / "skills"
+            cand = plugin_skills / cap
+            if _is_skill_dir(cand):
+                return cand
+    return None
 
 
 def _all_skill_names() -> list[str]:
@@ -157,6 +179,15 @@ def _all_skill_names() -> list[str]:
         for d in sorted(LOGIC_CATALOG_DIR.iterdir()):
             if _is_skill_dir(d):
                 _add(d.name)
+    if _logic_catalog_is_bundled() and LOGIC_PACKS_ROOT.is_dir():
+        for packdir in sorted(LOGIC_PACKS_ROOT.iterdir()):
+            if not packdir.is_dir() or packdir.name == "base-pack":
+                continue
+            plugin_skills = packdir / "plugins" / packdir.name / "skills"
+            if plugin_skills.is_dir():
+                for d in sorted(plugin_skills.iterdir()):
+                    if _is_skill_dir(d):
+                        _add(f"{packdir.name}/{d.name}")
     return names
 
 
@@ -165,7 +196,15 @@ def _pack_skill_names(pack: str) -> list[str]:
     `base-pack`/`logic` → skill del logic catalog (nomi bare); altri pack →
     sotto-dir del data catalog, qualificate `<pack>/<skill>`."""
     out: list[str] = []
-    if pack in ("base-pack", "logic"):
+    if pack == "logic":
+        pack = "base-pack"
+    logic_pack_skills = LOGIC_PACKS_ROOT / pack / "plugins" / pack / "skills"
+    if logic_pack_skills.is_dir():
+        for d in sorted(logic_pack_skills.iterdir()):
+            if _is_skill_dir(d):
+                out.append(d.name if pack == "base-pack" else f"{pack}/{d.name}")
+        return out
+    if pack == "base-pack":
         if LOGIC_CATALOG_DIR.is_dir():
             for d in sorted(LOGIC_CATALOG_DIR.iterdir()):
                 if _is_skill_dir(d):

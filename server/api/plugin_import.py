@@ -55,9 +55,10 @@ LOG = logging.getLogger("agent-server.api.plugin_import")
 
 PLUGINS_META_DIR = data_path("plugins")
 
-# Nomi riservati: base-pack è il catalogo logic (git), local-pack è la label
-# implicita delle entry flat del data catalog. Nessuno dei due è importabile.
-RESERVED_PLUGIN_NAMES = {"base-pack", "local-pack", "logic"}
+# Nomi riservati: i pack first-party vivono nel catalogo logic (git), local-pack
+# è la label implicita delle entry flat del data catalog. Nessuno è importabile
+# dal path terze parti.
+RESERVED_PLUGIN_NAMES = {"base-pack", "editorial-pack", "comms-pack", "local-pack", "logic"}
 
 
 class PluginImportError(SkillImportError):

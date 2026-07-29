@@ -24,6 +24,7 @@ montati automaticamente sul gateway: il mount è un'azione esplicita dell'owner.
 """
 from __future__ import annotations
 
+import json
 import logging
 import re
 import time
@@ -160,11 +161,36 @@ def _collect_plugins() -> dict[str, dict[str, Any]]:
     def _bucket(name: str) -> dict[str, Any]:
         return plugins.setdefault(name, {"skills": [], "rules": [], "manifest": {}})
 
-    # base-pack: catalogo logic
-    for name, path in sorted(catalog._iter_skill_paths(catalog.LOGIC_SKILLS_DIR).items()):
-        _bucket("base-pack")["skills"].append(_skill_entry(name, path))
-    for name, path in sorted(catalog._iter_rule_paths(catalog.LOGIC_RULES_DIR).items()):
-        _bucket("base-pack")["rules"].append(_rule_entry(name, path))
+    # Pack first-party bundled nel catalogo logic.
+    logic_packs_root = catalog.LOGIC_PACKS_ROOT
+    try:
+        catalog.LOGIC_SKILLS_DIR.resolve().relative_to(logic_packs_root.resolve())
+        bundled_logic = True
+    except ValueError:
+        bundled_logic = False
+    if bundled_logic and logic_packs_root.is_dir():
+        for packdir in sorted(logic_packs_root.iterdir()):
+            if not packdir.is_dir():
+                continue
+            plugin_name = packdir.name
+            skills_dir = packdir / "plugins" / plugin_name / "skills"
+            rules_dir = packdir / "plugins" / plugin_name / "rules"
+            for name, path in sorted(catalog._iter_skill_paths(skills_dir).items()):
+                _bucket(plugin_name)["skills"].append(_skill_entry(name, path))
+            for name, path in sorted(catalog._iter_rule_paths(rules_dir).items()):
+                _bucket(plugin_name)["rules"].append(_rule_entry(name, path))
+            manifest_path = packdir / "plugins" / plugin_name / ".claude-plugin" / "plugin.json"
+            if manifest_path.is_file():
+                try:
+                    _bucket(plugin_name)["manifest"] = json.loads(
+                        manifest_path.read_text(encoding="utf-8"))
+                except Exception:
+                    pass
+    else:
+        for name, path in sorted(catalog._iter_skill_paths(catalog.LOGIC_SKILLS_DIR).items()):
+            _bucket("base-pack")["skills"].append(_skill_entry(name, path))
+        for name, path in sorted(catalog._iter_rule_paths(catalog.LOGIC_RULES_DIR).items()):
+            _bucket("base-pack")["rules"].append(_rule_entry(name, path))
 
     # data catalog: flat → local-pack, subdir → plugin esplicito
     same_root = (

@@ -49,7 +49,7 @@ sandbox:
 
 capabilities:
   - "base-pack/*"
-  - "helpdesk"          # è l'agente del widget di assistenza (canale SEAL-1 helpdesk)
+  - "comms-pack/helpdesk"  # è l'agente del widget di assistenza (canale SEAL-1 helpdesk)
 rules: []
 tool_permissions:
   # Remit PLATFORM-OPS pieno (lug 2026): sysadmin amministra la piattaforma su
