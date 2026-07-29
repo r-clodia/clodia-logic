@@ -487,7 +487,9 @@ async def update_pack(name: str, request: Request):
         return JSONResponse(status_code=400, content={"error": f"update: {str(e)[:160]}"})
     except Exception as e:  # noqa: BLE001
         return JSONResponse(status_code=500, content={"error": f"update fallito: {str(e)[:160]}"})
-    pack_mcp_mount.auto_mount_imported_mcp(result, principal)
+    # update di un pack FIRST-PARTY dal proprio upstream = codice nostro → mount
+    # automatico consentito (fonte trusted). Gli import da zip/URL restano opt-in.
+    pack_mcp_mount.auto_mount_imported_mcp(result, principal, trusted=True)
     plugins_api.invalidate_plugins()
     try:
         registry.load()

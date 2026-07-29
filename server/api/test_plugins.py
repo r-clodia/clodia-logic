@@ -194,7 +194,7 @@ class PluginsApiTest(unittest.TestCase):
                 (200, {"result": {"registered": ["normattiva"]}})
             )
             result = {"plugin": "studio-legale", "mcp_servers": ["normattiva"]}
-            pack_mcp_mount.auto_mount_imported_mcp(result, "davide")
+            pack_mcp_mount.auto_mount_imported_mcp(result, "davide", trusted=True)
         finally:
             gateway_pdp.gw_tool = old_tool
 
@@ -203,6 +203,31 @@ class PluginsApiTest(unittest.TestCase):
         self.assertIn("normattiva", calls[0][1]["config"]["mcpServers"])
         self.assertEqual(result["mcp_mount"]["mounted"], ["normattiva"])
         self.assertEqual(result["mcp_mount"]["failed"], [])
+
+    def test_auto_mount_untrusted_source_stays_pending(self) -> None:
+        # Prima Legge: import da fonte esterna (default trusted=False) NON deve
+        # montare (nessuna chiamata mcp.add) → i server restano `pending`.
+        (self.plugins_meta / "studio-legale").mkdir()
+        (self.plugins_meta / "studio-legale" / "plugin.yaml").write_text(
+            yaml.safe_dump({
+                "name": "studio-legale",
+                "mcp_servers": {"normattiva": {"command": "python3", "args": ["x.py"]}},
+            }),
+            encoding="utf-8",
+        )
+        calls = []
+        old_tool = gateway_pdp.gw_tool
+        try:
+            gateway_pdp.gw_tool = lambda *a, **k: (calls.append(a) or (200, {}))
+            result = {"plugin": "studio-legale", "mcp_servers": ["normattiva"]}
+            pack_mcp_mount.auto_mount_imported_mcp(result, "davide")  # trusted=False
+        finally:
+            gateway_pdp.gw_tool = old_tool
+
+        self.assertEqual(calls, [])  # mcp.add MAI chiamato
+        self.assertEqual(result["mcp_mount"]["pending"], ["normattiva"])
+        self.assertEqual(result["mcp_mount"]["mounted"], [])
+        self.assertIn("note", result["mcp_mount"])
 
     def test_auto_mount_imported_mcp_reports_failure(self) -> None:
         (self.plugins_meta / "studio-legale").mkdir()
@@ -220,7 +245,7 @@ class PluginsApiTest(unittest.TestCase):
                 {"detail": "server 'normattiva': timeout"},
             )
             result = {"plugin": "studio-legale", "mcp_servers": ["normattiva"]}
-            pack_mcp_mount.auto_mount_imported_mcp(result, "davide")
+            pack_mcp_mount.auto_mount_imported_mcp(result, "davide", trusted=True)
         finally:
             gateway_pdp.gw_tool = old_tool
 
