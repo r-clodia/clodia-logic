@@ -31,6 +31,7 @@ from .config import data_path
 LOG = logging.getLogger("agent-server.instance_profile")
 
 PROFILE_FILENAME = "profile.yaml"
+_ALIAS_RE = r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$"
 
 
 class Features(BaseModel):
@@ -226,3 +227,45 @@ def public_view() -> dict:
             p.topics_single.model_dump() if p.features.topics == "single" else {}
         ),
     }
+
+
+def _profile_raw() -> dict:
+    path = data_path(PROFILE_FILENAME)
+    if not path.is_file():
+        return {}
+    raw = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    if not isinstance(raw, dict):
+        raise ValueError("profile.yaml deve essere un mapping")
+    return raw
+
+
+def normalize_channel_aliases(aliases: dict) -> dict[str, str]:
+    """Normalizza e valida `$alias -> prompt` per profile.yaml."""
+    import re
+    out: dict[str, str] = {}
+    if not isinstance(aliases, dict):
+        raise ValueError("channel_aliases deve essere un mapping")
+    for raw_key, raw_value in aliases.items():
+        key = str(raw_key or "").strip()
+        if key.startswith("$"):
+            key = key[1:]
+        value = str(raw_value or "").strip()
+        if not key:
+            continue
+        if not re.fullmatch(_ALIAS_RE, key):
+            raise ValueError(f"alias non valido: {raw_key!r}")
+        if not value:
+            continue
+        out[key] = value
+    return dict(sorted(out.items()))
+
+
+def update_channel_aliases(aliases: dict) -> dict:
+    """Aggiorna channel_aliases nel profilo datadir e ricarica la cache."""
+    path = data_path(PROFILE_FILENAME)
+    raw = _profile_raw()
+    raw["channel_aliases"] = normalize_channel_aliases(aliases)
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(yaml.safe_dump(raw, allow_unicode=True, sort_keys=False), encoding="utf-8")
+    load(force=True)
+    return public_view()
