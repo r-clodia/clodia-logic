@@ -1,10 +1,18 @@
 """Runtime del canale (Fase 2) — i topic come canali Slack-like.
 
-Un **post umano** può innescare uno o più risponditori: i tag espliciti hanno
-priorità, altrimenti il routing semantico assegna il messaggio o i suoi
-sotto-intenti agli specialisti idonei. Il turno RIUSA il runtime delle chat
+Un **post umano** innesca **un solo** risponditore: il tag esplicito ha
+priorità, altrimenti il routing semantico assegna il messaggio al *best fit*
+(lo specialista con la rilevanza più alta). Il turno RIUSA il runtime delle chat
 (ChatSession/CodexChatSession: spawn, provider, principal, log); le risposte
 vengono postate nel canale (`.messages/`).
+
+**Risposta singola (default).** Il fan-out multi-agente — multi-match soft,
+decomposizione multi-intent, tag multipli — poteva far rispondere due o più
+agenti *simultaneamente* allo stesso messaggio: caotico da leggere in canale,
+costoso in token e fonte di lavoro duplicato. È disattivato per default e
+riattivabile con `CHANNEL_MULTI_RESPONDER=1`. La collaborazione fra agenti
+resta possibile **in sequenza** via catena di delega (@agente nel messaggio di
+un agente, vedi `_maybe_delegate`).
 """
 from __future__ import annotations
 
@@ -183,6 +191,14 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                                    + [(t, "soft") for t in soft if t in participants and t != from_agent])
     if not plan:
         return
+    if not _multi_responder_enabled() and len(plan) > 1:
+        # risposta singola: un agente delega a UN solo collega per volta (i `@`
+        # diretti precedono i `$` soft). Gli altri restano raggiungibili dal hop
+        # successivo, in sequenza — non in parallelo.
+        LOG.info("delega da %s su %s/%s: risposta singola, delego solo a @%s "
+                 "(non avviati: %s)", from_agent, tier, name, plan[0][0],
+                 ", ".join(t for t, _k in plan[1:]))
+        plan = plan[:1]
     started: list[str] = []
     for tag, kind in plan:
         # idoneità: _pick_responder col tag ritorna il delegato SOLO se idoneo al tier
@@ -275,6 +291,18 @@ def _tags(text: str) -> tuple[list[str], list[str]]:
         if m not in seen:
             seen.add(m); soft.append(m)
     return hard, soft
+
+
+def _multi_responder_enabled() -> bool:
+    """Fan-out multi-agente sullo STESSO messaggio: OFF per default.
+
+    Con OFF (default) ogni messaggio produce **un solo** turno: il best fit del
+    routing semantico, o il primo agente taggato. Con `CHANNEL_MULTI_RESPONDER=1`
+    torna il comportamento precedente (multi-match soft, split multi-intent,
+    tag multipli in parallelo)."""
+    return (os.environ.get("CHANNEL_MULTI_RESPONDER", "") or "").strip().lower() in (
+        "1", "true", "yes", "on",
+    )
 
 
 _BULLET_INTENT_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
@@ -641,16 +669,27 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         if hit:
             return _record(hit[0], "relevance", "relevance", scored)
         soft_hits = responder_routing.soft_matches(scored)
-        if multi and len(soft_hits) >= 2:
+        if multi and _multi_responder_enabled() and len(soft_hits) >= 2:
             return _record_multi([spec for spec, _score in soft_hits], scored)
+        if soft_hits:
+            # BEST FIT: `scored` è ordinato per rilevanza discendente, quindi
+            # soft_hits[0] è il più pertinente. Prima, con ≥2 soft match,
+            # rispondevano tutti; ora risponde solo il migliore. Il generalista
+            # (rango) resta il fallback quando nessuno è pertinente.
+            best, best_score = soft_hits[0]
+            return _record(best, f"best-fit (soft {round(best_score, 3)})",
+                           "relevance", scored)
         return _record(rank_mod.highest(ai), "fallback-rank", "relevance", scored)
     return _record(rank_mod.highest(ai), "rank", "rank")
 
 
 def _routing_plan(participants: list[str], tier: str, message: str,
                   trace: dict | None = None) -> list[tuple[object, str]]:
-    """Build a per-agent plan, batching unmatched intents on the coordinator."""
-    intents = _decompose_intents(message)
+    """Build a per-agent plan, batching unmatched intents on the coordinator.
+
+    Con risposta singola (default) NON si decompone il messaggio: un solo turno
+    per l'agente best fit, che vede il messaggio integro."""
+    intents = _decompose_intents(message) if _multi_responder_enabled() else [message]
     if len(intents) == 1:
         picked = _pick_responder(
             participants, tier, None, message, trace=trace, multi=True
@@ -963,9 +1002,12 @@ async def post_channel_message(
     if not respond:
         return {"posted": True, "responder": None}
 
-    # 2. DESTINATARI. @tag = richieste dirette (N → N agenti, in parallelo);
-    #    $tag = menzioni soft (l'agente giudica se intervenire). Nessun tag →
-    #    routing per rilevanza (singolo responder).
+    # 2. DESTINATARI. @tag = richiesta diretta; $tag = menzione soft (l'agente
+    #    giudica se intervenire). Nessun tag → routing per rilevanza.
+    #    Risposta singola (default): anche con più tag risponde UN solo agente —
+    #    il primo @ diretto, o il primo $ soft se non ci sono @. Gli altri
+    #    taggati restano raggiungibili dalla catena di delega dell'agente che
+    #    risponde. Con CHANNEL_MULTI_RESPONDER=1 partono tutti in parallelo.
     hard, soft = _tags(content)
     targets: list[tuple[object, str]] = []
     for nm in hard:
@@ -977,12 +1019,22 @@ async def post_channel_message(
         if s is not None and s.name == nm and not any(t[0].name == s.name for t in targets):
             targets.append((s, "soft"))
 
+    dropped_tags: list[str] = []
+    if targets and not _multi_responder_enabled() and len(targets) > 1:
+        dropped_tags = [s.name for s, _kind in targets[1:]]
+        targets = targets[:1]
+        LOG.info("canale %s/%s: risposta singola, risponde %s; altri taggati "
+                 "non avviati: %s", tier, name, targets[0][0].name,
+                 ", ".join(dropped_tags))
+
     if targets:
         # barra 🧭: instradamento multi-tag
         try:
             await bus.publish(Event(type="routing_decision", payload={
                 "tier": tier, "name": name, "mode": "tag",
-                "reason": "tag espliciti (@ diretto · $ soft)",
+                "reason": ("tag esplicito (@ diretto · $ soft)"
+                           + (f" — risposta singola, non avviati: "
+                              f"{', '.join(dropped_tags)}" if dropped_tags else "")),
                 "chosen": ", ".join(f"{s.name}{' ·soft' if k == 'soft' else ''}" for s, k in targets),
                 "chosen_agents": [s.name for s, _kind in targets],
                 "candidates": [], "eligible": [s.name for s, _ in targets],
