@@ -2,6 +2,22 @@
 
 Il **substrato** di Clodia Agency: pure logica, immutabile, versionata. È il build context dell'immagine container e il "patrimonio genetico" trasmesso ai cloni dell'agenzia.
 
+> ### 📍 Non è il repo di ingresso
+>
+> Questo repository è un **componente** di Clodia Platform, non un prodotto
+> installabile per conto proprio. Il repo di ingresso — installazione, quickstart,
+> architettura d'insieme, licenza e **avvertenze di rischio** — è:
+>
+> ### 👉 **[r-clodia/clodia-platform](https://github.com/r-clodia/clodia-platform)**
+>
+> Non partire da qui per deployare: `clodia-platform` clona i repo componenti,
+> builda le immagini e orchestra lo stack. Prima di installare, leggi il
+> disclaimer as-is e i **difetti noti** nel tracker della platform —
+> [issue `security` aperte](https://github.com/r-clodia/clodia-platform/issues?q=is%3Aissue+is%3Aopen+label%3Asecurity)
+> e [`SECURITY.md`](https://github.com/r-clodia/clodia-platform/blob/main/SECURITY.md).
+> Il software è distribuito **COSÌ COM'È, senza garanzie**: lo esegui a tuo
+> rischio e pericolo.
+
 ## Cosa contiene (solo logica)
 - `CLAUDE.md` — costituzione / system prompt.
 - `tools/system/`, `tools/app/` — runtime agent-server + tutti i tool.
