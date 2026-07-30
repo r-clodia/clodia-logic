@@ -421,7 +421,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertTrue(res["posted"])
         self.assertTrue(res["queued"])
-        self.assertEqual(res["responder"], "clodia")
+        self.assertEqual(res["responders"], ["clodia"])
         self.assertEqual(self.posts, [("owner", "@clodia vai", "human")])
 
         await self.sent.wait()
@@ -448,6 +448,61 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             self.posts,
             [("owner", "aggiorniamo summary e tldr del topic", "human")],
         )
+
+    async def test_tool_post_suppresses_internal_confirmation_reply(self) -> None:
+        messages: list[dict] = []
+
+        class ToolPostingChat:
+            principal = ""
+
+            async def send_user_message(chat_self, _prompt: str) -> str:
+                channels.topics_client.post_message(
+                    "P0",
+                    "ops",
+                    "clodia",
+                    "Messaggio utile destinato al canale",
+                    kind="ai",
+                )
+                return "Messaggio postato. Ho aggiornato il canale."
+
+        async def noop_async(*_args, **_kwargs):
+            return None
+
+        original_list = channels.topics_client.list_messages
+        original_post = channels.topics_client.post_message
+        original_delegate = channels._maybe_delegate
+        try:
+            channels.topics_client.list_messages = lambda *_args, **_kwargs: list(messages)
+
+            def post(_tier, _name, author, text, kind="human", **_kwargs):
+                row = {
+                    "id": str(len(messages) + 1),
+                    "author": author,
+                    "text": text,
+                    "kind": kind,
+                    "ts": str(len(messages) + 1),
+                }
+                messages.append(row)
+                self.posts.append((author, text, kind))
+                return row
+
+            channels.topics_client.post_message = post
+            channels._maybe_delegate = noop_async
+
+            reply = await channels._run_and_post_response(
+                "P0",
+                "ops",
+                "clodia",
+                ToolPostingChat(),
+                "prompt",
+            )
+
+            self.assertEqual(reply, "Messaggio utile destinato al canale")
+            self.assertEqual(self.posts, [("clodia", "Messaggio utile destinato al canale", "ai")])
+        finally:
+            channels.topics_client.list_messages = original_list
+            channels.topics_client.post_message = original_post
+            channels._maybe_delegate = original_delegate
 
     async def test_channel_post_queues_routing_plan_per_agent(self) -> None:
         worker = _a("worker", "normal", "P1")
