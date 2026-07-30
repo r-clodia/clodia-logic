@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import asyncio
+import os
 import unittest
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
@@ -127,12 +128,14 @@ class ResponderTests(unittest.TestCase):
         self.assertNotIn("worker", seen["names"])  # P1 escluso su canale P2
 
     def test_soft_fallback_returns_multiple_specialists(self) -> None:
+        # modalità opt-in CHANNEL_MULTI_RESPONDER=1 (il default è risposta singola)
         scored = [
             (self.agents["worker"], 0.70),
             (self.agents["accountant"], 0.68),
         ]
         trace = {}
         with (
+            patch.dict(os.environ, {"CHANNEL_MULTI_RESPONDER": "1"}),
             patch.object(channels, "_provider_seal_ok", return_value=True),
             patch.object(channels, "_routing_mode", return_value="relevance"),
             patch.object(
@@ -161,6 +164,7 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(trace["chosen_agents"], ["worker", "accountant"])
 
     def test_multi_intent_plan_routes_and_batches_by_agent(self) -> None:
+        # modalità opt-in CHANNEL_MULTI_RESPONDER=1 (il default è risposta singola)
         def score(_specialists, intent):
             if "summary" in intent:
                 return [
@@ -174,6 +178,7 @@ class ResponderTests(unittest.TestCase):
 
         trace = {}
         with (
+            patch.dict(os.environ, {"CHANNEL_MULTI_RESPONDER": "1"}),
             patch.object(channels, "_provider_seal_ok", return_value=True),
             patch.object(channels, "_routing_mode", return_value="relevance"),
             patch.object(
@@ -210,12 +215,14 @@ class ResponderTests(unittest.TestCase):
         )
 
     def test_multi_intent_unmatched_tasks_go_to_coordinator(self) -> None:
+        # modalità opt-in CHANNEL_MULTI_RESPONDER=1 (il default è risposta singola)
         def score(_specialists, intent):
             if "summary" in intent:
                 return [(self.agents["worker"], 0.91)]
             return [(self.agents["worker"], 0.20)]
 
         with (
+            patch.dict(os.environ, {"CHANNEL_MULTI_RESPONDER": "1"}),
             patch.object(channels, "_provider_seal_ok", return_value=True),
             patch.object(channels, "_routing_mode", return_value="relevance"),
             patch.object(
@@ -245,6 +252,103 @@ class ResponderTests(unittest.TestCase):
                 ("clodia", "Organizza la richiesta non classificata"),
             ],
         )
+
+    # --- Risposta singola (default) ---------------------------------------
+    # Fix urgente: nessun fan-out simultaneo. Il routing sceglie il best fit.
+
+    def test_soft_matches_pick_single_best_fit_by_default(self) -> None:
+        # due soft match: prima rispondevano entrambi, ora solo il migliore
+        scored = [
+            (self.agents["worker"], 0.70),
+            (self.agents["accountant"], 0.68),
+        ]
+        trace = {}
+        with (
+            patch.dict(os.environ, {}, clear=False),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.responder_routing, "pick_by_exemplar", return_value=None
+            ),
+            patch.object(
+                channels.responder_routing, "score_specialists", return_value=scored
+            ),
+            patch.object(channels.responder_routing, "decide", return_value=None),
+            patch.object(channels.responder_routing, "THRESHOLD", 0.75),
+            patch.object(channels.responder_routing, "FALLBACK_SOFT_RATIO", 0.87),
+        ):
+            os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
+            picked = channels._pick_responder(
+                ["clodia", "worker", "accountant"], "P0", None,
+                "richiesta ambigua", trace=trace, multi=True,
+            )
+
+        self.assertFalse(isinstance(picked, list))
+        self.assertEqual(picked.name, "worker")          # best fit = score più alto
+        self.assertEqual(trace["mode"], "relevance")
+        self.assertIn("best-fit", trace["reason"])
+        self.assertEqual(trace["chosen"], "worker")
+
+    def test_no_soft_match_still_falls_back_to_rank(self) -> None:
+        scored = [(self.agents["worker"], 0.10)]
+        trace = {}
+        with (
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.responder_routing, "pick_by_exemplar", return_value=None
+            ),
+            patch.object(
+                channels.responder_routing, "score_specialists", return_value=scored
+            ),
+            patch.object(channels.responder_routing, "decide", return_value=None),
+            patch.object(channels.responder_routing, "THRESHOLD", 0.75),
+            patch.object(channels.responder_routing, "FALLBACK_SOFT_RATIO", 0.87),
+        ):
+            os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
+            picked = channels._pick_responder(
+                ["clodia", "worker"], "P0", None, "fuori dominio", trace=trace,
+                multi=True,
+            )
+
+        self.assertEqual(picked.name, "clodia")
+        self.assertEqual(trace["reason"], "fallback-rank")
+
+    def test_routing_plan_does_not_decompose_by_default(self) -> None:
+        # messaggio con due bullet: un solo turno, messaggio integro
+        message = ("- Aggiorna il summary del topic\n"
+                   "- Invia il preventivo al cliente")
+
+        def score(_specialists, _msg):
+            return [
+                (self.agents["worker"], 0.91),
+                (self.agents["accountant"], 0.30),
+            ]
+
+        trace = {}
+        with (
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.responder_routing, "pick_by_exemplar", return_value=None
+            ),
+            patch.object(
+                channels.responder_routing, "score_specialists", side_effect=score
+            ),
+            patch.object(
+                channels.responder_routing, "decide",
+                side_effect=lambda scored: scored[0],
+            ),
+        ):
+            os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
+            plan = channels._routing_plan(
+                ["clodia", "worker", "accountant"], "P0", message, trace=trace,
+            )
+
+        self.assertEqual(len(plan), 1)
+        self.assertEqual(plan[0][0].name, "worker")
+        self.assertEqual(plan[0][1], message)            # nessuna decomposizione
+        self.assertNotEqual(trace.get("mode"), "multi-intent")
 
     def test_channel_alias_expansion_is_exact_and_case_insensitive(self) -> None:
         profile = SimpleNamespace(channel_aliases={
@@ -547,6 +651,65 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             ["routed", "routed"],
         )
 
+
+
+class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
+    """Fix urgente: un messaggio → un solo turno, anche con più tag o deleghe."""
+
+    def setUp(self) -> None:
+        self.agents = {
+            "clodia": _a("clodia", "super", "P3", "2026-01-01T00:00:00Z"),
+            "worker": _a("worker", "normal", "P1", "2026-02-01T00:00:00Z"),
+            "accountant": _a("accountant", "normal", "P1", "2026-02-01T00:00:01Z"),
+            "owner": _a("owner", "human", role="superadmin"),
+        }
+        self._orig_get = channels.registry.get_by_name
+        channels.registry.get_by_name = lambda n: self.agents.get(n)
+        os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
+
+    def tearDown(self) -> None:
+        channels.registry.get_by_name = self._orig_get
+
+    async def test_two_hard_tags_start_only_the_first_agent(self) -> None:
+        start = AsyncMock(return_value=True)
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0",
+                         "participants": ["owner", "worker", "accountant"]},
+            }),
+            patch.object(channels.topics_client, "post_message",
+                         return_value={"id": "1"}),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "@worker @accountant guardate qui", "owner",
+            )
+
+        self.assertEqual(result["responders"], ["worker"])
+        self.assertEqual(start.await_count, 1)
+
+    async def test_delegation_involves_one_agent_per_hop(self) -> None:
+        start = AsyncMock(return_value=True)
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0",
+                         "participants": ["owner", "clodia", "worker", "accountant"]},
+            }),
+        ):
+            await channels._maybe_delegate(
+                "P0", "ops", "clodia",
+                "Coinvolgo @worker e anche @accountant su questo",
+                "owner", 0,
+            )
+
+        self.assertEqual(start.await_count, 1)
+        self.assertEqual(start.await_args_list[0].args[3].name, "worker")
 
 class MessageFeedbackTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
