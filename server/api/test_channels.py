@@ -51,6 +51,79 @@ class ResponderTests(unittest.TestCase):
         r = channels._pick_responder(["clodia", "worker"], "P0", "worker")
         self.assertEqual(r.name, "worker")
 
+    def test_exemplar_can_select_an_eligible_super_agent(self) -> None:
+        trace = {}
+        with (
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.registry, "list", return_value=list(self.agents.values())
+            ),
+            patch.object(
+                channels.responder_routing,
+                "pick_by_exemplar",
+                return_value=("clodia", 0.82),
+            ) as picker,
+        ):
+            picked = channels._pick_responder(
+                ["clodia", "worker"], "P0", None,
+                "coordina questa attività", trace=trace,
+            )
+
+        self.assertEqual(picked.name, "clodia")
+        self.assertEqual(trace["mode"], "exemplar")
+        self.assertEqual(trace["exemplar_confidence"], 0.82)
+        picker.assert_called_once_with(
+            "coordina questa attività",
+            ["clodia", "worker"],
+            {"clodia", "ophelia", "worker", "accountant"},
+        )
+
+    def test_routing_stats_include_leave_one_out_metrics(self) -> None:
+        request = SimpleNamespace(headers={})
+        with (
+            patch.object(channels, "_principal_from_request", return_value="owner"),
+            patch.object(
+                channels.registry, "list",
+                return_value=[self.agents["clodia"], self.agents["worker"]],
+            ),
+            patch.object(
+                channels.routing_feedback, "load_exemplars",
+                return_value=[{"agent": "clodia", "vec": [1.0]}],
+            ) as load,
+            patch.object(
+                channels.routing_feedback, "stats",
+                return_value={"decision_total": 3},
+            ),
+            patch.object(
+                channels.responder_routing, "evaluate_exemplars",
+                return_value={"evaluated": 1, "accuracy": None},
+            ) as evaluate,
+        ):
+            result = channels.routing_stats(request)
+
+        self.assertEqual(result["decision_total"], 3)
+        self.assertEqual(
+            result["leave_one_out"], {"evaluated": 1, "accuracy": None}
+        )
+        load.assert_called_once_with({"clodia", "worker"})
+        evaluate.assert_called_once()
+
+    def test_routing_decision_tracks_exemplar_origin(self) -> None:
+        with patch.object(
+            channels.routing_feedback, "record_decision"
+        ) as record:
+            channels._track_routing_decision({
+                "mode": "exemplar",
+                "chosen": "clodia",
+                "exemplar_confidence": 0.82,
+            })
+
+        record.assert_called_once_with(
+            "exemplar", ["clodia"], confidence=0.82, mode="exemplar",
+            topic=None,
+        )
+
     def test_clearance_excludes_low(self) -> None:
         # canale P2: worker (P1) escluso, clodia (P3) ok
         r = channels._pick_responder(["worker", "clodia"], "P2", None)
@@ -481,6 +554,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         self._orig_channel_message = channels._channel_message
         self._orig_typing = channels._typing
         self._orig_topic_runtime_override = channels.topic_runtime_override
+        self._orig_track_routing = channels._track_routing_decision
 
         class FakeChat:
             principal = ""
@@ -518,6 +592,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             "provider": "test-provider",
             "topic_tier": tier,
         }
+        channels._track_routing_decision = lambda _payload: None
 
     async def asyncTearDown(self) -> None:
         channels._principal_from_request = self._orig_principal
@@ -533,6 +608,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         channels._channel_message = self._orig_channel_message
         channels._typing = self._orig_typing
         channels.topic_runtime_override = self._orig_topic_runtime_override
+        channels._track_routing_decision = self._orig_track_routing
 
     async def test_channel_post_queues_responder_without_waiting_for_reply(self) -> None:
         res = await channels.channel_post("P0", "ops", MessageRequest(content="@clodia vai"), object())
@@ -678,11 +754,14 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
             "owner": _a("owner", "human", role="superadmin"),
         }
         self._orig_get = channels.registry.get_by_name
+        self._orig_track_routing = channels._track_routing_decision
         channels.registry.get_by_name = lambda n: self.agents.get(n)
+        channels._track_routing_decision = lambda _payload: None
         os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
 
     def tearDown(self) -> None:
         channels.registry.get_by_name = self._orig_get
+        channels._track_routing_decision = self._orig_track_routing
 
     async def test_two_hard_tags_start_only_the_first_agent(self) -> None:
         start = AsyncMock(return_value=True)

@@ -31,11 +31,46 @@ from ..agents import feedback as agent_feedback
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import manager, ProviderNotConnected, topic_runtime_override
-from . import access_log, responder_routing, topics_client
+from . import access_log, responder_routing, routing_feedback, topics_client
 from .agents import _principal_from_request
 
 router = APIRouter()
 LOG = logging.getLogger("agent-server.api.channels")
+
+
+def _track_routing_decision(payload: dict) -> None:
+    """Persist aggregate routing telemetry without message contents."""
+    mode = payload.get("mode")
+    if mode in {"exemplar", "correction"}:
+        origin = "exemplar"
+    elif mode in {"relevance", "relevance-multi", "multi-intent"}:
+        origin = "relevance"
+    elif mode in {"tag", "delega"}:
+        origin = "tag"
+    else:
+        origin = "rank"
+    chosen = payload.get("chosen_agents")
+    if not chosen and payload.get("chosen"):
+        chosen = [payload["chosen"]]
+    topic = (
+        f"{payload['tier']}/{payload['name']}"
+        if payload.get("tier") and payload.get("name")
+        else None
+    )
+    try:
+        routing_feedback.record_decision(
+            origin,
+            chosen or [],
+            confidence=payload.get("exemplar_confidence"),
+            mode=mode,
+            topic=topic,
+        )
+        LOG.info(
+            "routing decision: origin=%s mode=%s chosen=%s",
+            origin, mode, ",".join(chosen or []),
+        )
+    except Exception as exc:  # noqa: BLE001
+        LOG.warning("telemetria routing non persistita: %s", exc)
 
 
 async def _typing(tier: str, name: str, agent: str, state: str) -> None:
@@ -208,10 +243,12 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         LOG.info("delega %s: %s → @%s (hop %d) su %s/%s",
                  kind, from_agent, delegate.name, hop + 1, tier, name)
         try:
-            await bus.publish(Event(type="routing_decision", payload={
+            payload = {
                 "tier": tier, "name": name, "mode": "delega",
                 "reason": f"{from_agent} ha coinvolto {delegate.name} ({kind})",
-                "chosen": delegate.name, "candidates": [], "eligible": []},
+                "chosen": delegate.name, "candidates": [], "eligible": []}
+            _track_routing_decision(payload)
+            await bus.publish(Event(type="routing_decision", payload=payload,
                 timestamp=datetime.now(timezone.utc)))
         except Exception:  # noqa: BLE001
             pass
@@ -670,17 +707,28 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
     mode = _routing_mode()
     if message and mode == "relevance":
         specialists = [s for s in ai if s.type != "super"]
-        # 2a. CORREZIONI: se il messaggio somiglia a una correzione passata, instrada
-        # all'agente indicato dall'utente (few-shot k-NN) — ha priorità sulla rilevanza.
+        # 2a. ESEMPLARI: conferme e correzioni votano fra tutti gli agenti
+        # idonei, inclusi i super-agent, prima del routing per rilevanza.
         try:
-            ex = responder_routing.pick_by_exemplar(message, [s.name for s in specialists])
+            known = {
+                s.name for s in registry.list()
+                if s and s.type in ("super", "normal")
+            }
+            ex = responder_routing.pick_by_exemplar(
+                message, [s.name for s in ai], known
+            )
         except Exception:  # noqa: BLE001
             ex = None
         if ex:
-            chosen = next((s for s in specialists if s.name == ex[0]), None)
+            chosen = next((s for s in ai if s.name == ex[0]), None)
             if chosen:
-                return _record(chosen, f"correzione (sim {ex[1]})", "correction",
-                               [(chosen, ex[1])])
+                result = _record(
+                    chosen, f"esemplari (conf {ex[1]})", "exemplar",
+                    [(chosen, ex[1])]
+                )
+                if trace is not None:
+                    trace["exemplar_confidence"] = ex[1]
+                return result
         try:
             scored = responder_routing.score_specialists(specialists, message)
             hit = responder_routing.decide(scored)
@@ -699,7 +747,7 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
             best, best_score = soft_hits[0]
             return _record(best, f"best-fit (soft {round(best_score, 3)})",
                            "relevance", scored)
-        return _record(rank_mod.highest(ai), "fallback-rank", "relevance", scored)
+        return _record(rank_mod.highest(ai), "fallback-rank", "rank", scored)
     return _record(rank_mod.highest(ai), "rank", "rank")
 
 
@@ -729,7 +777,7 @@ def _routing_plan(participants: list[str], tier: str, message: str,
             participants, tier, None, intent, trace=intent_trace
         )
         mode = intent_trace.get("mode")
-        if picked is not None and mode in ("relevance", "correction"):
+        if picked is not None and mode in ("relevance", "exemplar", "correction"):
             grouped.setdefault(picked.name, (picked, []))[1].append(intent)
             chosen = picked.name
         else:
@@ -1050,7 +1098,7 @@ async def post_channel_message(
     if targets:
         # barra 🧭: instradamento multi-tag
         try:
-            await bus.publish(Event(type="routing_decision", payload={
+            payload = {
                 "tier": tier, "name": name, "mode": "tag",
                 "reason": ("tag esplicito (@ diretto · $ soft)"
                            + (f" — risposta singola, non avviati: "
@@ -1058,7 +1106,12 @@ async def post_channel_message(
                 "chosen": ", ".join(f"{s.name}{' ·soft' if k == 'soft' else ''}" for s, k in targets),
                 "chosen_agents": [s.name for s, _kind in targets],
                 "candidates": [], "eligible": [s.name for s, _ in targets],
-            }, timestamp=datetime.now(timezone.utc)))
+            }
+            _track_routing_decision(payload)
+            await bus.publish(Event(
+                type="routing_decision", payload=payload,
+                timestamp=datetime.now(timezone.utc),
+            ))
         except Exception:  # noqa: BLE001
             pass
         warning = None
@@ -1081,8 +1134,9 @@ async def post_channel_message(
     plan = _routing_plan(participants, tier_real, content, trace=routing)
     if routing.get("chosen"):
         try:
-            await bus.publish(Event(type="routing_decision",
-                payload={"tier": tier, "name": name, **routing},
+            payload = {"tier": tier, "name": name, **routing}
+            _track_routing_decision(payload)
+            await bus.publish(Event(type="routing_decision", payload=payload,
                 timestamp=datetime.now(timezone.utc)))
         except Exception as e:  # noqa: BLE001
             LOG.debug("routing_decision non pubblicato: %s", e)
@@ -1200,9 +1254,11 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
                                     trigger_text or "", trace=routing)
         if routing.get("chosen"):
             try:
+                payload = {"tier": tier, "name": name, **routing}
+                _track_routing_decision(payload)
                 await bus.publish(Event(
                     type="routing_decision",
-                    payload={"tier": tier, "name": name, **routing},
+                    payload=payload,
                     timestamp=datetime.now(timezone.utc)))
             except Exception:  # noqa: BLE001
                 pass
@@ -1396,6 +1452,23 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     return topic
 
 
+@router.get("/clodia/routing/stats")
+def routing_stats(request: Request) -> dict:
+    """Aggregate routing effectiveness metrics; never exposes message text."""
+    if not _principal_from_request(request):
+        raise HTTPException(401, "login richiesto")
+    known = {
+        spec.name for spec in registry.list()
+        if spec and spec.type in ("super", "normal")
+    }
+    exemplars = routing_feedback.load_exemplars(known)
+    result = routing_feedback.stats()
+    result["leave_one_out"] = responder_routing.evaluate_exemplars(
+        exemplars, sorted(known)
+    )
+    return result
+
+
 @router.post("/clodia/routing/correct")
 async def routing_correct(request: Request) -> dict:
     """CORREZIONE del routing: l'utente indica l'agente che AVREBBE usato. Salviamo
@@ -1425,9 +1498,9 @@ async def routing_correct(request: Request) -> dict:
     vec = responder_routing.embed_text(human["text"], role="query")
     if not vec:
         raise HTTPException(503, "embedder non disponibile")
-    from . import routing_feedback
     routing_feedback.record_correction(vec, correct_agent,
-                                        router_chose=b.get("chosen"), tier=tier, by=principal)
+                                        router_chose=b.get("chosen"), tier=tier,
+                                        by=principal, topic=f"{tier}/{name}")
     return {"ok": True, "learned": correct_agent}
 
 
@@ -1461,10 +1534,9 @@ async def routing_feedback_record(request: Request) -> dict:
     vec = responder_routing.embed_text(human["text"], role="query")
     if not vec:
         raise HTTPException(503, "embedder non disponibile")
-    from . import routing_feedback
     routing_feedback.record_feedback(
         vec, kind=kind, chosen_agent=chosen, correct_agent=correct_agent,
-        tier=tier, by=principal,
+        tier=tier, by=principal, topic=f"{tier}/{name}",
     )
     return {"ok": True, "kind": kind,
             "learned": chosen if kind == "confirm" else correct_agent}
