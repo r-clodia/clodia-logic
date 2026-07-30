@@ -551,6 +551,23 @@ def agent_effective_provider(kind: str) -> Optional[str]:
     return effective_provider(None, None, sdk, connected, None, override=ov)
 
 
+def agent_effective_provider_for_tier(kind: str, tier: str | None) -> Optional[str]:
+    """Provider meno costoso per l'agent nel tier di un topic."""
+    try:
+        from ..api.providers import effective_provider_for_tier, connected_provider_ids
+        connected = connected_provider_ids()
+    except Exception:  # noqa: BLE001 — fail-open su errore infra
+        return (agent_candidates(kind) or [None])[0]
+    spec = _kind_spec(kind)
+    if spec is not None:
+        return effective_provider_for_tier(getattr(spec, "providers", None),
+                                           getattr(spec, "provider", None), spec.agent_sdk,
+                                           connected, tier, getattr(spec, "model", None),
+                                           getattr(spec, "provider_models", None))
+    sdk = "codex" if kind in CODEX_KINDS else "claude"
+    return effective_provider_for_tier(None, None, sdk, connected, tier, None)
+
+
 def agent_provider(kind: str) -> Optional[str]:
     """Compat: provider effettivo, o (se nessuno collegato) il preferito."""
     return agent_effective_provider(kind) or (agent_candidates(kind) or [None])[0]
@@ -633,6 +650,18 @@ def _runtime_token_ttl(override: Optional[dict]) -> int:
         return _CLODIA_TOOLS_TOKEN_TTL
     remaining = int(min(expiries) - time.time())
     return max(1, min(_CLODIA_TOOLS_TOKEN_TTL, remaining))
+
+
+def topic_runtime_override(kind: str, tier: str | None) -> dict:
+    """Runtime override per sessioni di topic: provider min-cost idoneo al tier."""
+    provider = agent_effective_provider_for_tier(kind, tier)
+    if not provider:
+        raise ProviderNotConnected(kind, f"nessun provider con SEAL >= {tier}")
+    override = {"provider": provider, "topic_tier": tier}
+    model = _runtime_model(kind, override)
+    if model:
+        override["model"] = model
+    return override
 
 
 def _ensure_runtime_provider(kind: str, override: Optional[dict]) -> None:
@@ -2308,13 +2337,15 @@ class ChatManager:
         return out
 
     async def create(self, chat_id: Optional[str] = None, kind: str = DEFAULT_KIND,
-                     run_id: Optional[str] = None) -> ChatSession:
+                     run_id: Optional[str] = None,
+                     runtime_override: Optional[dict] = None) -> ChatSession:
         async with self._lock:
             # Enforcement: un agent col provider scollegato non è disponibile —
             # né per chat (qui) né per job (fire_job passa di qui). Choke point unico.
             cid = chat_id or _new_chat_id()
             from .. import scoped_overrides
-            runtime_override = scoped_overrides.resolve(kind, chat_id=cid, run_id=run_id)
+            resolved_override = scoped_overrides.resolve(kind, chat_id=cid, run_id=run_id)
+            runtime_override = {**resolved_override, **(runtime_override or {})}
             _ensure_runtime_provider(kind, runtime_override)
             if cid in self._chats:
                 raise ValueError(f"chat '{cid}' already exists")

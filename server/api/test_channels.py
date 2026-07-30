@@ -29,10 +29,14 @@ class ResponderTests(unittest.TestCase):
             "owner": _a("owner", "human", role="superadmin"),
         }
         self._orig = channels.registry.get_by_name
+        self._orig_provider_seal_ok = channels._provider_seal_ok
         channels.registry.get_by_name = lambda n: self.agents.get(n)
+        channels._provider_seal_ok = lambda s, tier: channels._can_access(
+            getattr(s, "clearance", None), tier)
 
     def tearDown(self) -> None:
         channels.registry.get_by_name = self._orig
+        channels._provider_seal_ok = self._orig_provider_seal_ok
 
     def test_highest_rank_ai_responds(self) -> None:
         r = channels._pick_responder(["owner", "worker", "clodia"], "P0", None)
@@ -364,6 +368,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         self._orig_open_topic = channels.topics_client.open_topic
         self._orig_list_messages = channels.topics_client.list_messages
         self._orig_post_message = channels.topics_client.post_message
+        self._orig_read_file = channels.topics_client.read_file
         self._orig_touch = channels.access_log.touch
         self._orig_activity = channels.activity_log.append
         self._orig_pick = channels._pick_responder
@@ -371,6 +376,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         self._orig_manager_create = channels.manager.create
         self._orig_channel_message = channels._channel_message
         self._orig_typing = channels._typing
+        self._orig_topic_runtime_override = channels.topic_runtime_override
 
         class FakeChat:
             principal = ""
@@ -395,6 +401,8 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             lambda _tier, _name, author, text, kind="human", **_kwargs:
                 self.posts.append((author, text, kind))
         )
+        channels.topics_client.read_file = lambda *_args, **_kwargs: (_ for _ in ()).throw(
+            channels.topics_client.TopicsClientError("missing"))
         channels.access_log.touch = lambda *_args, **_kwargs: None
         channels.activity_log.append = lambda *_args, **_kwargs: None
         channels._pick_responder = lambda *_args, **_kwargs: self.agent
@@ -402,12 +410,17 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         channels.manager.create = create
         channels._channel_message = noop_async
         channels._typing = noop_async
+        channels.topic_runtime_override = lambda agent, tier: {
+            "provider": "test-provider",
+            "topic_tier": tier,
+        }
 
     async def asyncTearDown(self) -> None:
         channels._principal_from_request = self._orig_principal
         channels.topics_client.open_topic = self._orig_open_topic
         channels.topics_client.list_messages = self._orig_list_messages
         channels.topics_client.post_message = self._orig_post_message
+        channels.topics_client.read_file = self._orig_read_file
         channels.access_log.touch = self._orig_touch
         channels.activity_log.append = self._orig_activity
         channels._pick_responder = self._orig_pick
@@ -415,13 +428,14 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         channels.manager.create = self._orig_manager_create
         channels._channel_message = self._orig_channel_message
         channels._typing = self._orig_typing
+        channels.topic_runtime_override = self._orig_topic_runtime_override
 
     async def test_channel_post_queues_responder_without_waiting_for_reply(self) -> None:
         res = await channels.channel_post("P0", "ops", MessageRequest(content="@clodia vai"), object())
 
         self.assertTrue(res["posted"])
         self.assertTrue(res["queued"])
-        self.assertEqual(res["responder"], "clodia")
+        self.assertEqual(res["responders"], ["clodia"])
         self.assertEqual(self.posts, [("owner", "@clodia vai", "human")])
 
         await self.sent.wait()

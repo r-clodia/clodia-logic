@@ -24,6 +24,7 @@ flow: anthropic
 # Preferenza entro l'SDK claude: dopo l'API commerciale (10, ZDR enterprise
 # disponibile), prima dell'abbonamento consumer Pro/Max (20).
 priority: 15
+cost_rank: 15
 models: ["claude-*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) — SEAL eff = min(SOV-2/3/7)
