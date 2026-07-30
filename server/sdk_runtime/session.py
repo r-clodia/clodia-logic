@@ -1860,6 +1860,19 @@ OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
 _OPENCODE_TURN_TIMEOUT = float(os.environ.get("OPENCODE_TURN_TIMEOUT", "180"))
 
 
+def _opencode_reasoning_effort(kind: str, model: str | None) -> str | None:
+    spec = _kind_spec(kind)
+    effort = (getattr(spec, "reasoning_effort", None) or "").strip() if spec else ""
+    if effort:
+        return effort
+    # Imported Tomato packs predating the seed fix may still lack the field.
+    # glm-5.2 reasoning is prone to long, non-convergent turns for tool executors,
+    # so default it to the fast/no-reasoning variant unless the seed says otherwise.
+    if (model or "").lower() == "glm-5.2":
+        return "none"
+    return None
+
+
 class OpenCodeChatSession:
     """Chat servita dal runtime **OpenCode** (agent multi-provider, es. Messaggero
     su gpt-oss-120b/scaleway). Stessa interfaccia di ChatSession/CodexChatSession
@@ -1943,15 +1956,18 @@ class OpenCodeChatSession:
             base = (provider_extra_env(self._provider) or {}).get("OPENAI_BASE_URL")
             if base:
                 opts["baseURL"] = base
-            # reasoning_effort del seed (es. glm-5.2 "none" → niente reasoning:
-            # turni rapidi, no runaway). Passato nelle options del provider
-            # opencode; ignorato dai modelli che non lo supportano.
-            _spec = _kind_spec(self.kind)
-            _reff = getattr(_spec, "reasoning_effort", None) if _spec else None
-            if _reff:
-                opts["reasoning_effort"] = _reff
             if opts:
                 cfg["provider"][self._provider] = {"options": opts}
+            # OpenCode expects model options in camelCase. The seed field keeps
+            # Clodia's Python/YAML snake_case, so translate it here; placing it
+            # under the selected model makes the `/message` request pick it up.
+            reff = _opencode_reasoning_effort(self.kind, self._model)
+            if reff and self._provider and self._model:
+                provider_cfg = cfg["provider"].setdefault(self._provider, {})
+                models_cfg = provider_cfg.setdefault("models", {})
+                model_cfg = models_cfg.setdefault(self._model, {})
+                options_cfg = model_cfg.setdefault("options", {})
+                options_cfg["reasoningEffort"] = reff
         except Exception as e:  # noqa: BLE001
             LOG.warning("opencode: credenziale provider %s non risolta: %s", self._provider, e)
         # gateway clodia-tools come MCP via bridge stdio `mcp-remote`. NB: il tipo
