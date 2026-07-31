@@ -1443,6 +1443,7 @@ class CodexChatSession:
         self._codex_home: Optional[Path] = None
         self._thread_id: Optional[str] = None   # session id codex per il resume
         self._last_usage: dict[str, int] = {}
+        self._usage_cumulative: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
         # occupazione ATTUALE della finestra di contesto (token dell'ultimo turno).
         self._context_tokens: int = 0
@@ -1637,9 +1638,17 @@ class CodexChatSession:
         if run_usage:
             self._context_tokens = (int(run_usage.get("input_tokens", 0) or 0)
                                     + int(run_usage.get("cache_read_input_tokens", 0) or 0))
+        usage_payload = None
+        if run_usage is not None:
+            usage_payload = {
+                "usage": run_usage,
+                "usage_semantics": "delta",
+                "usage_source": "codex_cumulative_delta",
+                "usage_cumulative": self._last_usage or None,
+            }
         activity_log.append(self.kind, "run_done",
                             {"reply": _snippet(full), "chat_id": self.chat_id,
-                             "usage": run_usage or None,
+                             **(usage_payload or {}),
                              "provider": _runtime_provider(self.kind, self._runtime_override)})
         return full
 

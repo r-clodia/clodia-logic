@@ -146,6 +146,22 @@ def _usage_totals(usage: dict | None) -> tuple[int, int]:
     return tokens_in, tokens_out
 
 
+def _run_done_fingerprint(agent: str, event: dict) -> str:
+    """Stable key per ignorare doppie scritture dello stesso completamento."""
+    payload = event.get("payload") or {}
+    usage = payload.get("usage") or {}
+    raw = {
+        "agent": agent,
+        "chat_id": payload.get("chat_id"),
+        "provider": payload.get("provider") or UNKNOWN_PROVIDER,
+        "reply": payload.get("reply"),
+        "usage": usage,
+        "usage_semantics": payload.get("usage_semantics"),
+        "usage_source": payload.get("usage_source"),
+    }
+    return json.dumps(raw, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+
+
 def summary(agent_names: list[str] | None = None) -> list[dict]:
     """Leaderboard per agent seed con contatori cumulativi all-time.
 
@@ -164,6 +180,7 @@ def summary(agent_names: list[str] | None = None) -> list[dict]:
         status = "idle"
         last_run_ts = None
         last_event = None
+        seen_run_done: set[str] = set()
 
         for e in _read_jsonl(_file_for(agent)):
             if e.get("type") == "run_started":
@@ -176,6 +193,11 @@ def summary(agent_names: list[str] | None = None) -> list[dict]:
                     last_run_ts = e.get("ts")
                     status = "running"
                 elif typ == "run_done":
+                    fp = _run_done_fingerprint(agent, e)
+                    if fp in seen_run_done:
+                        last_event = e
+                        continue
+                    seen_run_done.add(fp)
                     runs += 1
                     tin, tout = _usage_totals((e.get("payload") or {}).get("usage"))
                     tokens_in += tin
@@ -214,11 +236,16 @@ def provider_summary(agent_names: list[str] | None = None) -> list[dict]:
         names.update(child.name for child in ACTIVITY_DIR.iterdir() if child.is_dir())
 
     acc: dict[str, dict] = {}
+    seen_run_done: set[str] = set()
     for agent in sorted(names):
         for f in _agent_log_files(agent):
             for e in _read_jsonl(f):
                 if e.get("type") != "run_done":
                     continue
+                fp = _run_done_fingerprint(agent, e)
+                if fp in seen_run_done:
+                    continue
+                seen_run_done.add(fp)
                 payload = e.get("payload") or {}
                 provider = payload.get("provider") or UNKNOWN_PROVIDER
                 tin, tout = _usage_totals(payload.get("usage"))
