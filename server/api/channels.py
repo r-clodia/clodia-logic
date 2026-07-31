@@ -709,13 +709,15 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         specialists = [s for s in ai if s.type != "super"]
         # 2a. ESEMPLARI: conferme e correzioni votano fra tutti gli agenti
         # idonei, inclusi i super-agent, prima del routing per rilevanza.
+        # In modalità shadow (default) la decisione è solo tracciata: qui `ex`
+        # resta None e si prosegue col routing per rilevanza.
         try:
             known = {
                 s.name for s in registry.list()
                 if s and s.type in ("super", "normal")
             }
             ex = responder_routing.pick_by_exemplar(
-                message, [s.name for s in ai], known
+                message, [s.name for s in ai], known, topic=trace.get("topic") if trace else None
             )
         except Exception:  # noqa: BLE001
             ex = None
@@ -1466,6 +1468,17 @@ def routing_stats(request: Request) -> dict:
     result["leave_one_out"] = responder_routing.evaluate_exemplars(
         exemplars, sorted(known)
     )
+    # Stato del classificatore: `shadow` traccia senza applicare, `enforce`
+    # applica. Le soglie sono qui perché la decisione di passare a enforce si
+    # prende guardando `leave_one_out` in questa stessa risposta.
+    result["exemplar"] = {
+        "mode": "enforce" if responder_routing.exemplar_enforced() else "shadow",
+        "floor": responder_routing.EXEMPLAR_FLOOR,
+        "k": responder_routing.EXEMPLAR_K,
+        "margin": responder_routing.EXEMPLAR_MARGIN,
+        "confirm_weight": responder_routing.EXEMPLAR_CONFIRM_WEIGHT,
+        "half_life_days": responder_routing.EXEMPLAR_HALF_LIFE_DAYS,
+    }
     return result
 
 

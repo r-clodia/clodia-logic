@@ -227,6 +227,33 @@ EXEMPLAR_CONFIRM_WEIGHT = min(1.0, max(
 EXEMPLAR_HALF_LIFE_DAYS = max(
     1.0, float(os.environ.get("RESPONDER_EXEMPLAR_HALF_LIFE_DAYS", "90")))
 
+# FLOOR di similarità: il criterio relativo (margine sul secondo) da solo NON
+# basta, perché un vincitore senza avversari ha margine 1.0 QUALUNQUE sia la
+# similarità. Su e5 le cosine sono compresse in alto (misurato sul corpus reale:
+# coppie stesso-agente 0.822 medio, coppie agenti-diversi 0.814), quindi senza
+# floor il classificatore aggancia rumore: 6 frasi su 8 fuori dominio venivano
+# instradate, con max_similarity ~0.79. Il floor a 0.80 azzera quei falsi
+# positivi senza costare copertura in-dominio (28/39 invariata).
+EXEMPLAR_FLOOR = min(1.0, max(
+    0.0, float(os.environ.get("RESPONDER_EXEMPLAR_FLOOR", "0.80"))))
+
+# MODALITÀ del classificatore:
+#   "shadow"  (default) → calcola e REGISTRA la decisione che avrebbe preso, ma
+#                         NON la applica: il routing resta quello per rilevanza;
+#   "enforce"           → applica la decisione.
+# Il default è shadow perché sul corpus attuale l'accuratezza leave-one-out è
+# 21–30% (39 voti su 9 agenti): applicarla peggiorerebbe il routing. Si passa a
+# "enforce" quando `GET /clodia/routing/stats` mostra un'accuratezza adeguata
+# (indicativamente ≥ 70%) su copertura non banale — decisione esplicita, non
+# automatica.
+EXEMPLAR_MODE = (os.environ.get("RESPONDER_EXEMPLAR_MODE", "shadow") or "shadow").strip().lower()
+
+
+def exemplar_enforced() -> bool:
+    """True se le decisioni degli esemplari vengono APPLICATE (non solo tracciate)."""
+    return (os.environ.get("RESPONDER_EXEMPLAR_MODE", EXEMPLAR_MODE)
+            or "").strip().lower() == "enforce"
+
 
 def _temporal_weight(timestamp: str | None,
                      now: datetime | None = None) -> float:
@@ -284,6 +311,12 @@ def _classify_exemplar_vector(vector: list[float], exemplars: list[dict],
     )
     if confidence < EXEMPLAR_MARGIN:
         return None
+    # FLOOR: il margine relativo non dice nulla sulla PERTINENZA. Senza questo
+    # check un vincitore senza avversari passa con confidence 1.0 anche a
+    # similarità da rumore. Il vincitore deve somigliare davvero a qualcosa che
+    # l'utente ha annotato.
+    if max_similarity[winner] < EXEMPLAR_FLOOR:
+        return None
     return {
         "agent": winner,
         "confidence": confidence,
@@ -295,8 +328,14 @@ def _classify_exemplar_vector(vector: list[float], exemplars: list[dict],
 
 
 def pick_by_exemplar(message: str, eligible_names: list[str],
-                     known_names: set[str] | None = None):
-    """Weighted k-NN over supervised routing feedback, or None if ambiguous."""
+                     known_names: set[str] | None = None,
+                     *, topic: str | None = None):
+    """k-NN pesato sul feedback supervisionato → (agent, confidence) o None.
+
+    In modalità **shadow** (default) la decisione viene calcolata e TRACCIATA ma
+    NON restituita: il chiamante prosegue col routing per rilevanza. Serve ad
+    accumulare evidenza — visibile su `GET /clodia/routing/stats` — prima di
+    dare al classificatore il potere di dirottare il routing."""
     from . import routing_feedback
     ex = routing_feedback.load_exemplars(known_names)
     if not ex:
@@ -307,11 +346,23 @@ def pick_by_exemplar(message: str, eligible_names: list[str],
     result = _classify_exemplar_vector(mv, ex, eligible_names)
     if result is None:
         return None
+    enforced = exemplar_enforced()
     LOG.info(
-        "routing exemplar: agent=%s confidence=%.3f support=%d max_sim=%.3f",
+        "routing exemplar (%s): agent=%s confidence=%.3f support=%d max_sim=%.3f",
+        "enforce" if enforced else "shadow",
         result["agent"], result["confidence"], result["support"],
         result["max_similarity"],
     )
+    try:
+        routing_feedback.record_decision(
+            "exemplar" if enforced else "exemplar-shadow",
+            result["agent"], confidence=round(result["confidence"], 3),
+            mode="exemplar", topic=topic,
+        )
+    except Exception as e:  # noqa: BLE001 — la telemetria non deve mai bloccare il routing
+        LOG.debug("telemetria esemplare non registrata: %s", e)
+    if not enforced:
+        return None
     return result["agent"], round(result["confidence"], 3)
 
 
