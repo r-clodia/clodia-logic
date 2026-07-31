@@ -73,6 +73,7 @@ services:
       # workspace agent ha `scratch/shared/` symlinkato a cards/<card_id>/.
       # Persistente tra restart e recreate del container.
       - ${CLODIA_DATA}/agency-shared:/datadir/agency-shared
+      - clodia-transfer:/shared
     environment: &common-env
       CLODIA_DATA: /datadir
       ANTHROPIC_API_KEY: ${ANTHROPIC_API_KEY:-}
@@ -80,6 +81,8 @@ services:
       GIT_BRANCH: ${GIT_BRANCH:-main}
       GIT_REPO: ${GIT_REPO:-r-clodia/clodia-logic}
       SERVER_HOST: "0.0.0.0"
+      CLODIA_ORCHESTRATOR_SECRET: ${CLODIA_ORCHESTRATOR_SECRET:-}
+      CLODIA_SHARED_ROOT: /shared
       LANGFUSE_CAPTURE_CONTENT: "true"
     restart: unless-stopped
     healthcheck:
@@ -119,3 +122,6 @@ services:
   # processi figli dell'agent-server, accesi/spenti dalla webui via
   # start.sh/stop.sh. Nessun auto-avvio all'avvio del container.
   # (check-mail dismesso — issue #91; sostituibile da un job schedulato.)
+
+volumes:
+  clodia-transfer:

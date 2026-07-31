@@ -730,6 +730,10 @@ class ChatSession:
         # occupazione ATTUALE della finestra di contesto (token dell'ultimo turno).
         self._context_tokens: int = 0
         self._spawn = None  # EphemeralWorkspace dello spawn webchat (cleanup a stop)
+        # Chiave X25519 effimera, solo in memoria, per envelope destinati a
+        # questa sessione sul volume /shared. Non è l'identità PKI Ed25519.
+        from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
+        self._transfer_private = X25519PrivateKey.generate()
         self._sandbox_uid: Optional[int] = None  # uid per-spawn allocato (sandbox)
         # Opzioni del client SDK calcolate in start(): riusate dal recovery per
         # ricreare il subprocess dopo un fallimento senza ricalcolare env/spawn.
