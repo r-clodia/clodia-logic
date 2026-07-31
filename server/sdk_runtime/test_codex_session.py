@@ -93,6 +93,37 @@ class CodexModelFallbackTests(unittest.IsolatedAsyncioTestCase):
 
         sess._run_codex_once.assert_awaited_once_with("ciao", "gpt-5.6-sol")
 
+    async def test_run_done_marks_codex_usage_as_delta_and_keeps_raw_cumulative(self):
+        sess = _make_session()
+        sess._run_codex_once = mock.AsyncMock(return_value=(["Fatto"], [], 0, ""))
+        sess._last_usage = {"input_tokens": 250, "output_tokens": 25, "cache_read_input_tokens": 180}
+        sess._usage_cumulative = {"input_tokens": 100, "output_tokens": 10, "cache_read_input_tokens": 50}
+
+        events: list[tuple[str, str, dict]] = []
+
+        def _append(agent: str, typ: str, payload: dict, *args, **kwargs) -> None:
+            events.append((agent, typ, payload))
+
+        with mock.patch.object(S, "_runtime_model", return_value="gpt-5-codex"), \
+             mock.patch.object(S, "_runtime_provider", return_value="codex"), \
+             mock.patch.object(S.activity_log, "append", side_effect=_append):
+            result = await sess._run_turn("ciao")
+
+        self.assertEqual(result, "Fatto")
+        run_done = [p for _agent, typ, p in events if typ == "run_done"][0]
+        self.assertEqual(run_done["usage"], {
+            "input_tokens": 150,
+            "output_tokens": 15,
+            "cache_read_input_tokens": 130,
+        })
+        self.assertEqual(run_done["usage_semantics"], "delta")
+        self.assertEqual(run_done["usage_source"], "codex_cumulative_delta")
+        self.assertEqual(run_done["usage_cumulative"], {
+            "input_tokens": 250,
+            "output_tokens": 25,
+            "cache_read_input_tokens": 180,
+        })
+
 
 class CodexEventTests(unittest.IsolatedAsyncioTestCase):
     async def test_turn_failed_is_collected_for_retry_decision(self):

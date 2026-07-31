@@ -38,6 +38,35 @@ class ActivityLogSummaryTest(TestCase):
         self.assertEqual(rows["wainston"]["tokens_in"], 0)
         self.assertEqual(rows["wainston"]["tokens_out"], 0)
 
+    def test_summary_ignores_duplicate_run_done_events(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            log_dir = root / "ophelia"
+            log_dir.mkdir(parents=True)
+            payload = {"chat_id": "chan:dev", "provider": "codex",
+                       "reply": "ok",
+                       "usage": {"input_tokens": 100, "output_tokens": 10},
+                       "usage_semantics": "delta"}
+            (log_dir / "2026-07-01.jsonl").write_text(
+                "\n".join([
+                    json.dumps({"ts": "2026-07-01T10:00:00+00:00", "agent": "ophelia",
+                                "type": "run_done", "payload": payload}),
+                    json.dumps({"ts": "2026-07-01T10:00:01+00:00", "agent": "ophelia",
+                                "type": "run_done", "payload": payload}),
+                ]) + "\n",
+                encoding="utf-8",
+            )
+
+            with patch.object(activity_log, "ACTIVITY_DIR", root):
+                rows = {r["agent"]: r for r in activity_log.summary(["ophelia"])}
+                providers = {r["provider"]: r for r in activity_log.provider_summary(["ophelia"])}
+
+        self.assertEqual(rows["ophelia"]["runs"], 1)
+        self.assertEqual(rows["ophelia"]["tokens_in"], 100)
+        self.assertEqual(rows["ophelia"]["tokens_out"], 10)
+        self.assertEqual(providers["codex"]["runs"], 1)
+        self.assertEqual(providers["codex"]["tokens_in"], 100)
+
 
 class ProviderSummaryTest(TestCase):
     def test_provider_from_event_and_unknown_bucket_no_guessing(self):
