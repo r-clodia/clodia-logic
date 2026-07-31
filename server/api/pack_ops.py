@@ -4,10 +4,9 @@ I pack dichiarano dipendenze (`requires:`) e datastore (`datastores:`) nel
 manifest, curated dal pack developer; l'import le propaga in
 `CLODIA_DATA/plugins/<nome>/plugin.yaml`.
 
-Questo modulo NON installa pacchetti, NON monta MCP server e NON provisiona RAG.
-Può solo consegnare un turno all'agente `pack_ops.agent`, e lo fa solo quando
-`profile.pack_ops.enabled: true`. Default OFF: senza tool dedicati, invocare
-Sysadmin al boot produce solo loop diagnostici impossibili da convergere.
+Questo modulo non esegue provisioning direttamente: consegna un turno all'agente
+`pack_ops.agent`, che usa i tool gateway dedicati (`packs.install_*`, `mcp.*`,
+`rag.*`) e marca il setup completato quando la convergenza è verificata.
 
 Trigger:
 - post-import (packs.py): fire-and-forget dopo un import con dichiarazioni;
@@ -68,15 +67,16 @@ def _reconcile_prompt(reason: str, decls: dict[str, dict]) -> str:
         lines.append(f"- {name} → requires [{req}] · datastores [{ds}] · rag_collections [{rc}]")
     lines += [
         "",
-        "Esegui SOLO se l'istanza espone tool dedicati di provisioning "
-        "(install pip/npm, mount/restart MCP, rag.ingest). Se quei tool non "
-        "sono disponibili, non tentare shell/raw-fs su /datadir: chiudi con un "
-        "report sintetico dei gap e non riaprire lo stesso accertamento.",
+        "Esegui la convergenza con i tool dedicati del gateway, non con shell "
+        "generica: packs.install_pip / packs.install_npm per `requires`, "
+        "packs.check_command per `bin`/`system`, mcp.add + runtime.restart_agent "
+        "per i server MCP dichiarati, rag.create_collection + rag.ingest per "
+        "`rag_collections`.",
         "",
         "Per le rag_collections: se una collection dichiarata non esiste ancora "
-        "(rag.collections), PROVISIONALA — crea/ingerisci le risorse iniziali via "
-        "rag.ingest (collection + doc_name + version; il corpus/indice è infra "
-        "pgvector, NON è nel pack). Le risorse con `url` vanno prima scaricate in "
+        "(rag.collections), PROVISIONALA con rag.create_collection e poi ingerisci "
+        "le risorse iniziali via rag.ingest (collection + doc_name + version; il "
+        "corpus/indice è infra pgvector, NON è nel pack). Le risorse con `url` vanno prima scaricate in "
         "un topic e poi ingerite; quelle con `path` sono file del pack. Idempotente: "
         "salta ciò che è già indicizzato. Se non hai gli strumenti per scaricare, "
         "riporta le risorse mancanti nel report per l'intervento umano.",

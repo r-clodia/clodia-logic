@@ -111,14 +111,13 @@ class HelpdeskConfig(BaseModel):
 class PackOpsConfig(BaseModel):
     """Pack ops agentico.
 
-    Default OFF: finché non esistono tool dedicati per install pip/npm in path
-    persistenti, mount/restart MCP dichiarati e RAG ingest, il boot non deve
-    invocare Sysadmin in un mandato strutturalmente impossibile. Le edizioni che
-    forniscono quell'infra possono abilitarlo esplicitamente.
+    Default ON: il gateway espone tool dedicati e stretti per install pip/npm in
+    path persistenti, verificare binari, montare MCP e provisionare RAG. Le
+    edizioni che vogliono gestire il setup solo manualmente possono spegnerlo.
     """
     model_config = ConfigDict(extra="forbid")
 
-    enabled: bool = False
+    enabled: bool = True
     agent: str = "sysadmin"          # agente sysadmin (default sysadmin)
 
 
