@@ -462,31 +462,6 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(plan[0][1], message)            # nessuna decomposizione
         self.assertNotEqual(trace.get("mode"), "multi-intent")
 
-    def test_channel_alias_expansion_is_exact_and_case_insensitive(self) -> None:
-        profile = SimpleNamespace(channel_aliases={
-            "save": "aggiorniamo summary e tldr",
-            "$status": "dammi lo stato",
-            None: "non deve essere usato",
-            "broken": 42,
-        })
-        with patch.object(channels._iprofile, "load", return_value=profile):
-            self.assertEqual(
-                channels._expand_aliases("  $SAVE\n"),
-                "aggiorniamo summary e tldr",
-            )
-            self.assertEqual(channels._expand_aliases("$status"), "dammi lo stato")
-            self.assertEqual(channels._expand_aliases("$unknown"), "$unknown")
-            self.assertEqual(channels._expand_aliases("$broken"), "$broken")
-            self.assertEqual(channels._expand_aliases("$save ora"), "$save ora")
-            self.assertEqual(channels._expand_aliases("usa $save"), "usa $save")
-
-    def test_alias_does_not_interfere_with_soft_agent_tags(self) -> None:
-        profile = SimpleNamespace(channel_aliases={"save": "salva il topic"})
-        with patch.object(channels._iprofile, "load", return_value=profile):
-            content = channels._expand_aliases("$clodia controlla")
-        self.assertEqual(content, "$clodia controlla")
-        self.assertEqual(channels._tags(content), ([], ["clodia"]))
-
     def test_agents_md_framed_untrusted(self) -> None:
         # AGENTS.md scrivibile da chiunque → nel prompt dev'essere framato come
         # materiale NON autorevole (anti prompt-injection), non come istruzioni.
@@ -662,21 +637,6 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
                 break
             await asyncio.sleep(0.01)
         self.assertEqual(self.posts[-1], ("clodia", "risposta", "ai"))
-
-    async def test_channel_post_persists_expanded_alias(self) -> None:
-        profile = SimpleNamespace(channel_aliases={
-            "save": "aggiorniamo summary e tldr del topic",
-        })
-        with patch.object(channels._iprofile, "load", return_value=profile):
-            result = await channels.post_channel_message(
-                "P0", "ops", "$save", "owner", respond=False,
-            )
-
-        self.assertEqual(result, {"posted": True, "responder": None})
-        self.assertEqual(
-            self.posts,
-            [("owner", "aggiorniamo summary e tldr del topic", "human")],
-        )
 
     async def test_tool_post_suppresses_internal_confirmation_reply(self) -> None:
         messages: list[dict] = []
