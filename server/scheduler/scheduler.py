@@ -38,6 +38,27 @@ LOG = logging.getLogger("scheduler")
 # risorsa unica per processo (FastAPI app è singleton).
 _scheduler: Optional[BackgroundScheduler] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
+_RUN_TASKS: set[asyncio.Task] = set()
+
+
+def _spawn_run(coro) -> None:
+    """Mantiene una reference forte al lifecycle asincrono di un job."""
+    task = asyncio.create_task(coro)
+    _RUN_TASKS.add(task)
+    task.add_done_callback(_RUN_TASKS.discard)
+
+
+async def _complete_agentic_run(job_id: int, run_id: str, chat, prompt: str) -> None:
+    LOG.info("Job run started job_id=%s run_id=%s chat_id=%s",
+             job_id, run_id, getattr(chat, "chat_id", None))
+    try:
+        await chat.send_user_message(prompt)
+    except Exception as exc:  # noqa: BLE001
+        db.complete_run(job_id, run_id, success=False, error=str(exc) or repr(exc))
+        LOG.exception("Job run failed job_id=%s run_id=%s: %s", job_id, run_id, exc)
+    else:
+        db.complete_run(job_id, run_id, success=True)
+        LOG.info("Job run completed job_id=%s run_id=%s", job_id, run_id)
 
 
 # ---------------------------------------------------------------------------
@@ -323,8 +344,9 @@ async def fire_job(job_id: int) -> dict:
 
     Aggiorna last_run_at / last_status / last_chat_id sul DB.
 
-    Ritorna `{'chat_id': str|None, 'status': 'ok'|'error: ...'}` — utile per
-    l'endpoint manuale `POST /clodia/jobs/{id}/run`.
+    Ritorna subito lo stato di dispatch (`dispatched`, `ok` per i job logici,
+    oppure `error: ...`); il run agentico viene poi aggiornato asincronamente
+    a `success`/`failed`. Utile per `POST /clodia/jobs/{id}/run`.
     """
     job = db.get_job(job_id)
     if job is None:
@@ -365,12 +387,13 @@ async def fire_job(job_id: int) -> dict:
             payload=chat.to_dict(),
             timestamp=datetime.now(timezone.utc),
         ))
-        # Fire-and-forget: il turno parte in background sulla chat.
-        # Lo scheduler non blocca aspettando la risposta del Looper.
-        await chat.send_user_message_async(job["prompt"])
-        # fire-and-forget: il turno prosegue async → NON è un "ok" reale, è un
-        # 'dispatched' (l'esito del turno non è tracciato qui). Evita falsi successi.
-        db.mark_run(job_id, status="dispatched (turno avviato in background)", chat_id=chat_id)
+        # Il fire resta non bloccante, ma il task conserva il lifecycle e porta
+        # la stessa entry dello storico a success/failed quando il turno termina.
+        run_id = db.mark_run(
+            job_id, status="dispatched (turno avviato in background)", chat_id=chat_id)
+        if run_id is None:
+            raise RuntimeError("impossibile creare il record del run")
+        _spawn_run(_complete_agentic_run(job_id, run_id, chat, job["prompt"]))
         return {"chat_id": chat_id, "status": "dispatched"}
     except Exception as e:
         LOG.exception("Errore firing job %s: %s", job_id, e)

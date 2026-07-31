@@ -216,33 +216,31 @@ def delete_job(job_id: int) -> bool:
 _RUNS_CAP = 100  # storico run tenuto per job (i più recenti)
 
 
-def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None) -> None:
+def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None) -> Optional[str]:
     """Registra un fire nello STORICO run del job (`runs`) e aggiorna i campi
-    `last_*`. Il fire è fire-and-forget: `status` = 'ok' (dispatch riuscito) o
-    'error: <msg>' (dispatch fallito) — durata/exit_code non si applicano (il
-    turno prosegue async sulla chat). Lo storico è cappato agli ultimi _RUNS_CAP."""
+    `last_*`. Ritorna l'id del run, usato dal completamento asincrono per
+    aggiornare la stessa entry. Lo storico è cappato agli ultimi _RUNS_CAP."""
     d = get_job(job_id)
     if d is None:
-        return
+        return None
     ts = _now_iso()
     s = str(status)
-    # stato a 3 valori: 'error' (fallito), 'dispatched' (job agentico: turno avviato
-    # in background, esito NON tracciato sincronicamente), 'ok' (esito reale ok —
-    # tipico dei job LOGICI che attendono davvero l'esecuzione).
-    if s.startswith("error"):
-        stato = "error"
+    if s.startswith(("error", "failed")):
+        stato = "failed"
     elif s.startswith("dispatched"):
-        stato = "dispatched"
+        stato = "running"
+    elif s.startswith(("ok", "success", "completed")):
+        stato = "success"
     else:
-        stato = "ok"
+        stato = s.split(" ", 1)[0]
     seq = int(d.get("run_seq") or 0) + 1
     entry = {
         "id": str(seq),
         "ts": ts,
         "stato": stato,
         "chat_id": chat_id,
-        "error": s.split("error:", 1)[-1].strip() or s if stato == "error" else None,
-        "note": s if stato == "dispatched" else None,
+        "error": s.split(":", 1)[-1].strip() or s if stato == "failed" else None,
+        "note": s if stato == "running" else None,
     }
     runs = list(d.get("runs") or [])
     runs.append(entry)
@@ -253,6 +251,43 @@ def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None) -> None
     d["last_chat_id"] = chat_id
     d["updated_at"] = ts
     _write(d)
+    return entry["id"]
+
+
+def complete_run(job_id: int, run_id: str, *, success: bool,
+                 error: Optional[str] = None) -> bool:
+    """Porta uno specifico run agentico a stato terminale e ne persiste durata.
+
+    L'id evita che il completamento tardivo di un run aggiorni per errore una
+    esecuzione successiva dello stesso job.
+    """
+    d = get_job(job_id)
+    if d is None:
+        return False
+    runs = list(d.get("runs") or [])
+    entry = next((row for row in runs if str(row.get("id")) == str(run_id)), None)
+    if entry is None:
+        return False
+    finished_at = _now_iso()
+    try:
+        started = datetime.fromisoformat(str(entry.get("ts")))
+        finished = datetime.fromisoformat(finished_at)
+        duration = max(0.0, (finished - started).total_seconds())
+    except (TypeError, ValueError):
+        duration = None
+    entry.update({
+        "stato": "success" if success else "failed",
+        "finished_at": finished_at,
+        "durata": duration,
+        "error": None if success else (str(error or "errore sconosciuto")),
+        "note": None,
+    })
+    d["runs"] = runs
+    if str(d.get("run_seq")) == str(run_id):
+        d["last_status"] = "success" if success else f"failed: {error or 'errore sconosciuto'}"
+    d["updated_at"] = finished_at
+    _write(d)
+    return True
 
 
 def iter_enabled_jobs() -> Iterable[dict]:
