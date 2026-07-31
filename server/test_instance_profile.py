@@ -109,6 +109,27 @@ class InstanceProfileTest(unittest.TestCase):
         self.assertIs(ip.load(), p1)                 # cache
         self.assertEqual(ip.load(force=True).edition, "nuova")
 
+    def test_update_channel_aliases_writes_profile_and_refreshes_cache(self) -> None:
+        self._write("edition: e1\nchannel_aliases:\n  old: vecchio\n")
+        self.assertEqual(ip.load(force=True).channel_aliases["old"], "vecchio")
+        view = ip.update_channel_aliases({
+            "$save": "aggiorna summary",
+            "status": "dammi lo stato",
+            "empty": "  ",
+        })
+        self.assertEqual(view["channel_aliases"], {
+            "save": "aggiorna summary",
+            "status": "dammi lo stato",
+        })
+        self.assertEqual(ip.load().channel_aliases["save"], "aggiorna summary")
+        text = (Path(self.tmp.name) / ip.PROFILE_FILENAME).read_text(encoding="utf-8")
+        self.assertIn("edition: e1", text)
+        self.assertIn("channel_aliases:", text)
+
+    def test_update_channel_aliases_rejects_invalid_key(self) -> None:
+        with self.assertRaisesRegex(ValueError, "alias non valido"):
+            ip.update_channel_aliases({"bad alias": "no"})
+
 
 if __name__ == "__main__":
     unittest.main()

@@ -10,7 +10,7 @@ from pathlib import Path
 if not os.environ.get("ANTHROPIC_API_KEY"):
     os.environ.pop("ANTHROPIC_API_KEY", None)
 
-from fastapi import FastAPI
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__, instance_profile
@@ -302,6 +302,23 @@ def create_app() -> FastAPI:
     async def get_instance_profile() -> dict:
         """Profilo pubblico dell'istanza per la webui (nessun segreto)."""
         return instance_profile.public_view()
+
+    @app.patch("/profile")
+    async def patch_instance_profile(request: Request) -> dict:
+        """Patch admin-only del profilo runtime. Per ora espone solo channel_aliases."""
+        from .api.agents import _principal_from_request
+        principal = _principal_from_request(request)
+        if not admin.is_admin(principal):
+            raise HTTPException(403, "solo un admin può modificare il profilo")
+        body = await request.json()
+        allowed = {"channel_aliases"}
+        unknown = set(body) - allowed
+        if unknown:
+            raise HTTPException(400, f"campi non modificabili: {', '.join(sorted(unknown))}")
+        try:
+            return instance_profile.update_channel_aliases(body.get("channel_aliases") or {})
+        except ValueError as e:
+            raise HTTPException(400, str(e))
 
     @app.get("/profile/logo")
     async def get_instance_logo():
