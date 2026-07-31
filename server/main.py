@@ -279,6 +279,10 @@ def create_app() -> FastAPI:
     app.include_router(files.router)
     if prof.features.topics != "off":
         app.include_router(topics.router)
+        # Segnali per-principal dei recent topics: badge azionabile + pallino
+        # attività (issue clodia-platform#83).
+        from .api import topic_signals
+        app.include_router(topic_signals.router)
         # Chat Hooks: iniezione di messaggi in una chat via hook/webhook (F1).
         from .hooks import api as hooks_api
         app.include_router(hooks_api.router)
