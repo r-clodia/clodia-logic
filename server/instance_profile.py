@@ -109,13 +109,16 @@ class HelpdeskConfig(BaseModel):
 
 
 class PackOpsConfig(BaseModel):
-    """Sysadmin di piattaforma (pack ops): riconcilia requires:/datastores:
-    dichiarati dai pack. La piattaforma cerca il RUOLO, non il nome: le
-    edizioni possono rinominare l'agente puntando qui il proprio seed.
-    Se l'agente non è nel roster → degradazione pulita (nessun trigger,
-    i gap restano nel report post-install)."""
+    """Pack ops agentico.
+
+    Default OFF: finché non esistono tool dedicati per install pip/npm in path
+    persistenti, mount/restart MCP dichiarati e RAG ingest, il boot non deve
+    invocare Sysadmin in un mandato strutturalmente impossibile. Le edizioni che
+    forniscono quell'infra possono abilitarlo esplicitamente.
+    """
     model_config = ConfigDict(extra="forbid")
 
+    enabled: bool = False
     agent: str = "sysadmin"          # agente sysadmin (default sysadmin)
 
 

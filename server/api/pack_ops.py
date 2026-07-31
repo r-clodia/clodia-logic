@@ -1,11 +1,13 @@
-"""Pack ops — consegna della riconciliazione all'agente sysadmin (Sysadmin).
+"""Pack ops — consegna opzionale della riconciliazione all'agente sysadmin.
 
 I pack dichiarano dipendenze (`requires:`) e datastore (`datastores:`) nel
 manifest, curated dal pack developer; l'import le propaga in
-`CLODIA_DATA/plugins/<nome>/plugin.yaml`. Questo modulo NON esegue nulla:
-individua l'agente col ruolo `pack_ops.agent` del profilo (default `sysadmin`)
-e gli consegna un turno di riconciliazione — è l'agente a convergere,
-dentro il perimetro dichiarato (vedi il suo system-prompt).
+`CLODIA_DATA/plugins/<nome>/plugin.yaml`.
+
+Questo modulo NON installa pacchetti, NON monta MCP server e NON provisiona RAG.
+Può solo consegnare un turno all'agente `pack_ops.agent`, e lo fa solo quando
+`profile.pack_ops.enabled: true`. Default OFF: senza tool dedicati, invocare
+Sysadmin al boot produce solo loop diagnostici impossibili da convergere.
 
 Trigger:
 - post-import (packs.py): fire-and-forget dopo un import con dichiarazioni;
@@ -66,8 +68,10 @@ def _reconcile_prompt(reason: str, decls: dict[str, dict]) -> str:
         lines.append(f"- {name} → requires [{req}] · datastores [{ds}] · rag_collections [{rc}]")
     lines += [
         "",
-        "Applica il tuo protocollo di riconciliazione (idempotente, path "
-        "persistenti in $CLODIA_DATA/runtime) e chiudi con il report.",
+        "Esegui SOLO se l'istanza espone tool dedicati di provisioning "
+        "(install pip/npm, mount/restart MCP, rag.ingest). Se quei tool non "
+        "sono disponibili, non tentare shell/raw-fs su /datadir: chiudi con un "
+        "report sintetico dei gap e non riaprire lo stesso accertamento.",
         "",
         "Per le rag_collections: se una collection dichiarata non esiste ancora "
         "(rag.collections), PROVISIONALA — crea/ingerisci le risorse iniziali via "
@@ -86,7 +90,12 @@ async def trigger_reconcile(reason: str) -> dict:
     if not decls:
         return {"triggered": False, "reason": "nessuna dichiarazione nei plugin"}
 
-    agent = instance_profile.load().pack_ops.agent
+    cfg = instance_profile.load().pack_ops
+    if not cfg.enabled:
+        LOG.info("pack ops: trigger %s saltato — profile.pack_ops.enabled=false", reason)
+        return {"triggered": False, "reason": "pack_ops disabilitato dal profilo"}
+
+    agent = cfg.agent
     # Import lazy: il runtime delle sessioni è pesante e questo modulo viene
     # importato anche in contesti che non lo usano (builder, test).
     from ..sdk_runtime.session import ProviderNotConnected, known_kind, manager
