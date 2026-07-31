@@ -349,10 +349,10 @@ async def get_pack(name: str):
 
 
 def _has_pack_ops_declarations(result: dict) -> bool:
-    """True se l'import ha installato plugin con requires:/datastores: (pack ops)."""
+    """True se l'import ha installato plugin con dichiarazioni pack ops."""
     if result.get("kind") == "packs":
         return any(_has_pack_ops_declarations(r) for r in result.get("packs", []))
-    return any(p.get("datastores") or p.get("requires")
+    return any(p.get("datastores") or p.get("requires") or p.get("rag_collections")
                for p in result.get("plugins", []) if isinstance(p, dict))
 
 
