@@ -14,7 +14,7 @@ from .agent_registry import _provider_fields
 
 
 def _spec(**kw) -> AgentSpec:
-    base = {"name": "a", "description": "d", "model": "m",
+    base = {"name": "a", "description": "d", "model": "claude-sonnet-4-5",
             "display_name": "A", "system_prompt": "s.md"}
     base.update(kw)
     return AgentSpec.model_validate(base)
@@ -36,12 +36,12 @@ class CatalogTests(unittest.TestCase):
 
     def test_default_order_api_before_subscription(self) -> None:
         self.assertEqual(P.default_providers_for_sdk("claude"),
-                         ["anthropic-api", "claude-pro-max"])
+                         ["anthropic-api", "claude-team", "aws-region-eu", "claude-pro-max"])
         self.assertEqual(P.default_providers_for_sdk("codex"),
                          ["openai-api", "codex"])
-        self.assertEqual(P.default_providers_for_sdk("opencode"), [])
+        self.assertEqual(P.default_providers_for_sdk("opencode"), ["scaleway"])
         self.assertEqual(P.default_providers_for_sdk(None),
-                         ["anthropic-api", "claude-pro-max"])  # default claude
+                         ["anthropic-api", "claude-team", "aws-region-eu", "claude-pro-max"])  # default claude
 
 
 class CandidateTests(unittest.TestCase):
@@ -104,16 +104,35 @@ class EffectiveTests(unittest.TestCase):
                                    override="aws-region-eu")
         self.assertEqual(eff, "claude-pro-max")
 
+    def test_topic_tier_picks_min_cost_eligible_provider(self) -> None:
+        eff = P.effective_provider_for_tier(
+            ["claude-team", "aws-region-eu"], None, "claude",
+            {"claude-team", "aws-region-eu"}, "SEAL-1", "claude-sonnet-4-5")
+        self.assertEqual(eff, "claude-team")
+
+    def test_topic_tier_skips_cheaper_but_underclassified_provider(self) -> None:
+        eff = P.effective_provider_for_tier(
+            ["claude-team", "aws-region-eu"], None, "claude",
+            {"claude-team", "aws-region-eu"}, "SEAL-2", "claude-sonnet-4-5")
+        self.assertEqual(eff, "aws-region-eu")
+
+    def test_topic_tier_returns_none_when_no_provider_meets_tier(self) -> None:
+        eff = P.effective_provider_for_tier(
+            ["claude-team"], None, "claude",
+            {"claude-team"}, "SEAL-2", "claude-sonnet-4-5")
+        self.assertIsNone(eff)
+
 
 class ProviderFieldsTests(unittest.TestCase):
     def test_effective_and_list_exposed(self) -> None:
         f = _provider_fields(_spec(agent_sdk="claude"), {"claude-pro-max"})
         self.assertEqual(f["provider"], "claude-pro-max")
-        self.assertEqual(f["providers"], ["anthropic-api", "claude-pro-max"])
+        self.assertEqual(f["providers"],
+                         ["anthropic-api", "claude-team", "aws-region-eu", "claude-pro-max"])
         self.assertTrue(f["provider_connected"])
 
     def test_disabled_when_no_candidate_connected(self) -> None:
-        f = _provider_fields(_spec(agent_sdk="codex"), {"anthropic-api"})
+        f = _provider_fields(_spec(agent_sdk="codex", model="gpt-5"), {"anthropic-api"})
         self.assertIsNone(f["provider"])
         self.assertEqual(f["providers"], ["openai-api", "codex"])
         self.assertFalse(f["provider_connected"])

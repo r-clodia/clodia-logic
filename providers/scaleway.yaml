@@ -16,6 +16,7 @@ extra_env:
 # endpoint OpenAI-compat arbitrari; OpenCode sì (vedi OpenCodeChatSession).
 sdk: opencode
 priority: 5
+cost_rank: 5
 models: ["mistral*", "llama*", "deepseek*", "qwen*", "pixtral*", "gemma*", "gpt-oss*", "glm*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) ────────────────────────

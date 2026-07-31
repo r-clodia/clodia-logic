@@ -30,7 +30,7 @@ from ..agents import activity_log, rank as rank_mod, registry
 from ..agents import feedback as agent_feedback
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
-from ..sdk_runtime.session import manager, ProviderNotConnected
+from ..sdk_runtime.session import manager, ProviderNotConnected, topic_runtime_override
 from . import access_log, responder_routing, topics_client
 from .agents import _principal_from_request
 
@@ -257,6 +257,16 @@ def _effective_clearance(spec) -> str:
     return _norm(ps) if ps else _norm(getattr(spec, "clearance", None))
 
 
+def _topic_provider(spec, tier: str | None) -> str | None:
+    try:
+        return topic_runtime_override(spec.name, tier).get("provider")
+    except ProviderNotConnected:
+        return None
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("topic provider non risolto per %s/%s: %s", spec.name, tier, e)
+        return None
+
+
 def _can_access(clearance: str | None, tier: str | None) -> bool:
     """T.privacy <= clearance: l'agente vede il canale se la sua clearance ≥ tier."""
     return _CLEAR.get(_norm(clearance), 0) >= _CLEAR.get(_norm(tier), 0)
@@ -414,9 +424,22 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         chat = manager.get(chat_id)
     except KeyError:
         try:
-            chat = await manager.create(chat_id=chat_id, kind=spec.name)
+            override = topic_runtime_override(spec.name, tier_real)
+            activity_log.append(spec.name, "provider_selected", {
+                "channel": f"{tier}/{name}",
+                "tier": tier_real,
+                "provider": override.get("provider"),
+                "reason": "topic_min_cost_eligible",
+            })
+            chat = await manager.create(
+                chat_id=chat_id,
+                kind=spec.name,
+                runtime_override=override,
+            )
             created = True
         except ProviderNotConnected:
+            LOG.warning("nessun provider idoneo per %s su topic %s/%s tier=%s",
+                        spec.name, tier, name, tier_real)
             return False
     chat.principal = principal
     directive = _tag_directive(kind, principal, user_text)
@@ -460,11 +483,12 @@ def _channel_meta(body: dict, principal: str, name: str) -> dict:
 
 def _provider_seal_ok(spec, tier: str | None) -> bool:
     """True se il provider EFFETTIVO dell'agent ha SEAL ≥ tier del topic — cioè il
-    motore che tratterà i dati è adeguato al tier. Provider non determinato → non ok
-    (salvo tier SEAL-0)."""
-    from ..sdk_runtime.session import agent_effective_provider
+    motore che tratterà i dati è adeguato al tier. Provider non determinato → non ok."""
     from .providers import provider_seal
-    ps = provider_seal(agent_effective_provider(spec.name))
+    pid = _topic_provider(spec, tier)
+    if not pid:
+        return False
+    ps = provider_seal(pid)
     return _CLEAR.get(_norm(ps), 0) >= _CLEAR.get(_norm(tier), 0)
 
 
@@ -476,7 +500,7 @@ def _eligibility(spec, tier: str | None) -> dict:
       nessuno tratta dati SEAL-3+ su un provider SEAL-2-. Stessa regola per tutti."""
     if not spec or spec.type not in ("super", "normal"):
         return {"eligible": True, "warn": False}
-    ok = _can_access(_effective_clearance(spec), tier)  # effettiva = provider SEAL
+    ok = _provider_seal_ok(spec, tier)
     return {"eligible": bool(ok), "warn": False}
 
 
@@ -585,18 +609,14 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
        messaggio (embedding, zero turni LLM) — così il super-agent non intercetta
        tutto; fallback al rango se non pertinente o router non disponibile;
     3. il più alto di RANGO fra gli idonei (il super = Clodia).
-    Idoneità (INVARIATA): clearance ≥ tier SEMPRE; per i NORMAL anche
-    provider.seal ≥ tier (enforcement duro). I super bypassano il vincolo
-    provider (warning se sotto tier)."""
+    Idoneità: provider scelto per il topic con SEAL ≥ tier, per normal e super."""
     specs = [registry.get_by_name(n) for n in participants]
 
     def eligible(s) -> bool:
         if not s or s.type not in ("super", "normal"):
             return False
-        if not _can_access(_effective_clearance(s), tier):
+        if not _provider_seal_ok(s, tier):
             return False
-        if s.type == "normal" and not _provider_seal_ok(s, tier):
-            return False   # normal: provider DEVE essere ≥ tier
         return True
 
     ai = [s for s in specs if eligible(s)]
@@ -1194,7 +1214,18 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         chat = manager.get(chat_id)
     except KeyError:
         try:
-            chat = await manager.create(chat_id=chat_id, kind=responder.name)
+            override = topic_runtime_override(responder.name, tier_real)
+            activity_log.append(responder.name, "provider_selected", {
+                "channel": f"{tier}/{name}",
+                "tier": tier_real,
+                "provider": override.get("provider"),
+                "reason": "topic_min_cost_eligible",
+            })
+            chat = await manager.create(
+                chat_id=chat_id,
+                kind=responder.name,
+                runtime_override=override,
+            )
             created = True
         except ProviderNotConnected:
             return None, None

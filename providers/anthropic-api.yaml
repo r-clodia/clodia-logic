@@ -10,6 +10,7 @@ sdk: claude
 # Ordine di preferenza entro l'SDK (più basso = preferito). L'API precede
 # l'abbonamento di default (DPA commerciale > consumer).
 priority: 10
+cost_rank: 10
 models: ["claude-*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1, ott 2025) ──────────────

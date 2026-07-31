@@ -65,8 +65,8 @@ PROVIDER_ALIASES = {
 def _load_catalog() -> tuple[dict, dict]:
     """Carica il catalogo provider dalle definizioni in `providers/<id>.yaml`.
     Ritorna (catalog, sdk_providers). `catalog[id]` = {name, apikey_env, oauth,
-    mechanism, sdk, priority}. `sdk_providers[sdk]` = lista id ordinata per
-    priority (preferenza: più basso prima)."""
+    mechanism, sdk, priority, cost_rank}. `sdk_providers[sdk]` = lista id ordinata
+    per priority (preferenza: più basso prima)."""
     catalog: dict[str, dict] = {}
     by_sdk: dict[str, list[tuple[int, str]]] = {}
     if PROVIDERS_DEF_DIR.is_dir():
@@ -74,6 +74,7 @@ def _load_catalog() -> tuple[dict, dict]:
             d = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
             pid = f.stem
             prio = int(d.get("priority", 100))
+            cost_rank = int(d.get("cost_rank", prio))
             # default=false → provider OPT-IN: NON entra nel default per-SDK (non
             # viene scelto in automatico), ma resta nel catalogo per gli agent che
             # lo dichiarano esplicitamente. Usato per provider che cambiano modello
@@ -87,6 +88,7 @@ def _load_catalog() -> tuple[dict, dict]:
                 "mechanism": d.get("mechanism") or ("subscription" if d.get("flow") else "apikey"),
                 "sdk": d.get("sdk"),
                 "priority": prio,
+                "cost_rank": cost_rank,
                 # Env STATICHE aggiuntive (es. Bedrock: CLAUDE_CODE_USE_BEDROCK, AWS_REGION,
                 # model id EU) iniettate quando il provider è effettivo, oltre alla apikey.
                 "extra_env": dict(d.get("extra_env") or {}),
@@ -225,6 +227,15 @@ def provider_seal(pid: str | None) -> str | None:
     return (meta.get("sovereignty") or {}).get("seal")
 
 
+def provider_cost_rank(pid: str | None) -> int:
+    """Costo relativo dichiarato del provider: più basso = meno costoso."""
+    meta = _CATALOG.get(_normalize(pid) or "") or {}
+    try:
+        return int(meta.get("cost_rank", meta.get("priority", 100)))
+    except Exception:  # noqa: BLE001
+        return 100
+
+
 # Rank numerico del livello SEAL (SEAL-0..4) per scegliere il più sovrano.
 def _seal_rank(pid: str | None) -> int:
     meta = _CATALOG.get(_normalize(pid) or "") or {}
@@ -233,6 +244,21 @@ def _seal_rank(pid: str | None) -> int:
         return int(str(seal).replace("SEAL-", "").strip())
     except ValueError:
         return -1
+
+
+def _tier_rank(tier: str | None) -> int:
+    u = str(tier or "SEAL-0").strip().upper()
+    if u.startswith("P") and u[1:].isdigit():
+        u = f"SEAL-{u[1:]}"
+    try:
+        return int(u.replace("SEAL-", "").strip())
+    except Exception:  # noqa: BLE001
+        return 0
+
+
+def provider_meets_tier(pid: str | None, tier: str | None) -> bool:
+    """True se il provider dichiara SEAL >= tier richiesto dal topic."""
+    return _seal_rank(pid) >= _tier_rank(tier)
 
 
 def default_providers_for_sdk(agent_sdk: str | None) -> list[str]:
@@ -352,6 +378,26 @@ def effective_provider(providers: list[str] | None, provider: str | None,
         if p in connected and p not in paused:
             return p
     return None
+
+
+def effective_provider_for_tier(providers: list[str] | None, provider: str | None,
+                                agent_sdk: str | None, connected: set[str],
+                                tier: str | None, model: str | None = None,
+                                provider_models: dict | None = None) -> str | None:
+    """Provider effettivo per uno spawn dentro un topic.
+
+    Sceglie il provider ATTIVO meno costoso fra quelli compatibili con l'agent e
+    con SEAL >= tier. Nessun fallback silenzioso a provider sotto-tier.
+    """
+    cands = candidate_providers(providers, provider, agent_sdk, model, provider_models)
+    paused = _load_paused()
+    eligible = [
+        p for p in cands
+        if p in connected and p not in paused and provider_meets_tier(p, tier)
+    ]
+    if not eligible:
+        return None
+    return min(eligible, key=lambda p: (provider_cost_rank(p), _seal_rank(p), cands.index(p)))
 
 
 def resolve_provider(provider: str | None, agent_sdk: str | None) -> str | None:
