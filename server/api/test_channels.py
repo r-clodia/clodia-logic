@@ -77,6 +77,7 @@ class ResponderTests(unittest.TestCase):
             "coordina questa attività",
             ["clodia", "worker"],
             {"clodia", "ophelia", "worker", "accountant"},
+            topic=None,   # passato per la telemetria delle decisioni (shadow mode)
         )
 
     def test_routing_stats_include_leave_one_out_metrics(self) -> None:
