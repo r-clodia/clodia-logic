@@ -25,7 +25,6 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 
-from .. import instance_profile as _iprofile
 from ..agents import activity_log, rank as rank_mod, registry
 from ..agents import feedback as agent_feedback
 from ..core.events import bus
@@ -1037,26 +1036,6 @@ def _responder_busy(tier: str, name: str, agent: str) -> bool:
     return bool(lock is not None and lock.locked())
 
 
-_CHANNEL_ALIAS_RE = re.compile(r"^\$([a-z0-9][a-z0-9_-]{0,63})$", re.IGNORECASE)
-
-
-def _expand_aliases(content: str) -> str:
-    """Espande un messaggio composto esclusivamente da un alias configurato."""
-    match = _CHANNEL_ALIAS_RE.fullmatch((content or "").strip())
-    if not match:
-        return content
-    aliases = _iprofile.load().channel_aliases or {}
-    key = match.group(1).lower()
-    for configured, expanded in aliases.items():
-        if not isinstance(configured, str):
-            continue
-        normalized = configured.strip().lstrip("$").lower()
-        if normalized == key and isinstance(expanded, str) and expanded.strip():
-            LOG.debug("alias espanso: $%s → %r", key, expanded[:80])
-            return expanded
-    return content
-
-
 async def post_channel_message(
     tier: str,
     name: str,
@@ -1083,8 +1062,6 @@ async def post_channel_message(
     if (not trusted_internal and principal not in participants
             and principal != meta.get("owner")):
         raise HTTPException(403, "non sei partecipante di questo canale")
-
-    content = _expand_aliases(content)
 
     # 1. registra il messaggio nel canale
     topics_client.post_message(tier, name, principal, content, kind=kind)
