@@ -18,6 +18,7 @@ import os
 import urllib.parse
 import urllib.request
 import json
+from datetime import datetime, timezone
 
 LOG = logging.getLogger("agent-server.responder_routing")
 
@@ -215,33 +216,182 @@ def pick_by_relevance(specialists: list, message: str):
     return decide(score_specialists(specialists, message))
 
 
-# Somiglianza minima a una correzione passata perché scatti l'override: alta, perché
-# vogliamo instradare come la correzione SOLO su messaggi davvero simili (few-shot).
-EXEMPLAR_HIT = float(os.environ.get("RESPONDER_EXEMPLAR_HIT", "0.88"))
+# Il classificatore degli esemplari usa un criterio RELATIVO: i top-k vicini
+# votano per agente, con correzioni più forti delle conferme e decadimento nel
+# tempo. Si applica solo quando il vincitore stacca il secondo in modo netto.
+EXEMPLAR_K = max(1, int(os.environ.get("RESPONDER_EXEMPLAR_K", "5")))
+EXEMPLAR_MARGIN = min(1.0, max(
+    0.0, float(os.environ.get("RESPONDER_EXEMPLAR_MARGIN", "0.15"))))
+EXEMPLAR_CONFIRM_WEIGHT = min(1.0, max(
+    0.0, float(os.environ.get("RESPONDER_EXEMPLAR_CONFIRM_WEIGHT", "0.50"))))
+EXEMPLAR_HALF_LIFE_DAYS = max(
+    1.0, float(os.environ.get("RESPONDER_EXEMPLAR_HALF_LIFE_DAYS", "90")))
+
+# FLOOR di similarità: il criterio relativo (margine sul secondo) da solo NON
+# basta, perché un vincitore senza avversari ha margine 1.0 QUALUNQUE sia la
+# similarità. Su e5 le cosine sono compresse in alto (misurato sul corpus reale:
+# coppie stesso-agente 0.822 medio, coppie agenti-diversi 0.814), quindi senza
+# floor il classificatore aggancia rumore: 6 frasi su 8 fuori dominio venivano
+# instradate, con max_similarity ~0.79. Il floor a 0.80 azzera quei falsi
+# positivi senza costare copertura in-dominio (28/39 invariata).
+EXEMPLAR_FLOOR = min(1.0, max(
+    0.0, float(os.environ.get("RESPONDER_EXEMPLAR_FLOOR", "0.80"))))
+
+# MODALITÀ del classificatore:
+#   "shadow"  (default) → calcola e REGISTRA la decisione che avrebbe preso, ma
+#                         NON la applica: il routing resta quello per rilevanza;
+#   "enforce"           → applica la decisione.
+# Il default è shadow perché sul corpus attuale l'accuratezza leave-one-out è
+# 21–30% (39 voti su 9 agenti): applicarla peggiorerebbe il routing. Si passa a
+# "enforce" quando `GET /clodia/routing/stats` mostra un'accuratezza adeguata
+# (indicativamente ≥ 70%) su copertura non banale — decisione esplicita, non
+# automatica.
+EXEMPLAR_MODE = (os.environ.get("RESPONDER_EXEMPLAR_MODE", "shadow") or "shadow").strip().lower()
 
 
-def pick_by_exemplar(message: str, eligible_names: list[str]):
-    """Se il messaggio somiglia (≥ EXEMPLAR_HIT) a una CORREZIONE passata il cui
-    agente è oggi idoneo → (agent_name, sim). Altrimenti None. Il router impara così
-    dalle correzioni dell'utente (k-NN a 1)."""
+def exemplar_enforced() -> bool:
+    """True se le decisioni degli esemplari vengono APPLICATE (non solo tracciate)."""
+    return (os.environ.get("RESPONDER_EXEMPLAR_MODE", EXEMPLAR_MODE)
+            or "").strip().lower() == "enforce"
+
+
+def _temporal_weight(timestamp: str | None,
+                     now: datetime | None = None) -> float:
+    if not timestamp:
+        return 1.0
+    try:
+        parsed = datetime.fromisoformat(timestamp.replace("Z", "+00:00"))
+        if parsed.tzinfo is None:
+            parsed = parsed.replace(tzinfo=timezone.utc)
+    except (TypeError, ValueError):
+        return 1.0
+    current = now or datetime.now(timezone.utc)
+    age_days = max(0.0, (current - parsed).total_seconds() / 86400)
+    return 0.5 ** (age_days / EXEMPLAR_HALF_LIFE_DAYS)
+
+
+def _classify_exemplar_vector(vector: list[float], exemplars: list[dict],
+                               eligible_names: list[str], *,
+                               now: datetime | None = None) -> dict | None:
+    eligible = set(eligible_names or [])
+    neighbors = []
+    for exemplar in exemplars:
+        if exemplar.get("agent") not in eligible or not exemplar.get("vec"):
+            continue
+        similarity = _cosine(vector, exemplar["vec"])
+        neighbors.append((similarity, exemplar))
+    neighbors.sort(key=lambda item: item[0], reverse=True)
+    neighbors = neighbors[:EXEMPLAR_K]
+    if not neighbors:
+        return None
+
+    scores: dict[str, float] = {}
+    support: dict[str, int] = {}
+    max_similarity: dict[str, float] = {}
+    for similarity, exemplar in neighbors:
+        agent = exemplar["agent"]
+        kind_weight = (
+            EXEMPLAR_CONFIRM_WEIGHT
+            if exemplar.get("kind") == "confirm"
+            else 1.0
+        )
+        weight = max(0.0, similarity) * kind_weight * _temporal_weight(
+            exemplar.get("ts"), now
+        )
+        scores[agent] = scores.get(agent, 0.0) + weight
+        support[agent] = support.get(agent, 0) + 1
+        max_similarity[agent] = max(max_similarity.get(agent, -1.0), similarity)
+
+    ranked = sorted(scores.items(), key=lambda item: item[1], reverse=True)
+    winner, winner_score = ranked[0]
+    runner_score = ranked[1][1] if len(ranked) > 1 else 0.0
+    confidence = (
+        (winner_score - runner_score) / winner_score
+        if winner_score > 0 else 0.0
+    )
+    if confidence < EXEMPLAR_MARGIN:
+        return None
+    # FLOOR: il margine relativo non dice nulla sulla PERTINENZA. Senza questo
+    # check un vincitore senza avversari passa con confidence 1.0 anche a
+    # similarità da rumore. Il vincitore deve somigliare davvero a qualcosa che
+    # l'utente ha annotato.
+    if max_similarity[winner] < EXEMPLAR_FLOOR:
+        return None
+    return {
+        "agent": winner,
+        "confidence": confidence,
+        "score": winner_score,
+        "runner_score": runner_score,
+        "support": support[winner],
+        "max_similarity": max_similarity[winner],
+    }
+
+
+def pick_by_exemplar(message: str, eligible_names: list[str],
+                     known_names: set[str] | None = None,
+                     *, topic: str | None = None):
+    """k-NN pesato sul feedback supervisionato → (agent, confidence) o None.
+
+    In modalità **shadow** (default) la decisione viene calcolata e TRACCIATA ma
+    NON restituita: il chiamante prosegue col routing per rilevanza. Serve ad
+    accumulare evidenza — visibile su `GET /clodia/routing/stats` — prima di
+    dare al classificatore il potere di dirottare il routing."""
     from . import routing_feedback
-    ex = routing_feedback.load_exemplars()
+    ex = routing_feedback.load_exemplars(known_names)
     if not ex:
         return None
     mv = embed_text(message, role="query")
     if not mv:
         return None
-    elig = set(eligible_names or [])
-    best_name, best_sim = None, 0.0
-    for e in ex:
-        if e["agent"] not in elig:
+    result = _classify_exemplar_vector(mv, ex, eligible_names)
+    if result is None:
+        return None
+    enforced = exemplar_enforced()
+    LOG.info(
+        "routing exemplar (%s): agent=%s confidence=%.3f support=%d max_sim=%.3f",
+        "enforce" if enforced else "shadow",
+        result["agent"], result["confidence"], result["support"],
+        result["max_similarity"],
+    )
+    try:
+        routing_feedback.record_decision(
+            "exemplar" if enforced else "exemplar-shadow",
+            result["agent"], confidence=round(result["confidence"], 3),
+            mode="exemplar", topic=topic,
+        )
+    except Exception as e:  # noqa: BLE001 — la telemetria non deve mai bloccare il routing
+        LOG.debug("telemetria esemplare non registrata: %s", e)
+    if not enforced:
+        return None
+    return result["agent"], round(result["confidence"], 3)
+
+
+def evaluate_exemplars(exemplars: list[dict],
+                       eligible_names: list[str]) -> dict:
+    """Leave-one-out evaluation on the installed privacy-preserving corpus."""
+    evaluated = predicted = correct = 0
+    for index, exemplar in enumerate(exemplars):
+        target = exemplar.get("agent")
+        vector = exemplar.get("vec")
+        if target not in eligible_names or not vector:
             continue
-        sim = _cosine(mv, e["vec"])
-        if sim > best_sim:
-            best_name, best_sim = e["agent"], sim
-    if best_name and best_sim >= EXEMPLAR_HIT:
-        return best_name, round(best_sim, 3)
-    return None
+        evaluated += 1
+        others = exemplars[:index] + exemplars[index + 1:]
+        result = _classify_exemplar_vector(vector, others, eligible_names)
+        if result is None:
+            continue
+        predicted += 1
+        if result["agent"] == target:
+            correct += 1
+    return {
+        "evaluated": evaluated,
+        "predicted": predicted,
+        "correct": correct,
+        "coverage": round(predicted / evaluated, 4) if evaluated else 0.0,
+        "accuracy": round(correct / predicted, 4) if predicted else None,
+        "k": EXEMPLAR_K,
+        "margin": EXEMPLAR_MARGIN,
+    }
 
 
 def invalidate_cache(name: str | None = None) -> None:
