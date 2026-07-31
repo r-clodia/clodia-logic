@@ -203,6 +203,11 @@ class AgentSpec(BaseModel):
     # Priorità di selezione: più basso = preferito a parità di altri
     # criteri (Agent Selection Engine, spec §12).
     priority: int = 100
+    # Vincolo di routing canale. "state_writer_only" identifica agenti che non
+    # devono essere scelti come responder conversazionali generici: sono
+    # eleggibili dal routing automatico solo per richieste esplicite di stato
+    # del topic (summary, minute, verbali, prossimi passi).
+    routing_mode: Literal["normal", "state_writer_only"] = "normal"
     # Profilo di costo dichiarato: "economy" (haiku), "standard" (sonnet),
     # "premium" (opus). Usato dalla selection engine come tie-break.
     cost_profile: str = "standard"

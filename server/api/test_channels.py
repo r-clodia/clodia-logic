@@ -29,6 +29,10 @@ class ResponderTests(unittest.TestCase):
             "accountant": _a("accountant", "normal", "P1", "2026-02-01T00:00:01Z"),
             "owner": _a("owner", "human", role="superadmin"),
         }
+        self.agents["segretario"] = _a(
+            "segretario", "normal", "P1", "2026-02-01T00:00:02Z"
+        )
+        self.agents["segretario"].routing_mode = "state_writer_only"
         self._orig = channels.registry.get_by_name
         self._orig_provider_seal_ok = channels._provider_seal_ok
         channels.registry.get_by_name = lambda n: self.agents.get(n)
@@ -50,6 +54,36 @@ class ResponderTests(unittest.TestCase):
     def test_tag_overrides_rank(self) -> None:
         r = channels._pick_responder(["clodia", "worker"], "P0", "worker")
         self.assertEqual(r.name, "worker")
+
+    def test_state_writer_only_agent_is_not_auto_routed_for_technical_questions(self) -> None:
+        r = channels._pick_responder(
+            ["owner", "segretario"],
+            "P0",
+            None,
+            "come funziona il boot degli agenti e il routing della piattaforma?",
+        )
+
+        self.assertIsNone(r)
+
+    def test_state_writer_only_agent_can_be_auto_routed_for_topic_state(self) -> None:
+        r = channels._pick_responder(
+            ["owner", "segretario"],
+            "P0",
+            None,
+            "aggiorna il summary del topic e i prossimi passi",
+        )
+
+        self.assertEqual(r.name, "segretario")
+
+    def test_direct_tag_still_reaches_state_writer_only_agent(self) -> None:
+        r = channels._pick_responder(
+            ["owner", "segretario"],
+            "P0",
+            "segretario",
+            "puoi aggiornare il summary?",
+        )
+
+        self.assertEqual(r.name, "segretario")
 
     def test_exemplar_can_select_an_eligible_super_agent(self) -> None:
         trace = {}
@@ -76,7 +110,7 @@ class ResponderTests(unittest.TestCase):
         picker.assert_called_once_with(
             "coordina questa attività",
             ["clodia", "worker"],
-            {"clodia", "ophelia", "worker", "accountant"},
+            {"clodia", "ophelia", "worker", "accountant", "segretario"},
             topic=None,   # passato per la telemetria delle decisioni (shadow mode)
         )
 

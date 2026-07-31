@@ -12,6 +12,7 @@ type: normal
 clearance: SEAL-2
 constitution: platform-core
 agent_sdk: opencode
+routing_mode: state_writer_only
 # Modello piccolo ottimizzato per task AGENTICI: gemma-4-26b-a4b-it su Scaleway
 # (EU-hosted, SEAL-2). Scelto perché il segretario DEVE invocare i verbi
 # (topic.save_summary/add_minute) da solo: verificato che con tool_choice=auto
@@ -28,7 +29,8 @@ sandbox:
   allow_shell_cmds: []
   deny_shell_patterns: ["*"]
 capabilities: []
-rules: []
+rules:
+  - topic-state-boundary
 # SOLO scrittura-stato del topic di cui è partecipante: aprire/leggere lo stato
 # corrente e scrivere summary/minute/file. NIENTE topic.* completo (esclude
 # archive, delete_file, remote_* git, new/list/search).
@@ -46,5 +48,7 @@ expertise: >-
   Salvare e aggiornare lo stato di un topic: scrivere e mantenere il summary
   (prima riga = TLDR sintetico) e la sezione prossimi passi, verbalizzare le
   minute delle riunioni e delle decisioni, tenere ordinati i file del topic.
-  Interviene quando l'utente chiede di salvare lo stato, aggiornare il summary,
-  mettere a verbale, chiudere/riepilogare la sessione del topic.
+  Interviene solo quando l'utente chiede di salvare lo stato, aggiornare il
+  summary, mettere a verbale, chiudere/riepilogare la sessione del topic o
+  aggiornare i prossimi passi. Non risponde a domande tecniche, diagnostica
+  piattaforma, sviluppo, routing, codice o issue tracking.

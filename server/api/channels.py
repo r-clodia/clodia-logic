@@ -356,6 +356,14 @@ _BULLET_INTENT_RE = re.compile(r"^\s*(?:[-*•]|\d+[.)])\s+(.+?)\s*$")
 _INTENT_CONNECTOR_RE = re.compile(
     r"\b(?:e\s+anche|inoltre|poi|dopodiché)\b", re.IGNORECASE
 )
+_STATE_WRITER_RE = re.compile(
+    r"\b("
+    r"summary|tldr|riassunt[oi]|riepilog[ao]|prossimi passi|action point|"
+    r"minut[ae]|verbale|verbalizz[ao]|metti a verbale|salva lo stato|"
+    r"aggiorna lo stato|aggiorna il topic|chiudi la sessione|stato del topic"
+    r")\b",
+    re.IGNORECASE,
+)
 # Ogni intent = un turno di routing con una embed_text() BLOCCANTE. Senza un
 # tetto, un messaggio con molti bullet (es. 2000 righe) genererebbe migliaia di
 # embed seriali che congelano l'event loop (DoS). Cap duro + guardia lunghezza:
@@ -401,6 +409,22 @@ def _decompose_intents(message: str) -> list[str]:
     if len(parts) >= 2 and all(len(part) > 10 for part in parts):
         return _cap_intents(parts)
     return [text]
+
+
+def _is_state_writer_request(message: str) -> bool:
+    """True per richieste esplicite di manutenzione dello stato del topic.
+
+    Gli agenti `routing_mode: state_writer_only` (es. segretario) sono
+    verbalizzatori, non responder generalisti: il routing automatico li può
+    scegliere solo davanti a segnali espliciti di summary/minute/verbale/stato.
+    """
+    return bool(_STATE_WRITER_RE.search(message or ""))
+
+
+def _auto_routing_allowed(spec, message: str) -> bool:
+    if getattr(spec, "routing_mode", "normal") != "state_writer_only":
+        return True
+    return _is_state_writer_request(message)
 
 
 def _tag_directive(kind: str, author: str, text: str) -> str | None:
@@ -656,7 +680,8 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
             return False
         return True
 
-    ai = [s for s in specs if eligible(s)]
+    ai_all = [s for s in specs if eligible(s)]
+    ai = ai_all if tagged else [s for s in ai_all if _auto_routing_allowed(s, message)]
 
     def _record(chosen, reason: str, mode: str, scored=None):
         if trace is None:
