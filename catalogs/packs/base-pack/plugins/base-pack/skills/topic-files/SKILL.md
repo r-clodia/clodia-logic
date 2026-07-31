@@ -52,7 +52,9 @@ topic.put(tier="SEAL-1", name="<canale>",
           filename="expenses/out.xlsx", src="<SCR>/out.xlsx")
 ```
 `dest`/`src` devono essere **path assoluti sotto il tuo scratch**
-(`/datadir/spawns/<tuo-spawn>/scratch/...`); il gateway rifiuta path fuori.
+(il path assoluto del tuo `scratch/`); agent-server valida che appartenga alla
+sessione corrente. I byte attraversano `/shared` solo come envelope cifrato
+per-destinatario e vengono rimossi subito dopo il consumo.
 Dopo il `put`, verifica con `topic.files` che il file sia presente con la size attesa.
 
 ## Completezza dei dati
