@@ -9,10 +9,11 @@ from __future__ import annotations
 import tempfile
 import unittest
 from pathlib import Path
+from unittest import mock
 
 import yaml
 
-from . import db
+from . import db, scheduler
 from ..agents.loader import registry
 from ..agents.models import AgentSpec
 from ..sdk_runtime import session as s
@@ -49,6 +50,50 @@ class JobAgentFieldTests(unittest.TestCase):
         job = db.create_job("j3", "*/5 * * * *", "ciao")
         db.update_job(job["id"], agent="ada")
         self.assertEqual(db.get_job(job["id"])["agent"], "ada")
+
+
+class JobRunLifecycleTests(unittest.IsolatedAsyncioTestCase):
+    async def asyncSetUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_dir = db.JOBS_DIR
+        db.JOBS_DIR = Path(self._tmp.name)
+        self.job = db.create_job("daily", "0 8 * * *", "digest", agent="ophelia")
+
+    async def asyncTearDown(self) -> None:
+        db.JOBS_DIR = self._old_dir
+        self._tmp.cleanup()
+
+    async def test_agentic_run_transitions_from_running_to_success(self) -> None:
+        run_id = db.mark_run(
+            self.job["id"], status="dispatched (turno avviato in background)",
+            chat_id="job:1",
+        )
+        self.assertIsNotNone(run_id)
+        self.assertEqual(db.get_job(self.job["id"])["runs"][0]["stato"], "running")
+        chat = mock.MagicMock(chat_id="job:1")
+        chat.send_user_message = mock.AsyncMock(return_value="done")
+
+        await scheduler._complete_agentic_run(self.job["id"], run_id, chat, "digest")
+
+        stored = db.get_job(self.job["id"])
+        self.assertEqual(stored["runs"][0]["stato"], "success")
+        self.assertIsNotNone(stored["runs"][0]["durata"])
+        self.assertEqual(stored["last_status"], "success")
+
+    async def test_agentic_run_persists_failure(self) -> None:
+        run_id = db.mark_run(
+            self.job["id"], status="dispatched (turno avviato in background)",
+            chat_id="job:1",
+        )
+        chat = mock.MagicMock(chat_id="job:1")
+        chat.send_user_message = mock.AsyncMock(side_effect=RuntimeError("provider down"))
+
+        await scheduler._complete_agentic_run(self.job["id"], run_id, chat, "digest")
+
+        stored = db.get_job(self.job["id"])
+        self.assertEqual(stored["runs"][0]["stato"], "failed")
+        self.assertEqual(stored["runs"][0]["error"], "provider down")
+        self.assertEqual(stored["last_status"], "failed: provider down")
 
 
 class DynamicKindResolutionTests(unittest.TestCase):
