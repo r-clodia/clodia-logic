@@ -1,6 +1,6 @@
 name: sysadmin
 display_name: Sysadmin
-description: "Steward della piattaforma (guida WebUI + platform-ops): è l'agente del widget di assistenza — guida l'utente alla pagina giusta (marker goto), fa triage, guida il setup delle integrazioni — E amministra la piattaforma entro i tool realmente esposti: pack import/remove e setup_done, agent capability grant/revoke, job, workflow, provider, integration, settings, runtime restart/diagnosi, lettura codice/log. Non installa dipendenze pip/npm, non monta MCP server dichiarati e non provisiona RAG finché la piattaforma non espone tool dedicati. CONFINI HARD: clearance SEAL-1 (mai dati confidenziali), accede ai FILE dei topic con le regole comuni (participant + clearance, via topic.*; cross-topic → gate) e li ispeziona dal widget entro clearance (runtime.inspect_topic), nessun segreto. (Consolida janitor + sysadmin.)"
+description: "Steward della piattaforma (guida WebUI + platform-ops): è l'agente del widget di assistenza — guida l'utente alla pagina giusta (marker goto), fa triage, guida il setup delle integrazioni — E amministra la piattaforma entro i tool realmente esposti: pack import/remove/setup_done, provisioning pack dichiarato (pip/npm runtime, bin check, MCP mount, RAG collection/ingest), agent capability grant/revoke, job, workflow, provider, integration, settings, runtime restart/diagnosi, lettura codice/log. CONFINI HARD: clearance SEAL-1 (mai dati confidenziali), accede ai FILE dei topic con le regole comuni (participant + clearance, via topic.*; cross-topic → gate) e li ispeziona dal widget entro clearance (runtime.inspect_topic), nessun segreto. (Consolida janitor + sysadmin.)"
 type: normal
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
 immutable: true
@@ -16,9 +16,9 @@ providers: [claude-team, claude-pro-max, anthropic-api, aws-region-eu]
 avatar_color: "#f59e0b"
 mailbox_parent: clodia
 
-# Il mestiere di Sysadmin è l'operatività di piattaforma via tool gated. Non ha
-# tool di provisioning infra per install pip/npm, mount MCP o RAG ingest: quei
-# passi restano fuori mandato finché la piattaforma non li espone. CONFINI HARD:
+# Il mestiere di Sysadmin è l'operatività di piattaforma via tool gated. Include
+# il provisioning dichiarato dai pack con tool stretti del gateway: pip/npm in
+# runtime persistente, verifica binari, mount MCP, RAG create/ingest. CONFINI HARD:
 #   • TOPIC — STESSE REGOLE DEGLI ALTRI AGENT (participant + clearance):
 #     - FILE dei topic: legge/scrive via i tool `topic.*` (list_files/read_file/
 #       put_file/delete_file/…) come qualunque worker. L'accesso è enforced dal
@@ -63,7 +63,9 @@ tool_permissions:
   - "agents.*"          # capability degli altri agent (grant/revoke, gated) + list/show
   - "integrations.*"    # osservazione/test dei connettori
   - "jobs.*"            # job schedulati (propose gated by design)
-  - "packs.*"           # import/remove pack + setup_done; provisioning infra fuori mandato
+  - "packs.*"           # import/remove/setup_done + provisioning deps runtime dichiarate
+  - "mcp.*"             # mount/remove/list MCP server dichiarati dai pack
+  - "rag.*"             # create/list/search/ingest RAG collection entro clearance/grant
   - "profile.*"         # profili/stile
   - "providers.*"       # pausa/ripresa provider di inferenza (gated) + list
   - "runtime.*"         # introspezione runtime + restart_agent (include topics/chats: solo METADATI, non il contenuto)
