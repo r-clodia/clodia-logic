@@ -1,0 +1,185 @@
+# Classificazione dei verbi tool nei tre lati della "lethal trifecta"
+# (issue clodia-platform#77, DoD «classificazione dei verbi come
+# configurazione VERSIONATA, non hard-coded»).
+#
+# I tre lati:
+#   private_data     — l'agente può LEGGERE dati privati dell'istanza/owner
+#   untrusted_input  — l'agente può ricevere contenuto scritto da terzi non
+#                      controllati (web, issue, mail in arrivo, documenti caricati)
+#   egress           — l'agente può far USCIRE dati verso l'esterno di Clodia
+#
+# Semantica di match (server/agents/trifecta.py): un grant e un pattern si
+# considerano corrispondenti se i due pattern si SOVRAPPONGONO. Quindi il grant
+# `email.*` accende `egress` perché copre `email.send`, mentre il grant
+# `topic.write_file` NON accende `private_data` (nessun verbo di lettura).
+# `*` copre tutto → 3/3 per costruzione.
+#
+# Una voce che inizia con `-` è un'ECCEZIONE: toglie dal lato i grant che vi
+# ricadono interamente, senza toccare i grant più larghi. Serve a classificare
+# per namespace (a prova di verbi futuri) senza che un verbo di sola uscita —
+# `email.send` è l'esempio — accenda anche i lati di lettura: chi ha SOLO
+# `email.send` non legge la posta, chi ha `email.*` sì.
+#
+# Nota deliberata: la SCRITTURA dentro Clodia (topic.write_file, topic.put,
+# topic.post_message, memory.*, save_summary…) NON è egress — resta dentro il
+# perimetro. È egress solo ciò che attraversa il confine dell'istanza.
+#
+# Nota sui falsi negativi noti (da rifinire, vedi issue #77):
+#   - un verbo NUOVO non ancora classificato non accende alcun lato;
+#   - una GET HTTP con parametri (`web.fetch?x=<dati>`) è un canale di
+#     esfiltrazione reale ma qui è classificata solo come untrusted_input,
+#     coerentemente con la classificazione dell'issue (il web che si legge è
+#     il lato 2). L'egress via shell/`curl` non è classificabile affatto:
+#     è il motivo del flag `shell` separato.
+version: 1
+
+private_data:
+  # topic: contenuti, file e documenti dei canali dell'istanza
+  - topic.open
+  - topic.list
+  - topic.search
+  - topic.files
+  - topic.read_file
+  - topic.read_document
+  - topic.fetch
+  - topic.remote_status
+  # memoria persistente dell'agente
+  - memory.read
+  - memory.list
+  - memory.fetch
+  - memory.get_document
+  - memory.read_document
+  - memory.list_documents
+  # archivi di comunicazione dell'owner (i verbi di solo invio non leggono
+  # nulla: sono classificati unicamente come egress)
+  - email.*
+  - -email.send
+  - -email.send_file
+  - telegram.*
+  - -telegram.send
+  - -telegram.send_message
+  - -telegram.send_file
+  - gdrive.*
+  - -gdrive.upload
+  - -gdrive.create
+  - -gdrive.write
+  - -gdrive.put
+  - -gdrive.share
+  - -gdrive.mkdir
+  # stato e configurazione dell'istanza (include credenziali e integrazioni)
+  - settings.*
+  - integrations.*
+  - providers.*
+  - agents.*
+  - profile.*
+  - runtime.*
+  - workflows.*
+  - logs.*
+  - fs.*
+  # corpora indicizzati dell'istanza
+  - rag.*
+  - eu_corpus.*
+
+untrusted_input:
+  # web aperto
+  - web.*
+  # GitHub in lettura: issue, PR, commenti e codice sono scritti da terzi
+  - github.get_file_contents
+  - github.get_commit
+  - github.get_label
+  - github.get_latest_release
+  - github.get_release_by_tag
+  - github.get_tag
+  - github.get_team_members
+  - github.get_teams
+  - github.issue_read
+  - github.pull_request_read
+  - github.list_branches
+  - github.list_commits
+  - github.list_issues
+  - github.list_issue_fields
+  - github.list_issue_types
+  - github.list_pull_requests
+  - github.list_releases
+  - github.list_repository_collaborators
+  - github.list_tags
+  - github.search_code
+  - github.search_commits
+  - github.search_issues
+  - github.search_pull_requests
+  - github.search_repositories
+  - github.search_users
+  # posta e chat in ARRIVO: il mittente non è controllato
+  - email.*
+  - -email.send
+  - -email.send_file
+  - telegram.*
+  - -telegram.send
+  - -telegram.send_message
+  - -telegram.send_file
+  # file e documenti caricati in un topic da chiunque (incluso AGENTS.md)
+  - topic.open
+  - topic.search
+  - topic.files
+  - topic.read_file
+  - topic.read_document
+  - topic.fetch
+  - topic.remote_pull
+  # documenti esterni sincronizzati o indicizzati
+  - gdrive.*
+  - -gdrive.upload
+  - -gdrive.create
+  - -gdrive.write
+  - -gdrive.put
+  - -gdrive.share
+  - -gdrive.mkdir
+  - rag.*
+  - eu_corpus.*
+
+egress:
+  - email.send
+  - email.send_file
+  - telegram.send_message
+  - telegram.send_file
+  - telegram.send
+  # GitHub in scrittura: pubblica fuori da Clodia
+  - github.add_comment_to_pending_review
+  - github.add_issue_comment
+  - github.add_reply_to_pull_request_comment
+  - github.create_branch
+  - github.create_or_update_file
+  - github.create_pull_request
+  - github.create_repository
+  - github.delete_file
+  - github.fork_repository
+  - github.issue_write
+  - github.merge_pull_request
+  - github.push_files
+  - github.pull_request_review_write
+  - github.request_copilot_review
+  - github.sub_issue_write
+  - github.update_pull_request
+  - github.update_pull_request_branch
+  # HTTP in uscita
+  - web.post
+  # remote git del topic: spinge i file del canale fuori dall'istanza
+  - topic.remote_add
+  - topic.remote_enable
+  - topic.remote_commit
+  - topic.remote_push
+  # backup verso storage esterno (S3)
+  - settings.backup_run
+  # drive esterno in scrittura/condivisione
+  - gdrive.upload
+  - gdrive.create
+  - gdrive.write
+  - gdrive.put
+  - gdrive.share
+
+# Verbi che permettono di ALLARGARE la composizione del contesto: chi li ha
+# può portare nel canale agenti che non erano partecipanti. Il punteggio si
+# calcola sulla CHIUSURA, quindi la loro presenza estende l'insieme valutato
+# a tutti gli agenti registrati (issue #77, «participant + spawn/delega»).
+expansion:
+  - topic.add_participant
+  - agents.*
