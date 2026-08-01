@@ -91,9 +91,18 @@ def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
                              getattr(spec, "provider", None), spec.agent_sdk, connected,
                              getattr(spec, "model", None), override=ov,
                              provider_models=getattr(spec, "provider_models", None))
-    # opzioni per il selettore nel profilo agent: id + stato di ciascun candidato.
+    # Modello dello stack (LLM, provider) di un candidato: l'override
+    # per-provider se dichiarato, altrimenti il model top-level (issue#93).
+    pm = getattr(spec, "provider_models", None) or {}
+
+    def _stack_model(c: str | None) -> str | None:
+        return pm.get(c or "", getattr(spec, "model", None))
+
+    # opzioni per il selettore nel profilo agent: ogni opzione è uno STACK
+    # completo — provider + modello che quel provider servirà + stato.
     options = [{
         "id": c,
+        "model": _stack_model(c),
         "seal": provider_seal(c),
         "connected": c in connected,
         "paused": provider_paused(c),
@@ -105,6 +114,13 @@ def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
         "provider": pid,
         # SEAL del provider a cui l'agent è ATTUALMENTE attribuito (per la card).
         "provider_seal": provider_seal(pid),
+        # modello dello stack EFFETTIVO: può differire dal `model` top-level
+        # quando il provider effettivo ha un override per-provider. La card
+        # mostra questo, non il top-level (issue#93).
+        "effective_model": _stack_model(pid) if pid else None,
+        # stack dichiarati/normalizzati (tuple model+provider, ordine = preferenza).
+        "stacks": [{"model": s.model, "provider": s.provider}
+                   for s in getattr(spec, "stacks", None) or []],
         # lista ordinata dei provider compatibili (per la UI).
         "providers": cands,
         # override manuale attualmente impostato (None = segue la preferenza).

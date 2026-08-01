@@ -6,7 +6,7 @@ Lo schema riflette esattamente i 4 prototipi validati nel topic
 from __future__ import annotations
 from typing import Literal, Optional
 
-from pydantic import BaseModel, Field, ConfigDict, field_validator
+from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
 class Sandbox(BaseModel):
@@ -60,6 +60,21 @@ class PluginRequirement(BaseModel):
 
     name: str
     hard: bool = False
+
+
+class StackSpec(BaseModel):
+    """Uno stack di inferenza dell'agente: la tupla (LLM, provider).
+
+    Modello concettuale "1 seed → N stack" (issue clodia-platform#93): il
+    modello NON è più una proprietà fissa dell'agente — è una proprietà dello
+    stack. L'ordine degli stack nel seed è la preferenza; a runtime è attivo
+    uno stack alla volta (il primo col provider connesso e non in pausa,
+    salvo override manuale dal profilo).
+    """
+    model_config = ConfigDict(extra="forbid")
+
+    model: str
+    provider: str
 
 
 class AgentSpec(BaseModel):
@@ -128,6 +143,47 @@ class AgentSpec(BaseModel):
     # gpt-oss su scaleway, fallback haiku su Bedrock. I provider NON elencati usano
     # il `model` top-level. Vuoto = un solo model per tutti i provider (back-compat).
     provider_models: dict[str, str] = Field(default_factory=dict)
+
+    # ── Stack di inferenza (issue clodia-platform#93): 1 seed → N stack ────
+    # Sintassi PRIMARIA per dichiarare le tuple (model, provider), in ordine
+    # di preferenza. `model`/`providers`/`provider_models` restano come zucchero
+    # legacy: `_normalize_stacks` normalizza nelle due direzioni, così tutto il
+    # runtime (candidate/effective_provider, _runtime_model, catene cross-SDK)
+    # lavora sui campi derivati senza conoscere gli stack.
+    # Vincolo v1: un provider compare al massimo in UNO stack (l'identità
+    # della selezione runtime — override, per-tier, telemetria — è il
+    # provider id). Stack multipli sullo stesso provider = follow-up.
+    stacks: list[StackSpec] = Field(default_factory=list)
+
+    @model_validator(mode="after")
+    def _normalize_stacks(self):
+        """Normalizza stacks ⇄ legacy (model/providers/provider_models)."""
+        if self.stacks:
+            seen: set[str] = set()
+            for s in self.stacks:
+                if s.provider in seen:
+                    raise ValueError(
+                        f"stacks: provider duplicato '{s.provider}' — v1 ammette "
+                        "al massimo uno stack per provider")
+                seen.add(s.provider)
+            if self.providers or self.provider_models:
+                # stacks vince; i legacy dichiarati insieme sono ignorati.
+                # Warning (non errore): un seed ridondante non deve impedire
+                # il boot dell'agente.
+                import logging
+                logging.getLogger("agent-server.agents.models").warning(
+                    "agent %s: dichiarati sia `stacks` che providers/"
+                    "provider_models legacy — stacks vince, legacy ignorati",
+                    self.name)
+            primary = self.stacks[0].model
+            self.model = primary
+            self.providers = [s.provider for s in self.stacks]
+            self.provider_models = {s.provider: s.model
+                                    for s in self.stacks if s.model != primary}
+        elif self.providers and self.model:
+            self.stacks = [StackSpec(model=self.provider_models.get(p, self.model),
+                                     provider=p) for p in self.providers]
+        return self
     # Sforzo di reasoning per i modelli che lo supportano (es. glm-5.2 su
     # Scaleway): "none" DISABILITA il reasoning → turni molto più rapidi, ~25×
     # meno token, niente loop runaway (per gli esecutori di tool). Valori tipici:
