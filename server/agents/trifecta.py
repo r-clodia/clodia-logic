@@ -94,6 +94,27 @@ def _parse_config(raw: dict) -> dict:
     return cfg
 
 
+def _merge_config(base: dict, extra: dict) -> dict:
+    """Fonde l'override d'istanza SOPRA il catalogo del repo, per lato e in modo
+    ADDITIVO.
+
+    Non sostituisce: un override che dichiara solo `egress` deve aggiungere i
+    suoi pattern di uscita, non azzerare `private_data` e `untrusted_input`.
+    Sostituendo, un agente realmente 3/3 verrebbe mostrato 0/3 — una falsa
+    rassicurazione, cioè la sola direzione d'errore che questa misura non può
+    permettersi. Per TOGLIERE una classificazione del repo esistono le
+    eccezioni `-pattern`, che restano il meccanismo esplicito.
+    """
+    out = _empty_config()
+    out["version"] = extra.get("version") or base.get("version", 0)
+    for key in (*LEGS, "expansion"):
+        for field in ("include", "exclude"):
+            merged = list(base[key][field]) + [p for p in extra[key][field]
+                                               if p not in base[key][field]]
+            out[key][field] = merged
+    return out
+
+
 def load_config(force: bool = False) -> dict:
     """Classificazione dei verbi. In cache: è un file versionato, cambia con un
     deploy. `force=True` la ricarica (usato dai test e da un eventuale reload)."""
@@ -110,7 +131,7 @@ def load_config(force: bool = False) -> dict:
             LOG.warning("trifecta: config %s illeggibile (%s) — ignorata", path, e)
             continue
         try:
-            cfg = _parse_config(raw)
+            cfg = _merge_config(cfg, _parse_config(raw))
         except ValueError as e:
             LOG.warning("trifecta: config %s malformata (%s) — ignorata", path, e)
     if not any(cfg[leg]["include"] for leg in LEGS):

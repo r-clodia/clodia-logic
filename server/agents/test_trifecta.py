@@ -1,6 +1,7 @@
 """Test del danger score trifecta (issue clodia-platform#77, step 1: calcolo)."""
 from __future__ import annotations
 
+import pathlib
 import unittest
 from types import SimpleNamespace
 
@@ -39,6 +40,30 @@ class ConfigTests(unittest.TestCase):
     def test_malformed_config_is_rejected(self) -> None:
         with self.assertRaises(ValueError):
             trifecta._parse_config({"egress": "email.send"})  # stringa, non lista
+
+    def test_instance_override_is_additive_not_replacing(self) -> None:
+        """Un override d'istanza PARZIALE non deve azzerare i lati che non
+        dichiara: sostituendo, un agente realmente 3/3 finirebbe mostrato 0/3 —
+        falsa rassicurazione, la sola direzione d'errore inaccettabile qui."""
+        import tempfile
+        from unittest.mock import patch
+        tmp = pathlib.Path(tempfile.mkdtemp()) / "trifecta.yaml"
+        tmp.write_text("version: 99\negress:\n  - custom.push\n", encoding="utf-8")
+        spec = _spec("x", tools=["topic.read_file", "web.fetch", "email.send"])
+        with patch.object(trifecta, "data_path", lambda rel: tmp):
+            cfg = trifecta.load_config(force=True)
+            self.assertEqual(cfg["version"], 99)          # la version è quella dell'override
+            for leg in trifecta.LEGS:                     # nessun lato azzerato
+                self.assertTrue(cfg[leg]["include"], f"lato '{leg}' azzerato dall'override")
+            self.assertIn("custom.push", cfg["egress"]["include"])   # pattern aggiunto
+            self.assertEqual(trifecta.agent_profile(spec, cfg)["score"], 3)
+        trifecta.load_config(force=True)                  # ripristina la cache dal repo
+
+    def test_merge_does_not_duplicate_patterns(self) -> None:
+        base = trifecta._parse_config({"egress": ["email.send"]})
+        extra = trifecta._parse_config({"egress": ["email.send", "telegram.send"]})
+        merged = trifecta._merge_config(base, extra)
+        self.assertEqual(merged["egress"]["include"], ["email.send", "telegram.send"])
 
     def test_exceptions_are_parsed_apart(self) -> None:
         cfg = trifecta._parse_config({"egress": ["email.*", "-email.read"]})
