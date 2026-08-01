@@ -82,13 +82,15 @@ def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
     # candidati filtrati per il MODELLO non sindacabile dell'agent.
     cands = candidate_providers(getattr(spec, "providers", None),
                                 getattr(spec, "provider", None), spec.agent_sdk,
-                                getattr(spec, "model", None))
+                                getattr(spec, "model", None),
+                                getattr(spec, "provider_models", None))
     ov = provider_override(spec.name)  # selezione manuale dal profilo (o None)
     # provider EFFETTIVO = override manuale (se usabile), altrimenti il primo attivo
     # nell'ordine di preferenza dichiarato.
     pid = effective_provider(getattr(spec, "providers", None),
                              getattr(spec, "provider", None), spec.agent_sdk, connected,
-                             getattr(spec, "model", None), override=ov)
+                             getattr(spec, "model", None), override=ov,
+                             provider_models=getattr(spec, "provider_models", None))
     # opzioni per il selettore nel profilo agent: id + stato di ciascun candidato.
     options = [{
         "id": c,
@@ -715,7 +717,8 @@ async def select_provider(name: str, body: ProviderSelect, request: Request) -> 
     if pid is not None:
         cands = candidate_providers(getattr(spec, "providers", None),
                                     getattr(spec, "provider", None), spec.agent_sdk,
-                                    getattr(spec, "model", None))
+                                    getattr(spec, "model", None),
+                                    getattr(spec, "provider_models", None))
         # normalizza e verifica l'appartenenza alla lista dichiarata
         from .providers import _normalize
         if _normalize(pid) not in cands:
@@ -727,7 +730,8 @@ async def select_provider(name: str, body: ProviderSelect, request: Request) -> 
     connected = connected_provider_ids()
     eff = effective_provider(getattr(spec, "providers", None),
                              getattr(spec, "provider", None), spec.agent_sdk, connected,
-                             getattr(spec, "model", None), override=pid)
+                             getattr(spec, "model", None), override=pid,
+                             provider_models=getattr(spec, "provider_models", None))
     return {"agent": name, "provider_override": result["override"], "provider": eff,
             "provider_connected": eff is not None}
 
