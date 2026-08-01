@@ -148,5 +148,106 @@ class ReadStateTests(unittest.TestCase):
         self.assertEqual(ts._load_state("nessuno"), {})
 
 
+class AckSecondBoundaryTests(unittest.TestCase):
+    """I `ts` sono al secondo: l'ack non deve inghiottire ciò che è arrivato
+    nello stesso secondo ma dopo (falso negativo silenzioso, I4)."""
+
+    ACK = "2026-07-31T10:00:05+00:00"
+
+    def _sig(self, messages, read):
+        with patch.object(ts.topics_client, "open_topic", return_value=_topic()), \
+             patch.object(ts.topics_client, "list_messages", return_value=messages):
+            return ts._topic_signal("davide", "SEAL-1", "ch", read, 0)
+
+    def _read(self, acked=()):
+        return {"visited": self.ACK, "mentions_upto": self.ACK,
+                "mentions_acked": list(acked)}
+
+    def test_acked_message_of_the_edge_second_is_read(self) -> None:
+        msg = _msg(self.ACK, mentions=["davide"]) | {"id": "m-visto"}
+        self.assertEqual(self._sig([msg], self._read(["m-visto"]))["actionable"], 0)
+
+    def test_unacked_message_of_the_edge_second_stays_unread(self) -> None:
+        # Stesso secondo dell'ack, ma non era ancora stato mostrato.
+        msg = _msg(self.ACK, mentions=["davide"]) | {"id": "m-arrivato-dopo"}
+        self.assertEqual(self._sig([msg], self._read(["m-visto"]))["actionable"], 1)
+
+    def test_older_second_stays_read(self) -> None:
+        msg = _msg("2026-07-31T10:00:04+00:00", mentions=["davide"]) | {"id": "m-vecchio"}
+        self.assertEqual(self._sig([msg], self._read())["actionable"], 0)
+
+    def test_newer_second_stays_unread(self) -> None:
+        msg = _msg("2026-07-31T10:00:06+00:00", mentions=["davide"]) | {"id": "m-nuovo"}
+        self.assertEqual(self._sig([msg], self._read())["actionable"], 1)
+
+    def test_edge_ids_recorded_at_ack(self) -> None:
+        msgs = [_msg("2026-07-31T10:00:04+00:00") | {"id": "a"},
+                _msg(self.ACK) | {"id": "b"},
+                _msg(self.ACK) | {"id": "c"},
+                _msg("2026-07-31T10:00:06+00:00") | {"id": "d"}]
+        with patch.object(ts.topics_client, "list_messages", return_value=msgs):
+            ids = ts._edge_ids("SEAL-1", "ch", ts._ts(self.ACK))
+        self.assertEqual(ids, ["b", "c"])
+
+
+class WindowCoverageTests(unittest.TestCase):
+    """Una mention non letta più vecchia della finestra non deve sparire dal
+    badge solo perché non è stata guardata (I4)."""
+
+    OLD_MENTION = "2026-07-30T09:00:00+00:00"
+
+    def _sig(self, narrow, wide, read):
+        calls = []
+
+        def _list(tier, name, limit=200):
+            calls.append(limit)
+            return wide if limit > ts._MSG_WINDOW else narrow
+
+        with patch.object(ts.topics_client, "open_topic", return_value=_topic()), \
+             patch.object(ts.topics_client, "list_messages", side_effect=_list):
+            return ts._topic_signal("davide", "SEAL-1", "ch", read, 0), calls
+
+    def _full_narrow(self):
+        # Finestra piena di traffico ordinario, tutto successivo all'ack.
+        return [_msg(f"2026-07-31T10:{i // 60:02d}:{i % 60:02d}+00:00")
+                for i in range(ts._MSG_WINDOW)]
+
+    def test_widens_when_badge_would_be_zero_and_window_uncovered(self) -> None:
+        narrow = self._full_narrow()
+        wide = [_msg(self.OLD_MENTION, mentions=["davide"]) | {"id": "vecchia"}] + narrow
+        read = {"visited": "2026-07-29T00:00:00+00:00",
+                "mentions_upto": "2026-07-29T00:00:00+00:00"}
+        sig, calls = self._sig(narrow, wide, read)
+        self.assertEqual(sig["actionable"], 1)          # non persa
+        self.assertEqual(calls, [ts._MSG_WINDOW, ts._MSG_WINDOW_MAX])
+
+    def test_no_widening_when_window_already_covers_the_ack(self) -> None:
+        narrow = self._full_narrow()
+        # Ack DENTRO la finestra (che parte da 10:00:00): la finestra risale
+        # oltre l'ack, quindi «0 mention» è verificato, non un limite di vista.
+        read = {"visited": "2026-07-31T10:01:00+00:00",
+                "mentions_upto": "2026-07-31T10:01:00+00:00"}
+        sig, calls = self._sig(narrow, [], read)
+        self.assertEqual(sig["actionable"], 0)
+        self.assertEqual(calls, [ts._MSG_WINDOW])
+
+    def test_no_widening_when_a_mention_is_already_found(self) -> None:
+        narrow = self._full_narrow()[:-1] + [_msg("2026-07-31T10:03:20+00:00",
+                                                  mentions=["davide"]) | {"id": "x"}]
+        read = {"visited": "2026-07-29T00:00:00+00:00",
+                "mentions_upto": "2026-07-29T00:00:00+00:00"}
+        sig, calls = self._sig(narrow, [], read)
+        self.assertEqual(sig["actionable"], 1)
+        self.assertEqual(calls, [ts._MSG_WINDOW])
+
+    def test_short_window_is_covered_by_definition(self) -> None:
+        # Meno di _MSG_WINDOW messaggi = tutto il topic: niente riletture.
+        read = {"visited": "2026-07-29T00:00:00+00:00",
+                "mentions_upto": "2026-07-29T00:00:00+00:00"}
+        sig, calls = self._sig([_msg("2026-07-31T10:00:00+00:00")], [], read)
+        self.assertEqual(sig, {"actionable": 0, "activity": True})
+        self.assertEqual(calls, [ts._MSG_WINDOW])
+
+
 if __name__ == "__main__":
     unittest.main()
