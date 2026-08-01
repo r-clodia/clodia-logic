@@ -225,3 +225,62 @@ class ProviderModelsCrossSdkTests(unittest.TestCase):
                                    providers=["codex", "claude-team"]),
                              {"codex", "claude-team"})
         self.assertEqual(f["providers"], ["codex"])
+
+
+class StacksTests(unittest.TestCase):
+    """1 seed → N stack (issue clodia-platform#93): normalizzazione ⇄ legacy."""
+
+    def test_stacks_derive_legacy_fields(self) -> None:
+        s = _spec(agent_sdk="codex", model=None,
+                  stacks=[{"model": "gpt-5.6-sol", "provider": "codex"},
+                          {"model": "claude-opus-5", "provider": "claude-team"}])
+        self.assertEqual(s.model, "gpt-5.6-sol")
+        self.assertEqual(s.providers, ["codex", "claude-team"])
+        self.assertEqual(s.provider_models, {"claude-team": "claude-opus-5"})
+
+    def test_legacy_derives_stacks(self) -> None:
+        s = _spec(agent_sdk="codex", model="gpt-5.6-sol",
+                  providers=["codex", "claude-team"],
+                  provider_models={"claude-team": "claude-opus-5"})
+        self.assertEqual([(x.model, x.provider) for x in s.stacks],
+                         [("gpt-5.6-sol", "codex"), ("claude-opus-5", "claude-team")])
+
+    def test_legacy_single_model_is_special_case(self) -> None:
+        # Il modello vecchio (1 LLM, N provider) = N stack con lo stesso model.
+        s = _spec(providers=["anthropic-api", "claude-pro-max"])
+        self.assertEqual([(x.model, x.provider) for x in s.stacks],
+                         [("claude-sonnet-4-5", "anthropic-api"),
+                          ("claude-sonnet-4-5", "claude-pro-max")])
+
+    def test_duplicate_provider_rejected(self) -> None:
+        with self.assertRaises(Exception):
+            _spec(stacks=[{"model": "claude-opus-5", "provider": "anthropic-api"},
+                          {"model": "claude-sonnet-4-5", "provider": "anthropic-api"}])
+
+    def test_stacks_win_over_legacy(self) -> None:
+        s = _spec(model="ignorato", providers=["codex"],
+                  stacks=[{"model": "claude-opus-5", "provider": "claude-team"}])
+        self.assertEqual(s.model, "claude-opus-5")
+        self.assertEqual(s.providers, ["claude-team"])
+
+    def test_no_providers_no_stacks(self) -> None:
+        # Nessun providers dichiarato → stacks vuoto (derivazione SDK a runtime).
+        s = _spec()
+        self.assertEqual(s.stacks, [])
+
+    def test_provider_fields_expose_stack_api(self) -> None:
+        s = _spec(agent_sdk="codex", model=None,
+                  stacks=[{"model": "gpt-5.6-sol", "provider": "codex"},
+                          {"model": "claude-opus-5", "provider": "claude-team"}])
+        f = _provider_fields(s, {"claude-team"})   # primario giù
+        self.assertEqual(f["provider"], "claude-team")
+        self.assertEqual(f["effective_model"], "claude-opus-5")
+        self.assertEqual(f["stacks"],
+                         [{"model": "gpt-5.6-sol", "provider": "codex"},
+                          {"model": "claude-opus-5", "provider": "claude-team"}])
+        by_id = {o["id"]: o["model"] for o in f["provider_options"]}
+        self.assertEqual(by_id, {"codex": "gpt-5.6-sol", "claude-team": "claude-opus-5"})
+
+    def test_effective_model_falls_back_to_top_level(self) -> None:
+        f = _provider_fields(_spec(agent_sdk="claude"), {"claude-pro-max"})
+        self.assertEqual(f["effective_model"], "claude-sonnet-4-5")
