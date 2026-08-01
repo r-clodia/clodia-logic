@@ -496,6 +496,29 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(meta["type"], "infra")
 
 
+class ChannelTrifectaTests(unittest.TestCase):
+    """Profilo trifecta esposto con il meta del canale (issue #77)."""
+
+    def test_profile_is_computed_from_participants(self) -> None:
+        specs = [
+            SimpleNamespace(name="lettore", type="normal",
+                            tool_permissions=["topic.read_file"], sandbox=None),
+            SimpleNamespace(name="postino", type="normal",
+                            tool_permissions=["email.send"], sandbox=None),
+        ]
+        real = channels.trifecta.context_profile
+        with patch.object(channels.trifecta, "context_profile",
+                          lambda parts: real(parts, specs=specs)):
+            prof = channels._channel_trifecta({"participants": ["lettore", "postino"]})
+        self.assertEqual(prof["score"], 3)
+        self.assertEqual(prof["symbol"], "🚨")
+
+    def test_failure_degrades_to_none_instead_of_breaking_the_channel(self) -> None:
+        with patch.object(channels.trifecta, "context_profile",
+                          side_effect=RuntimeError("registry ko")):
+            self.assertIsNone(channels._channel_trifecta({"participants": ["x"]}))
+
+
 class ParticipantJoinTests(unittest.IsolatedAsyncioTestCase):
     async def test_new_agent_is_forced_to_introduce_itself(self) -> None:
         agent = _a("worker", "normal", "P1", "2026-02-01T00:00:00Z")
