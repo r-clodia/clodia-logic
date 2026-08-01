@@ -353,6 +353,7 @@ def _materialize_spawn(kind: str, runtime_override: Optional[dict] = None):
             spec,
             extra_capabilities=override.get("capabilities"),
             extra_rules=override.get("rules"),
+            memory_readonly=bool(override.get("spawn_memory_readonly")),
         )
         return ws, ws.create()
     except Exception as e:  # noqa: BLE001 — lo spawn non deve impedire lo start

@@ -184,6 +184,17 @@ class AgentSpec(BaseModel):
             self.stacks = [StackSpec(model=self.provider_models.get(p, self.model),
                                      provider=p) for p in self.providers]
         return self
+    # ── Multi-spawn (issue clodia-platform#94): N istanze concorrenti ──────
+    # True = in un contesto (topic) il seed può materializzare più spawn
+    # concorrenti, identificati da ordinale (#1, #2, …). La menzione generica
+    # @nome va al minimo ordinale libero; se tutti occupati si forka una nuova
+    # istanza fino a `max_spawns` (poi ci si accoda sul minimo). L'ordinale >1
+    # riceve la memory del seed in SOLA LETTURA (niente scritture concorrenti).
+    multi_spawn: bool = False
+    # Cap istanze concorrenti per contesto (budget RAM: ogni istanza attiva è
+    # un subprocess vivo). Rilevante solo con multi_spawn: true.
+    max_spawns: int = 4
+
     # Sforzo di reasoning per i modelli che lo supportano (es. glm-5.2 su
     # Scaleway): "none" DISABILITA il reasoning → turni molto più rapidi, ~25×
     # meno token, niente loop runaway (per gli esecutori di tool). Valori tipici:
