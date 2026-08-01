@@ -197,3 +197,31 @@ class BedrockModelTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ProviderModelsCrossSdkTests(unittest.TestCase):
+    """Regressione (1 ago 2026): l'override per-provider `provider_models` deve
+    contare anche nei campi API del registry (card + selettore del profilo),
+    non solo nel runtime. Caso reale: fullstack-dev (codex/gpt-5.6-sol) con
+    fallback claude-team/claude-opus-5 — senza il fix claude-team veniva
+    filtrato perché non serve il modello top-level."""
+
+    def _cross(self) -> AgentSpec:
+        return _spec(agent_sdk="codex", model="gpt-5.6-sol",
+                     providers=["codex", "claude-team"],
+                     provider_models={"claude-team": "claude-opus-5"})
+
+    def test_cross_sdk_fallback_listed(self) -> None:
+        f = _provider_fields(self._cross(), {"codex", "claude-team"})
+        self.assertEqual(f["providers"], ["codex", "claude-team"])
+        self.assertEqual(f["provider"], "codex")  # primario connesso vince
+
+    def test_cross_sdk_fallback_effective_when_primary_down(self) -> None:
+        f = _provider_fields(self._cross(), {"claude-team"})
+        self.assertEqual(f["provider"], "claude-team")
+
+    def test_without_override_model_filter_still_applies(self) -> None:
+        f = _provider_fields(_spec(agent_sdk="codex", model="gpt-5.6-sol",
+                                   providers=["codex", "claude-team"]),
+                             {"codex", "claude-team"})
+        self.assertEqual(f["providers"], ["codex"])
