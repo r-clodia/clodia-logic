@@ -28,6 +28,23 @@ fail-safe verso il mostrare).
 Lo stato di lettura è per-principal in
 `user-settings/<principal>/topic-read.json` (stesso pattern isolato di
 channel-aliases).
+
+Due dettagli servono a non spegnere un badge che deve restare acceso (I4:
+il falso negativo è l'esito peggiore, un item che aspetta qualcuno e che
+nessuno vede):
+
+- **Copertura della finestra.** I messaggi si leggono a finestra
+  (`_MSG_WINDOW`). Se la finestra è piena, non arriva fino all'ack e non ha
+  trovato mention, il conteggio verrebbe dato per 0 senza aver guardato
+  dove le mention non lette potrebbero stare: in quel caso — e SOLO in
+  quello, per non pagare la finestra larga a ogni richiesta — si rilegge
+  fino a `_MSG_WINDOW_MAX`.
+- **Granularità dell'ack.** I `ts` hanno risoluzione al secondo, quindi
+  «letto fino a `mentions_upto`» non basta a distinguere i messaggi che
+  cadono nello stesso secondo dell'ack: quelli arrivati dopo passerebbero
+  per letti senza essere mai stati mostrati. L'ack registra perciò anche
+  gli id del secondo di bordo (`mentions_acked`); tutto ciò che sta in quel
+  secondo e non è in elenco resta non letto.
 """
 from __future__ import annotations
 
@@ -52,6 +69,8 @@ _PRINCIPAL_RE = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]{0,63}$")
 _TOPIC_KEY_RE = re.compile(r"^[A-Za-z0-9_-]{1,32}/[A-Za-z0-9._-]{1,128}$")
 _MAX_TOPICS = 20          # la sidebar ne mostra 5: bound difensivo
 _MSG_WINDOW = 200         # finestra messaggi per il conteggio
+_MSG_WINDOW_MAX = 2000    # finestra estesa: solo quando il badge sarebbe 0 non coperto
+_EDGE_IDS_MAX = 50        # id conservati per il secondo di bordo dell'ack
 
 
 def _principal(request: Request) -> str:
@@ -104,6 +123,62 @@ def _after(msg_ts: str | None, marker: str | None) -> bool:
     return m > mk
 
 
+def _mention_unread(msg: dict, upto: str | None, acked: list) -> bool:
+    """True se la mention contenuta nel messaggio è ancora da leggere.
+
+    Il confronto col solo `upto` non basta: i `ts` sono al secondo, quindi un
+    messaggio arrivato nello stesso secondo dell'ack — ma DOPO — risulterebbe
+    letto senza essere mai stato mostrato. Nel secondo di bordo vale l'elenco
+    di id effettivamente acked; fuori da quel secondo il confronto ordinario.
+    """
+    m, mk = _ts(msg.get("ts")), _ts(upto)
+    if mk is None or m is None:      # mai letto / ts illeggibile → I4: conta
+        return True
+    if m > mk:
+        return True
+    if m == mk:
+        return str(msg.get("id") or "") not in acked
+    return False
+
+
+def _covers(messages: list, marker: str | None) -> bool:
+    """True se la finestra `messages` risale almeno fino al marker: solo in
+    quel caso «nessuna mention non letta» è un'affermazione verificata e non
+    un limite della finestra."""
+    mk = _ts(marker)
+    if mk is None:
+        return False
+    stamps = [t for t in (_ts(m.get("ts")) for m in messages) if t is not None]
+    return bool(stamps) and min(stamps) <= mk
+
+
+def _scan(messages: list, principal: str, visited: str | None,
+          upto: str | None, acked: list) -> tuple[int, bool]:
+    """(mention non lette, activity) su una finestra di messaggi."""
+    unread, activity = 0, False
+    for msg in messages:
+        if msg.get("author") == principal:
+            continue
+        if _after(msg.get("ts"), visited):
+            activity = True
+        if principal.lower() in (msg.get("mentions") or []) and \
+                _mention_unread(msg, upto, acked):
+            unread += 1
+    return unread, activity
+
+
+def _edge_ids(tier: str, name: str, upto: datetime) -> list[str]:
+    """Id dei messaggi che cadono esattamente nel secondo dell'ack: sono i
+    soli, in quel secondo, che l'utente ha davvero visto."""
+    try:
+        messages = topics_client.list_messages(tier, name, limit=_MSG_WINDOW)
+    except Exception:  # noqa: BLE001 — l'ack non deve fallire per questo
+        return []
+    ids = [str(m["id"]) for m in messages
+           if m.get("id") and _ts(m.get("ts")) == upto]
+    return ids[-_EDGE_IDS_MAX:]
+
+
 def _gate_assignee(run: dict) -> str:
     """Assegnatario del gate: stessa regola delle notifiche (notify.py)."""
     return (run.get("wf_owner") or "").strip() or (run.get("requested_by") or "")
@@ -143,21 +218,30 @@ def _topic_signal(principal: str, tier: str, name: str,
         return None
     visited = read.get("visited")
     mentions_upto = read.get("mentions_upto")
+    acked = [str(i) for i in (read.get("mentions_acked") or [])]
     try:
         messages = topics_client.list_messages(tier, name, limit=_MSG_WINDOW)
     except Exception:  # noqa: BLE001
         # Membership confermata ma contenuti non leggibili → I4: si segnala.
         return {"actionable": gates, "activity": True}
-    unread_mentions = 0
-    activity = False
-    for msg in messages:
-        if msg.get("author") == principal:
-            continue
-        ts = msg.get("ts")
-        if _after(ts, visited):
-            activity = True
-        if principal.lower() in (msg.get("mentions") or []) and _after(ts, mentions_upto):
-            unread_mentions += 1
+    unread_mentions, activity = _scan(messages, principal, visited, mentions_upto, acked)
+    covered = len(messages) < _MSG_WINDOW or _covers(messages, mentions_upto)
+    if unread_mentions == 0 and not covered:
+        # Il badge starebbe per spegnersi senza che la finestra abbia davvero
+        # guardato dove le mention non lette possono stare: prima di dire 0 si
+        # allarga (I4). Costo pagato solo qui, non a ogni richiesta.
+        try:
+            wide = topics_client.list_messages(tier, name, limit=_MSG_WINDOW_MAX)
+        except Exception:  # noqa: BLE001
+            return {"actionable": gates, "activity": True}
+        unread_mentions, wide_activity = _scan(wide, principal, visited,
+                                               mentions_upto, acked)
+        activity = activity or wide_activity
+        if unread_mentions == 0 and len(wide) >= _MSG_WINDOW_MAX and \
+                not _covers(wide, mentions_upto):
+            LOG.warning("signals %s/%s: finestra %d messaggi non copre l'ack di %s "
+                        "— eventuali mention più vecchie non sono conteggiate",
+                        tier, name, _MSG_WINDOW_MAX, principal)
     return {"actionable": unread_mentions + gates, "activity": activity}
 
 
@@ -214,6 +298,9 @@ async def topic_seen(tier: str, name: str, request: Request) -> dict:
         prev = _ts(entry.get("mentions_upto"))
         if prev is None or upto > prev:
             entry["mentions_upto"] = upto.isoformat(timespec="seconds")
+            # Il secondo di bordo va registrato per id: i ts sono al secondo e
+            # ciò che arriva nello stesso secondo, dopo l'ack, non è stato letto.
+            entry["mentions_acked"] = _edge_ids(tier, name, upto)
     state[key] = entry
     _save_state(principal, state)
     return {"ok": True, "topic": key, "read": entry}
