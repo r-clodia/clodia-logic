@@ -135,10 +135,13 @@ def _message_key(msg: dict) -> tuple:
 
 
 def _new_ai_messages(before: list[dict], after: list[dict], author: str) -> list[dict]:
+    # Confronto per SEED (strip dell'ordinale #N): un'istanza multi-spawn posta
+    # via tool gateway con l'identità del seed, la risposta finale con la label.
+    seed = _seed_name(author)
     seen = {_message_key(m or {}) for m in before}
     return [
         m for m in after
-        if (m or {}).get("author") == author
+        if _seed_name((m or {}).get("author")) == seed
         and (m or {}).get("kind") == "ai"
         and _message_key(m or {}) not in seen
     ]
@@ -221,8 +224,15 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
     hard, soft = _tags(reply_text or "")
-    plan: list[tuple[str, str]] = ([(t, "direct") for t in hard if t in participants and t != from_agent]
-                                   + [(t, "soft") for t in soft if t in participants and t != from_agent])
+    # Confronti per SEED: 'fullstack-dev#2' che tagga @fullstack-dev non deve
+    # auto-delegarsi; il tag con ordinale (@nome#N) resta valido se il SEED è
+    # partecipante (issue#94).
+    self_seed = _seed_name(from_agent)
+    plan: list[tuple[str, str]] = (
+        [(t, "direct") for t in hard
+         if _seed_name(t) in participants and _seed_name(t) != self_seed]
+        + [(t, "soft") for t in soft
+           if _seed_name(t) in participants and _seed_name(t) != self_seed])
     if not plan:
         return
     if not _multi_responder_enabled() and len(plan) > 1:
@@ -235,9 +245,10 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         plan = plan[:1]
     started: list[str] = []
     for tag, kind in plan:
+        seed, req_ord = _split_ord(tag)
         # idoneità: _pick_responder col tag ritorna il delegato SOLO se idoneo al tier
-        delegate = _pick_responder(participants, tier_real, tag)
-        if delegate is None or delegate.name != tag or delegate.name in started:
+        delegate = _pick_responder(participants, tier_real, seed)
+        if delegate is None or delegate.name != seed or delegate.name in started:
             continue
         LOG.info("delega %s: %s → @%s (hop %d) su %s/%s",
                  kind, from_agent, delegate.name, hop + 1, tier, name)
@@ -254,7 +265,8 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         # riusa la stessa logica di turno multi-tag (direttiva direct/soft), il
         # messaggio è il reply dell'agente delegante
         if await _start_turn(tier, name, tier_real, delegate,
-                             principal or "channel", reply_text or "", kind, hop=hop + 1):
+                             principal or "channel", reply_text or "", kind, hop=hop + 1,
+                             ordinal=req_ord):
             started.append(delegate.name)
 
 # I DM sono canali a 2 partecipanti (meta.kind="dm"): nome deterministico (i due
@@ -275,7 +287,24 @@ _LEGACY_TIER = {"P0": "SEAL-0", "P1": "SEAL-1", "P2": "SEAL-2", "P3": "SEAL-3"}
 def _norm(level: str | None) -> str:
     u = (level or "SEAL-0").strip().upper()
     return _LEGACY_TIER.get(u, u)
-_TAG_RE = re.compile(r"@([a-z0-9][a-z0-9_-]{0,30})")
+# L'ordinale opzionale #N indirizza un'ISTANZA di un seed multi-spawn
+# (issue clodia-platform#94): @fullstack-dev#2. Vive solo nel contesto del
+# canale: chiave sessione, etichetta autore, typing.
+_TAG_RE = re.compile(r"@([a-z0-9][a-z0-9_-]{0,30}(?:#[1-9][0-9]{0,2})?)")
+_ORD_SUFFIX_RE = re.compile(r"^(.*?)#([1-9][0-9]{0,2})$")
+
+
+def _split_ord(tag: str | None) -> tuple[str | None, int | None]:
+    """'fullstack-dev#2' → ('fullstack-dev', 2); senza ordinale → (tag, None)."""
+    if not tag:
+        return tag, None
+    m = _ORD_SUFFIX_RE.match(tag)
+    return (m.group(1), int(m.group(2))) if m else (tag, None)
+
+
+def _seed_name(label: str | None) -> str | None:
+    """Nome del seed da un'etichetta istanza ('fullstack-dev#2' → 'fullstack-dev')."""
+    return _split_ord(label)[0]
 
 
 def _effective_clearance(spec) -> str:
@@ -320,7 +349,7 @@ def _tagged(text: str) -> str | None:
 
 # Tag SOFT ($agente): menzione senza richiesta d'azione — l'agente giudica se
 # intervenire. `@agente` resta la richiesta DIRETTA (hard).
-_SOFT_TAG_RE = re.compile(r"\$([a-z0-9][a-z0-9_-]{0,30})")
+_SOFT_TAG_RE = re.compile(r"\$([a-z0-9][a-z0-9_-]{0,30}(?:#[1-9][0-9]{0,2})?)")
 
 
 def _tags(text: str) -> tuple[list[str], list[str]]:
@@ -473,22 +502,71 @@ def _provider_below_tier_warning(spec, tier_real: str) -> dict:
     }
 
 
+def _resolve_ordinal(tier: str, name: str, spec, requested: int | None) -> int:
+    """Ordinale dell'istanza multi-spawn per questo turno (issue#94).
+
+    - richiesto esplicito (@nome#N) → quello, clampato a max_spawns;
+    - generico → il MINIMO ordinale senza un turno in corso fra le istanze
+      esistenti; se tutte occupate → fork del successivo (entro il cap);
+      al cap raggiunto ci si accoda sul minimo (FIFO del lock di sessione).
+    Le istanze evinte dal reaper non esistono più nel manager → gli ordinali
+    si riassegnano dal basso alla menzione successiva.
+    """
+    cap = max(1, int(getattr(spec, "max_spawns", 4) or 4))
+    if requested:
+        if requested > cap:
+            LOG.info("ordinale %s#%d oltre il cap %d: clampato", spec.name, requested, cap)
+        return min(requested, cap)
+    prefix = f"chan:{tier}:{name}:{spec.name}#"
+    busy_by_ord: dict[int, bool] = {}
+    for chat in manager.list():
+        cid = getattr(chat, "chat_id", "")
+        if not cid.startswith(prefix):
+            continue
+        try:
+            n = int(cid[len(prefix):])
+        except ValueError:
+            continue
+        lock = getattr(chat, "_lock", None)
+        busy_by_ord[n] = bool(lock is not None and lock.locked())
+    if not busy_by_ord:
+        return 1
+    free = [n for n in sorted(busy_by_ord) if not busy_by_ord[n]]
+    if free:
+        return free[0]
+    nxt = max(busy_by_ord) + 1
+    return nxt if nxt <= cap else min(busy_by_ord)
+
+
 async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str,
-                      user_text: str, kind: str, hop: int = 0) -> bool:
+                      user_text: str, kind: str, hop: int = 0,
+                      ordinal: int | None = None) -> bool:
     """Avvia (fire-and-forget) un turno del responder `spec` con la direttiva del
-    tipo di tag (direct/soft/plain). Sessione persistente per (canale, agente).
-    Ritorna False se il provider non è connesso."""
+    tipo di tag (direct/soft/plain). Sessione persistente per (canale, agente);
+    per i seed multi-spawn (issue#94) la sessione è per (canale, agente, ordinale)
+    e l'autore è etichettato `nome#N`. Ritorna False se il provider non è connesso."""
+    label = spec.name
     chat_id = f"chan:{tier}:{name}:{spec.name}"
+    inst_ord: int | None = None
+    if getattr(spec, "multi_spawn", False):
+        inst_ord = _resolve_ordinal(tier, name, spec, ordinal)
+        label = f"{spec.name}#{inst_ord}"
+        chat_id = f"{chat_id}#{inst_ord}"
     created = False
     try:
         chat = manager.get(chat_id)
     except KeyError:
         try:
             override = topic_runtime_override(spec.name, tier_real)
+            if inst_ord is not None and inst_ord > 1:
+                # Solo l'ordinale minimo scrive la memory del seed: le altre
+                # istanze la ricevono in sola lettura (issue#94).
+                override["spawn_memory_readonly"] = True
             activity_log.append(spec.name, "provider_selected", {
                 "channel": f"{tier}/{name}",
                 "tier": tier_real,
                 "provider": override.get("provider"),
+                "instance": label if inst_ord is not None else None,
                 "reason": "topic_min_cost_eligible",
             })
             chat = await manager.create(
@@ -503,6 +581,10 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
             return False
     chat.principal = principal
     directive = _tag_directive(kind, principal, user_text)
+    if inst_ord is not None:
+        directive = (f"[Sei l'istanza {label}: una delle istanze concorrenti di "
+                     f"{spec.name} in questo canale. Firma implicita: i tuoi messaggi "
+                     f"appaiono come {label}.]\n" + (directive or ""))
     if created:
         base = _history_prompt(name, tier_real,
                                _context_messages(topics_client.list_messages(tier, name, limit=200)),
@@ -511,8 +593,8 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     else:
         fallback = (f"[Canale #{name} · {tier_real}] @{principal}: {user_text}\n"
                     f"({_channel_files_hint(tier_real, name)})")
-        prompt = _reused_turn_prompt(tier, name, spec.name, principal, directive or fallback)
-    _spawn_bg(_run_and_post_response(tier, name, spec.name, chat, prompt,
+        prompt = _reused_turn_prompt(tier, name, label, principal, directive or fallback)
+    _spawn_bg(_run_and_post_response(tier, name, label, chat, prompt,
                                      principal=principal, hop=hop))
     return True
 
@@ -1028,6 +1110,11 @@ def _responder_busy(tier: str, name: str, agent: str) -> bool:
     """True se il responder ha già un turno IN CORSO su questo canale (lock della
     ChatSession tenuto). Usato dai topic trigger per NON accodare un nuovo turno
     se il precedente non è ancora finito (skip-if-busy)."""
+    spec = registry.get_by_name(agent)
+    if spec is not None and getattr(spec, "multi_spawn", False):
+        # Multi-spawn (issue#94): la menzione può forkare una nuova istanza →
+        # il responder non è mai "occupato" ai fini dello skip.
+        return False
     try:
         chat = manager.get(f"chan:{tier}:{name}:{agent}")
     except KeyError:
@@ -1081,19 +1168,21 @@ async def post_channel_message(
     #    taggati restano raggiungibili dalla catena di delega dell'agente che
     #    risponde. Con CHANNEL_MULTI_RESPONDER=1 partono tutti in parallelo.
     hard, soft = _tags(content)
-    targets: list[tuple[object, str]] = []
+    targets: list[tuple[object, str, int | None]] = []
     for nm in hard:
-        s = _pick_responder(participants, tier_real, nm)   # ritorna nm solo se idoneo
-        if s is not None and s.name == nm:
-            targets.append((s, "direct"))
+        seed, req_ord = _split_ord(nm)     # @nome#N → istanza esplicita (issue#94)
+        s = _pick_responder(participants, tier_real, seed)   # ritorna il seed solo se idoneo
+        if s is not None and s.name == seed:
+            targets.append((s, "direct", req_ord))
     for nm in soft:
-        s = _pick_responder(participants, tier_real, nm)
-        if s is not None and s.name == nm and not any(t[0].name == s.name for t in targets):
-            targets.append((s, "soft"))
+        seed, req_ord = _split_ord(nm)
+        s = _pick_responder(participants, tier_real, seed)
+        if s is not None and s.name == seed and not any(t[0].name == s.name for t in targets):
+            targets.append((s, "soft", req_ord))
 
     dropped_tags: list[str] = []
     if targets and not _multi_responder_enabled() and len(targets) > 1:
-        dropped_tags = [s.name for s, _kind in targets[1:]]
+        dropped_tags = [s.name for s, _kind, _o in targets[1:]]
         targets = targets[:1]
         LOG.info("canale %s/%s: risposta singola, risponde %s; altri taggati "
                  "non avviati: %s", tier, name, targets[0][0].name,
@@ -1107,9 +1196,9 @@ async def post_channel_message(
                 "reason": ("tag esplicito (@ diretto · $ soft)"
                            + (f" — risposta singola, non avviati: "
                               f"{', '.join(dropped_tags)}" if dropped_tags else "")),
-                "chosen": ", ".join(f"{s.name}{' ·soft' if k == 'soft' else ''}" for s, k in targets),
-                "chosen_agents": [s.name for s, _kind in targets],
-                "candidates": [], "eligible": [s.name for s, _ in targets],
+                "chosen": ", ".join(f"{s.name}{' ·soft' if k == 'soft' else ''}" for s, k, _o in targets),
+                "chosen_agents": [s.name for s, _kind, _o in targets],
+                "candidates": [], "eligible": [s.name for s, _k, _o in targets],
             }
             _track_routing_decision(payload)
             await bus.publish(Event(
@@ -1121,14 +1210,15 @@ async def post_channel_message(
         warning = None
         started: list[str] = []
         skipped: list[str] = []
-        for s, kind in targets:
+        for s, kind, req_ord in targets:
             if skip_if_busy and _responder_busy(tier, name, s.name):
                 skipped.append(s.name)
                 continue
             if (kind == "direct" and getattr(s, "type", None) == "super"
                     and not _provider_seal_ok(s, tier_real) and warning is None):
                 warning = _provider_below_tier_warning(s, tier_real)
-            if await _start_turn(tier, name, tier_real, s, principal, content, kind):
+            if await _start_turn(tier, name, tier_real, s, principal, content, kind,
+                                 ordinal=req_ord):
                 started.append(s.name)
         return {"posted": True, "queued": True, "responders": started,
                 "skipped": skipped, "warning": warning}

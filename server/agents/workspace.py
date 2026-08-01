@@ -82,7 +82,7 @@ def sweep_orphan_spawns(live_dirs: Optional[set] = None,
                 mem_link.unlink()
         except OSError:
             pass
-        shutil.rmtree(d, ignore_errors=True)
+        _rmtree_force(d)
         removed.append(d.name)
     if removed:
         LOG.info("sweep spawn orfani: rimossi %d (%s%s)", len(removed),
@@ -142,6 +142,21 @@ def _build_settings_json(spec: AgentSpec, scratch_dir: Path) -> dict:
     }
 
 
+def _rmtree_force(path) -> None:
+    """rmtree che recupera i path read-only: lo snapshot memory delle istanze
+    multi-spawn (issue#94) ha dir 0555/file 0444 → il rmtree normale fallirebbe.
+    Rialza i permessi e riprova, senza mai seguire symlink."""
+    def _onerr(func, p, _exc):
+        try:
+            parent = os.path.dirname(p)
+            os.chmod(parent, 0o755)
+            os.chmod(p, 0o755)
+            func(p)
+        except OSError:
+            pass
+    shutil.rmtree(path, onerror=_onerr)
+
+
 class EphemeralWorkspace:
     """Workspace effimero per una singola attivazione di un agente."""
 
@@ -153,8 +168,13 @@ class EphemeralWorkspace:
         execution_id: Optional[str] = None,
         extra_capabilities: Optional[list[str]] = None,
         extra_rules: Optional[list[str]] = None,
+        memory_readonly: bool = False,
     ) -> None:
         self.spec = spec
+        # Issue#94: le istanze multi-spawn con ordinale >1 ricevono la memory
+        # del seed come SNAPSHOT read-only (no symlink): solo l'ordinale minimo
+        # scrive MEMORY.md — niente scritture concorrenti.
+        self.memory_readonly = memory_readonly
         # Senza task_id esplicito (es. webchat) → indice sequenziale proc-like
         # (name-1, name-2, …). I chiamanti colonia passano un task_id proprio.
         self.task_id = task_id or str(_next_spawn_index(spec.name))
@@ -230,15 +250,27 @@ class EphemeralWorkspace:
                 self.spec.name, r_copied, r_unresolved,
             )
 
-        # memory: symlink se configurata, altrimenti niente
+        # memory: symlink (rw) se configurata; per le istanze multi-spawn con
+        # ordinale >1 uno SNAPSHOT read-only (issue#94) — la scrittura fallisce,
+        # la fonte resta la memory del seed montata solo dall'ordinale minimo.
         if self.spec.memory is not None:
             mem_src = agent_dir / self.spec.memory.dir
             if mem_src.is_dir():
                 mem_link = agent_root / "memory"
-                # Symlink relativo per portabilità tra container e host
                 if mem_link.exists() or mem_link.is_symlink():
-                    mem_link.unlink()
-                os.symlink(str(mem_src.resolve()), str(mem_link))
+                    if mem_link.is_symlink():
+                        mem_link.unlink()
+                    else:
+                        _rmtree_force(mem_link)
+                if self.memory_readonly:
+                    shutil.copytree(mem_src, mem_link, symlinks=False)
+                    for root, dirs, files in os.walk(mem_link, topdown=False):
+                        for f in files:
+                            os.chmod(os.path.join(root, f), 0o444)
+                        os.chmod(root, 0o555)
+                else:
+                    # Symlink relativo per portabilità tra container e host
+                    os.symlink(str(mem_src.resolve()), str(mem_link))
 
         # system-prompt.md = costituzione (genoma, se referenziata) FUSA in testa
         # + system prompt dell'agent. Unico punto di fusione: entrambi i motori
@@ -293,7 +325,7 @@ class EphemeralWorkspace:
         mem_link = self.dir / ".agent" / "memory"
         if mem_link.is_symlink():
             mem_link.unlink()
-        shutil.rmtree(self.dir, ignore_errors=True)
+        _rmtree_force(self.dir)
         LOG.info("Workspace effimero rimosso: %s", self.dir)
 
     def __enter__(self) -> "EphemeralWorkspace":
