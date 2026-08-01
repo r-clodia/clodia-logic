@@ -27,6 +27,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ..agents import activity_log, rank as rank_mod, registry
 from ..agents import feedback as agent_feedback
+from ..agents import trifecta
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import manager, ProviderNotConnected, topic_runtime_override
@@ -1532,6 +1533,21 @@ def _active_responders(tier: str, name: str, participants: list[str]) -> list[st
     return active
 
 
+def _channel_trifecta(meta: dict) -> dict | None:
+    """Danger score «lethal trifecta» del canale (issue clodia-platform#77).
+
+    Calcolato dai grant effettivi dei partecipanti a ogni apertura/refresh: i
+    grant cambiano a runtime (PATCH caps, override scoped) e un punteggio
+    cachato mentirebbe. Non blocca nulla — questo è lo step di misura.
+    Un errore qui non deve impedire di aprire il canale: si degrada a None e
+    la UI semplicemente non mostra il badge."""
+    try:
+        return trifecta.context_profile(meta.get("participants") or [])
+    except Exception as e:  # pragma: no cover - difensivo
+        LOG.warning("trifecta: profilo canale non calcolabile (%s)", e)
+        return None
+
+
 @router.get("/clodia/channels/{tier}/{name}")
 def channel_open(tier: str, name: str, request: Request) -> dict:
     """Meta del canale (owner, participants, tier, summary/tldr) per la UI.
@@ -1543,6 +1559,7 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
     topic["active_responders"] = _active_responders(
         tier, name, topic.get("meta", {}).get("participants", []))
+    topic["trifecta"] = _channel_trifecta(topic.get("meta", {}))
     return topic
 
 
