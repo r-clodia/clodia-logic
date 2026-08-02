@@ -34,7 +34,13 @@ _CHAT_PREFIX = "packops:"
 
 
 def declarations() -> dict[str, dict]:
-    """Manifest dei plugin con dichiarazioni pack ops: {plugin: {requires, datastores}}."""
+    """Manifest dei plugin con dichiarazioni pack ops.
+
+    {plugin: {requires, datastores, rag_collections, mcp_servers}}. I server MCP
+    fanno parte della riconciliazione quanto pip/npm/rag: un plugin importato da
+    fonte non fidata NON viene montato automaticamente (`pack_mcp_mount`), quindi
+    il mount resta un compito esplicito del reconciler.
+    """
     found: dict[str, dict] = {}
     for manifest in sorted(Path(data_path("plugins")).glob("*/plugin.yaml")):
         try:
@@ -45,13 +51,18 @@ def declarations() -> dict[str, dict]:
             continue
         req, ds = meta.get("requires") or {}, meta.get("datastores") or []
         rc = meta.get("rag_collections") or []
-        if req or ds or rc:
+        mcp = meta.get("mcp_servers") or {}
+        if not isinstance(mcp, dict):
+            mcp = {}
+        if req or ds or rc or mcp:
             found[manifest.parent.name] = {"requires": req, "datastores": ds,
-                                           "rag_collections": rc}
+                                           "rag_collections": rc,
+                                           "mcp_servers": mcp}
     return found
 
 
-def _reconcile_prompt(reason: str, decls: dict[str, dict]) -> str:
+def _reconcile_prompt(reason: str, decls: dict[str, dict],
+                      *, rag_enabled: bool = True) -> str:
     lines = [
         f"[piattaforma · pack ops · trigger: {reason}] Riconciliazione richiesta.",
         "",
@@ -59,12 +70,14 @@ def _reconcile_prompt(reason: str, decls: dict[str, dict]) -> str:
         "$CLODIA_DATA/plugins/<nome>/plugin.yaml — rileggili tu stesso):",
     ]
     for name, d in decls.items():
-        req = ", ".join(f"{k}:{v}" for k, v in (d["requires"] or {}).items()) or "-"
-        ds = ", ".join(x.get("path", "?") for x in d["datastores"]) or "-"
+        req = ", ".join(f"{k}:{v}" for k, v in (d.get("requires") or {}).items()) or "-"
+        ds = ", ".join(x.get("path", "?") for x in (d.get("datastores") or [])) or "-"
         rc = ", ".join(
             f"{c.get('name')}({len(c.get('resources') or [])} risorse)"
             for c in (d.get("rag_collections") or [])) or "-"
-        lines.append(f"- {name} → requires [{req}] · datastores [{ds}] · rag_collections [{rc}]")
+        mcp = ", ".join(sorted(d.get("mcp_servers") or {})) or "-"
+        lines.append(f"- {name} → requires [{req}] · datastores [{ds}] · "
+                     f"rag_collections [{rc}] · mcp_servers [{mcp}]")
     lines += [
         "",
         "Esegui la convergenza con i tool dedicati del gateway, non con shell "
@@ -73,13 +86,42 @@ def _reconcile_prompt(reason: str, decls: dict[str, dict]) -> str:
         "per i server MCP dichiarati, rag.create_collection + rag.ingest per "
         "`rag_collections`.",
         "",
-        "Per le rag_collections: se una collection dichiarata non esiste ancora "
-        "(rag.collections), PROVISIONALA con rag.create_collection e poi ingerisci "
-        "le risorse iniziali via rag.ingest (collection + doc_name + version; il "
-        "corpus/indice è infra pgvector, NON è nel pack). Le risorse con `url` vanno prima scaricate in "
-        "un topic e poi ingerite; quelle con `path` sono file del pack. Idempotente: "
-        "salta ciò che è già indicizzato. Se non hai gli strumenti per scaricare, "
-        "riporta le risorse mancanti nel report per l'intervento umano.",
+        "Per i mcp_servers: confronta i server dichiarati con `mcp.list`. Quelli "
+        "assenti NON sono un guasto — l'auto-mount all'import è riservato alle "
+        "fonti fidate, per le altre il mount è un atto esplicito. Montali con "
+        "mcp.add passando la voce del manifest ({\"mcpServers\": {<nome>: "
+        "{command, args, env}}}), poi runtime.restart_agent per gli agent che li "
+        "usano. Se il mount va negato o fallisce, riportalo come gap: non "
+        "marcare setup_done.",
+    ]
+    if rag_enabled:
+        lines += [
+            "",
+            "Per le rag_collections: se una collection dichiarata non esiste ancora "
+            "(rag.collections), PROVISIONALA con rag.create_collection e poi ingerisci "
+            "le risorse iniziali via rag.ingest (collection + doc_name + version; il "
+            "corpus/indice è infra pgvector, NON è nel pack). Le risorse con `url` vanno prima scaricate in "
+            "un topic e poi ingerite; quelle con `path` sono file del pack. Idempotente: "
+            "salta ciò che è già indicizzato. Se non hai gli strumenti per scaricare, "
+            "riporta le risorse mancanti nel report per l'intervento umano.",
+        ]
+    elif any(d.get("rag_collections") for d in decls.values()):
+        lines += [
+            "",
+            "ATTENZIONE — la feature `rag` è DISATTIVATA su questa istanza: i verbi "
+            "rag.* non esistono (né in lista né al dispatch). Le rag_collections "
+            "dichiarate qui sopra NON sono provisionabili: non cercare i tool e non "
+            "considerarlo un tuo fallimento — riportale come gap di configurazione "
+            "d'istanza (features.rag) e non marcare setup_done per quei pack.",
+        ]
+    lines += [
+        "",
+        "Verbi gated (packs.install_pip, packs.install_npm, mcp.add): ogni uso "
+        "richiede l'approvazione umana in contesto. Se il trigger è automatico "
+        "(boot/post-import) può non esserci nessuno all'ascolto: diniego o timeout "
+        "NON vanno reinseguiti in loop. Registra il gap nel report — l'owner può "
+        "sbloccare i run non presidiati con una delega permanente firmata sul "
+        "singolo verbo, oppure approvare al primo turno interattivo.",
     ]
     return "\n".join(lines)
 
@@ -90,7 +132,8 @@ async def trigger_reconcile(reason: str) -> dict:
     if not decls:
         return {"triggered": False, "reason": "nessuna dichiarazione nei plugin"}
 
-    cfg = instance_profile.load().pack_ops
+    profile = instance_profile.load()
+    cfg = profile.pack_ops
     if not cfg.enabled:
         LOG.info("pack ops: trigger %s saltato — profile.pack_ops.enabled=false", reason)
         return {"triggered": False, "reason": "pack_ops disabilitato dal profilo"}
@@ -119,7 +162,9 @@ async def trigger_reconcile(reason: str) -> dict:
         return {"triggered": False, "reason": f"sessione: {str(e)[:120]}"}
 
     chat.principal = "platform"  # trigger di piattaforma, nessun principal umano
-    await chat.send_user_message_async(_reconcile_prompt(reason, decls))
+    rag_enabled = profile.features.rag != "off"
+    await chat.send_user_message_async(
+        _reconcile_prompt(reason, decls, rag_enabled=rag_enabled))
     LOG.info("pack ops: riconciliazione consegnata a '%s' (%s: %s)",
              agent, reason, ", ".join(decls))
     return {"triggered": True, "agent": agent, "plugins": sorted(decls)}

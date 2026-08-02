@@ -340,19 +340,37 @@ async def list_packs() -> list[dict[str, Any]]:
 
 @router.get("/clodia/packs/{name}")
 async def get_pack(name: str):
+    """Dettaglio di un pack per nome, con fallback sul nome di un PLUGIN.
+
+    Pack e plugin sono livelli diversi (pack := agents + plugins) e i due nomi
+    spesso non coincidono (`assetti-contabili` è un plugin del pack
+    `studio-commercialista`). Chi riconcilia parte dalle dichiarazioni, che sono
+    per-plugin: un 404 su un nome valido è solo un ostacolo. Se il nome non è un
+    pack ma un plugin contenuto in uno, si ritorna il pack contenitore con
+    `resolved_from_plugin` a dire che la risoluzione è avvenuta."""
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
-    for pack in _list_packs():
+    packs_list = _list_packs()
+    for pack in packs_list:
         if pack["name"] == name:
             return pack
+    for pack in packs_list:
+        for plugin in pack.get("plugins") or []:
+            if isinstance(plugin, dict) and plugin.get("name") == name:
+                return {**pack, "resolved_from_plugin": name}
     return JSONResponse(status_code=404, content={"error": "pack non trovato"})
 
 
 def _has_pack_ops_declarations(result: dict) -> bool:
-    """True se l'import ha installato plugin con dichiarazioni pack ops."""
+    """True se l'import ha installato plugin con dichiarazioni pack ops.
+
+    Deve restare allineato a `_pack_needs_setup`: un plugin con SOLI mcp_servers
+    marca comunque il pack `setup_pending`, quindi senza `mcp_servers` qui il
+    bottone «Finish setup» resterebbe acceso senza che nessuno riconcili."""
     if result.get("kind") == "packs":
         return any(_has_pack_ops_declarations(r) for r in result.get("packs", []))
     return any(p.get("datastores") or p.get("requires") or p.get("rag_collections")
+               or p.get("mcp_servers")
                for p in result.get("plugins", []) if isinstance(p, dict))
 
 
