@@ -99,7 +99,43 @@ tool_permissions:
   # list/read/put/delete file, open, summary/minute. Enforcement gateway:
   # participant + clearance ≥ tier; topic non-participant → gate cross-topic.
   # post_message resta bloccato (prerogativa super/messaggero) dal suo guard.
-  - "topic.*"
+  #
+  # `topic.*` ESPLOSO nell'elenco puntuale per togliere UN SOLO verbo,
+  # `topic.add_participant` (clodia-platform#104 §10.2): sysadmin amministra la
+  # piattaforma, non compone le squadre dei canali. Tutto il resto è conservato
+  # verbo per verbo; l'elenco esplicito evita anche che un `topic.*` futuro
+  # venga concesso in automatico (#104 §8).
+  #
+  # ⚠️ Da solo questo NON rende sysadmin incapace di allargare la composizione:
+  # conserva `agents.*`, che il catalogo trifecta classifica come `expansion`
+  # (grant/revoke di capability = fabbricare autorità). Per sysadmin il §10.2 va
+  # completato dallo split di `agents.*` previsto in #104 §8. Vedi il PR.
+  - "topic.add_minute"
+  - "topic.archive"
+  - "topic.delete_file"
+  - "topic.fetch"
+  - "topic.files"
+  - "topic.invoke_hook"
+  - "topic.list"
+  - "topic.migrate_storage"
+  - "topic.new"
+  - "topic.open"
+  - "topic.post_message"
+  - "topic.put"
+  - "topic.read_document"
+  - "topic.read_file"
+  - "topic.remote_add"
+  - "topic.remote_commit"
+  - "topic.remote_disable"
+  - "topic.remote_enable"
+  - "topic.remote_pull"
+  - "topic.remote_push"
+  - "topic.remote_status"
+  - "topic.remove_participant"
+  - "topic.save_summary"
+  - "topic.search"
+  - "topic.suggest_team"
+  - "topic.write_file"
 priority: 30
 cost_profile: standard
 
