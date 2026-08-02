@@ -39,9 +39,45 @@ rules: []
 # Tool comms (la fruizione degli account/token resta gated dai grant del vault:
 # email account + telegram_bot_token delegati a Messaggero dalla sezione
 # Connettori/Integrations). Enforcement effettivo nel gateway (config.yaml).
-# topic.* include topic.post_message (prerogativa di messaggero+super). jobs.propose
-# per creare il job periodico di check-email (l'owner lo approva, gated by design).
-tool_permissions: [email.*, telegram.*, topic.*, jobs.propose]
+# post_message è prerogativa di messaggero+super. jobs.propose per creare il job
+# periodico di check-email (l'owner lo approva, gated by design).
+#
+# `topic.*` è stato ESPLOSO nell'elenco puntuale per togliere UN SOLO verbo,
+# `topic.add_participant` (clodia-platform#104 §10.2): il messaggero non compone
+# squadre. Tutto il resto di `topic.*` è conservato verbo per verbo — questa non
+# è la riduzione a TOPIC_RW proposta in #102, che è un passo successivo.
+# L'elenco esplicito ha anche l'effetto voluto in #104 §8: un verbo `topic.*`
+# FUTURO non viene più concesso in automatico.
+tool_permissions:
+  - email.*
+  - telegram.*
+  - jobs.propose
+  - topic.add_minute
+  - topic.archive
+  - topic.delete_file
+  - topic.fetch
+  - topic.files
+  - topic.invoke_hook
+  - topic.list
+  - topic.migrate_storage
+  - topic.new
+  - topic.open
+  - topic.post_message
+  - topic.put
+  - topic.read_document
+  - topic.read_file
+  - topic.remote_add
+  - topic.remote_commit
+  - topic.remote_disable
+  - topic.remote_enable
+  - topic.remote_pull
+  - topic.remote_push
+  - topic.remote_status
+  - topic.remove_participant
+  - topic.save_summary
+  - topic.search
+  - topic.suggest_team
+  - topic.write_file
 memory:
   dir: memory/
 system_prompt: system-prompt.md
