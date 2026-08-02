@@ -62,7 +62,7 @@ def _version_tuple(v: str):
         return (v,)
 
 
-# ── Check update / Update da GitHub (Opzione A) ──────────────────────────
+# ── Check update / Update da GitHub (Opzione A) ──────────────────────────────
 def _pack_upstream(name: str) -> dict | None:
     """`upstream: {repo, path, ref}` dal manifest installato (o dal catalogo
     bundled come fallback). None se il pack non dichiara un upstream."""
