@@ -8,28 +8,83 @@ from . import pack_ops
 from . import packs
 
 
+_DECLS = {"demo": {"requires": {"pip": ["mcp"]}, "datastores": [], "rag_collections": []}}
+
+
 class PackOpsTest(unittest.IsolatedAsyncioTestCase):
-    async def test_reconcile_is_enabled_by_default(self):
-        chat = AsyncMock()
+    def setUp(self) -> None:
+        # Attempt state (#116 point C) must be isolated per test.
+        self._tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self._tmp.cleanup)
+        pp = patch.object(pack_ops, "data_path",
+                          side_effect=lambda rel: Path(self._tmp.name) / rel)
+        pp.start()
+        self.addCleanup(pp.stop)
+
+    async def test_boot_reports_without_delivering_a_turn(self):
+        """#116 point A: boot reports, it does not act.
+
+        A turn at boot attempted verbs that are gated by definition (`mcp.add`,
+        `packs.install_*`) from a session with no channel, and each attempt
+        surfaced as an out-of-context consent popup. What is missing is
+        deterministic, so boot records it and stops.
+        """
         with (
-            patch.object(
-                pack_ops,
-                "declarations",
-                return_value={"demo": {"requires": {"pip": ["mcp"]}, "datastores": [], "rag_collections": []}},
-            ),
-            patch(
-                "server.instance_profile.load",
-                return_value=InstanceProfile(),
-            ),
+            patch.object(pack_ops, "declarations", return_value=_DECLS),
+            patch("server.instance_profile.load", return_value=InstanceProfile()),
             patch("server.sdk_runtime.session.known_kind", return_value=True),
-            patch("server.sdk_runtime.session.manager.get", side_effect=KeyError),
-            patch("server.sdk_runtime.session.manager.create", new_callable=AsyncMock, return_value=chat) as create,
+            patch("server.sdk_runtime.session.manager.create",
+                  new_callable=AsyncMock) as create,
         ):
             result = await pack_ops.trigger_reconcile("boot")
 
-        self.assertEqual(result, {"triggered": True, "agent": "sysadmin", "plugins": ["demo"]})
+        self.assertFalse(result["triggered"])
+        self.assertEqual(result["reason"], "boot: report-only")
+        self.assertEqual(result["plugins"], ["demo"])
+        create.assert_not_awaited()   # no session, no gate
+
+    async def test_explicit_trigger_still_delivers_a_turn(self):
+        chat = AsyncMock()
+        with (
+            patch.object(pack_ops, "declarations", return_value=_DECLS),
+            patch("server.instance_profile.load", return_value=InstanceProfile()),
+            patch("server.sdk_runtime.session.known_kind", return_value=True),
+            patch("server.sdk_runtime.session.manager.get", side_effect=KeyError),
+            patch("server.sdk_runtime.session.manager.create",
+                  new_callable=AsyncMock, return_value=chat) as create,
+        ):
+            result = await pack_ops.trigger_reconcile("post-import")
+
+        self.assertTrue(result["triggered"])
+        self.assertEqual(result["agent"], "sysadmin")
         create.assert_awaited_once()
         chat.send_user_message_async.assert_awaited_once()
+
+    async def test_identical_declarations_are_not_requested_twice(self):
+        """#116 point C: with no memory, a pending setup was re-requested on every
+        startup — six restarts in a morning, six identical bursts of gates."""
+        chat = AsyncMock()
+        ctx = lambda: (  # noqa: E731
+            patch.object(pack_ops, "declarations", return_value=_DECLS),
+            patch("server.instance_profile.load", return_value=InstanceProfile()),
+            patch("server.sdk_runtime.session.known_kind", return_value=True),
+            patch("server.sdk_runtime.session.manager.get", side_effect=KeyError),
+            patch("server.sdk_runtime.session.manager.create",
+                  new_callable=AsyncMock, return_value=chat),
+        )
+        for patches in (ctx(),):
+            for pt in patches:
+                pt.start()
+            first = await pack_ops.trigger_reconcile("post-import")
+            second = await pack_ops.trigger_reconcile("post-import")
+            for pt in patches:
+                pt.stop()
+
+        self.assertTrue(first["triggered"])
+        self.assertFalse(second["triggered"])
+        self.assertIn("already requested", second["reason"])
+        # one delivery, not two
+        self.assertEqual(chat.send_user_message_async.await_count, 1)
 
     async def test_reconcile_can_be_disabled_by_profile(self):
         profile = InstanceProfile()
