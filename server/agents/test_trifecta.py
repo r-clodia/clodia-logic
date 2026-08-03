@@ -179,19 +179,32 @@ class ContextProfileTests(unittest.TestCase):
         return trifecta.context_profile(participants, specs=self._specs())
 
     def test_composition_lights_the_third_leg(self) -> None:
-        # Nessuno dei due è 3/3 da solo: insieme sì.
+        """Nessuno dei due ha tutti i lati da solo: insieme sì.
+
+        Misura la CAPACITÀ, non il punteggio: da quando `score` conta i bit del
+        vettore (contaminato · dati privati · uscita ARBITRARIA), un canale pulito
+        non arriva a 3 nemmeno con la composizione completa — ed è il punto della
+        modifica. Ciò che questo test difende è la chiusura: i lati si sommano
+        fra partecipanti.
+        """
         prof = self._profile(["lettore", "postino"])
-        self.assertEqual(prof["score"], 3)
-        self.assertEqual(prof["label"], "3/3")
-        self.assertEqual(prof["symbol"], "🚨")
+        self.assertEqual(prof["capability"], 3)
+        self.assertTrue(prof["capability_legs"]["egress"])
+        self.assertTrue(prof["capability_legs"]["private_data"])
         self.assertEqual(prof["by_leg"]["egress"], ["postino"])
         self.assertEqual(prof["by_leg"]["private_data"], ["lettore"])
 
     def test_symbols_follow_the_score(self) -> None:
-        self.assertEqual(self._profile(["lettore"])["symbol"], "⚠️")   # 2/3
-        self.assertEqual(self._profile(["lettore"])["label"], "2/3")
-        self.assertEqual(self._profile(["postino"])["symbol"], "✅")    # 1/3
+        """Il punteggio conta i BIT ACCESI. Senza contaminazione il primo è 0, e
+        un lettore che non fa uscire niente è 1/3 (solo dati privati)."""
+        self.assertEqual(self._profile(["lettore"])["label"], "1/3")
+        self.assertEqual(self._profile(["lettore"])["symbol"], "✅")
         self.assertEqual(self._profile(["muto"])["label"], "0/3")
+        # e con la contaminazione lo stesso canale sale
+        prof = trifecta.context_profile(["lettore"], specs=self._specs(),
+                                        tainted=True)
+        self.assertEqual(prof["label"], "2/3")
+        self.assertEqual(prof["vector"], "110")
 
     def test_human_participant_does_not_raise_the_score(self) -> None:
         self.assertEqual(self._profile(["muto", "davide"])["score"], 0)
@@ -199,7 +212,8 @@ class ContextProfileTests(unittest.TestCase):
     def test_closure_includes_agents_reachable_by_invitation(self) -> None:
         # "recluta" non ha alcun lato, ma può portare chiunque nel canale.
         prof = self._profile(["recluta"])
-        self.assertEqual(prof["score"], 3)
+        # capacità: la chiusura porta dentro i lati di chi è invitabile
+        self.assertEqual(prof["capability"], 3)
         self.assertEqual(prof["expanded_by"], ["recluta"])
         self.assertIn("postino", prof["reachable"])
         # …e il punteggio dei soli presenti resta distinto, per non appiattire
@@ -217,6 +231,7 @@ class ContextProfileTests(unittest.TestCase):
         self.assertEqual(prof["reachable"], [])
         self.assertEqual(prof["expanded_by"], [])
         self.assertEqual(prof["direct"]["score"], prof["score"])
+        self.assertEqual(prof["capability"], 3)
 
     def test_shell_is_reported_separately(self) -> None:
         prof = self._profile(["lettore", "sysadmin"])
@@ -316,7 +331,8 @@ class FailClosedTests(unittest.TestCase):
         specs = [_spec("a", ["slack.post_message"]), _spec("b", ["web.fetch"])]
         p = trifecta.context_profile(["a", "b"], specs=specs, config=self.CFG)
         self.assertEqual(p["unclassified"], ["slack"])
-        self.assertEqual(p["score"], 3)
+        self.assertEqual(p["capability"], 3)
+        self.assertEqual(p["score"], 2)  # niente contaminazione → primo bit spento
 
 
 class ConfinementScoreTests(unittest.TestCase):
@@ -384,8 +400,11 @@ class ConfinementScoreTests(unittest.TestCase):
         with patch.object(trifecta, "egress_confinement", return_value=conf):
             p = trifecta.context_profile(["reader", "sender"], specs=specs,
                                         config=self.CFG)
-        self.assertEqual(p["score"], 3)
-        self.assertEqual(p["residual"], 3)
+        self.assertEqual(p["capability"], 3)
+        # `tainted` non passato → primo bit `?`: non inventato né a 0 né a 1.
+        self.assertEqual(p["vector"], "?11")
+        self.assertIsNone(p["tainted"])
+        self.assertEqual(p["residual"], p["score"])  # alias: il punteggio È il residuo
         self.assertEqual(max(a["residual"] for a in p["agents"]), 2)
 
     def test_a_channel_under_gate_reports_the_mode_and_a_lower_residual(self):
@@ -393,8 +412,9 @@ class ConfinementScoreTests(unittest.TestCase):
         with patch.object(trifecta, "egress_confinement",
                           return_value={"mode": "gate", "agents": {}}):
             p = trifecta.context_profile(["a"], specs=specs, config=self.CFG)
-        self.assertEqual(p["score"], 3)
-        self.assertEqual(p["residual"], 2)
+        self.assertEqual(p["capability"], 3)
+        self.assertEqual(p["vector"], "?10")  # uscita presidiata, taint ignoto
+        self.assertEqual(p["residual"], p["score"])  # alias: il punteggio È il residuo
         self.assertEqual(p["egress_mode"], "gate")
         self.assertEqual(p["egress_scopes"], ["presided"])
 

@@ -1533,7 +1533,7 @@ def _active_responders(tier: str, name: str, participants: list[str]) -> list[st
     return active
 
 
-def _channel_trifecta(meta: dict) -> dict | None:
+def _channel_trifecta(meta: dict, tainted: bool | None = None) -> dict | None:
     """Danger score «lethal trifecta» del canale (issue clodia-platform#77).
 
     Calcolato dai grant effettivi dei partecipanti a ogni apertura/refresh: i
@@ -1542,7 +1542,8 @@ def _channel_trifecta(meta: dict) -> dict | None:
     Un errore qui non deve impedire di aprire il canale: si degrada a None e
     la UI semplicemente non mostra il badge."""
     try:
-        return trifecta.context_profile(meta.get("participants") or [])
+        return trifecta.context_profile(meta.get("participants") or [],
+                                        tainted=tainted)
     except Exception as e:  # pragma: no cover - difensivo
         LOG.warning("trifecta: profilo canale non calcolabile (%s)", e)
         return None
@@ -1559,7 +1560,11 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
     topic["active_responders"] = _active_responders(
         tier, name, topic.get("meta", {}).get("participants", []))
-    topic["trifecta"] = _channel_trifecta(topic.get("meta", {}))
+    # Il primo bit del vettore viene dal gateway insieme al topic: senza, il
+    # punteggio conterebbe solo i due bit statici — cioè quelli che non cambiano.
+    _t = topic.get("taint") or {}
+    topic["trifecta"] = _channel_trifecta(topic.get("meta", {}),
+                                          tainted=_t.get("tainted"))
     return topic
 
 
