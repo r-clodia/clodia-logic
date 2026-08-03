@@ -19,7 +19,13 @@ extra_env:
 sdk: claude
 priority: 20
 cost_rank: 20
-models: ["claude-*"]
+# Both forms are legitimate for THIS provider: an agent declares
+# `claude-opus-4-8`, and `bedrock_model_id()` translates it into the EU
+# inference profile Bedrock requires. The runtime override carries the
+# TRANSLATED id, so a catalogue that lists only the declared form makes the
+# provider reject its own translation — which silently disabled every
+# SEAL-2 topic, since this is the only connected provider with SEAL >= 2.
+models: ["claude-*", "eu.anthropic.*", "us.anthropic.*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) ────────────────────────
 # SEAL effettivo (gating Clodia) = min(SOV-2 legale, SOV-3 dato/AI, SOV-7 sicurezza).
