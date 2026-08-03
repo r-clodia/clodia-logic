@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__, instance_profile
-from .api import admin, agent_registry, agents, auth, catalog, channel_aliases, channels, connectors, files, gate, health, human_auth, packs, plugins, profile, providers, spawns, topics, transfers
+from .api import admin, agent_registry, agents, auth, catalog, channel_aliases, channels, connectors, files, gate, health, human_auth, observe, packs, plugins, profile, providers, spawns, topics, transfers
 from .config import HOST, PORT
 from .scheduler import api as jobs_api
 from .scheduler import (
@@ -274,6 +274,7 @@ def create_app() -> FastAPI:
     app.include_router(agents.router)
     app.include_router(channels.router)
     app.include_router(gate.router)
+    app.include_router(observe.router)
     app.include_router(connectors.router)
     app.include_router(agent_registry.router)
     app.include_router(files.router)
