@@ -316,10 +316,14 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
                       principal: Optional[str], clearance: Optional[str],
                       on_behalf: bool, human_role: Optional[str],
                       chat: Optional[str],
-                      scoped_tools: Optional[list[str]]) -> str:
+                      scoped_tools: Optional[list[str]],
+                      unattended: bool = False) -> str:
     scoped_key = tuple(scoped_tools or ())
+    # `unattended` ENTRA nella chiave di cache: senza, un token coniato per una
+    # chat umana verrebbe riusato per un job dello stesso agente e il blocco
+    # salterebbe silenziosamente.
     key = (agent, execution_id, int(ttl_seconds), principal, clearance, on_behalf,
-           human_role, chat, scoped_key)
+           human_role, chat, scoped_key, bool(unattended))
     now = int(time.time())
     hit = _MINT_CACHE.get(key)
     if hit and hit[1] - _MINT_CACHE_SKEW > now:
@@ -330,7 +334,7 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
             "ttl_seconds": int(ttl_seconds), "principal": principal,
             "clearance": clearance, "on_behalf": bool(on_behalf),
             "human_role": human_role, "chat": chat,
-            "scoped_tools": list(scoped_key)}
+            "scoped_tools": list(scoped_key), "unattended": bool(unattended)}
     r = httpx.post(_gateway_mint_url(), json=body,
                    headers={"X-Orchestrator-Secret": secret}, timeout=8.0)
     r.raise_for_status()
@@ -346,7 +350,8 @@ def mint_session_token(agent: str, execution_id: str = "",
                        on_behalf: bool = False,
                        human_role: str | None = None,
                        chat: str | None = None,
-                       scoped_tools: list[str] | None = None) -> str:
+                       scoped_tools: list[str] | None = None,
+                       unattended: bool = False) -> str:
     """Firmato dal RUNNER con la chiave privata dell'agente (mai esposta
     al workspace). Nel workspace entra solo il token risultante.
 
@@ -368,7 +373,7 @@ def mint_session_token(agent: str, execution_id: str = "",
         try:
             return _mint_via_gateway(agent, execution_id, ttl_seconds, principal,
                                      clearance, on_behalf, human_role, chat,
-                                     scoped_tools)
+                                     scoped_tools, unattended)
         except Exception as e:  # noqa: BLE001
             LOG.warning("mint via gateway fallito per %s (%s) → firma locale", agent, e)
     key_path = agent_key_path(agent)
@@ -388,6 +393,10 @@ def mint_session_token(agent: str, execution_id: str = "",
         payload["chat"] = chat  # chat_id della sessione (per postare in chat le decisioni sudo)
     if scoped_tools:
         payload["scoped_tools"] = scoped_tools
+    if unattended:
+        # Sessione aperta da un job schedulato: nessun umano davanti al turno.
+        # Claim FIRMATO → l'agente non può togliersela (clodia-platform#104).
+        payload["unattended"] = True
     # M-authz: chiamata ON-BEHALF di un umano → il gateway autorizza sul ruolo
     # umano (PDP unico), non sul carrier-agent. Claim firmati → non forgiabili.
     if on_behalf:

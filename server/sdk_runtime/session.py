@@ -735,6 +735,11 @@ class ChatSession:
     """Una singola chat con un agente (Clodia o Ada): subprocess claude
     + history dedicata sotto la cartella sessions/ del kind."""
 
+    #: True solo per le sessioni aperte da un job schedulato: nessun umano è
+    #: davanti al turno. Default False — una sessione è presidiata finché non si
+    #: dimostra il contrario, mai il viceversa.
+    unattended: bool = False
+
     def __init__(self, chat_id: str, kind: str = DEFAULT_KIND, title: str = "",
                  runtime_override: Optional[dict] = None) -> None:
         if not known_kind(kind):
@@ -875,7 +880,8 @@ class ChatSession:
                                               self._runtime_override),
                                               principal=self.principal,
                                               clearance=_effective_clearance(self.kind), chat=self.chat_id,
-                                              scoped_tools=self._runtime_override.get("tools"))
+                                              scoped_tools=self._runtime_override.get("tools"),
+                                              unattended=getattr(self, "unattended", False))
             # principal "cotto" nel token MCP di questo client: se cambia (l'utente
             # connesso cambia, o la sessione era partita anonima) va ri-coniato.
             self._token_principal = self.principal
@@ -1707,7 +1713,8 @@ class CodexChatSession:
                 self.kind, ttl_seconds=_runtime_token_ttl(self._runtime_override),
                 principal=self.principal,
                 clearance=_effective_clearance(self.kind), chat=self.chat_id,
-                scoped_tools=self._runtime_override.get("tools"))
+                scoped_tools=self._runtime_override.get("tools"),
+                unattended=getattr(self, "unattended", False))
         except Exception as e:  # noqa: BLE001
             LOG.warning("token clodia-tools (codex) non coniato per %s: %s", self.kind, e)
         run_cwd = str(self._spawn_dir or self.cwd)
@@ -2406,6 +2413,12 @@ class ChatManager:
                 raise ValueError(f"chat '{cid}' already exists")
             cls = _runtime_class(kind, runtime_override)
             chat = cls(cid, kind=kind, runtime_override=runtime_override)
+            # NON PRESIDIATA (clodia-platform#104, blocco job asincroni). Un job
+            # nasce da `fire_job` con run_id="job:<id>": non c'è nessun umano
+            # davanti al turno, quindi un gate non è una difesa — è uno stallo
+            # fino al timeout, che è la lezione di #116. Il gateway deve poterlo
+            # sapere, e l'unico modo non falsificabile è un claim nel token.
+            chat.unattended = bool(run_id and str(run_id).startswith("job:"))
             # Pre-popola titolo dalla history se esiste su disco
             existing = chat.read_history()
             if existing:
