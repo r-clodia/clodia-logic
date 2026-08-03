@@ -203,11 +203,19 @@ def read_file(tier: str, name: str, path: str) -> bytes:
     return r.content
 
 
-def put_file(tier: str, name: str, filename: str, content_b64: str) -> dict:
+def put_file(tier: str, name: str, filename: str, content_b64: str,
+             provenance: str = "untrusted") -> dict:
+    """Carica un file nel topic. `provenance` = `trusted` | `untrusted`.
+
+    Default `untrusted` (clodia-platform#104 §3): se il chiamante non dichiara la
+    provenienza non si assume il bene. Un file untrusted contamina il canale — la
+    lettura resta libera, è una classificazione e non un blocco.
+    """
     url = f"{_base()}/{tier}/{name}/files"
     try:
         r = requests.post(url, headers=_headers(),
-                          json={"filename": filename, "content_b64": content_b64},
+                          json={"filename": filename, "content_b64": content_b64,
+                                "provenance": provenance},
                           timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway put_file irraggiungibile: {e}") from e
