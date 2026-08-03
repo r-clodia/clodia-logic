@@ -27,6 +27,12 @@ Tre scelte di modello, tutte prese dall'issue:
   (`catalogs/trifecta.yaml`), non costanti nel codice: si rifinisce per verbo
   con una PR, senza toccare la logica. Override d'istanza opzionale in
   `CLODIA_DATA/trifecta.yaml`.
+- **Il default è fail-CLOSED** (#119): un namespace che il catalogo non conosce
+  si assume capace di leggere dati privati e di farli uscire. Prima era
+  fail-open, e un agente i cui soli grant fossero verbi di un connettore nuovo
+  risultava «innocuo» pur potendo esfiltrare. È anche la condizione perché la
+  whitelist di destinazione funzioni: il PDP confronta la destinazione solo per
+  i verbi che *sa* essere di uscita.
 
 I principal `human` non contribuiscono ad alcun lato: non eseguono tool. Sono
 l'unico declassificatore legittimo, non una capacità del canale.
@@ -193,6 +199,55 @@ def _matching_grants(grants: Iterable[str], leg: dict) -> list[str]:
     })
 
 
+# ── fail-closed sui namespace non classificati (#119) ─────────────────────
+#: I lati che si ASSUMONO su un namespace ignoto. Non tutti e tre di proposito:
+#: `untrusted_input` marcherebbe ogni pack nuovo a 3/3 all'istante, che è rumore
+#: e non informazione. `private_data` + `egress` sono la coppia che **chiude un
+#: flusso** — «può leggere le tue cose e mandarle fuori» — ed è la coppia su cui
+#: whitelist e gate possono agire.
+_UNKNOWN_NS_LEGS = ("private_data", "egress")
+
+
+def _known_namespaces(cfg: dict) -> set[str]:
+    """Namespace che il catalogo CONOSCE, presi da tutti i pattern di tutti i
+    lati (include ed exclude) più l'espansione.
+
+    Gli `exclude` contano: `gdrive.rename` è deliberatamente in nessun lato, e
+    `gdrive` va considerato noto — la regola riguarda l'IGNOTO, non l'escluso.
+    """
+    out: set[str] = set()
+    for key in (*LEGS, "expansion"):
+        for field in ("include", "exclude"):
+            for pat in cfg.get(key, {}).get(field, []) or []:
+                ns, _ = _split(str(pat).lstrip("-"))
+                if ns and ns != "*":
+                    out.add(ns)
+    return out
+
+
+def unclassified_namespaces(grants: Iterable[str], cfg: dict) -> list[str]:
+    """Namespace dei grant che il catalogo non classifica.
+
+    Il difetto misurato in #119: un agente i cui soli grant erano
+    `slack.post_message` / `dropbox.upload` risultava **0/3**, cioè innocuo, pur
+    potendo esfiltrare. Il default del catalogo era fail-OPEN: un namespace
+    ignoto non accendeva nulla. Due conseguenze, ed è la seconda che conta di
+    più: il punteggio invecchiava da solo a ogni pack nuovo, **e** la whitelist
+    di destinazione non si attivava affatto, perché il PDP confronta la
+    destinazione solo per i verbi che sa essere di uscita. Un verbo non
+    classificato passava sotto il punteggio e sotto la whitelist insieme.
+    """
+    known = _known_namespaces(cfg)
+    out: set[str] = set()
+    for g in grants:
+        ns, _ = _split(str(g))
+        # `*` combacia con ogni pattern classificato: non è un ignoto, è il
+        # contrario — accende tutto da sé.
+        if ns and ns != "*" and ns not in known:
+            out.add(ns)
+    return sorted(out)
+
+
 # ── profilo di un agente ──────────────────────────────────────────────────
 
 def has_shell(spec) -> bool:
@@ -228,6 +283,21 @@ def agent_profile(spec, config: Optional[dict] = None) -> dict:
         matched = _matching_grants(grants, cfg[leg])
         legs[leg] = bool(matched)
         why[leg] = matched[:_MAX_REASONS]
+    # FAIL-CLOSED (#119): un namespace che il catalogo non conosce si assume
+    # capace di leggere dati privati e di farli uscire. Il costo di sbagliare in
+    # questa direzione è un falso positivo su un connettore innocuo, che si
+    # corregge con una riga di catalogo; il costo opposto è un canale di
+    # esfiltrazione invisibile sia al punteggio sia alla whitelist.
+    unknown = unclassified_namespaces(grants, cfg)
+    if unknown:
+        for leg in _UNKNOWN_NS_LEGS:
+            legs[leg] = True
+            # La motivazione dice PERCHÉ: «acceso da email.send» e «acceso
+            # perché slack.* è ignoto al catalogo» richiedono azioni diverse, e
+            # senza la distinzione l'operatore non sa quale.
+            reasons = why[leg] + [f"{ns}.* (namespace non classificato)"
+                                  for ns in unknown]
+            why[leg] = reasons[:_MAX_REASONS]
     return {
         "name": name,
         "type": kind,
@@ -237,6 +307,7 @@ def agent_profile(spec, config: Optional[dict] = None) -> dict:
         "why": why,
         "shell": has_shell(spec),
         "expands": bool(_matching_grants(grants, cfg["expansion"])),
+        "unclassified": unknown,
     }
 
 
@@ -305,5 +376,11 @@ def context_profile(participants: Iterable[str],
         "shell": bool(shell_agents),
         "shell_agents": shell_agents,
         "unknown_participants": unknown,
+        # Namespace non classificati presenti nella chiusura (#119): un canale a
+        # 3/3 «perché nessuno ha classificato slack» è un problema di catalogo,
+        # non di composizione, e va distinto — le due cose si risolvono con
+        # azioni diverse (una riga di yaml vs togliere un partecipante).
+        "unclassified": sorted({ns for pr in closure
+                                for ns in (pr.get("unclassified") or [])}),
         "config_version": cfg.get("version", 0),
     }

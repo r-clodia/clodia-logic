@@ -57,11 +57,13 @@
 #   - scritture interne a Clodia (`topic.write_file`, `memory.put`, …) e verbi
 #     di sola introspezione locale (`packs.list`, `mcp.list`, `jobs.list`).
 #
-# Resta aperto (non deciso qui, vedi il PR di #104): i corpora di dominio
-# montati come MCP esterni — `normattiva.*`, `contabilita.*`, `sedia.*` — non
-# sono classificati. Sono letture di contenuto di terzi, quindi candidati a
-# `untrusted_input`; #102 ha però misurato i seed senza di essi, e cambiarli
-# qui sposterebbe i numeri di quello studio.
+# CHIUSO il 3 ago 2026 (#119): i corpora di dominio montati come MCP esterni —
+# `normattiva.*`, `contabilita.*`, `sedia.*` — erano deliberatamente NON
+# classificati, ed erano indicati come candidati a `untrusted_input`. Il default
+# fail-closed li avrebbe assunti `private_data` + `egress`, cioè i due lati che
+# non hanno: ora sono classificati su `untrusted_input` e nulla più. Questo
+# sposta di un lato i numeri per i tre seed documentali rispetto a #102, che li
+# aveva misurati senza.
 version: 2
 
 private_data:
@@ -215,6 +217,17 @@ untrusted_input:
   - -trello.move_card
   - rag.*
   - eu_corpus.*
+  # Corpora di dominio montati come MCP esterni. Erano deliberatamente NON
+  # classificati (vedi la nota in testa a questo file): con il default fail-open
+  # non accendevano nulla, e la scelta era sostenibile. Con il fail-closed di
+  # #119 un namespace ignoto si assume `private_data` + `egress`, cioè
+  # esattamente i due lati che questi verbi NON hanno: sono letture di contenuto
+  # di terzi (norme, prassi contabile, bandi), non dati dell'owner e non un
+  # canale di uscita. Classificarli su `untrusted_input` è la lettura che l'epic
+  # #104 già indicava come probabile, ed è ora obbligata.
+  - normattiva.*
+  - contabilita.*
+  - sedia.*
 
 egress:
   - email.send

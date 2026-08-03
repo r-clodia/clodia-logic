@@ -244,3 +244,75 @@ class ContextProfileTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class FailClosedTests(unittest.TestCase):
+    """#119 — un namespace che il catalogo non conosce non è «innocuo».
+
+    Il difetto misurato in produzione: `tool_permissions` con soli
+    `slack.post_message` / `dropbox.upload` dava **0/3**. Non era il difetto di
+    §9 (voci note mancanti, aggiunte a mano): era la REGOLA DI DEFAULT.
+    """
+
+    CFG = {
+        "version": 1,
+        "private_data": {"include": ["email.*"], "exclude": []},
+        "untrusted_input": {"include": ["web.*"], "exclude": []},
+        "egress": {"include": ["email.send"], "exclude": []},
+        "expansion": {"include": ["agents.*"], "exclude": []},
+    }
+
+    def _p(self, tools):
+        return trifecta.agent_profile(_spec("x", tools), config=self.CFG)
+
+    def test_an_unknown_namespace_is_assumed_able_to_read_and_to_send(self):
+        p = self._p(["slack.post_message", "dropbox.upload"])
+        self.assertEqual(p["score"], 2)
+        self.assertTrue(p["legs"]["private_data"])
+        self.assertTrue(p["legs"]["egress"])
+        # non untrusted_input: marcarlo renderebbe ogni pack nuovo 3/3
+        # all'istante, che è rumore e non informazione
+        self.assertFalse(p["legs"]["untrusted_input"])
+        self.assertEqual(p["unclassified"], ["dropbox", "slack"])
+
+    def test_the_reason_says_it_is_unclassified_not_which_verb(self):
+        """«acceso da email.send» e «acceso perché slack è ignoto» richiedono
+        azioni diverse: senza la distinzione l'operatore non sa quale."""
+        why = self._p(["slack.post_message"])["why"]
+        self.assertIn("slack.* (namespace non classificato)", why["egress"])
+
+    def test_a_known_namespace_deliberately_in_no_leg_stays_at_zero(self):
+        """La regola riguarda l'IGNOTO, non l'escluso.
+
+        `gdrive.rename` è il precedente documentato: scrittura di solo
+        metadato, deliberatamente in nessun lato. Un namespace citato negli
+        `exclude` è noto e non va toccato.
+        """
+        cfg = dict(self.CFG)
+        cfg["egress"] = {"include": ["gdrive.*"], "exclude": ["gdrive.rename"]}
+        p = trifecta.agent_profile(_spec("x", ["gdrive.rename"]), config=cfg)
+        self.assertEqual(p["score"], 0)
+        self.assertEqual(p["unclassified"], [])
+
+    def test_the_wildcard_is_not_an_unknown(self):
+        """`*` combacia con ogni pattern classificato: accende tutto da sé, e
+        non va contato come namespace ignoto (era l'argomento per cui esplodere
+        il `*` di clodia sarebbe stato un peggioramento — #104 §8)."""
+        p = self._p(["*"])
+        self.assertEqual(p["unclassified"], [])
+        self.assertEqual(p["score"], 3)
+
+    def test_a_classified_namespace_keeps_its_own_legs(self):
+        p = self._p(["web.fetch"])
+        self.assertEqual(p["unclassified"], [])
+        self.assertTrue(p["legs"]["untrusted_input"])
+        self.assertFalse(p["legs"]["egress"])
+
+    def test_a_channel_reports_which_namespaces_are_unclassified(self):
+        """Un canale a 3/3 «perché nessuno ha classificato slack» è un problema
+        di catalogo, non di composizione: si risolve con una riga di yaml, non
+        togliendo un partecipante. La UI deve poterli distinguere."""
+        specs = [_spec("a", ["slack.post_message"]), _spec("b", ["web.fetch"])]
+        p = trifecta.context_profile(["a", "b"], specs=specs, config=self.CFG)
+        self.assertEqual(p["unclassified"], ["slack"])
+        self.assertEqual(p["score"], 3)
