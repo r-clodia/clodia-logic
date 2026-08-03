@@ -27,6 +27,13 @@ Tre scelte di modello, tutte prese dall'issue:
   (`catalogs/trifecta.yaml`), non costanti nel codice: si rifinisce per verbo
   con una PR, senza toccare la logica. Override d'istanza opzionale in
   `CLODIA_DATA/trifecta.yaml`.
+- **La capacità e il rischio residuo sono due numeri diversi.** `score` dice
+  quali verbi l'agente ha; `residual` dice cosa resta dopo le mitigazioni
+  APPLICATE — la whitelist di destinazione (#104 §7) e, da #126, il M-gate: un
+  lato acceso soltanto da verbi che richiedono conferma umana a ogni chiamata
+  non è un lato che l'agente attraversa da solo. Nessuna delle due mitigazioni
+  tocca `score`: confondere capacità e confinamento renderebbe illeggibili
+  entrambi.
 - **Il default è fail-CLOSED** (#119): un namespace che il catalogo non conosce
   si assume capace di leggere dati privati e di farli uscire. Prima era
   fail-open, e un agente i cui soli grant fossero verbi di un connettore nuovo
@@ -246,6 +253,31 @@ _EGRESS_CACHE: tuple[float, dict] | None = None
 _ENFORCING_MODES = ("gate", "on")
 
 
+def _gateway_get(path: str, fallback: dict, what: str) -> dict:
+    """GET server-to-server sul gateway, o `fallback` se non si può leggere.
+
+    Il fallback non è un dettaglio di robustezza: è la direzione dell'errore.
+    Ogni dato che si legge da qui descrive una MITIGAZIONE, e una mitigazione
+    immaginata abbassa il rischio di un agente che invece agisce da solo. Se il
+    gateway non risponde si conta zero mitigazione, non la mitigazione sperata.
+    """
+    secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+    if not secret:
+        return fallback
+    try:
+        import httpx
+        mcp = os.environ.get("CLODIA_TOOLS_MCP_URL",
+                             "http://clodia-tools:7849/mcp/").rstrip("/")
+        base = mcp[:-len("/mcp")] if mcp.endswith("/mcp") else mcp
+        r = httpx.get(f"{base}{path}",
+                      headers={"X-Orchestrator-Secret": secret}, timeout=4.0)
+        r.raise_for_status()
+        return r.json()
+    except Exception as e:  # noqa: BLE001 — misura, non enforcement
+        LOG.warning("trifecta: %s non leggibile (%s)", what, e)
+        return fallback
+
+
 def egress_confinement(force: bool = False) -> dict:
     """{mode, agents: {name: {type: {scope, count}}}} dal gateway.
 
@@ -259,20 +291,8 @@ def egress_confinement(force: bool = False) -> dict:
     now = time.monotonic()
     if _EGRESS_CACHE and not force and now - _EGRESS_CACHE[0] < _EGRESS_TTL:
         return _EGRESS_CACHE[1]
-    out = {"mode": "unknown", "agents": {}}
-    secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
-    if secret:
-        try:
-            import httpx
-            mcp = os.environ.get("CLODIA_TOOLS_MCP_URL",
-                                 "http://clodia-tools:7849/mcp/").rstrip("/")
-            base = mcp[:-len("/mcp")] if mcp.endswith("/mcp") else mcp
-            r = httpx.get(f"{base}/internal/egress",
-                          headers={"X-Orchestrator-Secret": secret}, timeout=4.0)
-            r.raise_for_status()
-            out = r.json()
-        except Exception as e:  # noqa: BLE001 — misura, non enforcement
-            LOG.warning("trifecta: confinamento in uscita non leggibile (%s)", e)
+    out = _gateway_get("/internal/egress", {"mode": "unknown", "agents": {}},
+                       "confinamento in uscita")
     _EGRESS_CACHE = (now, out)
     return out
 
@@ -303,6 +323,71 @@ def egress_scope(name: str, conf: dict, egress_lit: bool) -> str:
     if scopes and scopes <= {"muted"}:
         return "none"
     return "presided" if mode == "gate" else "listed"
+
+
+# ── supervisione umana per verbo (M-gate, #126) ───────────────────────────
+# «Il residuo scontava solo la whitelist di DESTINAZIONE; il gate sui verbi no.»
+# Un verbo gated richiede una conferma umana a OGNI chiamata: un lato acceso solo
+# da verbi così non è un lato che l'agente attraversa da solo, ed è la stessa
+# forma di mitigazione che `egress_scope != "arbitrary"` già sconta.
+#
+# L'insieme gated si LEGGE dal gateway invece di duplicarlo qui. È deliberato:
+# `gate.py` lo rende configurabile per istanza (`CLODIA_GATED_VERBS`), e una
+# copia nel codice divergerebbe in silenzio dal gate applicato. È esattamente la
+# divergenza già pagata in #195 — un numero che descrive un sistema diverso da
+# quello che gira — e lì almeno il codice era nello stesso repo.
+_GATE_TTL = 30.0
+_GATE_CACHE: tuple[float, dict] | None = None
+
+#: «Non so quali verbi siano gated» → nessuno sconto. Vedi `_gateway_get`.
+_NO_GATE = {"prefixes": [], "exact": []}
+
+
+def gated_verbs(force: bool = False) -> dict:
+    """`{prefixes, exact}` dell'insieme gated EFFETTIVO del gateway.
+
+    Best-effort come `egress_confinement()`: gateway muto o troppo vecchio per
+    conoscere la rotta → insieme vuoto → il residuo resta quello della capacità
+    pura. Nessun ordine di deploy fra i due repo è quindi obbligatorio.
+    """
+    global _GATE_CACHE
+    import time
+    now = time.monotonic()
+    if _GATE_CACHE and not force and now - _GATE_CACHE[0] < _GATE_TTL:
+        return _GATE_CACHE[1]
+    raw = _gateway_get("/internal/gate/spec", _NO_GATE, "insieme dei verbi gated")
+    out = {"prefixes": [str(p) for p in (raw.get("prefixes") or [])],
+           "exact": [str(v) for v in (raw.get("exact") or [])]}
+    _GATE_CACHE = (now, out)
+    return out
+
+
+def grant_is_gated(grant: str, gated: dict) -> bool:
+    """True se OGNI verbo che `grant` può raggiungere richiede conferma umana.
+
+    Più severo di `is_gated()` del gateway, che risponde su un verbo singolo,
+    perché un grant è un INSIEME di verbi. `topic.*` include
+    `topic.add_participant` (gated) e `topic.read_file` (non gated): presidiato
+    per un decimo, e contarlo come presidiato sarebbe la falsa rassicurazione che
+    questa misura non può permettersi. Contano quindi solo il verbo puntuale
+    gated e il namespace la cui FAMIGLIA intera lo è (`settings.`, `pki.`, `ca.`).
+
+    `*` non è gated: copre anche tutti i verbi che nessuno presidia.
+    """
+    g = str(grant).strip()
+    if not g or g.startswith("-"):
+        return False   # una negazione non concede nulla, non c'è niente da presidiare
+    prefixes = tuple(str(p) for p in (gated.get("prefixes") or ()))
+    exact = frozenset(str(v) for v in (gated.get("exact") or ()))
+    ns, verb = _split(g)
+    if ns == "*":
+        return False
+    if verb == "*":
+        # Namespace intero: presidiato solo se il gate copre la FAMIGLIA. Non
+        # basta che qualche verbo del namespace sia in `exact`.
+        return f"{ns}." in prefixes
+    full = f"{ns}.{verb}"
+    return full in exact or any(full.startswith(p) for p in prefixes)
 
 
 # ── fail-closed sui namespace non classificati (#119) ─────────────────────
@@ -374,7 +459,8 @@ def has_shell(spec) -> bool:
 
 
 def agent_profile(spec, config: Optional[dict] = None,
-                  egress_conf: Optional[dict] = None) -> dict:
+                  egress_conf: Optional[dict] = None,
+                  gated: Optional[dict] = None) -> dict:
     """Profilo trifecta di un singolo agente, dai suoi grant effettivi.
 
     Ritorna anche i grant che hanno acceso ciascun lato: il numero da solo non
@@ -388,13 +474,21 @@ def agent_profile(spec, config: Optional[dict] = None,
                 "legs": {leg: False for leg in LEGS},
                 "why": {leg: [] for leg in LEGS},
                 "shell": False, "expands": False, "unclassified": [],
-                "egress_scope": "none", "residual": 0}
+                "egress_scope": "none", "residual": 0,
+                "gated_legs": {leg: False for leg in LEGS},
+                "residual_legs": {leg: False for leg in LEGS},
+                "ungated": {leg: [] for leg in LEGS}}
     grants = [str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])
               if str(g).strip()]
     legs, why = {}, {}
+    # I grant che accendono ciascun lato, INTERI: `why` è troncato per la UI, e lo
+    # sconto del gate deve vederli tutti — basta un grant non presidiato perché il
+    # lato resti attraversabile.
+    lit_by: dict[str, list[str]] = {}
     for leg in LEGS:
         matched = _matching_grants(grants, cfg[leg])
         legs[leg] = bool(matched)
+        lit_by[leg] = list(matched)
         why[leg] = matched[:_MAX_REASONS]
     # FAIL-CLOSED (#119): un namespace che il catalogo non conosce si assume
     # capace di leggere dati privati e di farli uscire. Il costo di sbagliare in
@@ -403,8 +497,16 @@ def agent_profile(spec, config: Optional[dict] = None,
     # esfiltrazione invisibile sia al punteggio sia alla whitelist.
     unknown = unclassified_namespaces(grants, cfg)
     if unknown:
+        # I grant che stanno accendendo i lati per via del fail-closed. Servono
+        # allo sconto del gate come gli altri: un `pki.qualcosa` ignoto al
+        # catalogo accende due lati, ma resta un verbo che passa da un umano, e la
+        # regola è una sola per tutti i grant.
+        unknown_grants = [g for g in grants if not g.startswith("-")
+                          and _split(g)[0] in unknown]
         for leg in _UNKNOWN_NS_LEGS:
             legs[leg] = True
+            lit_by[leg] = lit_by[leg] + [g for g in unknown_grants
+                                         if g not in lit_by[leg]]
             # La motivazione dice PERCHÉ: «acceso da email.send» e «acceso
             # perché slack.* è ignoto al catalogo» richiedono azioni diverse, e
             # senza la distinzione l'operatore non sa quale.
@@ -413,6 +515,19 @@ def agent_profile(spec, config: Optional[dict] = None,
             why[leg] = reasons[:_MAX_REASONS]
     conf = egress_conf if egress_conf is not None else egress_confinement()
     scope = egress_scope(name, conf, legs["egress"])
+    # #126 — sconto del M-gate, per lato. Un lato è presidiato solo se OGNI grant
+    # che lo accende richiede conferma umana: uno solo non presidiato e il lato
+    # resta attraversabile in autonomia.
+    gspec = gated if gated is not None else gated_verbs()
+    ungated = {leg: [g for g in lit_by[leg] if not grant_is_gated(g, gspec)]
+               for leg in LEGS}
+    gated_legs = {leg: bool(lit_by[leg]) and not ungated[leg] for leg in LEGS}
+    # Le due mitigazioni sono alternative, non cumulative: presidiare l'uscita
+    # basta, che avvenga per destinazione (whitelist) o per verbo (gate).
+    mitigated = {"private_data": gated_legs["private_data"],
+                 "untrusted_input": gated_legs["untrusted_input"],
+                 "egress": gated_legs["egress"] or scope != "arbitrary"}
+    residual_legs = {leg: bool(legs[leg]) and not mitigated[leg] for leg in LEGS}
     return {
         "name": name,
         "type": kind,
@@ -428,8 +543,16 @@ def agent_profile(spec, config: Optional[dict] = None,
         # mente: quei verbi ce li ha), `residual` è il rischio che rimane dopo il
         # confinamento applicato — l'uscita conta solo se è arbitraria.
         "egress_scope": scope,
-        "residual": (sum(1 for leg in LEGS if legs[leg])
-                     - (1 if legs["egress"] and scope != "arbitrary" else 0)),
+        # #126: lati accesi SOLO da verbi gated (conferma umana a ogni chiamata).
+        "gated_legs": gated_legs,
+        # Perché un lato NON è scontato: i grant che lo accendono senza passare da
+        # un umano. È la parte azionabile — dice quali grant togliere per
+        # guadagnare lo sconto, e senza di essa un lato «presidiato al 90%» e uno
+        # per nulla presidiato sarebbero indistinguibili nel report.
+        "ungated": {leg: ungated[leg][:_MAX_REASONS] for leg in LEGS},
+        # I lati che restano dopo TUTTE le mitigazioni applicate.
+        "residual_legs": residual_legs,
+        "residual": sum(1 for leg in LEGS if residual_legs[leg]),
     }
 
 
@@ -450,11 +573,12 @@ def context_profile(participants: Iterable[str],
         specs = registry.list()
     by_name = {getattr(s, "name", None): s for s in (specs or []) if s is not None}
 
-    # UNA sola lettura del confinamento per tutto il canale: la chiusura può
-    # includere decine di agenti, e il dato è lo stesso per tutti.
+    # UNA sola lettura di confinamento e insieme gated per tutto il canale: la
+    # chiusura può includere decine di agenti, e il dato è lo stesso per tutti.
     conf = egress_confinement()
+    gspec = gated_verbs()
     members = [by_name[p] for p in dict.fromkeys(participants or []) if p in by_name]
-    profiles = [agent_profile(s, cfg, conf) for s in members]
+    profiles = [agent_profile(s, cfg, conf, gspec) for s in members]
     unknown = [p for p in dict.fromkeys(participants or []) if p not in by_name]
 
     # Chiusura: chi può aggiungere partecipanti porta potenzialmente nel canale
@@ -464,7 +588,8 @@ def context_profile(participants: Iterable[str],
     reachable: list[dict] = []
     if expanded_by:
         member_names = {p["name"] for p in profiles}
-        reachable = [agent_profile(s, cfg, conf) for n, s in sorted(by_name.items())
+        reachable = [agent_profile(s, cfg, conf, gspec)
+                     for n, s in sorted(by_name.items())
                      if n not in member_names
                      and getattr(s, "type", "normal") != "human"]
 
@@ -515,12 +640,25 @@ def context_profile(participants: Iterable[str],
         "egress_mode": conf.get("mode", "unknown"),
         "egress_scopes": sorted({pr.get("egress_scope", "none") for pr in closure
                                  if pr.get("legs", {}).get("egress")}),
+        # #126: l'insieme gated è stato letto? Un canale senza sconti perché il
+        # gateway non risponde non è un canale senza gate, e le due letture
+        # richiedono azioni opposte (guardare la composizione vs. guardare il
+        # gateway). Senza il flag il report le confonderebbe.
+        "gate_visible": bool(gspec.get("prefixes") or gspec.get("exact")),
+        # Lati presidiati per OGNI agente della chiusura che li accende: se un
+        # solo agente li attraversa in autonomia, il canale non è presidiato.
+        "gated_legs": {leg: legs[leg] and not any(pr["residual_legs"][leg]
+                                                 for pr in closure)
+                       for leg in LEGS},
         # Si calcola sull'OR dei lati come `score`, NON come massimo dei residui
         # per-agente: un agente a 2/3 senza uscita più uno a 1/3 con uscita
         # arbitraria fanno un canale a 3 residuo, mentre il massimo dei residui
-        # direbbe 2. La chiusura è l'unità di valutazione, anche qui.
-        "residual": (int(legs["private_data"]) + int(legs["untrusted_input"])
-                     + int(legs["egress"] and any(
-                         pr.get("egress_scope") == "arbitrary" for pr in closure))),
+        # direbbe 2. La chiusura è l'unità di valutazione, anche qui. L'OR è sui
+        # lati RESIDUI dei singoli, perché una mitigazione è per-agente: presidiare
+        # l'uscita di uno non presidia quella di un altro.
+        "residual_legs": {leg: any(pr["residual_legs"][leg] for pr in closure)
+                          for leg in LEGS},
+        "residual": sum(1 for leg in LEGS
+                        if any(pr["residual_legs"][leg] for pr in closure)),
         "config_version": cfg.get("version", 0),
     }
