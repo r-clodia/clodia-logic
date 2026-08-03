@@ -406,3 +406,55 @@ class ConfinementScoreTests(unittest.TestCase):
             self.assertEqual(trifecta.egress_confinement(force=True)["mode"],
                              "unknown")
             trifecta._EGRESS_CACHE = None
+
+
+class GrantNegationTests(unittest.TestCase):
+    """#104 §8 — un grant `-verbo` sottrae da un namespace concesso in blocco.
+
+    Senza questo lo scorer vedeva `topic.*` combaciare con `topic.remote_push`
+    nel catalogo e continuava ad accendere l'uscita: enforcement applicato dal
+    PDP, misura cieca. È la divergenza peggiore possibile — un numero che
+    descrive un sistema diverso da quello che gira.
+    """
+
+    CFG = {
+        "version": 1,
+        "private_data": {"include": ["topic.open", "topic.files"], "exclude": []},
+        "untrusted_input": {"include": ["topic.files"], "exclude": []},
+        "egress": {"include": ["topic.remote_push", "topic.remote_commit"],
+                   "exclude": []},
+        "expansion": {"include": ["agents.*"], "exclude": []},
+    }
+
+    def _p(self, tools):
+        return trifecta.agent_profile(_spec("x", tools), config=self.CFG,
+                                     egress_conf={"mode": "off", "agents": {}})
+
+    def test_negating_every_egress_verb_of_a_namespace_turns_the_leg_off(self):
+        p = self._p(["topic.*", "-topic.remote_push", "-topic.remote_commit"])
+        self.assertFalse(p["legs"]["egress"])
+        self.assertTrue(p["legs"]["private_data"])   # il resto del namespace resta
+
+    def test_negating_only_some_leaves_the_leg_on(self):
+        """Una riduzione parziale non va arrotondata a sicura."""
+        p = self._p(["topic.*", "-topic.remote_push"])
+        self.assertTrue(p["legs"]["egress"])
+
+    def test_negating_a_namespace_verb_does_not_disable_a_wildcard_pattern(self):
+        """Se il catalogo classifica `web.*` e il grant nega `-web.fetch`, il
+        namespace resta acceso: un intero namespace non è coperto dalla negazione
+        di un suo verbo, e trattarlo così sarebbe una falsa rassicurazione."""
+        cfg = dict(self.CFG)
+        cfg["untrusted_input"] = {"include": ["web.*"], "exclude": []}
+        p = trifecta.agent_profile(_spec("x", ["web.*", "-web.fetch"]), config=cfg,
+                                   egress_conf={"mode": "off", "agents": {}})
+        self.assertTrue(p["legs"]["untrusted_input"])
+
+    def test_a_negated_punctual_grant_lights_nothing(self):
+        p = self._p(["-topic.open"])
+        self.assertEqual(p["score"], 0)
+
+    def test_a_negation_is_not_reported_as_a_reason(self):
+        """Nel `why` devono comparire i grant che ACCENDONO, non quelli tolti."""
+        p = self._p(["topic.open", "-topic.files"])
+        self.assertNotIn("-topic.files", p["why"]["private_data"])
