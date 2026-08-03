@@ -665,6 +665,22 @@ def topic_runtime_override(kind: str, tier: str | None) -> dict:
     return override
 
 
+def _declared_model(kind: str, override: Optional[dict]) -> Optional[str]:
+    """Modello come lo DICHIARA l'agent, prima di qualunque traduzione di
+    trasporto. `_runtime_model` restituisce il modello che il provider vedrà —
+    su Bedrock un inference profile EU (`eu.anthropic.…`) — mentre i pattern
+    `models` del catalogo descrivono ciò che un agent può dichiarare
+    (`claude-*`). Confrontare i due mondi è l'errore che questa funzione evita.
+    """
+    model = (override or {}).get("model")
+    if model:
+        return model
+    spec = _kind_spec(kind)
+    provider = _runtime_provider(kind, override)
+    per_provider = (getattr(spec, "provider_models", None) or {}) if spec else {}
+    return per_provider.get(provider) or _resolve_model(kind)
+
+
 def _ensure_runtime_provider(kind: str, override: Optional[dict]) -> None:
     if not override or not (override.get("provider") or override.get("model")):
         _ensure_provider_connected(kind)
@@ -674,8 +690,17 @@ def _ensure_runtime_provider(kind: str, override: Optional[dict]) -> None:
     model = _runtime_model(kind, override)
     if not provider or provider not in connected_provider_ids():
         raise ProviderNotConnected(kind, provider or "nessuno")
-    if not provider_supports_model(provider, model):
-        raise RuntimeError(f"provider '{provider}' incompatibile con modello '{model}'")
+    # Il modello è compatibile se lo è nella forma DICHIARATA o in quella
+    # EFFETTIVA. Solo l'effettiva rompeva ogni topic SEAL-2: `claude-opus-4-8`
+    # diventa `eu.anthropic.claude-opus-4-6-v1` per Bedrock, che non matcha il
+    # `claude-*` del catalogo — quindi l'unico provider con SEAL >= 2 veniva
+    # rifiutato e l'agente non eseguiva il turno.
+    declared = _declared_model(kind, override)
+    if not (provider_supports_model(provider, declared)
+            or provider_supports_model(provider, model)):
+        raise RuntimeError(
+            f"provider '{provider}' incompatibile con modello '{declared}'"
+            + (f" (effettivo: '{model}')" if model != declared else ""))
 
 
 def provider_connected_for(kind: str) -> bool:
