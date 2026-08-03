@@ -93,3 +93,6 @@ logs/
 agent-state/
 daemons/kanban/logs/
 daemons/kanban/kanban.pid
+
+# Pack ops attempt state: lives in the datadir, never in the repo (#116)
+pack-ops-state.json

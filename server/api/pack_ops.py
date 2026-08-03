@@ -18,7 +18,9 @@ post-install del builder).
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
 from pathlib import Path
 
 import yaml
@@ -126,6 +128,55 @@ def _reconcile_prompt(reason: str, decls: dict[str, dict],
     return "\n".join(lines)
 
 
+# ── Memory of past attempts (clodia-platform#116, point C) ───────────────────
+# Reconciliation had no memory: a setup left pending produced the same requests
+# on the next boot, indefinitely. Six restarts in one morning meant six
+# identical bursts of consent prompts. This state records the digest of the
+# declarations a turn was already delivered for: unchanged situation, no repeat.
+_STATE_FILE = "pack-ops-state.json"
+
+
+def _state_path():
+    return data_path(_STATE_FILE)
+
+
+def _decls_digest(decls: dict) -> str:
+    import hashlib
+    return hashlib.sha256(
+        json.dumps(decls, sort_keys=True, ensure_ascii=False).encode()).hexdigest()[:16]
+
+
+def _load_state() -> dict:
+    try:
+        return json.loads(_state_path().read_text(encoding="utf-8")) or {}
+    except (OSError, ValueError):
+        return {}
+
+
+def _save_state(state: dict) -> None:
+    try:
+        p = _state_path()
+        p.parent.mkdir(parents=True, exist_ok=True)
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(state, ensure_ascii=False, indent=2), encoding="utf-8")
+        os.replace(tmp, p)
+    except OSError as e:  # noqa: BLE001 - bookkeeping must not break the trigger
+        LOG.warning("pack ops: state not saved (%s)", str(e)[:100])
+
+
+def pending_report(decls: dict | None = None) -> dict:
+    """DETERMINISTIC list of what is missing, delivering no agentic turn.
+
+    This is what boot produces (point A): unsatisfied declarations are
+    computable without an LLM, so boot needs no turn — the turn instead
+    attempted gated verbs (`mcp.add`, `packs.install_*`) and raised a consent
+    request for each one, outside any channel. The UI already flags packs with a
+    pending setup; this leaves the readable trace.
+    """
+    d = decls if decls is not None else declarations()
+    return {"plugins": sorted(d), "declarations": d, "digest": _decls_digest(d)}
+
+
 async def trigger_reconcile(reason: str) -> dict:
     """Consegna un turno di riconciliazione all'agente pack_ops (best-effort)."""
     decls = declarations()
@@ -137,6 +188,30 @@ async def trigger_reconcile(reason: str) -> dict:
     if not cfg.enabled:
         LOG.info("pack ops: trigger %s saltato — profile.pack_ops.enabled=false", reason)
         return {"triggered": False, "reason": "pack_ops disabilitato dal profilo"}
+
+    digest = _decls_digest(decls)
+    state = _load_state()
+
+    # A · BOOT REPORTS, it does not act. A startup path must not ask for dozens
+    # of human approvals: the verbs it needs (mcp.add, packs.install_*) are
+    # gated by definition, and the platform session has no channel, so every
+    # request ended up as an out-of-context popup (#116). What is missing is
+    # deterministic and the UI already shows it: at boot, recording it is
+    # enough.
+    if reason == "boot":
+        report = pending_report(decls)
+        state["last_boot_report"] = {"digest": digest, "plugins": report["plugins"]}
+        _save_state(state)
+        LOG.info("pack ops: setup pending for %s — no turn delivered at boot, "
+                 "start it from the Packs page (#116)", ", ".join(report["plugins"]))
+        return {"triggered": False, "reason": "boot: report-only", **report}
+
+    # C · Do not repeat a request identical to one already delivered.
+    if state.get("last_trigger_digest") == digest:
+        LOG.info("pack ops: trigger %s skipped — declarations identical to the "
+                 "previous turn (digest %s), setup still pending", reason, digest)
+        return {"triggered": False, "reason": "already requested for these declarations",
+                "digest": digest}
 
     agent = cfg.agent
     # Import lazy: il runtime delle sessioni è pesante e questo modulo viene
@@ -165,6 +240,9 @@ async def trigger_reconcile(reason: str) -> dict:
     rag_enabled = profile.features.rag != "off"
     await chat.send_user_message_async(
         _reconcile_prompt(reason, decls, rag_enabled=rag_enabled))
+    state["last_trigger_digest"] = digest
+    _save_state(state)
     LOG.info("pack ops: riconciliazione consegnata a '%s' (%s: %s)",
              agent, reason, ", ".join(decls))
-    return {"triggered": True, "agent": agent, "plugins": sorted(decls)}
+    return {"triggered": True, "agent": agent, "plugins": sorted(decls),
+            "digest": digest}
