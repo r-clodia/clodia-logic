@@ -178,12 +178,21 @@ class OpenQuestionTests(unittest.TestCase):
         self.assertTrue(legs["private_data"])
         self.assertFalse(legs["untrusted_input"])
 
-    def test_domain_mcps_are_still_unclassified(self) -> None:
-        # Se un domani vengono classificati, questo test fallisce e obbliga a
-        # rileggere i numeri di #102 invece di lasciarli invecchiare in silenzio.
+    def test_domain_mcps_are_untrusted_input_only(self) -> None:
+        """Chiuso da #119: erano deliberatamente non classificati.
+
+        Con il default fail-closed un namespace ignoto si assume `private_data`
+        + `egress`, cioè i due lati che questi verbi NON hanno: leggono norme,
+        prassi contabile e bandi — contenuto di terzi, non dati dell'owner, e
+        nessun canale di uscita. Lasciarli ignoti li avrebbe resi 2/3 sui lati
+        sbagliati, che è peggio di non classificarli affatto.
+        """
         for verb in ("normattiva.search", "contabilita.list", "sedia.search"):
             with self.subTest(verb=verb):
-                self.assertEqual(_score(verb), 0)
+                legs = _legs(verb)
+                self.assertTrue(legs["untrusted_input"])
+                self.assertFalse(legs["private_data"])
+                self.assertFalse(legs["egress"])
 
 
 class PatternHygieneTests(unittest.TestCase):
