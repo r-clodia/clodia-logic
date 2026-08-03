@@ -109,6 +109,12 @@ private_data:
   - -gdocs.create
   - -gdocs.append_text
   - -gdocs.replace_text
+  # fogli dell'owner: budget, costi, anagrafiche. I verbi di sola scrittura
+  # stanno in egress (clodia-platform#118).
+  - gsheets.*
+  - -gsheets.add_tab
+  - -gsheets.append_rows
+  - -gsheets.write_range
   - trello.*
   - -trello.create_card
   - -trello.comment
@@ -197,6 +203,12 @@ untrusted_input:
   - -gdocs.create
   - -gdocs.append_text
   - -gdocs.replace_text
+  # un foglio condiviso è scritto da chiunque abbia il link in scrittura: celle
+  # e nomi di tab sono contenuto non controllato che entra nel contesto.
+  - gsheets.*
+  - -gsheets.add_tab
+  - -gsheets.append_rows
+  - -gsheets.write_range
   - trello.*
   - -trello.create_card
   - -trello.comment
@@ -255,6 +267,12 @@ egress:
   - gdocs.create
   - gdocs.append_text
   - gdocs.replace_text
+  # scritture su Google Sheets: il contenuto attraversa il confine dell'istanza
+  # esattamente come una mail. `write_range` è anche l'unico verbo `gsheets.*`
+  # che può sovrascrivere celle esistenti.
+  - gsheets.add_tab
+  - gsheets.append_rows
+  - gsheets.write_range
   - trello.create_card
   - trello.comment
   - trello.move_card

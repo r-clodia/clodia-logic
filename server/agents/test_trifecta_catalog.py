@@ -58,10 +58,12 @@ class ThirdPartyConnectorTests(unittest.TestCase):
               "gdocs.replace_text", "trello.create_card", "trello.comment",
               "trello.move_card", "image.generate", "gdrive.mkdir",
               "gdrive.move", "artifact.render", "mcp.add", "packs.import_url",
-              "packs.install_npm", "packs.install_pip")
+              "packs.install_npm", "packs.install_pip",
+              "gsheets.add_tab", "gsheets.append_rows", "gsheets.write_range")
 
     READS = ("gcalendar.list_events", "gcalendar.freebusy", "gdocs.read",
-             "trello.cards", "trello.boards", "trello.lists")
+             "trello.cards", "trello.boards", "trello.lists",
+             "gsheets.read", "gsheets.list_tabs")
 
     def test_writes_towards_third_parties_are_egress(self) -> None:
         # Il difetto originale: un agente con SOLI questi verbi risultava 0/3
@@ -92,6 +94,17 @@ class ThirdPartyConnectorTests(unittest.TestCase):
         browser, non il file: è il motivo per cui questa voce va documentata,
         altrimenti al prossimo giro qualcuno la toglie in buona fede."""
         self.assertTrue(_legs("artifact.render")["egress"])
+
+    def test_gsheets_namespace_covers_verbs_added_later(self) -> None:
+        """`gsheets.*` is classified as a namespace, not verb by verb, on purpose.
+
+        The gap found in #104 §9 was connectors added without touching this
+        catalogue: an agent holding only those verbs scored 0/3 while it could
+        exfiltrate. A future `gsheets.delete_tab` must light up on its own.
+        """
+        legs = _legs("gsheets.some_future_read")
+        self.assertTrue(legs["private_data"])
+        self.assertTrue(legs["untrusted_input"])
 
     def test_rename_is_deliberately_in_no_leg(self) -> None:
         # Scrittura di solo metadato: non legge contenuto e non ne fa uscire.
