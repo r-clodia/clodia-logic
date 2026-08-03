@@ -4,6 +4,7 @@ from __future__ import annotations
 import pathlib
 import unittest
 from types import SimpleNamespace
+from unittest.mock import patch
 
 import yaml
 
@@ -316,3 +317,92 @@ class FailClosedTests(unittest.TestCase):
         p = trifecta.context_profile(["a", "b"], specs=specs, config=self.CFG)
         self.assertEqual(p["unclassified"], ["slack"])
         self.assertEqual(p["score"], 3)
+
+
+class ConfinementScoreTests(unittest.TestCase):
+    """#104 §7 property 4 — circumscribed egress is not arbitrary egress.
+
+    `score` stays the CAPABILITY (it does not lie: the agent does hold those
+    verbs); `residual` is what is left once the applied confinement is taken into
+    account. Before this, both got 3/3 and the number could not discriminate.
+    """
+
+    CFG = {
+        "version": 1,
+        "private_data": {"include": ["topic.*"], "exclude": []},
+        "untrusted_input": {"include": ["web.*"], "exclude": []},
+        "egress": {"include": ["email.send"], "exclude": []},
+        "expansion": {"include": ["agents.*"], "exclude": []},
+    }
+
+    def _p(self, tools, conf):
+        return trifecta.agent_profile(_spec("x", tools), config=self.CFG,
+                                     egress_conf=conf)
+
+    def test_a_mode_that_does_not_enforce_leaves_egress_arbitrary(self):
+        """A confinement that is not applied is not a confinement. Counting it
+        would lower the score of an agent that can still send freely — a lie in
+        the worst direction."""
+        for mode in ("report", "off", "unknown"):
+            with self.subTest(mode=mode):
+                p = self._p(["topic.open", "web.fetch", "email.send"],
+                            {"mode": mode, "agents": {"x": {"email": {"scope": "listed", "count": 2}}}})
+                self.assertEqual(p["egress_scope"], "arbitrary")
+                self.assertEqual(p["residual"], p["score"])
+
+    def test_gate_mode_makes_egress_presided_and_lowers_the_residual(self):
+        p = self._p(["topic.open", "web.fetch", "email.send"],
+                    {"mode": "gate", "agents": {}})
+        self.assertEqual(p["score"], 3)          # the capability is still there
+        self.assertEqual(p["egress_scope"], "presided")
+        self.assertEqual(p["residual"], 2)       # a human stands in the way
+
+    def test_a_star_rule_is_arbitrary_even_when_enforced(self):
+        """`["*"]` is declared but constrains nothing."""
+        p = self._p(["topic.open", "web.fetch", "email.send"],
+                    {"mode": "on", "agents": {"x": {"email": {"scope": "wide", "count": 1}}}})
+        self.assertEqual(p["egress_scope"], "arbitrary")
+        self.assertEqual(p["residual"], 3)
+
+    def test_all_types_muted_counts_as_no_egress_at_all(self):
+        p = self._p(["topic.open", "email.send"],
+                    {"mode": "on", "agents": {"x": {"email": {"scope": "muted", "count": 0}}}})
+        self.assertEqual(p["egress_scope"], "none")
+        self.assertEqual(p["residual"], 1)
+
+    def test_an_agent_without_egress_verbs_has_scope_none(self):
+        p = self._p(["topic.open"], {"mode": "gate", "agents": {}})
+        self.assertEqual(p["egress_scope"], "none")
+
+    def test_a_channel_residual_is_the_or_of_the_legs_not_the_max(self):
+        """An agent at 2/3 without egress plus one at 1/3 with arbitrary egress
+        makes a channel with residual 3, while the max of the per-agent residuals
+        would say 2. The closure is the unit of evaluation here too."""
+        specs = [_spec("reader", ["topic.open", "web.fetch"]),
+                 _spec("sender", ["email.send"])]
+        conf = {"mode": "report", "agents": {}}   # not enforcing → arbitrary
+        with patch.object(trifecta, "egress_confinement", return_value=conf):
+            p = trifecta.context_profile(["reader", "sender"], specs=specs,
+                                        config=self.CFG)
+        self.assertEqual(p["score"], 3)
+        self.assertEqual(p["residual"], 3)
+        self.assertEqual(max(a["residual"] for a in p["agents"]), 2)
+
+    def test_a_channel_under_gate_reports_the_mode_and_a_lower_residual(self):
+        specs = [_spec("a", ["topic.open", "web.fetch", "email.send"])]
+        with patch.object(trifecta, "egress_confinement",
+                          return_value={"mode": "gate", "agents": {}}):
+            p = trifecta.context_profile(["a"], specs=specs, config=self.CFG)
+        self.assertEqual(p["score"], 3)
+        self.assertEqual(p["residual"], 2)
+        self.assertEqual(p["egress_mode"], "gate")
+        self.assertEqual(p["egress_scopes"], ["presided"])
+
+    def test_an_unreachable_gateway_does_not_invent_a_confinement(self):
+        """Best-effort read: if the gateway does not answer, the score stays the
+        pure capability. A confinement imagined is worse than one not seen."""
+        with patch.dict("os.environ", {}, clear=True):
+            trifecta._EGRESS_CACHE = None
+            self.assertEqual(trifecta.egress_confinement(force=True)["mode"],
+                             "unknown")
+            trifecta._EGRESS_CACHE = None

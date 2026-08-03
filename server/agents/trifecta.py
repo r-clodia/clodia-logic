@@ -40,6 +40,7 @@ l'unico declassificatore legittimo, non una capacità del canale.
 from __future__ import annotations
 
 import logging
+import os
 from typing import Iterable, Optional
 
 import yaml
@@ -199,6 +200,82 @@ def _matching_grants(grants: Iterable[str], leg: dict) -> list[str]:
     })
 
 
+# ── confinamento in uscita (#104 §7 proprietà 4) ──────────────────────────
+# «Uscita circoscritta e uscita arbitraria non sono lo stesso rischio, anche se
+# oggi il calcolatore dà 3/3 a entrambi.» Il dato sta nella config del GATEWAY,
+# su un volume che l'agent-server non monta di proposito (#80: chi può
+# riscrivere la whitelist si auto-concede le destinazioni), quindi si legge dal
+# canale server-to-server. Cache breve: cambia quando un umano approva una
+# destinazione, non a ogni richiesta.
+_EGRESS_TTL = 30.0
+_EGRESS_CACHE: tuple[float, dict] | None = None
+
+#: Come il MODO del gateway qualifica l'uscita. Un confinamento che non è
+#: applicato non è un confinamento: contarlo abbasserebbe il punteggio di un
+#: agente che può ancora inviare liberamente, cioè mentirebbe nella direzione
+#: peggiore. `report` e `off` non confinano nulla.
+_ENFORCING_MODES = ("gate", "on")
+
+
+def egress_confinement(force: bool = False) -> dict:
+    """{mode, agents: {name: {type: {scope, count}}}} dal gateway.
+
+    Best-effort: se il gateway non risponde si ritorna un confinamento VUOTO,
+    che significa «non so, quindi non conto nessun confinamento» — il punteggio
+    resta quello della capacità pura. L'errore va in questa direzione: un
+    confinamento immaginato è peggio di un confinamento non visto.
+    """
+    global _EGRESS_CACHE
+    import time
+    now = time.monotonic()
+    if _EGRESS_CACHE and not force and now - _EGRESS_CACHE[0] < _EGRESS_TTL:
+        return _EGRESS_CACHE[1]
+    out = {"mode": "unknown", "agents": {}}
+    secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+    if secret:
+        try:
+            import httpx
+            mcp = os.environ.get("CLODIA_TOOLS_MCP_URL",
+                                 "http://clodia-tools:7849/mcp/").rstrip("/")
+            base = mcp[:-len("/mcp")] if mcp.endswith("/mcp") else mcp
+            r = httpx.get(f"{base}/internal/egress",
+                          headers={"X-Orchestrator-Secret": secret}, timeout=4.0)
+            r.raise_for_status()
+            out = r.json()
+        except Exception as e:  # noqa: BLE001 — misura, non enforcement
+            LOG.warning("trifecta: confinamento in uscita non leggibile (%s)", e)
+    _EGRESS_CACHE = (now, out)
+    return out
+
+
+def egress_scope(name: str, conf: dict, egress_lit: bool) -> str:
+    """Qualifica l'uscita di un agente: `none` · `presided` · `listed` · `arbitrary`.
+
+    - `none`      nessun verbo di uscita, o tutti i tipi dichiarati muti;
+    - `presided`  il gateway è in modo `gate`: una destinazione non in whitelist
+                  passa da un umano. È lo stato più forte in pratica, perché non
+                  richiede di aver previsto le destinazioni;
+    - `listed`    modo `on` con regole esplicite: solo destinazioni dichiarate;
+    - `arbitrary` nessun confinamento applicato, o una regola `*`.
+    """
+    if not egress_lit:
+        return "none"
+    mode = str(conf.get("mode") or "unknown")
+    if mode not in _ENFORCING_MODES:
+        return "arbitrary"
+    types = (conf.get("agents") or {}).get(name)
+    if types is None:
+        # Agente senza voce nella config del gateway. In modo `gate` una
+        # destinazione qualunque passa comunque da un umano: è presidiata.
+        return "presided" if mode == "gate" else "arbitrary"
+    scopes = {v.get("scope") for v in types.values() if isinstance(v, dict)}
+    if "wide" in scopes:
+        return "arbitrary"
+    if scopes and scopes <= {"muted"}:
+        return "none"
+    return "presided" if mode == "gate" else "listed"
+
+
 # ── fail-closed sui namespace non classificati (#119) ─────────────────────
 #: I lati che si ASSUMONO su un namespace ignoto. Non tutti e tre di proposito:
 #: `untrusted_input` marcherebbe ogni pack nuovo a 3/3 all'istante, che è rumore
@@ -262,7 +339,8 @@ def has_shell(spec) -> bool:
     return True
 
 
-def agent_profile(spec, config: Optional[dict] = None) -> dict:
+def agent_profile(spec, config: Optional[dict] = None,
+                  egress_conf: Optional[dict] = None) -> dict:
     """Profilo trifecta di un singolo agente, dai suoi grant effettivi.
 
     Ritorna anche i grant che hanno acceso ciascun lato: il numero da solo non
@@ -275,7 +353,8 @@ def agent_profile(spec, config: Optional[dict] = None) -> dict:
         return {"name": name, "type": kind, "human": True, "score": 0,
                 "legs": {leg: False for leg in LEGS},
                 "why": {leg: [] for leg in LEGS},
-                "shell": False, "expands": False}
+                "shell": False, "expands": False, "unclassified": [],
+                "egress_scope": "none", "residual": 0}
     grants = [str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])
               if str(g).strip()]
     legs, why = {}, {}
@@ -298,6 +377,8 @@ def agent_profile(spec, config: Optional[dict] = None) -> dict:
             reasons = why[leg] + [f"{ns}.* (namespace non classificato)"
                                   for ns in unknown]
             why[leg] = reasons[:_MAX_REASONS]
+    conf = egress_conf if egress_conf is not None else egress_confinement()
+    scope = egress_scope(name, conf, legs["egress"])
     return {
         "name": name,
         "type": kind,
@@ -308,6 +389,13 @@ def agent_profile(spec, config: Optional[dict] = None) -> dict:
         "shell": has_shell(spec),
         "expands": bool(_matching_grants(grants, cfg["expansion"])),
         "unclassified": unknown,
+        # §7 proprietà 4: il punteggio da solo dava 3/3 sia a un'uscita
+        # arbitraria sia a una circoscritta. `score` resta la CAPACITÀ (non
+        # mente: quei verbi ce li ha), `residual` è il rischio che rimane dopo il
+        # confinamento applicato — l'uscita conta solo se è arbitraria.
+        "egress_scope": scope,
+        "residual": (sum(1 for leg in LEGS if legs[leg])
+                     - (1 if legs["egress"] and scope != "arbitrary" else 0)),
     }
 
 
@@ -328,8 +416,11 @@ def context_profile(participants: Iterable[str],
         specs = registry.list()
     by_name = {getattr(s, "name", None): s for s in (specs or []) if s is not None}
 
+    # UNA sola lettura del confinamento per tutto il canale: la chiusura può
+    # includere decine di agenti, e il dato è lo stesso per tutti.
+    conf = egress_confinement()
     members = [by_name[p] for p in dict.fromkeys(participants or []) if p in by_name]
-    profiles = [agent_profile(s, cfg) for s in members]
+    profiles = [agent_profile(s, cfg, conf) for s in members]
     unknown = [p for p in dict.fromkeys(participants or []) if p not in by_name]
 
     # Chiusura: chi può aggiungere partecipanti porta potenzialmente nel canale
@@ -339,7 +430,7 @@ def context_profile(participants: Iterable[str],
     reachable: list[dict] = []
     if expanded_by:
         member_names = {p["name"] for p in profiles}
-        reachable = [agent_profile(s, cfg) for n, s in sorted(by_name.items())
+        reachable = [agent_profile(s, cfg, conf) for n, s in sorted(by_name.items())
                      if n not in member_names
                      and getattr(s, "type", "normal") != "human"]
 
@@ -382,5 +473,20 @@ def context_profile(participants: Iterable[str],
         # azioni diverse (una riga di yaml vs togliere un partecipante).
         "unclassified": sorted({ns for pr in closure
                                 for ns in (pr.get("unclassified") or [])}),
+        # §7 proprietà 4 a livello di canale. `score` è la capacità presente;
+        # `residual` è ciò che resta dopo il confinamento applicato. Un canale a
+        # 3/3 in cui ogni destinazione nuova passa da un umano NON è lo stesso
+        # rischio di un canale a 3/3 che può scrivere a chiunque, e prima i due
+        # erano indistinguibili.
+        "egress_mode": conf.get("mode", "unknown"),
+        "egress_scopes": sorted({pr.get("egress_scope", "none") for pr in closure
+                                 if pr.get("legs", {}).get("egress")}),
+        # Si calcola sull'OR dei lati come `score`, NON come massimo dei residui
+        # per-agente: un agente a 2/3 senza uscita più uno a 1/3 con uscita
+        # arbitraria fanno un canale a 3 residuo, mentre il massimo dei residui
+        # direbbe 2. La chiusura è l'unità di valutazione, anche qui.
+        "residual": (int(legs["private_data"]) + int(legs["untrusted_input"])
+                     + int(legs["egress"] and any(
+                         pr.get("egress_scope") == "arbitrary" for pr in closure))),
         "config_version": cfg.get("version", 0),
     }
