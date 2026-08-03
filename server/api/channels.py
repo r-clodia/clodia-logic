@@ -2058,7 +2058,18 @@ async def channel_files(tier: str, name: str, request: Request, path: str = "") 
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_member(request, topic.get("meta", {}))
-    return {"files": topics_client.list_files(tier, name, path)}
+    try:
+        return {"files": topics_client.list_files(tier, name, path)}
+    except Exception as e:  # noqa: BLE001
+        # Storage remoto giù (token Drive scaduto, rete): NON è un errore del
+        # canale, ed era il caso in cui la UI mostrava una cartella vuota senza
+        # dire nulla. 424 Failed Dependency, con il motivo leggibile che il
+        # gateway ha già formulato (marcatore `remote-unavailable:`).
+        msg = str(e)
+        if "remote-unavailable:" in msg:
+            reason = msg.split("remote-unavailable:", 1)[1].strip().rstrip('"')
+            raise HTTPException(424, f"storage del topic non disponibile — {reason}")
+        raise
 
 
 @router.post("/clodia/channels/{tier}/{name}/files")
