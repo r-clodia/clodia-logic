@@ -192,12 +192,41 @@ def _covers(pattern: str, grant: str) -> bool:
 
 
 def _matching_grants(grants: Iterable[str], leg: dict) -> list[str]:
+    """Grant che accendono `leg`, al netto delle NEGAZIONI nei grant stessi.
+
+    Un grant che inizia con `-` è una sottrazione: `topic.*` più
+    `-topic.remote_push` significa «tutto topic tranne quel verbo». Serve perché
+    la §8 di #104 toglie singoli verbi da un namespace concesso in blocco, e senza
+    questo lo scorer vedeva `topic.*` combaciare con `topic.remote_push` nel
+    catalogo e continuava ad accendere l'uscita — enforcement applicato, misura
+    cieca. È la divergenza peggiore: un numero che descrive un sistema diverso da
+    quello che gira.
+
+    La sottrazione agisce sui pattern PUNTUALI del catalogo. Negare
+    `topic.remote_push` spegne quella voce; non spegne un `topic.*` presente
+    negli include, perché un namespace intero non è coperto dalla negazione di un
+    suo verbo — sarebbe una falsa rassicurazione.
+    """
     include, exclude = leg.get("include", []), leg.get("exclude", [])
-    return sorted({
-        g for g in grants
-        if any(_overlap(g, p) for p in include)
-        and not any(_covers(p, g) for p in exclude)
-    })
+    pos = [g for g in grants if not str(g).startswith("-")]
+    neg = {str(g)[1:].strip() for g in grants if str(g).startswith("-")}
+    out = set()
+    for g in pos:
+        for pat in include:
+            if not _overlap(g, pat):
+                continue
+            if any(_covers(x, g) for x in exclude):
+                continue
+            # Se il pattern del catalogo è PUNTUALE ed è negato nei grant, quella
+            # voce non accende: il verbo non è raggiungibile.
+            if "*" not in str(pat) and str(pat) in neg:
+                continue
+            # Se il GRANT è puntuale e negato, non accende nulla.
+            if g in neg:
+                continue
+            out.add(g)
+            break
+    return sorted(out)
 
 
 # ── confinamento in uscita (#104 §7 proprietà 4) ──────────────────────────
@@ -317,6 +346,11 @@ def unclassified_namespaces(grants: Iterable[str], cfg: dict) -> list[str]:
     known = _known_namespaces(cfg)
     out: set[str] = set()
     for g in grants:
+        # Una NEGAZIONE (`-verbo`) non concede niente: leggerla come namespace
+        # produceva un `-topic` ignoto, e il fail-closed accendeva due lati su un
+        # grant che ne TOGLIE uno. Due difese corrette che si sommavano male.
+        if str(g).startswith("-"):
+            continue
         ns, _ = _split(str(g))
         # `*` combacia con ogni pattern classificato: non è un ignoto, è il
         # contrario — accende tutto da sé.
