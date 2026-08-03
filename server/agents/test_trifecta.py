@@ -458,3 +458,236 @@ class GrantNegationTests(unittest.TestCase):
         """Nel `why` devono comparire i grant che ACCENDONO, non quelli tolti."""
         p = self._p(["topic.open", "-topic.files"])
         self.assertNotIn("-topic.files", p["why"]["private_data"])
+
+
+class GateDiscountTests(unittest.TestCase):
+    """#126 — un verbo che passa da un umano non pesa come uno autonomo.
+
+    Il residuo scontava solo la whitelist di DESTINAZIONE (`egress_scope`); il
+    M-gate, che chiede conferma umana a OGNI chiamata, non contava affatto: un
+    grant `settings.*` pesava come se l'agente potesse usarlo da solo. Lo sconto
+    vale per tutti e tre i lati e sta in `residual`; `score` resta la capacità.
+    """
+
+    #: Forma di ciò che il gateway restituisce su `/internal/gate/spec`. In
+    #: produzione arriva da lì e NON è duplicato nel codice sotto test: la copia
+    #: sta qui, in un fixture, proprio perché divergere sia un problema del test
+    #: e non della misura.
+    GATED = {
+        "prefixes": ["settings.", "pki.", "ca."],
+        "exact": ["web.post", "topic.add_participant", "topic.remove_participant",
+                  "mcp.add", "mcp.remove", "packs.import_url", "packs.remove",
+                  "packs.install_pip", "packs.install_npm",
+                  "providers.pause", "providers.resume",
+                  "agents.grant_tool", "agents.revoke_tool"],
+    }
+
+    CFG = {
+        "version": 1,
+        "private_data": {"include": ["settings.*", "agents.*", "topic.read_file"],
+                         "exclude": []},
+        "untrusted_input": {"include": ["web.*", "topic.read_file"], "exclude": []},
+        "egress": {"include": ["web.post", "email.send"], "exclude": []},
+        "expansion": {"include": ["agents.*"], "exclude": []},
+    }
+
+    #: Nessun confinamento di destinazione: così l'unico sconto osservabile è
+    #: quello del gate, e i due non si coprono a vicenda nei test.
+    OPEN = {"mode": "off", "agents": {}}
+
+    def _p(self, tools, gated=None, conf=None):
+        return trifecta.agent_profile(_spec("x", tools), config=self.CFG,
+                                     egress_conf=conf or self.OPEN,
+                                     gated=self.GATED if gated is None else gated)
+
+    # ── la regola su un singolo grant ────────────────────────────────────
+    def test_a_punctual_gated_verb_is_presided(self):
+        self.assertTrue(trifecta.grant_is_gated("web.post", self.GATED))
+        self.assertTrue(trifecta.grant_is_gated("settings.backup_run", self.GATED))
+
+    def test_a_namespace_is_presided_only_if_the_whole_family_is_gated(self):
+        """`settings.` è un prefisso gated: ogni verbo della famiglia passa da un
+        umano, quindi `settings.*` è presidiato. `agents.*` no: il gate copre
+        `grant_tool`/`revoke_tool`, non `agents.list`."""
+        self.assertTrue(trifecta.grant_is_gated("settings.*", self.GATED))
+        self.assertTrue(trifecta.grant_is_gated("settings", self.GATED))   # ns nudo
+        self.assertFalse(trifecta.grant_is_gated("agents.*", self.GATED))
+
+    def test_a_wildcard_over_a_partly_gated_namespace_is_not_presided(self):
+        """`topic.*` include `topic.add_participant` (gated) e `topic.read_file`
+        (no): presidiato per un decimo. Contarlo come presidiato sarebbe la falsa
+        rassicurazione che questa misura non può permettersi."""
+        self.assertFalse(trifecta.grant_is_gated("topic.*", self.GATED))
+
+    def test_the_full_wildcard_is_never_presided(self):
+        self.assertFalse(trifecta.grant_is_gated("*", self.GATED))
+        self.assertEqual(self._p(["*"])["residual"], 3)
+
+    def test_a_negation_is_not_something_to_preside(self):
+        self.assertFalse(trifecta.grant_is_gated("-settings.set", self.GATED))
+
+    # ── lo sconto per lato ───────────────────────────────────────────────
+    def test_a_leg_lit_only_by_gated_grants_leaves_the_residual(self):
+        p = self._p(["settings.*"])
+        self.assertTrue(p["legs"]["private_data"])   # la capacità c'è
+        self.assertEqual(p["score"], 1)              # e `score` non mente
+        self.assertTrue(p["gated_legs"]["private_data"])
+        self.assertEqual(p["residual"], 0)           # ma nessuna chiamata è autonoma
+
+    def test_one_ungated_grant_is_enough_to_keep_the_leg(self):
+        """Il grant non presidiato è la strada che resta aperta: un lato
+        presidiato al 90% non è un lato presidiato."""
+        p = self._p(["settings.*", "topic.read_file"])
+        self.assertFalse(p["gated_legs"]["private_data"])
+        self.assertEqual(p["ungated"]["private_data"], ["topic.read_file"])
+        self.assertTrue(p["residual_legs"]["private_data"])
+
+    def test_ungated_names_the_grants_to_remove(self):
+        """È la parte azionabile: dice QUALI grant impediscono lo sconto."""
+        p = self._p(["web.post", "email.send"])
+        self.assertEqual(p["ungated"]["egress"], ["email.send"])
+        self.assertEqual(p["residual"], 1)
+
+    def test_the_gate_discounts_egress_even_with_no_destination_whitelist(self):
+        """Le due mitigazioni sono alternative: presidiare l'uscita per VERBO
+        vale quanto presidiarla per destinazione."""
+        p = self._p(["web.post"])
+        self.assertEqual(p["egress_scope"], "arbitrary")   # nessuna whitelist
+        self.assertTrue(p["gated_legs"]["egress"])
+        self.assertEqual(p["residual"], 0)
+
+    def test_a_destination_whitelist_still_discounts_an_ungated_verb(self):
+        """Nessuna regressione sul confinamento di #104 §7: `email.send` non è
+        gated, ma sotto `gate` la destinazione passa da un umano."""
+        p = self._p(["email.send"], conf={"mode": "gate", "agents": {}})
+        self.assertFalse(p["gated_legs"]["egress"])
+        self.assertEqual(p["residual"], 0)
+
+    def test_all_three_legs_can_be_discounted(self):
+        """La §7 scontava solo l'uscita: un agente i cui unici grant sono tutti
+        gated risultava 3/3 residuo. Ora resta 3/3 di CAPACITÀ e 0 di residuo."""
+        cfg = dict(self.CFG)
+        cfg["untrusted_input"] = {"include": ["settings.*"], "exclude": []}
+        cfg["egress"] = {"include": ["settings.backup_run"], "exclude": []}
+        p = trifecta.agent_profile(_spec("x", ["settings.*"]), config=cfg,
+                                   egress_conf=self.OPEN, gated=self.GATED)
+        self.assertEqual(p["score"], 3)
+        self.assertEqual(p["residual"], 0)
+        self.assertEqual(p["gated_legs"], {leg: True for leg in trifecta.LEGS})
+
+    def test_an_unclassified_namespace_follows_the_same_rule(self):
+        """Il fail-closed di #119 accende `private_data`+`egress` su un namespace
+        ignoto. La regola dello sconto è UNA per tutti i grant: se quel verbo è
+        gated il gate vale, se non lo è il lato resta."""
+        gated = self._p(["pki.sign"])
+        self.assertEqual(gated["unclassified"], ["pki"])
+        self.assertEqual(gated["score"], 2)
+        self.assertEqual(gated["residual"], 0)
+        loose = self._p(["slack.post_message"])
+        self.assertEqual(loose["score"], 2)
+        self.assertEqual(loose["residual"], 2)
+        self.assertEqual(loose["ungated"]["egress"], ["slack.post_message"])
+
+    # ── il gate non visto non è un gate ──────────────────────────────────
+    def test_an_unreadable_gate_set_discounts_nothing(self):
+        """Stessa direzione d'errore del confinamento: un gate immaginato
+        abbasserebbe il residuo di un agente che agisce da solo. Vale anche per
+        un gateway troppo vecchio per conoscere la rotta (404 → insieme vuoto)."""
+        p = self._p(["settings.*", "web.post"], gated=trifecta._NO_GATE)
+        self.assertEqual(p["residual"], p["score"])
+        self.assertFalse(any(p["gated_legs"].values()))
+
+    def test_an_unreachable_gateway_returns_an_empty_gate_set(self):
+        with patch.dict("os.environ", {}, clear=True):
+            trifecta._GATE_CACHE = None
+            self.assertEqual(trifecta.gated_verbs(force=True),
+                             {"prefixes": [], "exact": []})
+            trifecta._GATE_CACHE = None
+
+    # ── livello canale ───────────────────────────────────────────────────
+    def _ctx(self, specs, names):
+        with patch.object(trifecta, "egress_confinement", return_value=self.OPEN), \
+             patch.object(trifecta, "gated_verbs", return_value=self.GATED):
+            return trifecta.context_profile(names, specs=specs, config=self.CFG)
+
+    def test_a_channel_is_presided_only_if_every_agent_is(self):
+        """La mitigazione è per-agente: presidiare l'uscita di uno non presidia
+        quella di un altro, e l'OR va fatto sui lati RESIDUI dei singoli."""
+        specs = [_spec("presidiato", ["web.post"]), _spec("libero", ["email.send"])]
+        p = self._ctx(specs, ["presidiato", "libero"])
+        self.assertEqual(p["score"], 2)             # untrusted_input + egress
+        self.assertEqual(p["residual"], 1)          # `libero` esce da solo
+        self.assertFalse(p["gated_legs"]["egress"])
+        self.assertEqual(p["residual_legs"],
+                         {"private_data": False, "untrusted_input": False,
+                          "egress": True})
+        # …togliendo l'agente non presidiato lo sconto compare.
+        q = self._ctx(specs, ["presidiato"])
+        self.assertEqual(q["score"], 2)
+        self.assertEqual(q["residual"], 0)
+        self.assertTrue(q["gated_legs"]["egress"])
+
+    def test_a_channel_reports_whether_the_gate_set_was_readable(self):
+        """Un canale senza sconti perché il gateway non risponde non è un canale
+        senza gate: le due letture richiedono azioni opposte."""
+        specs = [_spec("a", ["web.post"])]
+        self.assertTrue(self._ctx(specs, ["a"])["gate_visible"])
+        with patch.object(trifecta, "egress_confinement", return_value=self.OPEN), \
+             patch.object(trifecta, "gated_verbs", return_value=trifecta._NO_GATE):
+            p = trifecta.context_profile(["a"], specs=specs, config=self.CFG)
+        self.assertFalse(p["gate_visible"])
+        self.assertEqual(p["residual"], p["score"])   # nessuno sconto immaginato
+
+
+class GateDiscountOnRealSeedsTests(unittest.TestCase):
+    """Effetto MISURATO dello sconto sui seed reali, con il catalogo reale.
+
+    Serve come regressione sull'unica direzione d'errore inaccettabile: uno
+    sconto che compare dove non deve. Il caso osservato in #126 è `sysadmin`, e
+    va detto chiaramente che la regola «tutti i grant del lato gated» NON lo
+    sconta: `settings.*` e `web.post` sono presidiati, ma gli stessi lati sono
+    accesi anche da `agents.*` e da `github.issue_write`, che nessun umano vede
+    passare. Il numero resta 3/3 perché il rischio resta.
+    """
+
+    GATED = GateDiscountTests.GATED
+    OPEN = {"mode": "off", "agents": {}}
+
+    def _p(self, name):
+        return trifecta.agent_profile(_seed(name), config=trifecta.load_config(),
+                                      egress_conf=self.OPEN, gated=self.GATED)
+
+    def test_sysadmin_keeps_its_score_and_its_residual(self):
+        p = self._p("sysadmin")
+        self.assertEqual(p["score"], 3)
+        self.assertEqual(p["residual"], 3, "sconto comparso dove il rischio resta")
+        self.assertFalse(any(p["gated_legs"].values()))
+        # …e il report dice perché, verbo per verbo.
+        self.assertTrue(p["ungated"]["private_data"])
+        self.assertTrue(p["ungated"]["egress"])
+
+    def test_no_seed_of_the_base_pack_earns_a_discount_today(self):
+        """Misura, non aspettativa: con i grant attuali NESSUNO dei cinque seed
+        guadagna lo sconto, perché ogni lato acceso da un verbo gated è acceso
+        anche da uno che non lo è (`clodia`/`ophelia` da `*`, `messaggero` da
+        `email.*`, `segretario` da `topic.read_file`, `sysadmin` da `agents.*` e
+        `github.issue_write`). Il valore di #126 non è abbassare questi numeri —
+        è dire quali grant li tengono su. Se un domani un seed viene ridotto e lo
+        sconto compare, questo test va aggiornato con la misura nuova, non
+        cancellato."""
+        for name in ("clodia", "ophelia", "sysadmin", "messaggero", "segretario"):
+            p = self._p(name)
+            with self.subTest(agent=name):
+                self.assertEqual(p["residual"], p["score"])
+                self.assertFalse(any(p["gated_legs"].values()))
+
+    def test_every_discounted_leg_has_no_ungated_grant_left(self):
+        """La proprietà, sui dati reali: uno sconto senza `ungated` vuoto sarebbe
+        un residuo che dichiara presidiato un lato ancora attraversabile."""
+        for name in ("clodia", "ophelia", "sysadmin", "messaggero", "segretario"):
+            p = self._p(name)
+            with self.subTest(agent=name):
+                self.assertLessEqual(p["residual"], p["score"])
+                for leg in trifecta.LEGS:
+                    if p["gated_legs"][leg]:
+                        self.assertEqual(p["ungated"][leg], [])
