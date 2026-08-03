@@ -437,8 +437,31 @@ def agent_profile(spec, config: Optional[dict] = None,
 
 def context_profile(participants: Iterable[str],
                     specs: Optional[Iterable] = None,
-                    config: Optional[dict] = None) -> dict:
-    """Danger score 0–3 di un contesto: OR dei lati sulla **chiusura**.
+                    config: Optional[dict] = None,
+                    tainted: Optional[bool] = None) -> dict:
+    """Danger score 0–3 di un contesto = **numero di bit accesi del vettore**.
+
+    Il vettore (clodia-platform#104 §4, formalizzato il 3 ago 2026):
+
+        1 0 0   è ENTRATO contenuto non fidato in questo canale
+        0 1 0   qualcuno qui ha accesso a dati privati
+        0 0 1   qualcuno qui può scrivere verso un sistema esterno NON approvato
+
+    Il primo bit è un **evento**, gli altri due **proprietà**. Prima questo
+    punteggio contava tre CAPACITÀ, fra cui «può leggere contenuto non fidato» —
+    che è quasi sempre vera e non dice niente su cosa sia successo. Un canale in
+    cui l'owner ha lavorato solo con i propri documenti risultava 3/3 come uno in
+    cui è entrato un PDF di terzi: il numero non discriminava, ed era l'unico
+    lavoro che gli si chiedeva.
+
+    Il terzo bit conta l'uscita **arbitraria**: se ogni destinazione nuova passa
+    da un umano, il flusso non si chiude da sé e il bit è spento. `capability`
+    resta esposto accanto — i verbi ci sono davvero, e negarlo sarebbe la sola
+    bugia che questa misura non può permettersi.
+
+    `tainted=None` = non leggibile (gateway giù): il bit vale `?`, si conta 0 e il
+    chiamante lo dichiara. Inventarlo a 1 sarebbe un falso allarme, a 0 una falsa
+    rassicurazione: l'unica risposta onesta è «non lo so».
 
     `participants` sono i nomi dichiarati nel meta del topic; `specs` l'elenco
     completo degli agenti registrati (default: la registry). Un partecipante
@@ -470,13 +493,27 @@ def context_profile(participants: Iterable[str],
 
     closure = profiles + reachable
     legs = {leg: any(p["legs"][leg] for p in closure) for leg in LEGS}
-    score = sum(1 for leg in LEGS if legs[leg])
+    # CAPACITÀ: l'OR dei tre lati, come prima. Resta esposta, non è il titolo.
+    capability = sum(1 for leg in LEGS if legs[leg])
+    # I tre bit del vettore. Il secondo è capacità, il terzo capacità NETTA del
+    # confinamento applicato, il primo un fatto avvenuto.
+    arbitrary_egress = legs["egress"] and any(
+        p.get("egress_scope") == "arbitrary" for p in closure)
+    bits = (1 if tainted else 0, 1 if legs["private_data"] else 0,
+            1 if arbitrary_egress else 0)
+    score = sum(bits)
+    vector = ("?" if tainted is None else str(bits[0])) + str(bits[1]) + str(bits[2])
     shell_agents = [p["name"] for p in closure if p["shell"]]
     # Punteggio dei soli partecipanti DICHIARATI. Serve a non appiattire tutto:
     # se il canale è a 3 solo perché qualcuno può invitare, il numero da solo
     # sarebbe indistinguibile da un canale già a 3 con i presenti.
     direct_legs = {leg: any(p["legs"][leg] for p in profiles) for leg in LEGS}
-    direct_score = sum(1 for leg in LEGS if direct_legs[leg])
+    # Anche `direct` conta i BIT, non le capacità: se il titolo del canale è il
+    # vettore, un secondo numero con un'altra semantica accanto sarebbe illeggibile.
+    direct_arbitrary = direct_legs["egress"] and any(
+        p.get("egress_scope") == "arbitrary" for p in profiles)
+    direct_score = ((1 if tainted else 0) + (1 if direct_legs["private_data"] else 0)
+                    + (1 if direct_arbitrary else 0))
     return {
         "score": score,
         "label": f"{score}/3",
@@ -512,6 +549,16 @@ def context_profile(participants: Iterable[str],
         # 3/3 in cui ogni destinazione nuova passa da un umano NON è lo stesso
         # rischio di un canale a 3/3 che può scrivere a chiunque, e prima i due
         # erano indistinguibili.
+        # Il vettore così com'è, perché UI e API non lo ricalcolino ognuna a modo
+        # suo — è la definizione, non una formattazione.
+        "vector": vector,
+        "bits": {"tainted": bits[0], "private_data": bits[1],
+                 "arbitrary_egress": bits[2]},
+        "tainted": tainted,
+        # Capacità: i verbi presenti, indipendentemente da cosa è accaduto e da
+        # come sono confinati.
+        "capability": capability,
+        "capability_legs": legs,
         "egress_mode": conf.get("mode", "unknown"),
         "egress_scopes": sorted({pr.get("egress_scope", "none") for pr in closure
                                  if pr.get("legs", {}).get("egress")}),
@@ -519,8 +566,8 @@ def context_profile(participants: Iterable[str],
         # per-agente: un agente a 2/3 senza uscita più uno a 1/3 con uscita
         # arbitraria fanno un canale a 3 residuo, mentre il massimo dei residui
         # direbbe 2. La chiusura è l'unità di valutazione, anche qui.
-        "residual": (int(legs["private_data"]) + int(legs["untrusted_input"])
-                     + int(legs["egress"] and any(
-                         pr.get("egress_scope") == "arbitrary" for pr in closure))),
+        # Alias storico: `score` ORA è già il rischio residuo, perché conta i bit
+        # del vettore e non le capacità. Tenuto per i chiamanti esistenti.
+        "residual": score,
         "config_version": cfg.get("version", 0),
     }
