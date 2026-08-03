@@ -2074,7 +2074,16 @@ async def channel_files(tier: str, name: str, request: Request, path: str = "") 
 
 @router.post("/clodia/channels/{tier}/{name}/files")
 async def channel_upload(tier: str, name: str, request: Request) -> dict:
-    """Upload file nel canale (umano partecipante). Body: {filename, content_b64}."""
+    """Upload file nel canale (umano partecipante).
+
+    Body: {filename, content_b64, provenance?}. `provenance` = `trusted` |
+    `untrusted`, default **untrusted** (clodia-platform#104 §3): è una
+    CLASSIFICAZIONE, non un'autorizzazione — dice da dove viene il file, non se si
+    può leggere. La lettura resta libera e un file untrusted contamina il canale,
+    così l'uscita successiva passa da un umano. Bloccarla renderebbe impossibile
+    il caso d'uso principale e spingerebbe l'utente a dichiarare «trusted» per
+    andare avanti, che è il modo di rendere l'etichetta inutile.
+    """
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
@@ -2087,7 +2096,10 @@ async def channel_upload(tier: str, name: str, request: Request) -> dict:
     fn = (body.get("filename") or "").strip()
     if not fn or not body.get("content_b64"):
         raise HTTPException(400, "filename e content_b64 richiesti")
-    result = topics_client.put_file(tier, name, fn, body["content_b64"])
+    prov = (body.get("provenance") or "untrusted").strip().lower()
+    if prov not in ("trusted", "untrusted"):
+        prov = "untrusted"
+    result = topics_client.put_file(tier, name, fn, body["content_b64"], prov)
     # 1. rendi l'allegato visibile nello stream del canale (bolla con allegato)
     try:
         topics_client.post_message(tier, name, principal, "", kind="human",
@@ -2095,6 +2107,9 @@ async def channel_upload(tier: str, name: str, request: Request) -> dict:
     except topics_client.TopicsClientError as e:
         LOG.warning("post messaggio-allegato fallito su %s/%s: %s", tier, name, e)
     # 2. log dell'azione nella tab Logs dell'uploader
+    # La provenienza va nel log: è una dichiarazione dell'utente, e se un giorno
+    # si risale a un'injection il primo dato utile è chi ha marcato cosa.
     activity_log.append(principal, "file_uploaded",
-                        {"channel": f"{tier}/{name}", "file": fn})
+                        {"channel": f"{tier}/{name}", "file": fn,
+                         "provenance": prov})
     return result
