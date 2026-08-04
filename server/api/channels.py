@@ -1561,8 +1561,15 @@ def _channel_trifecta(meta: dict, tainted: bool | None = None) -> dict | None:
     Un errore qui non deve impedire di aprire il canale: si degrada a None e
     la UI semplicemente non mostra il badge."""
     try:
+        # Un remote è un condotto PERMANENTE verso l'esterno: se punta a una
+        # destinazione non vagliata, il terzo bit è acceso a prescindere dai verbi
+        # dei partecipanti. `None` (gateway muto) si tratta come non vagliato: un
+        # condotto di cui non sappiamo se è approvato va mostrato, non nascosto.
+        uri = trifecta.remote_uri(meta)
+        remote_egress = (uri is not None) and (trifecta.uri_allowed(uri) is not True)
         return trifecta.context_profile(meta.get("participants") or [],
-                                        tainted=tainted)
+                                        tainted=tainted,
+                                        remote_egress=remote_egress)
     except Exception as e:  # pragma: no cover - difensivo
         LOG.warning("trifecta: profilo canale non calcolabile (%s)", e)
         return None

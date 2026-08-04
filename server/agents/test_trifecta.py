@@ -478,3 +478,70 @@ class GrantNegationTests(unittest.TestCase):
         """Nel `why` devono comparire i grant che ACCENDONO, non quelli tolti."""
         p = self._p(["topic.open", "-topic.files"])
         self.assertNotIn("-topic.files", p["why"]["private_data"])
+
+
+class RemoteEgressTests(unittest.TestCase):
+    """Un remote non vagliato accende il terzo bit (richiesta del 4 ago 2026).
+
+    Un remote non è un verbo: è un condotto PERMANENTE. Un topic collegato a una
+    cartella Drive fa uscire i propri file da lì per definizione, e se quella
+    cartella non è fra le destinazioni approvate l'uscita è arbitraria —
+    indipendentemente da quali verbi abbiano i partecipanti.
+    """
+
+    CFG = {
+        "version": 1,
+        "private_data": {"include": ["topic.open"], "exclude": []},
+        "untrusted_input": {"include": ["web.*"], "exclude": []},
+        "egress": {"include": ["email.send"], "exclude": []},
+        "expansion": {"include": ["agents.*"], "exclude": []},
+    }
+
+    def _p(self, remote_egress):
+        specs = [_spec("lettore", ["topic.open"])]   # nessun verbo di uscita
+        with patch.object(trifecta, "egress_confinement",
+                          return_value={"mode": "gate", "agents": {}}):
+            return trifecta.context_profile(["lettore"], specs=specs, config=self.CFG,
+                                            tainted=False, remote_egress=remote_egress)
+
+    def test_an_unvetted_remote_lights_the_third_bit_with_no_egress_verbs(self):
+        p = self._p(True)
+        self.assertEqual(p["vector"], "011")
+        self.assertTrue(p["remote_egress"])
+        # e la capacità NON cambia: nessun partecipante ha verbi di uscita
+        self.assertFalse(p["capability_legs"]["egress"])
+
+    def test_a_vetted_remote_leaves_it_off(self):
+        p = self._p(False)
+        self.assertEqual(p["vector"], "010")
+        self.assertFalse(p["remote_egress"])
+
+    def test_the_reason_is_distinguishable_from_an_agents_arbitrary_egress(self):
+        """Un remote non vagliato è un problema di whitelist, un agente con uscita
+        arbitraria è un problema di grant: si risolvono con azioni diverse."""
+        self.assertTrue(self._p(True)["remote_egress"])
+        self.assertFalse(self._p(False)["remote_egress"])
+
+
+class RemoteUriTests(unittest.TestCase):
+    def test_a_drive_remote_becomes_a_folder_uri(self):
+        self.assertEqual(
+            trifecta.remote_uri({"remote": {"type": "drive",
+                                            "config": {"folder": "1AbC"}}}),
+            "gdrive:folder/1AbC")
+
+    def test_a_git_remote_is_its_url(self):
+        self.assertEqual(
+            trifecta.remote_uri({"remote": {"type": "git",
+                                            "config": {"url": "https://github.com/a/b"}}}),
+            "https://github.com/a/b")
+
+    def test_no_remote_no_uri(self):
+        for meta in ({}, {"remote": {}}, {"remote": {"type": "drive", "config": {}}}):
+            self.assertIsNone(trifecta.remote_uri(meta))
+
+    def test_membership_is_unknown_without_the_orchestrator_secret(self):
+        """Non si inventa né sì né no: il chiamante tratta `None` come non
+        vagliato, che è la direzione prudente."""
+        with patch.dict("os.environ", {}, clear=True):
+            self.assertIsNone(trifecta.uri_allowed("gdrive:folder/1AbC"))
