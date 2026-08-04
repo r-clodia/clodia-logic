@@ -277,6 +277,56 @@ def egress_confinement(force: bool = False) -> dict:
     return out
 
 
+def remote_uri(meta: dict) -> Optional[str]:
+    """URI di destinazione del REMOTE del canale, o None se non ne ha.
+
+    Un remote non è un verbo: è un condotto **permanente** verso l'esterno. Un
+    topic collegato a una cartella Drive fa uscire i propri file da lì per
+    definizione, e se quella cartella non è fra le destinazioni vagliate l'uscita
+    è arbitraria — indipendentemente da quali verbi abbiano i partecipanti.
+    """
+    rem = (meta or {}).get("remote") or {}
+    rtype = str(rem.get("type") or "").strip()
+    cfg = rem.get("config") or {}
+    if rtype == "drive":
+        folder = str(cfg.get("folder") or "").strip()
+        return f"gdrive:folder/{folder}" if folder else None
+    if rtype == "git":
+        url = str(cfg.get("url") or "").strip()
+        return url or None
+    return None
+
+
+def uri_allowed(uri: Optional[str]) -> Optional[bool]:
+    """`True`/`False` se l'URI è fra le destinazioni vagliate, `None` se non si sa.
+
+    Query di APPARTENENZA al gateway, non lettura della lista: il punteggio non
+    deve ricevere gli indirizzi (una rubrica è dato privato). Chiedendo di un URI
+    che conosce già — viene dal meta del topic — non impara nulla di nuovo.
+
+    `None` su gateway irraggiungibile: non si inventa né sì né no. Il chiamante
+    decide, e la scelta prudente è considerarlo non vagliato — un condotto verso
+    l'esterno che non sappiamo se è approvato va mostrato, non nascosto.
+    """
+    if not uri:
+        return None
+    secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+    if not secret:
+        return None
+    try:
+        import httpx
+        mcp = os.environ.get("CLODIA_TOOLS_MCP_URL",
+                             "http://clodia-tools:7849/mcp/").rstrip("/")
+        base = mcp[:-len("/mcp")] if mcp.endswith("/mcp") else mcp
+        r = httpx.get(f"{base}/internal/egress", params={"uri": uri},
+                      headers={"X-Orchestrator-Secret": secret}, timeout=4.0)
+        r.raise_for_status()
+        return bool(r.json().get("allowed"))
+    except Exception as e:  # noqa: BLE001 — misura, non enforcement
+        LOG.warning("trifecta: appartenenza di '%s' non verificabile (%s)", uri, e)
+        return None
+
+
 def egress_scope(name: str, conf: dict, egress_lit: bool) -> str:
     """Qualifica l'uscita di un agente: `none` · `presided` · `listed` · `arbitrary`.
 
@@ -438,7 +488,8 @@ def agent_profile(spec, config: Optional[dict] = None,
 def context_profile(participants: Iterable[str],
                     specs: Optional[Iterable] = None,
                     config: Optional[dict] = None,
-                    tainted: Optional[bool] = None) -> dict:
+                    tainted: Optional[bool] = None,
+                    remote_egress: Optional[bool] = None) -> dict:
     """Danger score 0–3 di un contesto = **numero di bit accesi del vettore**.
 
     Il vettore (clodia-platform#104 §4, formalizzato il 3 ago 2026):
@@ -497,8 +548,11 @@ def context_profile(participants: Iterable[str],
     capability = sum(1 for leg in LEGS if legs[leg])
     # I tre bit del vettore. Il secondo è capacità, il terzo capacità NETTA del
     # confinamento applicato, il primo un fatto avvenuto.
-    arbitrary_egress = legs["egress"] and any(
-        p.get("egress_scope") == "arbitrary" for p in closure)
+    # Terzo bit: uscita arbitraria dei partecipanti OPPURE un remote del canale
+    # che punta a una destinazione non vagliata. La seconda non dipende dai verbi
+    # di nessuno — è il canale stesso ad avere un condotto verso l'esterno.
+    arbitrary_egress = bool(remote_egress) or (legs["egress"] and any(
+        p.get("egress_scope") == "arbitrary" for p in closure))
     bits = (1 if tainted else 0, 1 if legs["private_data"] else 0,
             1 if arbitrary_egress else 0)
     score = sum(bits)
@@ -559,6 +613,10 @@ def context_profile(participants: Iterable[str],
         # come sono confinati.
         "capability": capability,
         "capability_legs": legs,
+        # Perché il terzo bit è acceso: un remote non vagliato è un problema di
+        # whitelist, un agente con uscita arbitraria è un problema di grant. Si
+        # risolvono con azioni diverse e vanno distinti.
+        "remote_egress": bool(remote_egress),
         "egress_mode": conf.get("mode", "unknown"),
         "egress_scopes": sorted({pr.get("egress_scope", "none") for pr in closure
                                  if pr.get("legs", {}).get("egress")}),
