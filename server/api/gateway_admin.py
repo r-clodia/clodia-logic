@@ -39,3 +39,19 @@ def register_agent(agent: str, allowed_tools: list | None = None) -> dict:
                       timeout=_HTTP_TIMEOUT)
     r.raise_for_status()
     return r.json()
+
+
+def flow_allow(flows: dict, source: str = "", validate: bool = False) -> dict:
+    """Convalida (`validate=True`) o concede le dichiarazioni di flusso di un pack.
+
+    Il gateway è l'unico posto in cui le due liste possono essere scritte: qui non
+    si tiene una copia dei criteri, si chiede. Una seconda copia divergerebbe, e
+    divergerebbe in silenzio.
+    """
+    payload = {"source": source, "validate": bool(validate),
+               "egress": list(flows.get("egress") or []),
+               "ingress": list(flows.get("ingress") or [])}
+    r = requests.post(f"{_base_url()}/flow-allow", headers=_headers(),
+                      json=payload, timeout=_HTTP_TIMEOUT)
+    r.raise_for_status()
+    return r.json()

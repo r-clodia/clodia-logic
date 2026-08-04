@@ -62,6 +62,23 @@ def _version_tuple(v: str):
         return (v,)
 
 
+def _pack_meta(name: str) -> dict | None:
+    """Il manifest del pack INSTALLATO. None se il pack non è installato.
+
+    Solo `DATA/packs/<n>/pack.yaml`, non il catalogo bundled: le dichiarazioni di
+    flusso approvate vivono nel manifest installato, e leggere il fallback
+    direbbe che un pack dichiara qualcosa che qui non è mai stato installato.
+    """
+    path = pack_import.PACKS_META_DIR / name / "pack.yaml"
+    if not path.is_file():
+        return None
+    try:
+        return yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as e:
+        LOG.warning("pack.yaml di '%s' non leggibile: %s", name, e)
+        return None
+
+
 # ── Check update / Update da GitHub (Opzione A) ──────────────────────────────
 def _pack_upstream(name: str) -> dict | None:
     """`upstream: {repo, path, ref}` dal manifest installato (o dal catalogo
@@ -544,6 +561,108 @@ async def mark_pack_setup_done(name: str, request: Request):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     set_setup_pending(name, False)
     return {"name": name, "setup_pending": False}
+
+
+@router.get("/clodia/packs/{name}/flows")
+async def get_pack_flows(name: str, request: Request):
+    """Le dichiarazioni di flusso del pack: cosa chiede, cosa è già approvato.
+
+    Read-only e admin-only come il resto: serve alla webui per mostrare le voci
+    in sospeso dopo un'installazione, e per farle rivedere dopo — un pack
+    aggiornato può dichiararne di nuove, e quelle nuove non sono approvate.
+    """
+    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    if not catalog._NAME_RE.fullmatch(name):
+        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    meta = _pack_meta(name)
+    if meta is None:
+        return JSONResponse(status_code=404, content={"error": f"pack '{name}' non trovato"})
+    flows = (meta.get("flows") or {})
+    declared = flows.get("declared") or {}
+    out = {"name": name, "declared": declared,
+           "approved": bool(flows.get("approved"))}
+    if declared and not flows.get("approved"):
+        out.update(pack_import.validate_flows(declared, source=f"pack:{name}"))
+    return out
+
+
+@router.post("/clodia/packs/{name}/flows/approve")
+async def approve_pack_flows(name: str, request: Request):
+    """Concede le dichiarazioni di flusso di un pack. Atto SEPARATO dall'install.
+
+    Separato di proposito. La dichiarazione è dell'autore del pack, la concessione
+    è dell'owner: se l'installazione concedesse da sé, sarebbe l'autore di un repo
+    di terzi a decidere quali fonti non contaminano il canale di chi installa, e
+    lo deciderebbe nella direzione d'errore che non produce nessun segnale.
+
+    Ogni voce concessa finisce nella lista GLOBALE, come qualunque altra: si vede
+    nelle impostazioni e si revoca una per una. Non esiste una «lista del pack»
+    separata — sarebbe un secondo posto in cui guardare, e chi controlla ne
+    guarderebbe uno solo.
+    """
+    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    if not catalog._NAME_RE.fullmatch(name):
+        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    meta = _pack_meta(name)
+    if meta is None:
+        return JSONResponse(status_code=404, content={"error": f"pack '{name}' non trovato"})
+    declared = ((meta.get("flows") or {}).get("declared")) or {}
+    if not declared:
+        return JSONResponse(status_code=400,
+                            content={"error": f"il pack '{name}' non dichiara flussi"})
+    body = {}
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — corpo opzionale
+        pass
+    # Approvazione SELETTIVA: l'owner può concedere un sottoinsieme. Un dialog
+    # tutto-o-niente su una lista si approva senza leggerla, e la voce che conta
+    # passa insieme alle altre.
+    pick = body.get("uris")
+    if pick:
+        wanted = {str(u).strip() for u in pick}
+        declared = {k: [u for u in v if u in wanted] for k, v in declared.items()}
+        declared = {k: v for k, v in declared.items() if v}
+        if not declared:
+            return JSONResponse(
+                status_code=400,
+                content={"error": "nessuna delle voci indicate è dichiarata dal pack"})
+    from . import gateway_admin
+    try:
+        res = gateway_admin.flow_allow(declared, source=f"pack:{name}")
+    except Exception as e:  # noqa: BLE001
+        return JSONResponse(status_code=502,
+                            content={"error": f"gateway non raggiungibile: {e}"})
+    _set_pack_flows_approved(name, granted=res.get("granted") or [])
+    return {"name": name, **res}
+
+
+def _set_pack_flows_approved(name: str, granted: list) -> None:
+    """Registra nel manifest installato COSA è stato approvato, non solo che lo è.
+
+    Serve alla revisione dopo un aggiornamento del pack: se il manifest nuovo
+    dichiara una voce che non è in questa lista, è una voce nuova e va approvata
+    di nuovo. Un flag booleano non lo distinguerebbe, e un pack aggiornato
+    erediterebbe l'approvazione data a ciò che dichiarava prima.
+    """
+    path = pack_import.PACKS_META_DIR / name / "pack.yaml"
+    try:
+        meta = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+    except OSError:
+        return
+    flows = dict(meta.get("flows") or {})
+    was = list(flows.get("granted") or [])
+    for g in granted:
+        u = g.get("uri")
+        if u and u not in was:
+            was.append(u)
+    flows["granted"] = was
+    declared = flows.get("declared") or {}
+    all_declared = {u for v in declared.values() for u in v}
+    flows["approved"] = bool(all_declared) and all_declared.issubset(set(was))
+    meta["flows"] = flows
+    path.write_text(yaml.safe_dump(meta, allow_unicode=True, sort_keys=False),
+                    encoding="utf-8")
 
 
 @router.delete("/clodia/packs/{name}")
