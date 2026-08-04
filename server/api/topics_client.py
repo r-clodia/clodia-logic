@@ -19,7 +19,38 @@ _HTTP_TIMEOUT = 15
 
 
 class TopicsClientError(RuntimeError):
-    pass
+    """Errore parlando col gateway dei topic.
+
+    Porta `status` e `detail` quando nasce da una risposta HTTP, perché la classe
+    dell'errore va conservata fino alla UI: un rifiuto per validazione (4xx) con un
+    messaggio azionabile non deve arrivare all'utente come un 502, cioè come un
+    guasto del server. È la stessa lezione del 424 sullo storage non raggiungibile
+    (#115): un rifiuto che sembra un crash manda a cercare il problema nel posto
+    sbagliato.
+    """
+
+    def __init__(self, message: str, status: int | None = None,
+                 detail: str | None = None):
+        super().__init__(message)
+        self.status = status
+        self.detail = detail or message
+
+    @property
+    def is_client_error(self) -> bool:
+        return bool(self.status and 400 <= self.status < 500)
+
+
+def _http_error(what: str, r) -> TopicsClientError:
+    """Costruisce l'errore da una risposta non-200, estraendo il messaggio del
+    gateway invece di annidare il suo JSON in una stringa."""
+    detail = ""
+    try:
+        body = r.json()
+        detail = str(body.get("error") or body.get("detail") or "").strip()
+    except Exception:  # noqa: BLE001 — corpo non JSON
+        detail = (r.text or "")[:400].strip()
+    return TopicsClientError(f"gateway {what} → HTTP {r.status_code}: {detail[:400]}",
+                             status=r.status_code, detail=detail or f"HTTP {r.status_code}")
 
 
 def _base() -> str:
@@ -171,7 +202,7 @@ def remote_action(tier: str, name: str, action: str, **params) -> dict:
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway remote irraggiungibile: {e}") from e
     if r.status_code != 200:
-        raise TopicsClientError(f"gateway remote → HTTP {r.status_code}: {r.text[:200]}")
+        raise _http_error("remote", r)
     return r.json()
 
 
