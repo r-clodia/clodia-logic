@@ -10,12 +10,13 @@ import json
 import tempfile
 import unittest
 import zipfile
+from unittest import mock
 from pathlib import Path
 
 import yaml
 
 from ..agents.loader import registry
-from . import catalog, pack_import, packs, plugin_import, plugins
+from . import catalog, gateway_pdp, pack_import, packs, plugin_import, plugins
 
 
 def _zip_bytes(files: dict[str, str]) -> bytes:
@@ -332,10 +333,23 @@ class PacksApiTest(unittest.TestCase):
 
     # --- delete -----------------------------------------------------------
 
+    @staticmethod
+    def _admin_request():
+        """Una richiesta che passa il PDP admin.
+
+        `delete_pack` ha acquisito il parametro `request` quando è stata messa
+        dietro `require_authz`, e questi due test sono rimasti alla firma vecchia:
+        fallivano con un TypeError, cioè senza dire nulla sul pack. Un test rotto
+        per la firma non copre più il comportamento, e occupa il posto di quello
+        che lo coprirebbe.
+        """
+        return mock.Mock(headers={}, client=None)
+
     def test_delete_pack_removes_plugins_and_agents(self) -> None:
         pack_import.import_pack_zip(self._pack_zip(), source="my-pack.zip")
         self._clear_caches()
-        res = asyncio.run(packs.delete_pack("my-pack"))
+        with mock.patch.object(gateway_pdp, "require_authz", lambda *a, **k: None):
+            res = asyncio.run(packs.delete_pack("my-pack", self._admin_request()))
         self.assertEqual(res["deleted"], "my-pack")
         self.assertEqual(sorted(res["plugins"]), ["bare-plugin", "inner-plugin"])
         self.assertEqual(res["agents"], ["testbot"])
@@ -357,7 +371,8 @@ class PacksApiTest(unittest.TestCase):
         self.assertEqual(base[0]["counts"], {"agents": 0, "plugins": 1})
 
     def test_delete_missing_pack_404(self) -> None:
-        res = asyncio.run(packs.delete_pack("ghost-pack"))
+        with mock.patch.object(gateway_pdp, "require_authz", lambda *a, **k: None):
+            res = asyncio.run(packs.delete_pack("ghost-pack", self._admin_request()))
         self.assertEqual(res.status_code, 404)
 
 

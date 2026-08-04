@@ -364,6 +364,11 @@ def install_pack_from_root(root: Path, *, source: str,
 
     meta_dir = PACKS_META_DIR / pack
     meta_dir.mkdir(parents=True, exist_ok=True)
+    # Dichiarazioni di flusso: registrate come IN SOSPESO, non concesse.
+    # L'installazione le mostra; l'approvazione è un atto separato dell'owner.
+    flows = declared_flows(manifest)
+    checked = validate_flows(flows, source=source) if flows else None
+
     _meta = {
         "name": pack,
         "description": description,
@@ -372,6 +377,8 @@ def install_pack_from_root(root: Path, *, source: str,
         "agents": [a["name"] for a in agents if a["status"] != "error"],
         "plugins": [p["plugin"] for p in plugins],
     }
+    if flows:
+        _meta["flows"] = {"declared": flows, "approved": False}
     if upstream is not None:
         _meta["upstream"] = upstream
     (meta_dir / "pack.yaml").write_text(
@@ -379,12 +386,64 @@ def install_pack_from_root(root: Path, *, source: str,
         encoding="utf-8",
     )
     LOG.info("pack '%s' importato: %d agent, %d plugin", pack, len(agents), len(plugins))
-    return {
+    out = {
         "kind": "pack",
         "pack": pack,
         "agents": agents,
         "plugins": plugins,
     }
+    if flows:
+        # In risposta perché è ciò che l'owner deve vedere PRIMA di approvare:
+        # cosa sarebbe concesso, con l'avvertenza per ciascuna voce, e cosa il
+        # gateway rifiuta comunque (uno `*`, una regola degenere).
+        out["flows"] = {"declared": flows, "approved": False, **(checked or {})}
+    return out
+
+
+def declared_flows(manifest: dict) -> dict[str, list[str]]:
+    """Le voci `egress:` / `ingress:` dichiarate dal manifest di un pack.
+
+    Sono una dichiarazione di **flusso**, non di permessi: `egress:` dice dove il
+    pack scrive nel suo funzionamento normale, `ingress:` dice quali fonti non
+    contaminano il canale. È la parte che nessun sistema di plugin esprime — un
+    manifest di estensione dichiara quali host può toccare (una capacità), non
+    che cosa il contenuto letto da lì permette di fare dopo (un flusso).
+
+    Ed è per questo che qui si limita a **leggere**: la dichiarazione è dell'autore
+    del pack, la concessione è dell'owner che installa. Un pack scaricato da un
+    repo di terzi non deve poter decidere cosa non contamina il canale di chi lo
+    installa — sarebbe l'unica delega che va nella direzione d'errore silenziosa.
+    """
+    out: dict[str, list[str]] = {}
+    for key in ("egress", "ingress"):
+        raw = manifest.get(key)
+        if isinstance(raw, str):
+            raw = [raw]
+        uris = [str(u).strip() for u in (raw or []) if str(u).strip()]
+        if uris:
+            out[key] = uris
+    return out
+
+
+def validate_flows(flows: dict, source: str = "") -> dict:
+    """Chiede al gateway cosa sarebbe concesso, SENZA concedere.
+
+    La convalida sta nel gateway e non qui perché è là che vivono le liste e le
+    regole (schemi ammessi per direzione, rifiuto delle voci degeneri): una
+    seconda copia dei criteri divergerebbe, e divergerebbe in silenzio.
+
+    Best-effort: se il gateway non risponde, le dichiarazioni restano in sospeso
+    e l'import non fallisce — un pack non deve diventare non installabile perché
+    il gateway si stava riavviando.
+    """
+    if not flows:
+        return {"granted": [], "refused": []}
+    from . import gateway_admin
+    try:
+        return gateway_admin.flow_allow(flows, source=source, validate=True)
+    except Exception as e:  # noqa: BLE001 — best-effort per disegno
+        LOG.warning("convalida flussi non disponibile: %s", e)
+        return {"granted": [], "refused": [], "unavailable": str(e)[:200]}
 
 
 def remove_pack(name: str) -> dict[str, Any]:
