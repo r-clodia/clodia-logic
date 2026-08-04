@@ -362,13 +362,13 @@ class ConfinementScoreTests(unittest.TestCase):
         for mode in ("report", "off", "unknown"):
             with self.subTest(mode=mode):
                 p = self._p(["topic.open", "web.fetch", "email.send"],
-                            {"mode": mode, "agents": {"x": {"email": {"scope": "listed", "count": 2}}}})
+                            {"mode": mode, "egress": {"scope": "listed"}})
                 self.assertEqual(p["egress_scope"], "arbitrary")
                 self.assertEqual(p["residual"], p["score"])
 
     def test_gate_mode_makes_egress_presided_and_lowers_the_residual(self):
         p = self._p(["topic.open", "web.fetch", "email.send"],
-                    {"mode": "gate", "agents": {}})
+                    {"mode": "gate", "egress": {"scope": "none"}})
         self.assertEqual(p["score"], 3)          # the capability is still there
         self.assertEqual(p["egress_scope"], "presided")
         self.assertEqual(p["residual"], 2)       # a human stands in the way
@@ -376,18 +376,18 @@ class ConfinementScoreTests(unittest.TestCase):
     def test_a_star_rule_is_arbitrary_even_when_enforced(self):
         """`["*"]` is declared but constrains nothing."""
         p = self._p(["topic.open", "web.fetch", "email.send"],
-                    {"mode": "on", "agents": {"x": {"email": {"scope": "wide", "count": 1}}}})
+                    {"mode": "on", "egress": {"scope": "wide"}})
         self.assertEqual(p["egress_scope"], "arbitrary")
         self.assertEqual(p["residual"], 3)
 
     def test_all_types_muted_counts_as_no_egress_at_all(self):
         p = self._p(["topic.open", "email.send"],
-                    {"mode": "on", "agents": {"x": {"email": {"scope": "muted", "count": 0}}}})
+                    {"mode": "on", "egress": {"scope": "muted"}})
         self.assertEqual(p["egress_scope"], "none")
         self.assertEqual(p["residual"], 1)
 
     def test_an_agent_without_egress_verbs_has_scope_none(self):
-        p = self._p(["topic.open"], {"mode": "gate", "agents": {}})
+        p = self._p(["topic.open"], {"mode": "gate", "egress": {"scope": "none"}})
         self.assertEqual(p["egress_scope"], "none")
 
     def test_a_channel_residual_is_the_or_of_the_legs_not_the_max(self):
@@ -410,7 +410,7 @@ class ConfinementScoreTests(unittest.TestCase):
     def test_a_channel_under_gate_reports_the_mode_and_a_lower_residual(self):
         specs = [_spec("a", ["topic.open", "web.fetch", "email.send"])]
         with patch.object(trifecta, "egress_confinement",
-                          return_value={"mode": "gate", "agents": {}}):
+                          return_value={"mode": "gate", "egress": {"scope": "none"}}):
             p = trifecta.context_profile(["a"], specs=specs, config=self.CFG)
         self.assertEqual(p["capability"], 3)
         self.assertEqual(p["vector"], "?10")  # uscita presidiata, taint ignoto
@@ -500,7 +500,7 @@ class RemoteEgressTests(unittest.TestCase):
     def _p(self, remote_egress):
         specs = [_spec("lettore", ["topic.open"])]   # nessun verbo di uscita
         with patch.object(trifecta, "egress_confinement",
-                          return_value={"mode": "gate", "agents": {}}):
+                          return_value={"mode": "gate", "egress": {"scope": "none"}}):
             return trifecta.context_profile(["lettore"], specs=specs, config=self.CFG,
                                             tainted=False, remote_egress=remote_egress)
 
@@ -545,3 +545,49 @@ class RemoteUriTests(unittest.TestCase):
         vagliato, che è la direzione prudente."""
         with patch.dict("os.environ", {}, clear=True):
             self.assertIsNone(trifecta.uri_allowed("gdrive:folder/1AbC"))
+
+
+class EgressScopeShapeTests(unittest.TestCase):
+    """`egress_scope` legge la forma GLOBALE della whitelist (#128).
+
+    Leggeva ancora `conf["agents"][name]`, che dopo il passaggio alla lista globale
+    è sempre assente. Con modo `gate` usciva "presided" per caso giusto, ma **un
+    `*` non veniva più rilevato**: una lista che apre tutto risultava presidiata.
+    È la direzione d'errore che questa misura non può permettersi, ed è il tipo di
+    difetto che un cambio di payload lascia dietro senza rompere niente.
+    """
+
+    def _scope(self, conf):
+        return trifecta.egress_scope("x", conf, egress_lit=True)
+
+    def test_a_star_is_arbitrary_under_both_enforcing_modes(self):
+        for mode in ("gate", "on"):
+            with self.subTest(mode=mode):
+                self.assertEqual(
+                    self._scope({"mode": mode, "egress": {"scope": "wide"}}),
+                    "arbitrary")
+
+    def test_gate_with_no_declared_destination_is_presided(self):
+        self.assertEqual(self._scope({"mode": "gate", "egress": {"scope": "none"}}),
+                         "presided")
+
+    def test_on_with_no_declared_destination_is_no_egress(self):
+        """In `on` una lista vuota non lascia passare niente: non è uscita."""
+        self.assertEqual(self._scope({"mode": "on", "egress": {"scope": "none"}}),
+                         "none")
+
+    def test_on_with_a_list_is_listed(self):
+        self.assertEqual(self._scope({"mode": "on", "egress": {"scope": "listed"}}),
+                         "listed")
+
+    def test_an_unreadable_shape_is_arbitrary(self):
+        """Gateway muto: non si inventa un confinamento."""
+        for conf in ({"mode": "gate"}, {"mode": "on", "egress": {}}):
+            with self.subTest(conf=conf):
+                self.assertEqual(self._scope(conf), "arbitrary")
+
+    def test_no_egress_verbs_short_circuits(self):
+        self.assertEqual(
+            trifecta.egress_scope("x", {"mode": "gate", "egress": {"scope": "wide"}},
+                                  egress_lit=False),
+            "none")

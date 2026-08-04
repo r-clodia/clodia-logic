@@ -342,16 +342,22 @@ def egress_scope(name: str, conf: dict, egress_lit: bool) -> str:
     mode = str(conf.get("mode") or "unknown")
     if mode not in _ENFORCING_MODES:
         return "arbitrary"
-    types = (conf.get("agents") or {}).get(name)
-    if types is None:
-        # Agente senza voce nella config del gateway. In modo `gate` una
-        # destinazione qualunque passa comunque da un umano: è presidiata.
-        return "presided" if mode == "gate" else "arbitrary"
-    scopes = {v.get("scope") for v in types.values() if isinstance(v, dict)}
-    if "wide" in scopes:
+    # La whitelist è GLOBALE (#128): la forma arriva in `egress`, non più per
+    # agente. Questa funzione leggeva ancora `conf["agents"][name]`, che dopo quel
+    # cambio è sempre assente — con modo `gate` usciva "presided" per caso giusto,
+    # ma un `*` non veniva più rilevato: una falsa rassicurazione, cioè la
+    # direzione d'errore che questa misura non può permettersi.
+    shape = str(((conf.get("egress") or {}).get("scope")) or "unknown")
+    if shape == "wide":
+        # Una lista che contiene `*` è dichiarata e non vincola niente.
         return "arbitrary"
-    if scopes and scopes <= {"muted"}:
-        return "none"
+    if shape in ("none", "muted"):
+        # Nessuna destinazione dichiarata. In `gate` ogni invio passa comunque da
+        # un umano — presidiata; in `on` non passa affatto — nessuna uscita.
+        return "presided" if mode == "gate" else "none"
+    if shape == "unknown":
+        # Forma non leggibile (gateway muto): non si inventa un confinamento.
+        return "arbitrary"
     return "presided" if mode == "gate" else "listed"
 
 
