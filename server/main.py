@@ -267,6 +267,30 @@ def create_app() -> FastAPI:
     # Profilo assente = FULL → comportamento identico a prima.
     prof = instance_profile.load()
 
+    # Un gateway irraggiungibile non è un 500. Trovato dal vivo: durante il
+    # riavvio del gateway un endpoint che non catturava `TopicsClientError` ha
+    # fatto uscire l'eccezione, e la UI ha mostrato «HTTP 500 — Internal Server
+    # Error», cioè il messaggio che non dice niente. I punti che lo catturano sono
+    # decine e ne basta uno che dimentica: l'handler globale è l'unico modo per
+    # cui non può essere dimenticato.
+    #
+    # 503 e non 502: il gateway non ha risposto male, non ha risposto — ed è una
+    # condizione TRANSITORIA, che è precisamente l'informazione utile (riprova).
+    from .api.topics_client import TopicsClientError as _TCErr
+
+    @app.exception_handler(_TCErr)
+    async def _gateway_error(_request, exc: _TCErr):  # noqa: ANN202
+        from fastapi.responses import JSONResponse as _JR
+        if exc.is_client_error:
+            return _JR({"detail": exc.detail}, status_code=exc.status or 400)
+        unreachable = "irraggiungibile" in str(exc)
+        LOG.warning("gateway: %s", str(exc)[:200])
+        return _JR({"detail": (
+            "gateway dei topic non raggiungibile — probabilmente si sta "
+            "riavviando. Riprova fra qualche secondo." if unreachable
+            else f"errore dal gateway dei topic: {exc.detail[:200]}")},
+            status_code=503 if unreachable else 502)
+
     app.include_router(health.router)
     app.include_router(admin.router)
     app.include_router(auth.router)
