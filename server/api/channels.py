@@ -1319,6 +1319,18 @@ async def channel_remote(tier: str, name: str, request: Request) -> dict:
         # 502 lo faceva sembrare un guasto del server e mandava a cercare il
         # problema nel posto sbagliato; e il testo veniva troncato a metà.
         if e.is_client_error:
+            # Rifiuto CONFERMABILE: il gateway marca i casi in cui la decisione
+            # spetta all'owner («collegando Drive i file già presenti non saranno
+            # più visibili»). 409 Conflict e non 400: la richiesta è in conflitto
+            # con lo stato attuale e si può ripetere confermando — un 400 direbbe
+            # «malformata», che non è. Il marcatore esce dal testo e diventa un
+            # campo: la UI non deve riconoscere il caso da una frase italiana.
+            marker = "confirmable:"
+            if e.detail.startswith(marker):
+                kind, _, human = e.detail[len(marker):].partition(":")
+                raise HTTPException(409, {"confirmable": kind.strip(),
+                                          "message": human.strip(),
+                                          "confirm_field": "confirm_hides_local"})
             raise HTTPException(e.status, e.detail)
         raise HTTPException(502, str(e)[:300])
 
