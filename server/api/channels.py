@@ -17,6 +17,7 @@ un agente, vedi `_maybe_delegate`).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import os
@@ -229,11 +230,22 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     # auto-delegarsi; il tag con ordinale (@nome#N) resta valido se il SEED è
     # partecipante (issue#94).
     self_seed = _seed_name(from_agent)
+    eligible_soft = [t for t in soft
+                     if _seed_name(t) in participants and _seed_name(t) != self_seed]
     plan: list[tuple[str, str]] = (
         [(t, "direct") for t in hard
          if _seed_name(t) in participants and _seed_name(t) != self_seed]
-        + [(t, "soft") for t in soft
-           if _seed_name(t) in participants and _seed_name(t) != self_seed])
+        # `$tag` NON avvia un turno. Prima lo avviava, con l'aggravante che la
+        # direttiva soft ORDINAVA un cenno anche a chi non aveva nulla da dire:
+        # costava come un `@` e produceva in più un messaggio vuoto. La citazione
+        # resta nel campo `mentions` (badge, notifica) e l'agente citato la vede
+        # nella storia del canale al suo prossimo turno naturale, quando può
+        # reagire sapendo già com'è finita.
+        + [(t, "soft-ack") for t in eligible_soft if _soft_ack_selected(from_agent, t, reply_text)])
+    for t in eligible_soft:
+        if not any(t == tag for tag, _k in plan):
+            LOG.info("citazione $%s da %s su %s/%s: nessun turno (soft)",
+                     t, from_agent, tier, name)
     if not plan:
         return
     if not _multi_responder_enabled() and len(plan) > 1:
@@ -456,6 +468,36 @@ def _auto_routing_allowed(spec, message: str) -> bool:
     return _is_state_writer_request(message)
 
 
+def _soft_ack_rate() -> float:
+    """Frazione di citazioni `$` che producono un cenno. 0 = mai."""
+    raw = (os.environ.get("CHANNEL_SOFT_ACK_RATE") or "0.2").strip()
+    try:
+        return max(0.0, min(1.0, float(raw)))
+    except ValueError:
+        return 0.2
+
+
+def _soft_ack_selected(from_agent: str, tag: str, text: str) -> bool:
+    """Questa citazione produce un cenno? Deciso in modo DETERMINISTICO.
+
+    Campionamento, non caso: l'hash di (chi cita, chi è citato, testo) invece di
+    un dado. Stessa frequenza, ma lo stesso messaggio decide sempre allo stesso
+    modo — un retry non raddoppia il cenno, un replay del canale ricostruisce la
+    stessa storia, e il comportamento si può fissare in un test.
+
+    Nota su cosa questo cenno NON è: un ack campionato non è interpretabile — dal
+    silenzio non si distingue «non avevo nulla da aggiungere» da «non sono stato
+    campionato». Serve come segno di vita del canale, non come risposta.
+    """
+    rate = _soft_ack_rate()
+    if rate <= 0:
+        return False
+    if rate >= 1:
+        return True
+    h = hashlib.sha256(f"{from_agent}\x00{tag}\x00{text}".encode("utf-8")).digest()
+    return (int.from_bytes(h[:4], "big") / 0xFFFFFFFF) < rate
+
+
 def _tag_directive(kind: str, author: str, text: str) -> str | None:
     """Direttiva del turno in base al tipo di tag (goal-oriented + gioco di squadra)."""
     if kind == "direct":
@@ -465,15 +507,24 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "il fine e portalo a casa con i tuoi strumenti. Se ti manca un tool/grant/"
             "skill per completarlo, NON fermarti: guarda i partecipanti del canale "
             "(runtime.agents mostra skill, grant e dominio di ciascuno), trova chi può "
-            "aiutarti e coinvolgilo — @agente per una richiesta diretta, $agente per un "
-            "coinvolgimento soft. Riferisci l'esito nel canale.\n\nMessaggio:\n" + text)
-    if kind == "soft":
+            "aiutarti e coinvolgilo. Riferisci l'esito nel canale.\n\n"
+            "COME COINVOLGERE, e quanto costa. `@nome` **apre un turno completo** di "
+            "quell'agente: consuma il suo contesto e produce un messaggio che tutti nel "
+            "canale leggono. Usalo SOLO quando ti serve che faccia qualcosa che tu non "
+            "puoi fare. `$nome` è una CITAZIONE: non apre un turno, lo informa e "
+            "gli lascia la storia del canale da leggere al suo prossimo intervento. "
+            "Usalo quando lo stai nominando, informando o ringraziando. In dubbio, `$`: "
+            "chi serve davvero lo si tagga al passaggio dopo, mentre un `@` di troppo "
+            "non si ritira.\n\nMessaggio:\n" + text)
+    if kind in ("soft", "soft-ack"):
         return (
-            f"[MENZIONE SOFT] {author} ti ha citato con $ in questo messaggio: è una "
-            "CITAZIONE, non una richiesta d'azione. Intervieni SOLO se hai davvero "
-            "qualcosa di utile da aggiungere; altrimenti posta un CENNO BREVISSIMO di "
-            "una riga (es. \"👍 noto, nulla da aggiungere\"). Niente intervento completo "
-            "se non serve.\n\nMessaggio:\n" + text)
+            f"[CITAZIONE] {author} ti ha citato con $ in questo messaggio. Una "
+            "citazione NON è una richiesta d'azione, e di norma non ti fa nemmeno "
+            "aprire un turno: questo è un campione. Rispondi con UNA RIGA e nient'altro "
+            "— un cenno se non hai niente da aggiungere, o l'unica informazione che "
+            "cambierebbe le cose se ce l'hai. Nessun lavoro, nessun tool, nessun "
+            "riepilogo: se serve davvero un intervento tuo, qualcuno ti taggherà "
+            "con @.\n\nMessaggio:\n" + text)
     if kind == "routed":
         return (
             f"[ROUTING AUTOMATICO] {author} ha inviato una richiesta multi-agente. "

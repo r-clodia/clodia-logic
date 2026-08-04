@@ -507,11 +507,23 @@ class ChannelTrifectaTests(unittest.TestCase):
                             tool_permissions=["email.send"], sandbox=None),
         ]
         real = channels.trifecta.context_profile
+
+        # Il finto INOLTRA i kwargs invece di elencarli: `context_profile` ha
+        # acquisito `tainted` e `remote_egress` quando il vettore è diventato a 3
+        # bit, e un finto con la firma fissa smetteva di accettare la chiamata —
+        # `_channel_trifecta` degradava a None e il test moriva su un TypeError,
+        # senza dire nulla sul profilo.
         with patch.object(channels.trifecta, "context_profile",
-                          lambda parts: real(parts, specs=specs)):
+                          lambda parts, **kw: real(parts, specs=specs, **kw)):
             prof = channels._channel_trifecta({"participants": ["lettore", "postino"]})
-        self.assertEqual(prof["score"], 3)
-        self.assertEqual(prof["symbol"], "🚨")
+        # Due gambe su tre: questi due partecipanti portano lettura di dati privati
+        # e scrittura verso l'esterno. Il primo bit è `?`, non `0`: senza lo stato
+        # del canale la contaminazione è NON DETERMINATA, e si rende diversa da
+        # «pulito» perché nessuno legga «non contaminato» da «non lo sappiamo».
+        # Non contando, lo score resta 2 — un bit ignoto non è un bit acceso.
+        self.assertEqual(prof["score"], 2)
+        self.assertEqual(prof["vector"], "?11")
+        self.assertEqual(prof["symbol"], "⚠️")
 
     def test_failure_degrades_to_none_instead_of_breaking_the_channel(self) -> None:
         with patch.object(channels.trifecta, "context_profile",
@@ -821,6 +833,51 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(start.await_count, 1)
         self.assertEqual(start.await_args_list[0].args[3].name, "worker")
+
+    async def _delegate(self, text, rate="0"):
+        """Esegue la delega con l'ack campionato spento, salvo diversa indicazione."""
+        start = AsyncMock(return_value=True)
+        with (
+            patch.dict("os.environ", {"CHANNEL_SOFT_ACK_RATE": rate}),
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0",
+                         "participants": ["owner", "clodia", "worker", "accountant"]},
+            }),
+        ):
+            await channels._maybe_delegate("P0", "ops", "clodia", text, "owner", 0)
+        return start
+
+    async def test_a_citation_does_not_start_a_turn(self) -> None:
+        """`$nome` non invoca. Prima invocava, con l'aggravante che la direttiva
+        ordinava un cenno anche a chi non aveva nulla da dire: costava come un `@`
+        e produceva in più un messaggio vuoto. La citazione resta nel campo
+        `mentions` — badge e notifica — e l'agente la legge al suo turno naturale.
+        """
+        start = await self._delegate("Come diceva $worker, il punto regge")
+        self.assertEqual(start.await_count, 0)
+
+    async def test_a_hard_mention_still_starts_a_turn(self) -> None:
+        """Il rimedio non deve rendere il canale muto: `@` invoca ancora."""
+        start = await self._delegate("@worker puoi verificare?")
+        self.assertEqual(start.await_count, 1)
+
+    async def test_a_sampled_citation_starts_an_ack_turn(self) -> None:
+        """Campionato, il turno parte con la direttiva della citazione: una riga,
+        nessun lavoro. Con rate=1 il campionamento è forzato."""
+        start = await self._delegate("Come diceva $worker", rate="1")
+        self.assertEqual(start.await_count, 1)
+        self.assertEqual(start.await_args_list[0].args[3].name, "worker")
+        self.assertIn("soft-ack", start.await_args_list[0].args)
+
+    async def test_a_hard_mention_wins_over_a_citation_of_the_same_agent(self) -> None:
+        """Un nome sia `@` che `$` conta come hard: chi è taggato davvero non
+        deve retrocedere a citazione per un'occorrenza successiva."""
+        start = await self._delegate("@worker verifica, e come diceva $worker prima")
+        self.assertEqual(start.await_count, 1)
+        self.assertIn("direct", start.await_args_list[0].args)
+
 
 class MessageFeedbackTests(unittest.IsolatedAsyncioTestCase):
     async def asyncSetUp(self) -> None:
