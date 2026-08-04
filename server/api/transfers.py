@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import hmac
+import logging
 import os
 import time
 import uuid
@@ -11,6 +12,8 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ..sdk_runtime.session import manager
 from ..transfer_crypto import decrypt_file, encrypt_file, public_b64, public_from_b64
+
+LOG = logging.getLogger("agent-server.transfers")
 
 router = APIRouter(prefix="/internal/transfers", tags=["internal-transfers"])
 
@@ -41,12 +44,38 @@ def _session(chat_id: str):
 
 
 def _scratch_path(spawn, value: str) -> Path:
+    """Risolve `value` DENTRO lo scratch della sessione.
+
+    Un path relativo si unisce alla radice dello scratch invece di essere
+    rifiutato. Prima veniva risolto contro la cwd del processo agent-server, cioè
+    fuori dallo scratch per costruzione → 400 su quello che un agente scrive
+    naturalmente (`estratto.zip`, `files/x.pdf`).
+
+    Il caso che ci è costato una giornata è peggiore, perché sembra corretto: la
+    cwd dell'agente è la RADICE dello spawn, mentre lo scratch è `<spawn>/scratch`.
+    Un agente che fa `pwd` e compone un path assoluto finisce ACCANTO allo scratch,
+    non dentro — e prende 400 su un path che ha appena letto dal proprio ambiente.
+    Tre agenti diversi hanno fallito così, ognuno concludendo che il servizio era
+    guasto.
+    """
     root = Path(spawn.scratch).resolve()
-    path = Path(value or "").resolve()
+    raw = (value or "").strip()
+    if not raw:
+        raise HTTPException(400, f"dest richiesto: un nome file, o un path sotto {root}")
+    candidate = Path(raw)
+    path = (candidate if candidate.is_absolute() else root / candidate).resolve()
     try:
         path.relative_to(root)
     except ValueError as exc:
-        raise HTTPException(400, "path fuori dallo scratch della sessione") from exc
+        # Il motivo va nel log E nella risposta: prima non era in nessuno dei due,
+        # e l'agente vedeva "400 Bad Request" senza nulla su cui agire.
+        LOG.warning("transfer rifiutato: '%s' non sta sotto lo scratch %s", raw, root)
+        raise HTTPException(
+            400,
+            f"'{raw}' non sta nel tuo scratch. Lo scratch è {root} — NON la tua "
+            f"cwd, che è la radice dello spawn (un livello sopra). Passa solo il "
+            f"nome del file (es. '{candidate.name or 'file.zip'}') e ci penso io, "
+            f"oppure un path sotto {root}.") from exc
     return path
 
 
