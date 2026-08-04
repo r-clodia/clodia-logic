@@ -427,6 +427,19 @@ def agent_profile(spec, config: Optional[dict] = None,
                   egress_conf: Optional[dict] = None) -> dict:
     """Profilo trifecta di un singolo agente, dai suoi grant effettivi.
 
+    ⚠️ `score` e `residual` di QUESTO profilo non sono una metrica di prodotto e
+    non vanno mostrati accanto a un agente. Da quando il punteggio conta i bit del
+    vettore (#198), due dei tre bit sono proprietà del CANALE: la contaminazione è
+    un evento della stanza, e l'uscita arbitraria dipende da una whitelist globale
+    (#128). Un numero per-agente somma cose che all'agente non appartengono, e
+    suggerisce che l'agente sia il soggetto della misura — che è la lettura
+    abbandonata in #77 («l'unità di valutazione non è l'agente, è il contesto»).
+
+    Ciò che di questo profilo resta vero e utile è `legs` — quali capacità
+    l'agente PORTA — e `why`, che dice con quali grant. Il numero esiste solo come
+    passaggio intermedio per `context_profile`.
+    
+
     Ritorna anche i grant che hanno acceso ciascun lato: il numero da solo non
     è azionabile, la scomposizione sì (è il requisito del dialog nell'issue)."""
     cfg = config or load_config()
