@@ -1313,7 +1313,14 @@ async def channel_remote(tier: str, name: str, request: Request) -> dict:
         return topics_client.remote_action(
             tier, name, action, **{k: v for k, v in body.items() if k != "action"})
     except topics_client.TopicsClientError as e:
-        raise HTTPException(502, str(e)[:200])
+        # Un rifiuto del gateway (4xx) è una VALIDAZIONE con un messaggio
+        # azionabile — «collegare Drive nasconderebbe 18 file locali: popola
+        # prima la cartella» — e va consegnato come tale. Impacchettarlo in un
+        # 502 lo faceva sembrare un guasto del server e mandava a cercare il
+        # problema nel posto sbagliato; e il testo veniva troncato a metà.
+        if e.is_client_error:
+            raise HTTPException(e.status, e.detail)
+        raise HTTPException(502, str(e)[:300])
 
 
 async def run_topic_turn(tier: str, name: str, meta: dict,
