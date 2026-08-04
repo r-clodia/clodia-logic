@@ -125,6 +125,13 @@ private_data:
   - leads.*
   # stato e configurazione dell'istanza (include credenziali e integrazioni)
   - settings.*
+  # Amministrazione delle whitelist: `egress.list`/`ingress.list` restituiscono la
+  # rubrica dell'owner, quindi il namespace è dato privato. NON è egress: `allow`
+  # non spedisce niente, concede il permesso di spedire — e classificarlo come
+  # uscita direbbe che un agente che amministra la lista sta esfiltrando, che è
+  # falso e renderebbe il punteggio meno leggibile.
+  - egress.*
+  - ingress.*
   - integrations.*
   - providers.*
   - agents.*

@@ -60,41 +60,11 @@ tool_permissions:
   # I CONFINI HARD restano: SEAL-1 (mai confidenziale, per clearance), nessun
   # segreto. I FILE dei topic NON sono più vietati in assoluto: accesso via
   # topic.* con le regole comuni (participant + clearance + gate cross-topic).
-  - "agents.*"          # capability degli altri agent (grant/revoke, gated) + list/show
-  - "integrations.*"    # osservazione/test dei connettori
-  - "jobs.*"            # job schedulati (propose gated by design)
-  - "packs.*"           # import/remove/setup_done + provisioning deps runtime dichiarate
-  - "mcp.*"             # mount/remove/list MCP server dichiarati dai pack
-  - "rag.*"             # create/list/search/ingest RAG collection entro clearance/grant
-  - "profile.*"         # profili/stile
-  - "providers.*"       # pausa/ripresa provider di inferenza (gated) + list
-  - "runtime.*"         # introspezione runtime + restart_agent (include topics/chats: solo METADATI, non il contenuto)
-  - "settings.*"        # settings di piattaforma (backup run/set/get/restore-test, gated)
-  - "workflows.*"       # lifecycle delle run dei workflow (start/cancel/delete_run, gated) + list/status
-  - "fs.list_dir"       # navigazione datadir (plugins/, runtime/)
-  - "logs.tail"         # diagnosi: ultimi log del server (read-only)
-  - "web.post"          # POST HTTP generica, sempre gated per singola invocazione
   # ── GitHub: codice r-clodia in lettura + gestione issue ──
   # Grant espliciti invece di github.*: sysadmin può diagnosticare consultando
   # repository e release e gestire il ciclo di vita delle issue, senza ottenere
   # permessi di scrittura su codice, branch, release o configurazione dei repo.
-  - "github.get_file_contents"
-  - "github.list_commits"
-  - "github.list_branches"
-  - "github.list_tags"
-  - "github.list_releases"
-  - "github.get_commit"
-  - "github.search_code"
-  - "github.search_commits"
-  - "github.issue_read"
-  - "github.issue_write"
-  - "github.list_issues"
-  - "github.search_issues"
-  - "github.add_issue_comment"
   # ── Front-of-house (ex janitor): lettura stato UI non sensibile per guidare ──
-  - "app_runtime.get"
-  - "app_runtime.list"
-  - "app_runtime.health"
   # ── File dei topic: stesse regole degli altri agent (es. messaggero) ──
   # list/read/put/delete file, open, summary/minute. Enforcement gateway:
   # participant + clearance ≥ tier; topic non-participant → gate cross-topic.
@@ -110,6 +80,34 @@ tool_permissions:
   # conserva `agents.*`, che il catalogo trifecta classifica come `expansion`
   # (grant/revoke di capability = fabbricare autorità). Per sysadmin il §10.2 va
   # completato dallo split di `agents.*` previsto in #104 §8. Vedi il PR.
+  - "agents.*"          # capability degli altri agent (grant/revoke, gated) + list/show
+  - "app_runtime.get"
+  - "app_runtime.health"
+  - "app_runtime.list"
+  - "fs.list_dir"       # navigazione datadir (plugins/, runtime/)
+  - "github.add_issue_comment"
+  - "github.get_commit"
+  - "github.get_file_contents"
+  - "github.issue_read"
+  - "github.issue_write"
+  - "github.list_branches"
+  - "github.list_commits"
+  - "github.list_issues"
+  - "github.list_releases"
+  - "github.list_tags"
+  - "github.search_code"
+  - "github.search_commits"
+  - "github.search_issues"
+  - "integrations.*"    # osservazione/test dei connettori
+  - "jobs.*"            # job schedulati (propose gated by design)
+  - "logs.tail"         # diagnosi: ultimi log del server (read-only)
+  - "mcp.*"             # mount/remove/list MCP server dichiarati dai pack
+  - "packs.*"           # import/remove/setup_done + provisioning deps runtime dichiarate
+  - "profile.*"         # profili/stile
+  - "providers.*"       # pausa/ripresa provider di inferenza (gated) + list
+  - "rag.*"             # create/list/search/ingest RAG collection entro clearance/grant
+  - "runtime.*"         # introspezione runtime + restart_agent (include topics/chats: solo METADATI, non il contenuto)
+  - "settings.*"        # settings di piattaforma (backup run/set/get/restore-test, gated)
   - "topic.add_minute"
   - "topic.archive"
   - "topic.delete_file"
@@ -136,6 +134,14 @@ tool_permissions:
   - "topic.search"
   - "topic.suggest_team"
   - "topic.write_file"
+  - "web.post"          # POST HTTP generica, sempre gated per singola invocazione
+  - "workflows.*"       # lifecycle delle run dei workflow (start/cancel/delete_run, gated) + list/status
+  - egress.allow
+  - egress.list
+  - egress.revoke
+  - ingress.allow
+  - ingress.list
+  - ingress.revoke
 priority: 30
 cost_profile: standard
 
