@@ -29,6 +29,7 @@ from fastapi import APIRouter, HTTPException, Request
 from ..agents import activity_log, rank as rank_mod, registry
 from ..agents import feedback as agent_feedback
 from ..agents import trifecta
+from .. import debug_watch
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import manager, ProviderNotConnected, topic_runtime_override
@@ -173,6 +174,14 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         # messaggio vuoto → senza tipo+traceback la diagnosi è cieca.
         LOG.warning("errore del risponditore %s su %s/%s: %r", responder, tier, name, e,
                     exc_info=True)
+        # Il caso più comune di «l'ho menzionato e non risponde»: il turno è
+        # morto, il log lo sa, il canale resta muto. Chi guarda non distingue
+        # un agente rotto da un agente che ha scelto di tacere.
+        _spawn_bg(_watch_report(
+            tier, name, "turn_failed", _seed_name(responder),
+            f"Il turno di {responder} è terminato con un'eccezione: nel canale non "
+            f"è comparso nulla, quindi dall'esterno sembra che non abbia risposto.",
+            error=repr(e)[:300], hop=hop))
         return None
     finally:
         await _typing(tier, name, responder, "stop")
@@ -213,6 +222,42 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     return reply
 
 
+async def _watch_report(tier: str, name: str, kind: str, subject: str,
+                        detail: str, **evidence) -> None:
+    """Rileva un'anomalia e, in modalità debug, sveglia il guardiano.
+
+    Best-effort per disegno: la diagnostica non deve poter rompere il turno che
+    stava già andando male. Un monitor che propaga la propria eccezione
+    trasforma un'anomalia in due.
+    """
+    if not debug_watch.enabled():
+        return
+    a = debug_watch.Anomaly(kind=kind, channel=f"{tier}/{name}", subject=subject,
+                            detail=detail, evidence=evidence)
+    if not debug_watch.should_report(a):
+        return
+    LOG.warning("debug-watch · %s su %s/%s (%s): %s", kind, tier, name, subject, detail)
+    try:
+        topic = topics_client.open_topic(tier, name)
+        meta = (topic or {}).get("meta", {})
+        tier_real = meta.get("tier", tier)
+        watcher = registry.get_by_name(debug_watch.WATCHER)
+        if watcher is None:
+            return
+        # Clearance: il guardiano è SEAL-1. In un topic di tier superiore non
+        # entra, e non lo si forza — si registra e si esce. Il segnale resta nel
+        # log, che è dove chi indaga guarda comunque; declassificare un topic per
+        # far entrare la diagnostica sarebbe il baratto sbagliato.
+        if not _provider_seal_ok(watcher, tier_real):
+            LOG.warning("debug-watch · %s non idoneo a %s: anomalia solo registrata",
+                        debug_watch.WATCHER, tier_real)
+            return
+        await _start_turn(tier, name, tier_real, watcher, "debug-watch",
+                          a.brief(), "debug", hop=_MAX_DELEGATION_HOPS)
+    except Exception as e:  # noqa: BLE001 — la diagnostica non rompe il turno
+        LOG.warning("debug-watch · escalation non riuscita: %r", e)
+
+
 async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str,
                           principal: str | None, hop: int) -> None:
     """Gioco di squadra: se nel suo reply un agente tagga ALTRI agenti idonei, ne
@@ -230,6 +275,21 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     # auto-delegarsi; il tag con ordinale (@nome#N) resta valido se il SEED è
     # partecipante (issue#94).
     self_seed = _seed_name(from_agent)
+    # Chiamata al guardiano da parte di un agente in difficoltà. In modalità debug
+    # `@sysadmin` sveglia il guardiano anche se non è partecipante del canale:
+    # senza questo, l'unica via d'uscita di un agente bloccato è chiedere
+    # all'umano — che è il comportamento che abbiamo visto tutto il giorno, e la
+    # ragione per cui esiste questa modalità.
+    if debug_watch.enabled() and debug_watch.WATCHER in hard \
+            and debug_watch.WATCHER not in participants \
+            and _seed_name(from_agent) != debug_watch.WATCHER:
+        _spawn_bg(_watch_report(
+            tier, name, "help_requested", _seed_name(from_agent),
+            f"{from_agent} ha chiesto aiuto taggando @{debug_watch.WATCHER}: "
+            f"si è dichiarato bloccato da qualcosa che sembra un guasto, non da "
+            f"una decisione. Leggi gli ultimi messaggi del canale per il sintomo.",
+            requested_by=from_agent))
+
     eligible_soft = [t for t in soft
                      if _seed_name(t) in participants and _seed_name(t) != self_seed]
     plan: list[tuple[str, str]] = (
@@ -262,6 +322,16 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         # idoneità: _pick_responder col tag ritorna il delegato SOLO se idoneo al tier
         delegate = _pick_responder(participants, tier_real, seed)
         if delegate is None or delegate.name != seed or delegate.name in started:
+            # Qui muore una mention: taggato ma non avviato. Per chi guarda il
+            # canale è «l'ho chiamato e non risponde», e finora l'unica traccia
+            # era la sua assenza.
+            if delegate is None or delegate.name != seed:
+                _spawn_bg(_watch_report(
+                    tier, name, "mention_unroutable", seed,
+                    f"@{seed} è stato taggato da {from_agent} ma nessun turno è "
+                    f"partito: non è partecipante idoneo di questo canale, o il suo "
+                    f"provider non copre il tier.",
+                    tagged_by=from_agent, tier=tier_real, kind=kind))
             continue
         LOG.info("delega %s: %s → @%s (hop %d) su %s/%s",
                  kind, from_agent, delegate.name, hop + 1, tier, name)
@@ -525,6 +595,10 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "cambierebbe le cose se ce l'hai. Nessun lavoro, nessun tool, nessun "
             "riepilogo: se serve davvero un intervento tuo, qualcuno ti taggherà "
             "con @.\n\nMessaggio:\n" + text)
+    if kind == "debug":
+        # Il brief è già completo (debug_watch.Anomaly.brief): non lo si
+        # riavvolge in un'altra direttiva, che ne diluirebbe le istruzioni.
+        return text
     if kind == "routed":
         return (
             f"[ROUTING AUTOMATICO] {author} ha inviato una richiesta multi-agente. "
@@ -630,6 +704,14 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         except ProviderNotConnected:
             LOG.warning("nessun provider idoneo per %s su topic %s/%s tier=%s",
                         spec.name, tier, name, tier_real)
+            # Anche questo si legge come «non risponde», e la causa è a monte del
+            # modello: nessun provider connesso e idoneo al tier. È il caso in cui
+            # un intervento (connettere/attivare un provider) risolve subito.
+            _spawn_bg(_watch_report(
+                tier, name, "no_provider", spec.name,
+                f"{spec.name} non ha un provider connesso e idoneo al tier "
+                f"{tier_real}: il turno non è mai partito.",
+                tier=tier_real))
             return False
     chat.principal = principal
     directive = _tag_directive(kind, principal, user_text)
