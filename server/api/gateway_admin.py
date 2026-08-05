@@ -32,10 +32,17 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL)}"}
 
 
-def register_agent(agent: str, allowed_tools: list | None = None) -> dict:
-    """Registra/aggiorna l'agent nella whitelist del gateway (config.yaml)."""
+def register_agent(agent: str, allowed_tools: list | None = None,
+                   gated_tools: list | None = None) -> dict:
+    """Registra/aggiorna l'agent nella whitelist del gateway (config.yaml).
+
+    `gated_tools` viaggia con la registrazione perché è dichiarato nel seed e
+    custodito dal gateway: la dichiarazione sta dove si sa quali verbi sono
+    pericolosi, l'autorità dove l'agente non può riscriverla.
+    """
     r = requests.post(f"{_base_url()}/whitelist", headers=_headers(),
-                      json={"agent": agent, "allowed_tools": allowed_tools or []},
+                      json={"agent": agent, "allowed_tools": allowed_tools or [],
+                            "gated_tools": gated_tools or []},
                       timeout=_HTTP_TIMEOUT)
     r.raise_for_status()
     return r.json()

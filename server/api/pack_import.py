@@ -275,7 +275,8 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
     # Whitelist gateway: idempotente, best-effort.
     try:
         from . import gateway_admin
-        gateway_admin.register_agent(name, spec.tool_permissions or None)
+        gateway_admin.register_agent(name, spec.tool_permissions or None,
+                                     gated_tools=spec.gated_tools or None)
     except Exception as e:  # noqa: BLE001
         LOG.warning("whitelist gateway per '%s' fallita: %s", name, e)
 

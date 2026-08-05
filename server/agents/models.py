@@ -281,6 +281,24 @@ class AgentSpec(BaseModel):
     # Permessi tool MCP granulari (es. ["trello.*", "email.send"]).
     # Enforcement nel gateway MCP; qui dichiarativo per validator/selection.
     tool_permissions: list[str] = Field(default_factory=list)
+    #: Verbi che, per QUESTO agent, richiedono un consenso umano a ogni uso.
+    #:
+    #: Dichiarati qui perché è il posto in cui si sa quali dei propri verbi sono
+    #: pericolosi: chi scrive il seed di un agente GitHub sa che `push_files` va
+    #: chiesto e `list_branches` no. Prima esistevano SOLO nella config del
+    #: gateway, messi a mano: `fullstack-dev` (15 mutazioni GitHub), `sysadmin`
+    #: (creare/cancellare agenti, restart, backup) e `messaggero` avevano i gate
+    #: perché qualcuno aveva eseguito uno script una volta — e un'istanza nuova
+    #: dai pack nasceva senza. Un controllo che non viaggia col seed non esiste
+    #: per il primo clone.
+    #:
+    #: Questa lista è una DICHIARAZIONE, non l'autorità. L'enforcement legge la
+    #: copia nella config del gateway, dove l'agente non scrive: questo file vive
+    #: sulla datadir insieme al codice degli agenti, e un agente capace di
+    #: riscriverlo cancellerebbe i propri gate — cioè si auto-escalerebbe al
+    #: silenzio. La copia avviene alla registrazione (register_agent), come per
+    #: le dichiarazioni di flusso dei pack.
+    gated_tools: list[str] = Field(default_factory=list)
     # Grant dichiarativi sulle collection RAG della capacità di piattaforma
     # (es. ["eu-normativa"]). Enforcement nel gateway, come tool_permissions.
     # Usati dai seed dei pack (es. aitiero in clodia-packs).
