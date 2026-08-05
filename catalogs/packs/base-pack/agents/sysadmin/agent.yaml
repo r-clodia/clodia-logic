@@ -41,7 +41,26 @@ mailbox_parent: clodia
 sandbox:
   allow_read: ["{scratch}/**", "plugins/**", "packs/**", "runtime/**", "agents/**",
                "/clodia/**", "/platform-src/**"]
+  # I path RELATIVI qui sotto sono risolti contro la cwd dell'agente (la radice
+  # dello spawn), dove `topics/`, `secrets/` e `clodia-vault/` NON esistono: quelle
+  # tre righe non corrispondono a nulla. Si tengono perché documentano l'intenzione
+  # e perché un pack installato su un'istanza con layout diverso potrebbe averle
+  # relative-raggiungibili — ma da sole non proteggono niente, e leggerle come una
+  # protezione è il modo in cui nasce un buco vero (qualcuno allenta l'uid
+  # convinto che il deny copra).
+  #
+  # Le versioni ASSOLUTE mordono davvero sul tool Read. Aggiunte dopo aver
+  # verificato che `/datadir/secrets` e `/datadir/clodia-vault` erano coperti SOLO
+  # dai permessi OS (root:root 700 contro l'uid dello spawn, 60000: negato dal
+  # kernel — provato). Difesa in profondità: il kernel resta il confine, questo
+  # rende il documento onesto.
+  #
+  # ⚠️ Con `allow_shell_cmds: ["*"]` queste regole sono AGGIRABILI per costruzione:
+  # `Bash(* *)` significa che `cat` legge tutto ciò che l'uid può leggere. Per
+  # sysadmin il confine è l'uid, non questo blocco. Vale anche per il punteggio
+  # trifecta: chi ha la shell scavalca il gateway.
   deny_read: ["topics/**", "secrets/**", "clodia-vault/**",
+              "/datadir/secrets/**", "/datadir/clodia-vault/**", "/datadir/topics/**",
               "/clodia/secrets/**", "/clodia/**/.env*", "/clodia/**/*.key",
               "/platform-src/**/secrets/**", "/platform-src/**/.env*", "/platform-src/**/*.key"]
   allow_write: ["{scratch}/**", "plugins/**", "runtime/**"]
