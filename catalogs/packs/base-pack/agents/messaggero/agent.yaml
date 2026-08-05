@@ -52,32 +52,16 @@ tool_permissions:
   - email.*
   - telegram.*
   - jobs.propose
-  - topic.add_minute
-  - topic.archive
-  - topic.delete_file
-  - topic.fetch
-  - topic.files
-  - topic.invoke_hook
-  - topic.list
-  - topic.migrate_storage
-  - topic.new
   - topic.open
-  - topic.post_message
-  - topic.put
-  - topic.read_document
+  - topic.files
   - topic.read_file
-  - topic.remote_add
-  - topic.remote_commit
-  - topic.remote_disable
-  - topic.remote_enable
-  - topic.remote_pull
-  - topic.remote_push
-  - topic.remote_status
-  - topic.remove_participant
-  - topic.save_summary
-  - topic.search
-  - topic.suggest_team
+  - topic.read_document
+  - topic.put
+  - topic.fetch
   - topic.write_file
+  - topic.search
+  - topic.list
+  - topic.post_message
 memory:
   dir: memory/
 system_prompt: system-prompt.md
