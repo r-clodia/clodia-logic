@@ -40,10 +40,16 @@ def register_agent(agent: str, allowed_tools: list | None = None,
     custodito dal gateway: la dichiarazione sta dove si sa quali verbi sono
     pericolosi, l'autorità dove l'agente non può riscriverla.
     """
+    # `gated_tools` si OMETTE quando non c'è, non si manda `[]`: il gateway tratta
+    # l'assenza come «non mi pronuncio» e la lista vuota come «azzerale». Mandare
+    # sempre `[]` sconfiggeva quella guardia dal lato client — e ha azzerato i gate
+    # di clodia al primo update del base-pack, cioè ha ALLARGATO l'autorità di un
+    # super-agent con un aggiornamento che doveva solo cambiargli il prompt.
+    payload: dict = {"agent": agent, "allowed_tools": allowed_tools or []}
+    if gated_tools is not None:
+        payload["gated_tools"] = list(gated_tools)
     r = requests.post(f"{_base_url()}/whitelist", headers=_headers(),
-                      json={"agent": agent, "allowed_tools": allowed_tools or [],
-                            "gated_tools": gated_tools or []},
-                      timeout=_HTTP_TIMEOUT)
+                      json=payload, timeout=_HTTP_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
