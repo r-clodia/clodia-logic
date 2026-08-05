@@ -14,6 +14,7 @@ catch-all SPA). Lo spostamento sotto `/api/agents` libera il path per la SPA.
 """
 import asyncio
 import json
+import logging
 import re
 import shutil
 from datetime import datetime, timezone
@@ -32,6 +33,8 @@ import yaml
 
 from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import FileResponse, JSONResponse
+
+LOG = logging.getLogger("agent-server.agent-registry")
 from pydantic import BaseModel, Field
 
 from ..agents import activity_log, pause as pause_mod, rank as rank_mod, registry
@@ -63,11 +66,27 @@ _PFP_STYLE = "no fotorealistic, manga style, studio ghibli style"
 
 
 def _connected_safe() -> set[str]:
-    """Provider collegati, con degrado a vuoto se il gateway è irraggiungibile:
-    la lista agenti non deve andare in 500 perché il vault è momentaneamente giù."""
+    """Provider collegati, con degrado a vuoto se il vault non è interrogabile:
+    la lista agenti non deve andare in 500 perché il gateway è momentaneamente giù.
+
+    Cattura anche `PermissionError`, e non è un allargamento: leggere i provider
+    richiede un token di sessione, e su un'istanza appena installata quel token
+    non si può coniare (nessuna identity.key ancora emessa). Il risultato era che
+    l'INTERA pagina degli agenti restituiva `500 Internal Server Error` mentre il
+    codice sapeva esattamente cosa mancava — «senza identità (eseguire pki issue)».
+    La docstring prometteva già questo degrado; l'eccezione sbagliata la rendeva
+    una promessa non mantenuta.
+    """
     try:
         return connected_provider_ids()
     except ProviderStoreError:
+        return set()
+    except PermissionError as e:
+        # Un errore di autorità qui NON è un errore della lista: si degrada e si
+        # dice perché, così la causa arriva a chi può agire invece di diventare
+        # un 500 opaco.
+        LOG.warning("provider non interrogabili (%s): la lista agenti prosegue "
+                    "senza lo stato di connessione", e)
         return set()
 
 

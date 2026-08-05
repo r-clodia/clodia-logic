@@ -337,10 +337,52 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
             "scoped_tools": list(scoped_key), "unattended": bool(unattended)}
     r = httpx.post(_gateway_mint_url(), json=body,
                    headers={"X-Orchestrator-Secret": secret}, timeout=8.0)
+    if r.status_code == 403 and "senza identità" in (r.text or ""):
+        # PRIMO BOOT di un'istanza keyless: l'entrypoint dichiara "PKI bootstrap
+        # delegata al gateway", il gateway sa emettere le identità ma NESSUNO
+        # gliele chiede. In mezzo non c'è nessuno, e l'istanza è inutilizzabile:
+        # senza identity.key ogni mint dà 403 e `/api/agents` muore in 500.
+        #
+        # Si chiede l'emissione una volta e si ritenta. Idempotente: il gateway
+        # non rigenera un'identità esistente.
+        #
+        # SOLO per agenti, mai per umani: un principal umano ha la chiave nel
+        # BROWSER e il server non deve possederne una: emettergliela qui
+        # significherebbe poter firmare al suo posto. La distinzione la conosce
+        # solo il registry, che vive qui — è la ragione per cui l'auto-emissione
+        # sta da questo lato e non nel gateway, che dal suo config.yaml non sa
+        # chi è umano.
+        if _is_human_principal(agent):
+            LOG.warning("mint: '%s' è un principal umano senza identità — NON la "
+                        "emetto (la sua chiave sta nel browser)", agent)
+            r.raise_for_status()
+        LOG.warning("mint: '%s' senza identità nel gateway → chiedo l'emissione", agent)
+        httpx.post(_gateway_mint_url(),
+                   json={"kind": "issue-identity", "agent": agent},
+                   headers={"X-Orchestrator-Secret": secret},
+                   timeout=15.0).raise_for_status()
+        r = httpx.post(_gateway_mint_url(), json=body,
+                       headers={"X-Orchestrator-Secret": secret}, timeout=8.0)
     r.raise_for_status()
     token = r.json()["token"]
     _MINT_CACHE[key] = (token, now + int(ttl_seconds))
     return token
+
+
+def _is_human_principal(agent: str) -> bool:
+    """True se `agent` è un principal UMANO. Fail-CLOSED verso «umano»: se non si
+    riesce a stabilirlo, NON si emette una chiave — sbagliare in questa direzione
+    costa un mint fallito, nell'altra costa la capacità di firmare per una persona.
+    """
+    try:
+        from ..agents.loader import registry
+        spec = registry.get_by_name(agent)
+        if spec is None:
+            return True
+        return (getattr(spec, "type", "") or "") == "human"
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("tipo di '%s' non determinabile (%s): assumo umano", agent, e)
+        return True
 
 
 def mint_session_token(agent: str, execution_id: str = "",
