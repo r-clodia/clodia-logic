@@ -62,3 +62,17 @@ def flow_allow(flows: dict, source: str = "", validate: bool = False) -> dict:
                       json=payload, timeout=_HTTP_TIMEOUT)
     r.raise_for_status()
     return r.json()
+
+
+def agent_verbs(agent: str) -> dict:
+    """Verbi EFFETTIVI dell'agent col flag gated, dal gateway.
+
+    Non si costruisce qui: il gateway è l'unico che conosce insieme il catalogo
+    dei verbi nativi, la lista gated globale, i `gated_tools` per-agente e i
+    `denied_tools`. Una risposta assemblata da questo lato sarebbe una seconda
+    verità, e divergerebbe come è già divergiuto lo specchio dei denied.
+    """
+    r = requests.get(f"{_base_url()}/{agent}/verbs", headers=_headers(),
+                     timeout=_HTTP_TIMEOUT)
+    r.raise_for_status()
+    return r.json()
