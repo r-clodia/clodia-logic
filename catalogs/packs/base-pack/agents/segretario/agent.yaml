@@ -36,11 +36,8 @@ rules:
 # archive, delete_file, remote_* git, new/list/search).
 tool_permissions:
   - topic.open
-  - topic.files
-  - topic.read_file
+  - topic.read_document
   - topic.save_summary
-  - topic.add_minute
-  - topic.write_file
 memory:
   dir: memory/
 system_prompt: system-prompt.md
