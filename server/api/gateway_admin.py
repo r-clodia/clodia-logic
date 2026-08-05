@@ -33,7 +33,8 @@ def _headers() -> dict[str, str]:
 
 
 def register_agent(agent: str, allowed_tools: list | None = None,
-                   gated_tools: list | None = None) -> dict:
+                   gated_tools: list | None = None,
+                   gated_in_channel: list | None = None) -> dict:
     """Registra/aggiorna l'agent nella whitelist del gateway (config.yaml).
 
     `gated_tools` viaggia con la registrazione perché è dichiarato nel seed e
@@ -48,6 +49,10 @@ def register_agent(agent: str, allowed_tools: list | None = None,
     payload: dict = {"agent": agent, "allowed_tools": allowed_tools or []}
     if gated_tools is not None:
         payload["gated_tools"] = list(gated_tools)
+    # Stessa regola dell'omissione: mandare `[]` sempre toglierebbe il gate del
+    # canale a ogni registrazione, che è come sono spariti i gate di clodia.
+    if gated_in_channel is not None:
+        payload["gated_in_channel"] = list(gated_in_channel)
     r = requests.post(f"{_base_url()}/whitelist", headers=_headers(),
                       json=payload, timeout=_HTTP_TIMEOUT)
     r.raise_for_status()

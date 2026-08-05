@@ -70,6 +70,14 @@ tool_permissions:
 # Questa è la DICHIARAZIONE; l'autorità è la copia nel gateway, scritta alla
 # registrazione. Il seed vive sulla datadir col codice degli agenti, e un agente
 # capace di riscriverlo cancellerebbe i propri gate.
+# Spedire è il mestiere di messaggero: fuori da un canale lo fa senza chiedere.
+# Dentro un canale serve l'approvazione di un ADMIN, perché lì chi chiede non è
+# l'owner — un partecipante può chiedere, e il contenuto che può far uscire è
+# tutto quello che sta nella stanza. La lettura resta libera: smistare la posta
+# in arrivo è lavoro legittimo anche dentro un canale.
+gated_in_channel:
+  - email.send
+  - email.reply
 gated_tools:
 - topic.remote_add
 - topic.remote_commit
