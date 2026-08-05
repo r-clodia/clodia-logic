@@ -31,7 +31,7 @@ def _norm_clearance(c: str | None) -> str:
 import yaml
 
 from fastapi import APIRouter, HTTPException, Request
-from fastapi.responses import FileResponse
+from fastapi.responses import FileResponse, JSONResponse
 from pydantic import BaseModel, Field
 
 from ..agents import activity_log, pause as pause_mod, rank as rank_mod, registry
@@ -196,6 +196,23 @@ async def get_agent(name: str, request: Request) -> dict:
     d["contact_channels"] = contacts.channels(spec)
     d.update(_provider_fields(spec, _connected_safe()))
     return d
+
+
+@router.get("/{name}/verbs")
+async def get_agent_verbs(name: str, request: Request):
+    """Verbi effettivi del seed col lucchetto: alimenta la scheda dell'agente.
+
+    Best-effort: se il gateway non risponde, la scheda mostra la dichiarazione del
+    seed senza lucchetti invece di rompersi. Un pannello che spare per un timeout
+    insegna a non fidarsi del pannello.
+    """
+    from . import gateway_admin
+    try:
+        return gateway_admin.agent_verbs(name)
+    except Exception as e:  # noqa: BLE001 — diagnostica, non un percorso critico
+        return JSONResponse(status_code=200,
+                            content={"agent": name, "verbs": [], "groups": [],
+                                     "unavailable": str(e)[:200]})
 
 
 @router.get("/{name}/pfp")
