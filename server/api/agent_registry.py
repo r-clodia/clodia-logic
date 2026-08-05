@@ -808,7 +808,20 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
     """Crea un nuovo agente USER-DEFINED generando lo scaffold direttamente dallo
     schema (single source of truth — niente file-template da tenere allineato),
     poi reload. Gli agent nativi (clodia/ophelia/messaggero) sono seed nel repo."""
-    gateway_pdp.require_authz(request, "agents.create")  # admin-only (PDP gateway)
+    # PRE-CLAIM: su un'istanza non ancora reclamata questa è l'UNICA azione
+    # permessa, e chiedere un admin per crearne il primo è uno stallo — l'admin
+    # non può esistere prima di sé stesso. Il middleware `_bootstrap_gate` lo
+    # dichiara già ("SOLO la creazione del primo superadmin"): qui l'endpoint
+    # non gli dava seguito, e una istanza nuova restava inutilizzabile con
+    # `401 autenticazione richiesta` sull'unico passo previsto dal log di boot.
+    #
+    # La finestra si chiude da sé: appena esiste un human, `is_initialized()`
+    # diventa vero e questa chiamata torna admin-only per sempre. Chi arriva
+    # primo reclama l'istanza — è la scelta di disegno del claim-by-first, già
+    # presa dal middleware, non una deroga introdotta qui.
+    from . import admin as _admin_state
+    if _admin_state.is_initialized():
+        gateway_pdp.require_authz(request, "agents.create")  # admin-only (PDP gateway)
     # Gli AGENT SEED (agenti AI) si installano SOLO via pack (import): un seed è
     # contenuto di pack, non un artefatto generato a runtime. Qui resta ammesso
     # solo `type=human` (onboarding di un principal umano — un'identità, non un
