@@ -142,6 +142,26 @@ tool_permissions:
   - ingress.allow
   - ingress.list
   - ingress.revoke
+# Verbi che per QUESTO agent richiedono un consenso umano a ogni uso
+# (clodia-platform#104). Dichiarati nel seed perché è qui che si sa quali dei
+# propri verbi sono pericolosi — e perché un controllo che non viaggia col seed
+# non esiste per il primo clone: prima queste liste stavano SOLO nella config del
+# gateway, applicate a mano, e un'istanza nuova nasceva senza.
+# Questa è la DICHIARAZIONE; l'autorità è la copia nel gateway, scritta alla
+# registrazione. Il seed vive sulla datadir col codice degli agenti, e un agente
+# capace di riscriverlo cancellerebbe i propri gate.
+gated_tools:
+- agents.create
+- agents.delete
+- agents.patch
+- runtime.inspect_topic
+- runtime.restart_agent
+- settings.backup_run
+- settings.restore_test
+- topic.remote_add
+- topic.remote_commit
+- topic.remote_enable
+- topic.remote_push
 priority: 30
 cost_profile: standard
 
