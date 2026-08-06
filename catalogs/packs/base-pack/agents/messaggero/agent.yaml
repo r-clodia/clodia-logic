@@ -88,6 +88,12 @@ tool_permissions:
 gated_in_channel:
   - email.send
   - email.reply
+  # Telegram è un'uscita esattamente come l'email, e ometterlo era
+  # un'omissione mia, non una scelta: dentro un canale con dei
+  # collaboratori un invio Telegram non chiedeva niente mentre una mail
+  # sì. Le due uscite hanno ora la stessa supervisione.
+  - telegram.send
+  - telegram.send_file
 gated_tools:
 - topic.remote_add
 - topic.remote_commit
