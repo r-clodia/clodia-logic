@@ -299,6 +299,14 @@ class AgentSpec(BaseModel):
     #: silenzio. La copia avviene alla registrazione (register_agent), come per
     #: le dichiarazioni di flusso dei pack.
     gated_tools: list[str] = Field(default_factory=list)
+    #: Verbi gated SOLO dentro un canale di topic. Stessa custodia di
+    #: `gated_tools` e stessa ragione. Serve dove il verbo È il mestiere
+    #: dell'agente — un postino che spedisce — e ciò che cambia dentro un canale
+    #: non è la pericolosità del verbo ma CHI può chiederlo: i partecipanti non
+    #: sono l'owner, e il contenuto che possono far uscire è tutta la stanza.
+    #: Gatarlo sempre renderebbe il gate un riflesso; gatarlo mai lascerebbe a un
+    #: membro un canale d'uscita. Solo un admin può approvare un gate.
+    gated_in_channel: list[str] = Field(default_factory=list)
     # Grant dichiarativi sulle collection RAG della capacità di piattaforma
     # (es. ["eu-normativa"]). Enforcement nel gateway, come tool_permissions.
     # Usati dai seed dei pack (es. aitiero in clodia-packs).
