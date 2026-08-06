@@ -278,7 +278,8 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
         gateway_admin.register_agent(
             name, spec.tool_permissions or None,
             gated_tools=spec.gated_tools or None,
-            gated_in_channel=spec.gated_in_channel or None)
+            gated_in_channel=spec.gated_in_channel or None,
+            profile_tools=spec.profile_tools or None)
     except Exception as e:  # noqa: BLE001
         LOG.warning("whitelist gateway per '%s' fallita: %s", name, e)
 

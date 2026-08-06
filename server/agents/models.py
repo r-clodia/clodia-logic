@@ -307,6 +307,11 @@ class AgentSpec(BaseModel):
     #: Gatarlo sempre renderebbe il gate un riflesso; gatarlo mai lascerebbe a un
     #: membro un canale d'uscita. Solo un admin può approvare un gate.
     gated_in_channel: list[str] = Field(default_factory=list)
+    #: Il MESTIERE dichiarato: i verbi che l'agente usa senza chiedere. Ciò che
+    #: raggiunge e NON dichiara resta raggiungibile ma passa da un consenso —
+    #: least authority per supervisione invece che per rimozione. Stessa custodia
+    #: di `gated_tools`: dichiarato qui, enforced dal gateway.
+    profile_tools: list[str] = Field(default_factory=list)
     # Grant dichiarativi sulle collection RAG della capacità di piattaforma
     # (es. ["eu-normativa"]). Enforcement nel gateway, come tool_permissions.
     # Usati dai seed dei pack (es. aitiero in clodia-packs).
