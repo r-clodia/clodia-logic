@@ -62,6 +62,16 @@ tool_permissions:
   - topic.search
   - topic.list
   - topic.post_message
+  # Drive per il TRASPORTO: prendere un file e depositarlo in un topic,
+  # e il contrario. Dichiarati perché dal 6 ago un grant sul vault apre la
+  # credenziale e non i verbi: quello che serve va deciso, non ereditato.
+  # Fuori di proposito: `gdrive.share` (uscita verso una PERSONA, non
+  # trasporto) e `gdrive.move`/`rename` (riorganizzare il Drive di altri
+  # non è consegnare).
+  - gdrive.list
+  - gdrive.search
+  - gdrive.download
+  - gdrive.upload
 # Verbi che per QUESTO agent richiedono un consenso umano a ogni uso
 # (clodia-platform#104). Dichiarati nel seed perché è qui che si sa quali dei
 # propri verbi sono pericolosi — e perché un controllo che non viaggia col seed
