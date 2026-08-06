@@ -18,6 +18,11 @@ _TOKEN_TTL = 300
 _HTTP_TIMEOUT = 15
 
 
+class TopicsConflictError(RuntimeError):
+    """Optimistic lock perso. Distinta da TopicsClientError perché la risposta
+    giusta è diversa: rileggere e rifondere, non ritentare uguale."""
+
+
 class TopicsClientError(RuntimeError):
     """Errore parlando col gateway dei topic.
 
@@ -152,6 +157,42 @@ def set_deadline(tier: str, name: str, deadline: str | None) -> dict:
         raise TopicsClientError(f"gateway set-deadline irraggiungibile: {e}") from e
     if r.status_code >= 400:
         raise TopicsClientError(f"gateway set-deadline → HTTP {r.status_code}: {r.text[:160]}")
+    return r.json()
+
+
+def get_agents_md(tier: str, name: str) -> tuple[str | None, str | None, bool]:
+    """`(testo, versione, autorevole)` delle istruzioni di scope.
+
+    `autorevole` distingue il control-plane dal fallback legacy in `files/`, dove
+    QUALUNQUE partecipante poteva scrivere. Chi inietta questo testo in un prompt
+    deve poterlo sapere: è la differenza fra una nota di canale e una direttiva.
+    """
+    url = f"{_base()}/{tier}/{name}/agents-md"
+    try:
+        r = requests.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway agents-md irraggiungibile: {e}") from e
+    if r.status_code >= 400:
+        raise TopicsClientError(f"gateway agents-md → HTTP {r.status_code}: {r.text[:160]}")
+    d = r.json()
+    return d.get("text"), d.get("version"), bool(d.get("authoritative"))
+
+
+def save_agents_md(tier: str, name: str, text: str,
+                   base_version: str | None) -> dict:
+    """Riscrive le istruzioni di scope. 409 = qualcun altro ha scritto nel
+    frattempo: il chiamante rilegge e rifonde, non sovrascrive."""
+    url = f"{_base()}/{tier}/{name}/agents-md"
+    try:
+        r = requests.post(url, headers=_headers(),
+                          json={"text": text, "base_version": base_version},
+                          timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway agents-md irraggiungibile: {e}") from e
+    if r.status_code == 409:
+        raise TopicsConflictError(r.json().get("error") or "conflitto di versione")
+    if r.status_code >= 400:
+        raise TopicsClientError(f"gateway agents-md → HTTP {r.status_code}: {r.text[:160]}")
     return r.json()
 
 
