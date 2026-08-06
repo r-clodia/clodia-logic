@@ -254,3 +254,15 @@ profile_tools:
   - fs.list_dir
   - topic.remote_commit
   - topic.remote_push
+
+# Nessun gate PER-AGENTE. La config live ne aveva quattro — i `topic.remote_*` —
+# ma non erano dichiarati da nessuna parte: vivevano solo là, quindi un rebuild
+# li avrebbe persi o conservati a caso.
+#
+# Oggi non servono: `remote_add` e `remote_enable` sono gated GLOBALMENTE (chi
+# imposta un remote dichiara il perimetro d'accesso del topic), e
+# `remote_commit`/`remote_push` sono liberi per decisione di Davide — spingono
+# verso la destinazione che l'owner ha approvato, quindi sono USO del perimetro
+# e non dichiarazione. Tenerli anche qui li avrebbe gatati comunque, perché un
+# lucchetto duro vince sul profilo.
+gated_tools: []
