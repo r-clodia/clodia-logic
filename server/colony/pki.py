@@ -393,7 +393,8 @@ def mint_session_token(agent: str, execution_id: str = "",
                        human_role: str | None = None,
                        chat: str | None = None,
                        scoped_tools: list[str] | None = None,
-                       unattended: bool = False) -> str:
+                       unattended: bool = False,
+                       origin: list[str] | None = None) -> str:
     """Firmato dal RUNNER con la chiave privata dell'agente (mai esposta
     al workspace). Nel workspace entra solo il token risultante.
 
@@ -435,6 +436,13 @@ def mint_session_token(agent: str, execution_id: str = "",
         payload["chat"] = chat  # chat_id della sessione (per postare in chat le decisioni sudo)
     if scoped_tools:
         payload["scoped_tools"] = scoped_tools
+    if origin:
+        # CATENA D'ORIGINE (docs/security-model.md §4): chi ha causato questo
+        # turno, dall'iniziatore all'esecutore. Firmata come `chat` e
+        # `clearance`, e per lo stesso motivo — il gateway interseca le autorità
+        # della catena, e se un agente potesse comporla l'intersezione sarebbe la
+        # sua parola su sé stesso.
+        payload["origin"] = [str(x) for x in origin]
     if unattended:
         # Sessione aperta da un job schedulato: nessun umano davanti al turno.
         # Claim FIRMATO → l'agente non può togliersela (clodia-platform#104).
