@@ -50,210 +50,77 @@ rules: ["*"]
 #   topic.migrate_storage      sposta tutto lo storage; da steward
 #   topic.invoke_hook          esecuzione locale di un hook
 tool_permissions:
-  - agents.grant_rule
-  - agents.grant_scoped
-  - agents.grant_skill
-  - agents.grant_tool
+# IL SET. Fisso, come per ogni altro agente — nel caso di clodia numeroso.
+# Non esiste più un secondo insieme «raggiungibile ma fuori profilo»: se un
+# verbo non è qui, clodia non lo ha. Punto.
+#
+# Quando le verrà chiesto un task che richiede un verbo che non possiede,
+# riceverà un GRANT specifico attraverso un gate. Quel meccanismo non è ancora
+# implementato (6 ago 2026): per ora il set è statico e questo file lo dichiara.
+  - topic.open
+  - topic.list
+  - topic.search
+  - topic.files
+  - topic.read_file
+  - topic.read_document
+  - topic.fetch
+  - topic.remote_status
+  - topic.post_message
+  - topic.add_minute
+  - topic.save_summary
+  - topic.suggest_team
+  - topic.add_participant
+  - topic.write_file
+  - topic.put
+  - topic.delete_file
+  - artifact.render
   - agents.list
-  - agents.list_rules
+  - agents.show
   - agents.list_scoped
   - agents.list_skills
+  - agents.list_rules
   - agents.list_tools
-  - agents.revoke_rule
-  - agents.revoke_scoped
-  - agents.revoke_skill
-  - agents.revoke_tool
-  - agents.show
-  - artifact.render
-  - egress.allow
-  - egress.list
-  - egress.revoke
-  - eu_corpus.ingest
-  - eu_corpus.list
-  - eu_corpus.remove
-  - eu_corpus.search
-  - fs.list_dir
-  - gcalendar.create_event
-  - gcalendar.delete_event
-  - gcalendar.freebusy
-  - gcalendar.list_calendars
-  - gcalendar.list_events
-  - gcalendar.update_event
-  - gdocs.append_text
-  - gdocs.create
-  - gdocs.read
-  - gdocs.replace_text
-  - gdrive.download
-  - gdrive.list
-  - gdrive.mkdir
-  - gdrive.move
-  - gdrive.rename
-  - gdrive.search
-  - gdrive.upload
-  - gsheets.add_tab
-  - gsheets.append_rows
-  - gsheets.list_tabs
-  - gsheets.read
-  - gsheets.write_range
-  - image.generate
-  - ingress.allow
-  - ingress.list
-  - ingress.revoke
-  - integrations.list
-  - jobs.list
-  - jobs.propose
-  - mcp.list
-  - memory.append
-  - memory.delete_document
-  - memory.fetch
-  - memory.get_document
-  - memory.list
-  - memory.list_documents
-  - memory.put
-  - memory.put_document
-  - memory.read
-  - memory.read_document
-  - memory.write
-  - packs.check_command
-  - packs.list
-  - packs.setup_done
-  - packs.show
-  - providers.list
-  - rag.collections
-  - rag.create_collection
-  - rag.ingest
-  - rag.list
-  - rag.remove
-  - rag.search
   - runtime.agents
+  - runtime.topics
   - runtime.chats
+  - runtime.skills
+  - runtime.jobs
+  - runtime.providers
+  - runtime.mcp_servers
   - runtime.current_user
   - runtime.inspect_topic
-  - runtime.jobs
-  - runtime.mcp_servers
-  - runtime.providers
-  - runtime.skills
-  - runtime.topics
-  - settings.backup_set
-  - telegram.inbox
-  - telegram.lease_acquire
-  - telegram.lease_release
-  - telegram.listen
-  - telegram.poll
-  - telegram.send
-  - telegram.send_file
-  - telegram.unlisten
-  - topic.add_minute
-  - topic.add_participant
-  - topic.archive
-  - topic.delete_file
-  - topic.fetch
-  - topic.files
-  - topic.list
-  - topic.new
-  - topic.open
-  - topic.post_message
-  - topic.put
-  - topic.read_document
-  - topic.read_file
-  - topic.remote_add
-  - topic.remote_commit
-  - topic.remote_disable
-  - topic.remote_enable
-  - topic.remote_pull
-  - topic.remote_push
-  - topic.remote_status
-  - topic.remove_participant
-  - topic.save_summary
-  - topic.search
-  - topic.suggest_team
-  - topic.write_file
-  - trello.boards
-  - trello.cards
-  - trello.comment
-  - trello.create_card
-  - trello.lists
-  - trello.move_card
-  - web.post
-  - workflows.cancel
-  - workflows.delete_run
+  - integrations.list
+  - providers.list
+  - mcp.list
+  - packs.list
+  - packs.show
   - workflows.list
-  - workflows.start
   - workflows.status
+  - jobs.list
+  - egress.list
+  - ingress.list
+  - rag.collections
+  - memory.list
+  - memory.read
+  - memory.append
+  - memory.write
+  - memory.list_documents
+  - memory.read_document
+  - memory.fetch
+  - fs.list_dir
+  - topic.remote_commit
+  - topic.remote_push
 
 memory:
   dir: memory/
 
 system_prompt: system-prompt.md
 
-# MESTIERE DICHIARATO (profile_tools). Questi verbi clodia li usa senza
-# chiedere; tutto ciò che raggiunge con `*` e NON è qui resta raggiungibile ma
-# passa da un consenso umano — least authority per SUPERVISIONE invece che per
-# rimozione. È la «modalità super» di cui parla il suo prompt: non un insieme
-# diverso di poteri, ma gli stessi poteri con una domanda davanti.
-#
-# Il criterio, in una riga: legge tutto, parla, verbalizza, e muta i file del
-# topic (perimetro approvato dall'owner). Non fa i mestieri altrui — posta,
-# Drive, calendario, Trello — e non tocca il ciclo di vita del topic né il suo
-# remote.
-#
-# `topic.add_participant` è nella lista ma è gated GLOBALMENTE: elencarlo non lo
-# libera. Costruire la squadra chiederà sempre conferma, per scelta (auto-invito
-# = confused deputy).
-profile_tools:
-  - topic.open
-  - topic.list
-  - topic.search
-  - topic.files
-  - topic.read_file
-  - topic.read_document
-  - topic.fetch
-  - topic.remote_status
-  - topic.post_message
-  - topic.add_minute
-  - topic.save_summary
-  - topic.suggest_team
-  - topic.add_participant
-  - topic.write_file
-  - topic.put
-  - topic.delete_file
-  - artifact.render
-  - agents.list
-  - agents.show
-  - agents.list_scoped
-  - agents.list_skills
-  - agents.list_rules
-  - agents.list_tools
-  - runtime.agents
-  - runtime.topics
-  - runtime.chats
-  - runtime.skills
-  - runtime.jobs
-  - runtime.providers
-  - runtime.mcp_servers
-  - runtime.current_user
-  - runtime.inspect_topic
-  - integrations.list
-  - providers.list
-  - mcp.list
-  - packs.list
-  - packs.show
-  - workflows.list
-  - workflows.status
-  - jobs.list
-  - egress.list
-  - ingress.list
-  - rag.collections
-  - memory.list
-  - memory.read
-  - memory.append
-  - memory.write
-  - memory.list_documents
-  - memory.read_document
-  - memory.fetch
-  - fs.list_dir
-  - topic.remote_commit
-  - topic.remote_push
+# Nessun profilo SEPARATO: il set dichiarato sopra è già il mestiere, quindi
+# non c'è niente «fuori profilo» da segnalare. `[]` e non assente, perché
+# assente significa «non mi pronuncio» e lascerebbe in piedi il profilo vecchio
+# nella config live.
+profile_tools: []
 
 # Nessun gate PER-AGENTE. La config live ne aveva quattro — i `topic.remote_*` —
 # ma non erano dichiarati da nessuna parte: vivevano solo là, quindi un rebuild
