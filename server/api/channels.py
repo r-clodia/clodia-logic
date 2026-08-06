@@ -34,6 +34,7 @@ from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import manager, ProviderNotConnected, topic_runtime_override
 from . import access_log, responder_routing, routing_feedback, topics_client
+from .gateway_pdp import require_authz
 from .agents import _principal_from_request
 
 router = APIRouter()
@@ -1477,6 +1478,19 @@ async def channel_remote(tier: str, name: str, request: Request) -> dict:
     action = (body.get("action") or "").strip()
     if not action:
         raise HTTPException(400, "action richiesta")
+    # Il remote Drive di un topic È il suo perimetro di accesso: la cartella del
+    # remote è la radice del confine per le chiamate Drive che avvengono dentro
+    # quel canale (clodia-tools, gdrive_root.roots_for_call). Quindi impostarlo,
+    # cambiarlo o TOGLIERLO non è una preferenza del canale ma una dichiarazione
+    # di autorità, e `_require_member` non è la guardia giusta: un partecipante
+    # potrebbe puntare il remote a una cartella sorella — `30-legale` accanto a
+    # `50-execution` — e allargarsi il perimetro da sé. È la lezione di #80,
+    # applicata al campo che ora porta il confine.
+    #
+    # `status` e `pull` restano ai partecipanti: leggere lo stato e tirare dentro
+    # i contenuti non spostano il confine.
+    if action in ("add", "enable", "disable"):
+        require_authz(request, f"topic.remote_{action}")
     try:
         return topics_client.remote_action(
             tier, name, action, **{k: v for k, v in body.items() if k != "action"})
