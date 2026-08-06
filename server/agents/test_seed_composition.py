@@ -138,15 +138,46 @@ class GrantHygieneTests(unittest.TestCase):
                         self.assertEqual(grant, "topic.*")
 
     def test_every_seed_still_parses_and_keeps_its_other_grants(self) -> None:
-        # Guardia grossolana contro un'esplosione che perde per strada dei verbi:
-        # i due seed toccati devono restare largamente più ricchi di prima.
+        """Un'esplosione dei verbi non deve perdere per strada il MESTIERE.
+
+        Prima questo test fissava una soglia numerica (messaggero > 20 verbi).
+        Il refactoring per classe di seed l'ha ridotto a 13 **di proposito** —
+        misurato: 44 dei 45 rifiuti registrati erano suoi, perché la §8 gli aveva
+        tolto il mestiere — quindi la soglia asseriva un fatto non più vero e
+        restava rossa mentre il codice era giusto. Un test così maschera la
+        regressione che dovrebbe trovare.
+
+        Ora si asserisce il CONTENUTO: i verbi senza i quali l'agente non fa il
+        proprio lavoro. Il numero può scendere ancora; questi non possono
+        sparire.
+        """
         seeds = _seeds()
-        self.assertGreater(len(_grants(seeds["messaggero"])), 20)
+        # messaggero è il postino: posta, messaggistica, e i verbi del topic che
+        # gli servono per leggere e depositare quello che consegna.
+        for verb in ("email.*", "telegram.*", "jobs.propose",
+                     "topic.open", "topic.post_message", "topic.put"):
+            with self.subTest(seed="messaggero", verb=verb):
+                self.assertIn(verb, _grants(seeds["messaggero"]))
+        # sysadmin amministra: resta largo per natura del ruolo.
         self.assertGreater(len(_grants(seeds["sysadmin"])), 40)
-        for name in ("email.*", "telegram.*", "jobs.propose"):
-            self.assertIn(name, _grants(seeds["messaggero"]))
-        for name in ("agents.*", "settings.*", "web.post"):
-            self.assertIn(name, _grants(seeds["sysadmin"]))
+        for verb in ("agents.*", "settings.*", "web.post"):
+            with self.subTest(seed="sysadmin", verb=verb):
+                self.assertIn(verb, _grants(seeds["sysadmin"]))
+
+    def test_the_postman_can_be_supervised_inside_a_channel(self) -> None:
+        """`gated_in_channel` è la ragione per cui il postino può conservare
+        `email.*` senza che un partecipante lo usi come canale d'uscita: fuori dal
+        canale spedisce, dentro serve un admin. Se la dichiarazione sparisse dal
+        seed, i verbi resterebbero e la supervisione no — cioè il difetto
+        silenzioso."""
+        spec = _seeds()["messaggero"]
+        gic = getattr(spec, "gated_in_channel", None) or []
+        self.assertIn("email.send", gic)
+        self.assertIn("email.reply", gic)
+        # la LETTURA non va gatata: smistare la posta in arrivo è lavoro
+        # legittimo anche dentro un canale
+        for verb in ("email.list", "email.read", "email.search"):
+            self.assertNotIn(verb, gic)
 
 
 if __name__ == "__main__":  # pragma: no cover
