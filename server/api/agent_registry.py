@@ -226,10 +226,19 @@ async def get_agent_verbs(name: str, request: Request):
     insegna a non fidarsi del pannello.
     """
     from . import gateway_admin
+    # `no-store`: questa risposta descrive un'AUTORITÀ, e una copia vecchia di
+    # un'autorità è la peggiore che si possa mostrare. Il 6 ago l'insieme di
+    # clodia è cambiato tre volte in un pomeriggio, e la scheda ha continuato a
+    # mostrare uno stato intermedio — senza un header, una GET 200 senza
+    # validatori può essere trattenuta, e l'owner conclude che il sistema non
+    # ubbidisce invece che «sto guardando una fotografia».
+    intestazioni = {"Cache-Control": "no-store, must-revalidate",
+                    "Pragma": "no-cache"}
     try:
-        return gateway_admin.agent_verbs(name)
+        return JSONResponse(status_code=200, content=gateway_admin.agent_verbs(name),
+                            headers=intestazioni)
     except Exception as e:  # noqa: BLE001 — diagnostica, non un percorso critico
-        return JSONResponse(status_code=200,
+        return JSONResponse(status_code=200, headers=intestazioni,
                             content={"agent": name, "verbs": [], "groups": [],
                                      "unavailable": str(e)[:200]})
 
