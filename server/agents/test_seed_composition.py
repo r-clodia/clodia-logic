@@ -179,6 +179,28 @@ class GrantHygieneTests(unittest.TestCase):
         for verb in ("email.list", "email.read", "email.search"):
             self.assertNotIn(verb, gic)
 
+    def test_every_outbound_verb_of_the_postman_is_supervised_in_channel(self) -> None:
+        """Le uscite vanno trattate allo stesso modo, o l'asimmetria è la falla.
+
+        `telegram.send` era fuori da `gated_in_channel` mentre `email.send` era
+        dentro: in un canale con dei collaboratori un invio Telegram non chiedeva
+        niente e una mail sì. Non era una scelta, era un'omissione — e un test che
+        ENUMERA le uscite la trova, mentre uno che ne controlla una sola la
+        conferma.
+        """
+        spec = _seeds()["messaggero"]
+        gic = set(getattr(spec, "gated_in_channel", None) or [])
+        uscite = {v for v in _grants(spec)
+                  if v.endswith((".send", ".send_file", ".reply"))}
+        # i wildcard coprono le uscite senza nominarle: si espandono qui
+        if "email.*" in _grants(spec):
+            uscite |= {"email.send", "email.reply"}
+        if "telegram.*" in _grants(spec):
+            uscite |= {"telegram.send", "telegram.send_file"}
+        mancanti = sorted(uscite - gic)
+        self.assertEqual(mancanti, [],
+                         f"uscite senza supervisione in canale: {mancanti}")
+
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
