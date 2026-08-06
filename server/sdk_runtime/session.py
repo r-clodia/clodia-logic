@@ -880,6 +880,7 @@ class ChatSession:
                                               self._runtime_override),
                                               principal=self.principal,
                                               clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                                              origin=getattr(self, "origin", None),
                                               scoped_tools=self._runtime_override.get("tools"),
                                               unattended=getattr(self, "unattended", False))
             # principal "cotto" nel token MCP di questo client: se cambia (l'utente
@@ -977,6 +978,7 @@ class ChatSession:
                 self.kind, ttl_seconds=_runtime_token_ttl(
                     getattr(self, "_runtime_override", None)),
                 principal=self.principal, clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                                              origin=getattr(self, "origin", None),
                 scoped_tools=self._runtime_override.get("tools"))
         except Exception as e:  # noqa: BLE001 — un re-mint fallito non rompe il turno
             LOG.warning("re-mint token MCP (principal) fallito per kind=%s: %s", self.kind, e)
@@ -1713,6 +1715,7 @@ class CodexChatSession:
                 self.kind, ttl_seconds=_runtime_token_ttl(self._runtime_override),
                 principal=self.principal,
                 clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                                              origin=getattr(self, "origin", None),
                 scoped_tools=self._runtime_override.get("tools"),
                 unattended=getattr(self, "unattended", False))
         except Exception as e:  # noqa: BLE001
@@ -2055,6 +2058,7 @@ class OpenCodeChatSession:
                                          self._runtime_override),
                                          principal=self.principal,
                                          clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                                              origin=getattr(self, "origin", None),
                                          scoped_tools=self._runtime_override.get("tools"))
             cfg["mcp"]["clodia-tools"] = {
                 "type": "local",

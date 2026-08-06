@@ -203,7 +203,9 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         if hop < _MAX_DELEGATION_HOPS:
             for msg in posted_during_turn:
                 try:
-                    await _maybe_delegate(tier, name, responder, msg.get("text") or "", principal, hop)
+                    await _maybe_delegate(tier, name, responder,
+                                          msg.get("text") or "", principal, hop,
+                                          origin_chain=getattr(chat, "origin", None))
                 except Exception as e:  # noqa: BLE001
                     LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
         return posted_during_turn[-1].get("text") or reply
@@ -216,7 +218,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         return None
     if hop < _MAX_DELEGATION_HOPS:
         try:
-            await _maybe_delegate(tier, name, responder, reply, principal, hop)
+            await _maybe_delegate(tier, name, responder, reply, principal, hop,
+                                  origin_chain=getattr(chat, "origin", None))
         except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
             LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
     return reply
@@ -259,7 +262,8 @@ async def _watch_report(tier: str, name: str, kind: str, subject: str,
 
 
 async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str,
-                          principal: str | None, hop: int) -> None:
+                          principal: str | None, hop: int,
+                          origin_chain: list | None = None) -> None:
     """Gioco di squadra: se nel suo reply un agente tagga ALTRI agenti idonei, ne
     innesca il turno. N tag → N deleghe (in parallelo). @tag = incarico diretto,
     $tag = coinvolgimento soft. Salta i tag verso sé stesso o non-partecipanti; il
@@ -349,7 +353,10 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         # messaggio è il reply dell'agente delegante
         if await _start_turn(tier, name, tier_real, delegate,
                              principal or "channel", reply_text or "", kind, hop=hop + 1,
-                             ordinal=req_ord):
+                             ordinal=req_ord,
+                             # eredita la catena del delegante: è il punto esatto
+                             # in cui l'autorità verrebbe amplificata
+                             origin=list(origin_chain or [])):
             started.append(delegate.name)
 
 # I DM sono canali a 2 partecipanti (meta.kind="dm"): nome deterministico (i due
@@ -664,9 +671,31 @@ def _resolve_ordinal(tier: str, name: str, spec, requested: int | None) -> int:
     return nxt if nxt <= cap else min(busy_by_ord)
 
 
+def _origin_for(principal: str, inherited: list | None, executor: str) -> list:
+    """Compone la catena del turno.
+
+    Un turno nato da un messaggio umano parte da `human:<chi>`; una delega
+    EREDITA la catena del delegante e vi aggiunge l'esecutore, perché è
+    esattamente il punto in cui l'autorità verrebbe amplificata se si ripartisse
+    da zero.
+
+    `principal` può valere "channel" (nessun umano identificato, es. un innesco
+    interno): in quel caso non si inventa un anello umano — la catena resta di
+    soli agenti, e il gateway la valuterà per quello che è.
+    """
+    chain = list(inherited or [])
+    if not chain and principal and principal not in ("channel", "feedback"):
+        chain.append(f"human:{principal}")
+    tail = f"agent:{executor}"
+    if not chain or chain[-1] != tail:
+        chain.append(tail)
+    return chain
+
+
 async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str,
                       user_text: str, kind: str, hop: int = 0,
-                      ordinal: int | None = None) -> bool:
+                      ordinal: int | None = None,
+                      origin: list | None = None) -> bool:
     """Avvia (fire-and-forget) un turno del responder `spec` con la direttiva del
     tipo di tag (direct/soft/plain). Sessione persistente per (canale, agente);
     per i seed multi-spawn (issue#94) la sessione è per (canale, agente, ordinale)
@@ -714,6 +743,12 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                 tier=tier_real))
             return False
     chat.principal = principal
+    # CATENA D'ORIGINE. Chi ha causato il turno, in ordine: l'umano che ha
+    # scritto, gli agenti che si sono delegati, e infine l'esecutore. Il gateway
+    # la interseca; il router la TRASPORTA e non decide mai — gira nel container
+    # degli agenti, quindi un suo difetto non deve essere un bypass di
+    # autorizzazione.
+    chat.origin = _origin_for(principal, origin, spec.name)
     directive = _tag_directive(kind, principal, user_text)
     if inst_ord is not None:
         directive = (f"[Sei l'istanza {label}: una delle istanze concorrenti di "

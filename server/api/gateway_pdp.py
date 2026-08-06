@@ -45,7 +45,12 @@ def human_role(principal: str | None) -> str:
 def _token(principal: str) -> str:
     return pki.mint_session_token(
         _CARRIER, ttl_seconds=_TOKEN_TTL, principal=principal,
-        on_behalf=True, human_role=human_role(principal))
+        on_behalf=True, human_role=human_role(principal),
+        # Anche un'azione dalla UI passa dalla stessa regola: la catena è di un
+        # solo anello — l'umano — perché non c'è delega. Il carrier tecnico NON
+        # entra: è un dettaglio di trasporto, e includerlo farebbe intersecare
+        # l'autorità di un agente che nessuno ha coinvolto.
+        origin=[f"human:{principal}"])
 
 
 def gw_authorize(tool: str, principal: str) -> bool:
