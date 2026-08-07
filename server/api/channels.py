@@ -211,9 +211,10 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                     LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
         return posted_during_turn[-1].get("text") or reply
 
+    autore = _spawn_label(chat, responder)
     try:
-        topics_client.post_message(tier, name, responder, reply, kind="ai")
-        await _channel_message(tier, name, responder, "ai")
+        topics_client.post_message(tier, name, autore, reply, kind="ai")
+        await _channel_message(tier, name, autore, "ai")
     except Exception as e:  # noqa: BLE001
         LOG.warning("post risposta canale %s/%s da %s fallito: %s", tier, name, responder, e)
         return None
@@ -378,19 +379,50 @@ _LEGACY_TIER = {"P0": "SEAL-0", "P1": "SEAL-1", "P2": "SEAL-2", "P3": "SEAL-3"}
 def _norm(level: str | None) -> str:
     u = (level or "SEAL-0").strip().upper()
     return _LEGACY_TIER.get(u, u)
-# L'ordinale opzionale #N indirizza un'ISTANZA di un seed multi-spawn
-# (issue clodia-platform#94): @fullstack-dev#2. Vive solo nel contesto del
-# canale: chiave sessione, etichetta autore, typing.
+# Un'ISTANZA si indirizza col suo numero di SPAWN: @fullstack-dev-2.
+#
+# Dal 7 ago 2026 l'ordinale di CANALE non esiste più. Ce n'erano due per la
+# stessa cosa: `#N`, ordinale per canale con un cap e riusabile, e `-N`, numero
+# dello spawn — progressivo per seed e mai riusato (system-notebook 7). Quello
+# mostrato era il primo, quindi `fullstack-dev#1` in chat poteva essere
+# `fullstack-dev-2` o `-3` su disco: il nome non identificava l'istanza. Ora ne
+# resta uno solo, ed è quello vero.
+#
+# La forma `#N` resta RICONOSCIUTA in ingresso: sta scritta nei messaggi già
+# inviati e nella memoria degli agenti, e smettere di capirla trasformerebbe una
+# menzione storica in un tag che non risolve.
 _TAG_RE = re.compile(r"@([a-z0-9][a-z0-9_-]{0,30}(?:#[1-9][0-9]{0,2})?)")
 _ORD_SUFFIX_RE = re.compile(r"^(.*?)#([1-9][0-9]{0,2})$")
+_SPAWN_SUFFIX_RE = re.compile(r"^(.*?)-([1-9][0-9]{0,4})$")
 
 
 def _split_ord(tag: str | None) -> tuple[str | None, int | None]:
-    """'fullstack-dev#2' → ('fullstack-dev', 2); senza ordinale → (tag, None)."""
+    """'fullstack-dev-2' → ('fullstack-dev', 2); senza numero → (tag, None).
+
+    Il taglio su `-N` è ambiguo di per sé, perché i nomi dei seed contengono
+    trattini: `security-engineer-1` va tagliato dopo `engineer`, non dopo
+    `security`. Si taglia solo se la coda è numerica **e** il prefisso è un seed
+    che esiste davvero — altrimenti un agente chiamato `tomato-2` diventerebbe
+    l'istanza 2 di un seed `tomato` che non c'è.
+    """
     if not tag:
         return tag, None
-    m = _ORD_SUFFIX_RE.match(tag)
-    return (m.group(1), int(m.group(2))) if m else (tag, None)
+    m = _ORD_SUFFIX_RE.match(tag)          # forma storica `#N`
+    if m:
+        return m.group(1), int(m.group(2))
+    m = _SPAWN_SUFFIX_RE.match(tag)
+    if m and _is_known_seed(m.group(1)):
+        return m.group(1), int(m.group(2))
+    return tag, None
+
+
+def _is_known_seed(nome: str) -> bool:
+    """`nome` è un seed registrato? Su errore risponde False: in caso di dubbio
+    l'etichetta resta intera, che è la direzione che non inventa istanze."""
+    try:
+        return registry.get_by_name(nome) is not None
+    except Exception:  # noqa: BLE001
+        return False
 
 
 def _seed_name(label: str | None) -> str | None:
@@ -691,6 +723,33 @@ def _origin_for(principal: str, inherited: list | None, executor: str) -> list:
     if not chain or chain[-1] != tail:
         chain.append(tail)
     return chain
+
+
+def _spawn_label(chat, seed: str) -> str:
+    """Il nome dello SPAWN che parla, non quello del seed.
+
+    In chat deve comparire `clodia-4`, non `clodia`: chi legge sta parlando con
+    un'istanza, e leggere il nome del tipo fa credere che sia sempre la stessa —
+    mentre gli spawn nascono, lavorano e muoiono, e due risposte consecutive
+    possono venire da due processi diversi con contesti diversi.
+
+    Il nome viene dalla DIRECTORY dello spawn (`/datadir/spawns/<seed>-<n>`),
+    che è l'identità vera: progressiva per seed e mai riusata (system-notebook 7).
+    L'etichetta `<seed>#<n>` usata finora è un'altra cosa — un ordinale PER
+    CANALE, con un cap e riusabile — quindi `fullstack-dev#1` poteva essere
+    `fullstack-dev-2` o `-3` su disco. Due numerazioni per la stessa cosa, e
+    quella mostrata non identificava l'istanza.
+
+    Ripiega sul nome del seed se lo spawn non è ancora materializzato: meglio un
+    nome meno preciso che nessun autore.
+    """
+    try:
+        d = getattr(chat, "_spawn_dir", None)
+        if d is not None and getattr(d, "name", None):
+            return str(d.name)
+    except Exception:  # noqa: BLE001 — un'etichetta non deve rompere un turno
+        pass
+    return seed
 
 
 async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str,
