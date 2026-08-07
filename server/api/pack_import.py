@@ -275,11 +275,15 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
     # Whitelist gateway: idempotente, best-effort.
     try:
         from . import gateway_admin
+        # NIENTE `or None` su questi tre: `[]` significa «dichiarato vuoto» e
+        # deve arrivare al gateway per azzerare, mentre `None` significa «il
+        # seed non si pronuncia». Collassarli rendeva impossibile RIMUOVERE una
+        # voce: si toglieva dal seed e restava viva nella config del gateway.
         gateway_admin.register_agent(
             name, spec.tool_permissions or None,
-            gated_tools=spec.gated_tools or None,
-            gated_in_channel=spec.gated_in_channel or None,
-            profile_tools=spec.profile_tools or None)
+            gated_tools=spec.gated_tools,
+            gated_in_channel=spec.gated_in_channel,
+            profile_tools=spec.profile_tools)
     except Exception as e:  # noqa: BLE001
         LOG.warning("whitelist gateway per '%s' fallita: %s", name, e)
 
