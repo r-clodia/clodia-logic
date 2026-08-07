@@ -1544,7 +1544,7 @@ async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
-    _require_member(request, topic.get("meta", {}))
+    _require_contributor(request, topic.get("meta", {}))
     prefix = f"chan:{tier}:{name}:"
     interrupted = []
     for chat in manager.list():
@@ -1564,7 +1564,7 @@ async def channel_remote(tier: str, name: str, request: Request) -> dict:
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
-    _require_member(request, topic.get("meta", {}))
+    _require_scope_owner(request, topic.get("meta", {}))
     body = await request.json()
     action = (body.get("action") or "").strip()
     if not action:
@@ -1766,14 +1766,72 @@ async def dm_create(request: Request) -> dict:
     return {"tier": _DM_TIER, "name": name, "meta": created}
 
 
+def _scope_role(meta: dict, chi: str | None) -> str | None:
+    """Ruolo di `chi` in questo scope: `owner` | `contributor` | `reader`.
+
+    Legge la stessa mappa del gateway, inclusa la forma legacy: una LISTA vale
+    tutta `contributor`, perché è ciò che «invitato» ha significato finora.
+    """
+    if not chi:
+        return None
+    if chi == meta.get("owner"):
+        return "owner"
+    raw = meta.get("participants")
+    if isinstance(raw, dict):
+        r = str(raw.get(chi) or "").strip().lower()
+        if chi in raw:
+            return r if r in ("owner", "contributor", "reader") else "contributor"
+        return None
+    if isinstance(raw, list) and chi in raw:
+        return "contributor"
+    return None
+
+
 def _require_member(request: Request, meta: dict) -> str:
-    """Solo i partecipanti (o l'owner) possono leggere/scrivere nel canale.
-    Niente accesso in lettura per chi non è stato invitato (regola di owner)."""
+    """LEGGERE il canale: qualunque ruolo, owner compreso.
+
+    La lettura non si gradua. Essere vincolati da regole che non si possono
+    vedere è il difetto peggiore disponibile, e un reader è nella stanza proprio
+    per seguirne il lavoro.
+    """
     principal = _principal_from_request(request)
     if not principal:
         raise HTTPException(401, "login richiesto")
-    if principal != meta.get("owner") and principal not in meta.get("participants", []):
+    if _scope_role(meta, principal) is None:
         raise HTTPException(403, "non sei partecipante di questo canale")
+    return principal
+
+
+def _require_contributor(request: Request, meta: dict) -> str:
+    """MUTARE dentro il canale: owner o contributor.
+
+    Un reader parla — la lettura e la conversazione restano — ma non scrive nello
+    stato condiviso: niente upload, niente interruzioni di turno. La sua
+    richiesta non viene ignorata: la porta un agente, e se implica una mutazione
+    diventa un gate rivolto all'owner (voce 26). Qui si ferma solo l'atto
+    DIRETTO, che non passerebbe da nessuna valutazione.
+    """
+    principal = _require_member(request, meta)
+    if _scope_role(meta, principal) == "reader":
+        raise HTTPException(
+            403, "sei reader in questo canale: puoi leggere e parlare, non "
+                 "modificare. Chiedi all'owner del topic di cambiarti ruolo, "
+                 "oppure chiedi a un agente di farlo — quella strada passa da "
+                 "un'approvazione invece che da un rifiuto.")
+    return principal
+
+
+def _require_scope_owner(request: Request, meta: dict) -> str:
+    """Atti di PROPRIETÀ: azzerare il contesto, gestire i partecipanti, spostare
+    i muri dello scope. Chi possiede la stanza risponde di ciò che ne esce.
+
+    `reset-context` è qui e non fra le mutazioni perché distrugge uno stato
+    CONDIVISO — la memoria conversazionale di tutti i partecipanti — e somiglia
+    più a un atto di proprietà che di partecipazione (voce 25).
+    """
+    principal = _require_member(request, meta)
+    if _scope_role(meta, principal) != "owner":
+        raise HTTPException(403, "riservato all'owner del topic")
     return principal
 
 
@@ -1844,7 +1902,7 @@ async def channel_reset_context(tier: str, name: str, request: Request) -> dict:
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
-    _require_member(request, meta)
+    _require_scope_owner(request, meta)
     topics_client.post_message(tier, name, principal, "__CLODIA_CONTEXT_RESET__", kind="system")
     deleted = await _drop_channel_sessions(tier, name, meta.get("participants", []))
     access_log.touch(tier, name)
@@ -1957,7 +2015,7 @@ async def routing_correct(request: Request) -> dict:
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
-    _require_member(request, topic.get("meta", {}))
+    _require_contributor(request, topic.get("meta", {}))
     if registry.get_by_name(correct_agent) is None:
         raise HTTPException(404, f"agente '{correct_agent}' non registrato")
     # ultimo messaggio UMANO del topic = quello che ha innescato il routing
@@ -1993,7 +2051,7 @@ async def routing_feedback_record(request: Request) -> dict:
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
-    _require_member(request, topic.get("meta", {}))
+    _require_contributor(request, topic.get("meta", {}))
     for agent in {chosen, correct_agent} - {None}:
         if registry.get_by_name(agent) is None:
             raise HTTPException(404, f"agente '{agent}' non registrato")
@@ -2116,7 +2174,7 @@ async def channel_message_feedback(tier: str, name: str, message_id: str,
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
-    _require_member(request, meta)
+    _require_contributor(request, meta)
     body = await request.json()
     rating = str(body.get("rating") or "").strip()
     if rating not in {"thumbs_up", "thumbs_down"}:
@@ -2436,10 +2494,13 @@ async def channel_upload(tier: str, name: str, request: Request) -> dict:
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
+    # Caricare un file MUTA lo stato condiviso della stanza — e fino al 7 ago
+    # 2026 era la via più diretta con cui un invitato poteva scrivere l'AGENTS.md
+    # iniettato nel contesto di ogni agente a ogni turno. Il controllo qui era
+    # scritto a mano invece di passare da una guardia, ed è il motivo per cui è
+    # rimasto indietro: una regola duplicata diverge (come `== "admin"`).
+    _require_contributor(request, meta)
     principal = _principal_from_request(request)
-    if not principal or (principal not in meta.get("participants", [])
-                         and principal != meta.get("owner")):
-        raise HTTPException(403, "non sei partecipante di questo canale")
     body = await request.json()
     fn = (body.get("filename") or "").strip()
     if not fn or not body.get("content_b64"):
