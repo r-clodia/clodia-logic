@@ -298,6 +298,20 @@ class AgentSpec(BaseModel):
     #: riscriverlo cancellerebbe i propri gate — cioè si auto-escalerebbe al
     #: silenzio. La copia avviene alla registrazione (register_agent), come per
     #: le dichiarazioni di flusso dei pack.
+    #: Topic che l'agente PORTA CON SÉ: raggiungibili da qualunque stanza, senza
+    #: gate. È lo «scope proprio dell'agente» — l'archivio aziendale che
+    #: `impiegato-tomato` consulta ovunque lavori senza copiarlo in ogni topic.
+    #:
+    #: È un'AUTORIZZAZIONE, non una comodità. Fino al 7 ago 2026 la membership
+    #: di un seed valeva da ogni stanza: su marte clodia era participant di 135
+    #: topic su 157, quindi un suo spawn poteva leggere gli altri 134 stando in
+    #: uno qualunque e riversarli lì. Il compartimento c'era nel modello e non
+    #: nel codice. Ora la membership non basta più, e ciò che si porta con sé va
+    #: dichiarato qui: esplicito, numerabile e leggibile in un file, invece che
+    #: implicito e largo 135.
+    #:
+    #: Forma: `["SEAL-2/tomato-azienda", …]`.
+    carries: Optional[list[str]] = None
     #: `None` = il seed NON si pronuncia (il gateway tiene ciò che ha);
     #: `[]` = dichiarato vuoto (il gateway azzera). La distinzione esiste
     #: perché una RIMOZIONE va dichiarata: col default a lista vuota,

@@ -283,7 +283,8 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
             name, spec.tool_permissions or None,
             gated_tools=spec.gated_tools,
             gated_in_channel=spec.gated_in_channel,
-            profile_tools=spec.profile_tools)
+            profile_tools=spec.profile_tools,
+            carries=spec.carries)
     except Exception as e:  # noqa: BLE001
         LOG.warning("whitelist gateway per '%s' fallita: %s", name, e)
 
