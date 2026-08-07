@@ -420,17 +420,33 @@ def _seal_num(s: Optional[str]) -> Optional[int]:
         return None
 
 
-def _effective_clearance(kind: str) -> Optional[str]:
-    """Clearance EFFETTIVA (per il token) = SEAL del PROVIDER effettivo su cui gira
-    l'agente. Il SEAL di un agente NON è statico né definito dal seed: dipende dal
-    provider, perché il dato va lì — impiegato su Scaleway (SEAL-3) è SEAL-3, su
+def _effective_clearance(kind: str, override: dict | None = None) -> Optional[str]:
+    """Clearance EFFETTIVA (per il token) = SEAL del PROVIDER su cui gira QUESTO SPAWN.
+
+    Il SEAL di un agente non è statico né definito dal seed: dipende dal provider,
+    perché il dato va lì — impiegato su Scaleway (SEAL-3) è SEAL-3, su
     anthropic-api (SEAL-1) è SEAL-1. Il campo `clearance` del seed è solo una SEAL
     MINIMA dichiarata (floor), NON un tetto: non riduce l'effettiva. Vale per
-    TUTTI, super inclusi (clodia/ophelia): nessuno tratta dati SEAL-3+ su provider
-    SEAL-2-. Provider non risolto → fallback alla minima dichiarata."""
+    TUTTI, super inclusi: nessuno tratta dati SEAL-3+ su provider SEAL-2-.
+
+    **`override` è la correzione del 7 ago 2026, ed era un buco.** Davide: «spawn
+    diversi dello stesso seed possono girare su provider diversi». È vero e il
+    meccanismo esiste — `scoped_overrides.resolve()` ritorna `provider` — ma la
+    clearance si calcolava dal SEED. Quindi uno spawn spostato su un provider più
+    debole conservava nel token la clearance del seed: apriva un topic SEAL-3 e ne
+    mandava i dati a un provider SEAL-1. La dottrina della voce 13 aggirata dal
+    meccanismo che avrebbe dovuto rispettarla.
+
+    Il punto di chiamata aveva già l'override in mano — lo usa per il TTL e per
+    `scoped_tools` due righe sopra — e non lo passava qui. È la forma esatta di
+    «dichiarato e nessuno lo porta», stavolta su un valore che protegge dati.
+
+    Provider non risolto → fallback alla minima dichiarata dal seed.
+    """
     try:
         from ..api.providers import provider_seal
-        prov = agent_effective_provider(kind)
+        prov = (str((override or {}).get("provider") or "").strip()
+                or agent_effective_provider(kind))
         ps = provider_seal(prov) if prov else None
     except Exception as e:  # noqa: BLE001
         LOG.warning("provider_seal non risolto per kind=%s: %s", kind, e)
@@ -895,7 +911,7 @@ class ChatSession:
             ct_token = pki.mint_session_token(self.kind, ttl_seconds=_runtime_token_ttl(
                                               self._runtime_override),
                                               principal=self.principal,
-                                              clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                                              clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
                                               origin=getattr(self, "origin", None),
                                               scoped_tools=self._runtime_override.get("tools"),
                                               unattended=getattr(self, "unattended", False))
@@ -993,7 +1009,7 @@ class ChatSession:
             ct_token = pki.mint_session_token(
                 self.kind, ttl_seconds=_runtime_token_ttl(
                     getattr(self, "_runtime_override", None)),
-                principal=self.principal, clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                principal=self.principal, clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
                                               origin=getattr(self, "origin", None),
                 scoped_tools=self._runtime_override.get("tools"))
         except Exception as e:  # noqa: BLE001 — un re-mint fallito non rompe il turno
@@ -1730,7 +1746,7 @@ class CodexChatSession:
             env["CLODIA_TOOLS_TOKEN"] = pki.mint_session_token(
                 self.kind, ttl_seconds=_runtime_token_ttl(self._runtime_override),
                 principal=self.principal,
-                clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
                                               origin=getattr(self, "origin", None),
                 scoped_tools=self._runtime_override.get("tools"),
                 unattended=getattr(self, "unattended", False))
@@ -2073,7 +2089,7 @@ class OpenCodeChatSession:
             tok = pki.mint_session_token(self.kind, ttl_seconds=_runtime_token_ttl(
                                          self._runtime_override),
                                          principal=self.principal,
-                                         clearance=_effective_clearance(self.kind), chat=self.chat_id,
+                                         clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
                                               origin=getattr(self, "origin", None),
                                          scoped_tools=self._runtime_override.get("tools"))
             cfg["mcp"]["clodia-tools"] = {
