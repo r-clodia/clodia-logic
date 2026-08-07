@@ -122,7 +122,23 @@ QUERY_TIMEOUT         = 90         # invio prompt al subprocess: oltre = client 
 # lettura appesa erra e il turno termina/recupera, invece di restare bloccato.
 WATCHDOG_SILENCE = int(os.environ.get("CLODIA_TURN_WATCHDOG_SILENCE", "180"))
 WATCHDOG_TICK    = 15
-DEFAULT_CHAT_ID = "default"
+#: RITIRATA il 7 ago 2026. Era la chat creata al boot, `topic: null`, protetta
+#: dall'idle-reaper — quindi uno spawn vivo a tempo indeterminato.
+#:
+#: Perché è uscita, e non è una questione di tassonomia. La voce 6 dice che uno
+#: spawn vive in esattamente due scope, canale e job; quella sessione non era né
+#: l'uno né l'altro, e la conseguenza misurata è che LÌ tutta la macchina
+#: per-scope degradava in silenzio: `current_channel()` None, quindi solo la
+#: lista globale, perimetro vuoto, nessun ruolo di scope, nessun owner a cui
+#: rivolgere un gate di confine.
+#:
+#: Il caso d'uso — «parlo con clodia senza un topic» — è coperto dai DM, che sono
+#: topic (`kind: dm`) e quindi scope veri, con tier, owner, liste e perimetro.
+#: La `default` era anteriore ai DM ed è rimasta.
+#:
+#: La costante resta, vuota di funzione, perché il nome compare nei log e negli
+#: storici: chi la incontra deve trovare questa nota invece di un'assenza.
+RETIRED_DEFAULT_CHAT_ID = "default"
 
 # Tipi di agente supportati. Ogni kind ha un cwd dedicato (dove vive il
 # CLAUDE.md e i settings di quell'agente) e una cartella sessions/

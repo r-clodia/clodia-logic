@@ -23,7 +23,7 @@ from .scheduler import (
     shutdown_scheduler,
     start_scheduler,
 )
-from .sdk_runtime.session import manager, DEFAULT_CHAT_ID
+from .sdk_runtime.session import manager
 
 LOG = logging.getLogger("agent-server")
 
@@ -81,11 +81,8 @@ async def _lifespan(app: FastAPI):
             LOG.warning("[BOOTSTRAP] istanza NON reclamata — apri la webui e crea il "
                         "primo admin (popup Nuovo agente, tipo human). Nessuna altra "
                         "azione è permessa finché non c'è un superadmin.")
-        else:
-            asyncio.create_task(_safe_create_default())
     except Exception as e:  # noqa: BLE001
         LOG.warning("bootstrap check fallito: %s", e)
-        asyncio.create_task(_safe_create_default())
     # Pack di skill esterni (anthropic-pack, openai-curated-pack…): installati
     # al setup iniziale, in background (clone di rete) e idempotenti. Non devono
     # mai bloccare/ritardare il boot né farlo fallire.
@@ -181,7 +178,7 @@ async def _lifespan(app: FastAPI):
         while True:
             await asyncio.sleep(interval)
             try:
-                await manager.reap_idle(ttl, protect={DEFAULT_CHAT_ID})
+                await manager.reap_idle(ttl)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("idle reaper tick: %s", e)
             # Sweep degli spawn orfani a runtime (crash/sessione evinta senza
@@ -369,15 +366,6 @@ def create_app() -> FastAPI:
     # Nessun frontend embedded: la webui ufficiale è clodia-web (servita a
     # parte). L'agent-server espone solo le API REST.
     return app
-
-
-async def _safe_create_default() -> None:
-    try:
-        await manager.create(chat_id=DEFAULT_CHAT_ID)
-    except ValueError:
-        pass  # già esistente
-    except Exception:
-        pass
 
 
 app = create_app()
