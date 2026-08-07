@@ -90,18 +90,70 @@ def sweep_orphan_spawns(live_dirs: Optional[set] = None,
     return removed
 
 
+#: Contatore PERSISTENTE degli ordinali di spawn, uno per seed.
+#: Vive accanto agli spawn e sopravvive alla loro cancellazione — che è tutto il
+#: punto (voce 7: «i numeri già usati non sono riusabili»).
+_SEQ_FILE = "spawn-seq.json"
+
+
+def _seq_path() -> Path:
+    return SPAWNS_ROOT / _SEQ_FILE
+
+
 def _next_spawn_index(name: str) -> int:
-    """Prossimo indice sequenziale per gli spawn di `name` (proc-like:
-    name-1, name-2, …). Scansiona SPAWNS_ROOT per le cartelle <name>-<int>."""
+    """Prossimo ordinale per gli spawn di `name`, MAI riusato.
+
+    Prima era un `max()` sulle directory esistenti. Sembrava giusto e non lo era:
+    il reaper cancella gli spawn vecchi, quindi appena `clodia-124` spariva il
+    successivo riprendeva un numero già usato. marte teneva 243 directory prima
+    di una pulizia; dopo, la numerazione è ripartita dentro terreno occupato.
+
+    Due carichi di lavoro con lo stesso nome in momenti diversi rendono una riga
+    di audit che dice `clodia-124` un'identificazione di niente — ed è
+    esattamente ciò che quella riga serve a fare.
+
+    Quindi il contatore è persistito e monotono. Il `max()` sulle directory resta
+    come **pavimento** alla prima esecuzione: su un'istanza che già gira, il file
+    non esiste ancora e ripartire da 1 riuserebbe in blocco tutti gli ordinali
+    vivi. Una migrazione che comincia sbagliando è peggio di nessuna migrazione.
+    """
+    SPAWNS_ROOT.mkdir(parents=True, exist_ok=True)
+    p = _seq_path()
+    try:
+        seq = json.loads(p.read_text(encoding="utf-8")) if p.is_file() else {}
+        if not isinstance(seq, dict):
+            seq = {}
+    except Exception as e:  # noqa: BLE001
+        # Un contatore illeggibile NON deve azzerarsi: ripartire da 1 riuserebbe
+        # ogni ordinale. Si ricade sul pavimento delle directory vive, che è
+        # troppo basso ma mai più basso di così.
+        LOG.warning("contatore spawn illeggibile (%s): si riparte dal pavimento",
+                    type(e).__name__)
+        seq = {}
+    prossimo = max(int(seq.get(name) or 0), _floor_from_dirs(name)) + 1
+    seq[name] = prossimo
+    try:
+        tmp = p.with_suffix(".tmp")
+        tmp.write_text(json.dumps(seq, ensure_ascii=False), encoding="utf-8")
+        tmp.replace(p)          # atomico: due spawn insieme non si dimezzano
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("contatore spawn non salvato (%s): l'ordinale %s potrebbe "
+                    "essere riusato dopo un riavvio", type(e).__name__, prossimo)
+    return prossimo
+
+
+def _floor_from_dirs(name: str) -> int:
+    """Il massimo ordinale ancora VIVO su disco. Solo un pavimento: le directory
+    cancellate non ci sono più, ed è per questo che da sole non bastano."""
     if not SPAWNS_ROOT.is_dir():
-        return 1
+        return 0
     mx = 0
     prefix = f"{name}-"
     for d in SPAWNS_ROOT.iterdir():
         suffix = d.name[len(prefix):] if d.name.startswith(prefix) else ""
         if d.is_dir() and suffix.isdigit():
             mx = max(mx, int(suffix))
-    return mx + 1
+    return mx
 
 
 def _resolve_path(path_template: str, scratch_dir: Path) -> str:
