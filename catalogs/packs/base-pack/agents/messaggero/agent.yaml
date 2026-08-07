@@ -80,20 +80,25 @@ tool_permissions:
 # Questa è la DICHIARAZIONE; l'autorità è la copia nel gateway, scritta alla
 # registrazione. Il seed vive sulla datadir col codice degli agenti, e un agente
 # capace di riscriverlo cancellerebbe i propri gate.
-# Spedire è il mestiere di messaggero: fuori da un canale lo fa senza chiedere.
-# Dentro un canale serve l'approvazione di un ADMIN, perché lì chi chiede non è
-# l'owner — un partecipante può chiedere, e il contenuto che può far uscire è
-# tutto quello che sta nella stanza. La lettura resta libera: smistare la posta
-# in arrivo è lavoro legittimo anche dentro un canale.
-gated_in_channel:
-  - email.send
-  - email.reply
-  # Telegram è un'uscita esattamente come l'email, e ometterlo era
-  # un'omissione mia, non una scelta: dentro un canale con dei
-  # collaboratori un invio Telegram non chiedeva niente mentre una mail
-  # sì. Le due uscite hanno ora la stessa supervisione.
-  - telegram.send
-  - telegram.send_file
+# NESSUN gate sul verbo. Rimosso il 7 ago 2026, e la ragione sta nel modello:
+# un gate non è una proprietà del verbo, è ciò che accade quando un'azione
+# ATTRAVERSA il confine dello scope. Spedire una mail attraversa il confine — e
+# quel confine è già presidiato dove deve esserlo, cioè sulla DESTINAZIONE:
+# un indirizzo che non sta in nessuna allowlist chiede l'approvazione, uno che
+# ci sta no.
+#
+# `gated_in_channel` era un surrogato della domanda «chi sta chiedendo?», posta
+# per approssimazione — *qualcuno è in un canale* — e l'approssimazione è
+# grossolana in due modi. Una DM È un canale, quindi il criterio reale era
+# «sempre tranne nei job»: chiedeva l'approvazione anche all'owner per la
+# propria richiesta, nella propria DM. E non guardava affatto chi avesse
+# chiesto, che è precisamente ciò che diceva di proteggere.
+#
+# La domanda ha una risposta esatta, ed è la catena `origin`: nomina
+# `human:giovanni` o `human:davide` invece di dedurlo dalla stanza. Finché
+# quella catena non è in enforcement, il presidio resta la destinazione — e la
+# lista globale contiene solo recapiti dell'owner, quindi togliere questo gate
+# non apre nulla che non fosse già approvato da lui.
 gated_tools:
 - topic.remote_add
 - topic.remote_commit
