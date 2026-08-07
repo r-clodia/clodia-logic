@@ -53,12 +53,39 @@ def _token(principal: str) -> str:
         origin=[f"human:{principal}"])
 
 
+class AuthzUnavailable(RuntimeError):
+    """Il gateway non ha potuto DECIDERE. Distinta da un rifiuto, perché la cosa
+    da fare è diversa e il messaggio all'utente deve dirlo."""
+
+
 def gw_authorize(tool: str, principal: str) -> bool:
-    """True se l'umano `principal` può invocare `tool` (decisione del gateway)."""
-    r = requests.post(f"{_gw_base()}/internal/authorize",
-                      headers={"Authorization": f"Bearer {_token(principal)}"},
-                      json={"tool": tool}, timeout=_HTTP_TIMEOUT)
+    """True se l'umano `principal` può invocare `tool` (decisione del gateway).
+
+    Solleva `AuthzUnavailable` se il gateway non risponde o risponde 5xx: NON è
+    un rifiuto. Il 7 ago 2026 questa funzione ritornava `False` su qualunque
+    non-200, e un 500 nel teardown dei contextvar è arrivato all'utente come
+    «azione riservata agli admin» — mandandolo a cercare un problema di permessi
+    che non c'era, per tre giri.
+
+    L'accesso resta comunque negato: il chiamante trasforma questa eccezione in
+    un rifiuto. Cambia solo che dice la verità su PERCHÉ, e un guasto che si
+    traveste da decisione è il modo più efficace di nascondere un guasto.
+    """
+    try:
+        r = requests.post(f"{_gw_base()}/internal/authorize",
+                          headers={"Authorization": f"Bearer {_token(principal)}"},
+                          json={"tool": tool}, timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        LOG.warning("authorize '%s' per '%s': gateway irraggiungibile (%s)",
+                    tool, principal, e)
+        raise AuthzUnavailable("gateway irraggiungibile") from e
+    if r.status_code >= 500:
+        LOG.error("authorize '%s' per '%s' → HTTP %s: %s",
+                  tool, principal, r.status_code, r.text[:200])
+        raise AuthzUnavailable(f"il gateway ha risposto HTTP {r.status_code}")
     if r.status_code != 200:
+        # 4xx: il gateway HA deciso (token scaduto, principal ignoto). È un
+        # rifiuto vero.
         LOG.warning("authorize '%s' per '%s' → HTTP %s", tool, principal, r.status_code)
         return False
     return bool(r.json().get("allowed"))
@@ -84,7 +111,16 @@ def require_authz(request: Request, tool: str) -> str:
     principal = _principal_from_request(request)
     if not principal:
         raise HTTPException(401, "autenticazione richiesta")
-    if not gw_authorize(tool, principal):
+    try:
+        consentito = gw_authorize(tool, principal)
+    except AuthzUnavailable as e:
+        # 503 e non 403: la richiesta non è stata rifiutata, non è stata
+        # DECISA. Un 403 direbbe «non hai i permessi» a un admin che li ha.
+        raise HTTPException(
+            503, f"impossibile decidere su '{tool}': {e}. "
+                 "Non è un problema di permessi — riprova fra qualche secondo, "
+                 "e se persiste guarda i log del gateway.")
+    if not consentito:
         raise HTTPException(403, f"azione '{tool}' riservata agli admin")
     return principal
 
