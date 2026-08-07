@@ -222,11 +222,21 @@ def post_message(tier: str, name: str, author: str, text: str,
     return r.json()
 
 
-def set_participant(tier: str, name: str, agent: str, add: bool = True) -> dict:
+def set_participant(tier: str, name: str, agent: str, add: bool = True,
+                    role: str | None = None) -> dict:
+    """Invita, rimuove, o CAMBIA il ruolo di chi è già dentro.
+
+    `role`: `contributor` (default) o `reader`. Cambiare ruolo passa da qui e non
+    da togli-e-rimetti, che nel frattempo farebbe uscire la persona dal canale e
+    le manderebbe un messaggio di uscita e uno di rientro per un cambio di grado.
+    """
     url = f"{_base()}/{tier}/{name}/participants"
     method = requests.post if add else requests.delete
+    payload = {"agent": agent}
+    if add and role:
+        payload["role"] = role
     try:
-        r = method(url, headers=_headers(), json={"agent": agent}, timeout=_HTTP_TIMEOUT)
+        r = method(url, headers=_headers(), json=payload, timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway participants irraggiungibile: {e}") from e
     if r.status_code != 200:
