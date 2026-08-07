@@ -333,6 +333,52 @@ async def _fire_topic_trigger(job: dict) -> dict:
     }
 
 
+def _provider_not_conformant(job: dict, agent: str) -> str | None:
+    """`None` se il job può partire; altrimenti il motivo del rifiuto.
+
+    Un job è uno scope e dichiara il tier dei dati che tratterà. La SEAL
+    effettiva di un agente non è quella del suo seed ma quella del **provider**
+    su cui gira (voce 13), perché è lì che il dato va: lo stesso agente è SEAL-3
+    su Scaleway e SEAL-1 su anthropic-api. Se quel livello non copre il tier
+    richiesto, il job **fallisce** — non degrada e non gira lo stesso.
+
+    Tre casi in cui NON si rifiuta, ognuno per una ragione diversa:
+
+    - **tier non dichiarato**: nessun requisito. È lo stato di ogni job
+      esistente, e rifiutarli in blocco al primo deploy non avrebbe protetto
+      nulla — avrebbe solo spento lo scheduler.
+    - **tier illeggibile**: una stringa che non sappiamo interpretare non è un
+      requisito che sappiamo far valere. Rifiutare fingerebbe un controllo che
+      non abbiamo fatto.
+    - **provider non risolto**: qui il dubbio è nostro, non del job. Rifiutare
+      sarebbe un guasto travestito da decisione — è il difetto che è costato
+      tre diagnosi il 6 agosto. Si logga e si lascia passare, come ovunque
+      altrove quando la risposta è «non sappiamo».
+    """
+    from ..sdk_runtime.session import _effective_clearance, _seal_num
+
+    voluto = _seal_num(job.get("tier") or "")
+    if voluto is None:
+        return None
+    try:
+        eff = _effective_clearance(agent)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("job %s: clearance di '%s' non risolta (%s) — si procede",
+                    job.get("id"), agent, e)
+        return None
+    ottenuto = _seal_num(eff)
+    if ottenuto is None:
+        LOG.warning("job %s: provider di '%s' non risolto, tier SEAL-%s non "
+                    "verificabile — si procede", job.get("id"), agent, voluto)
+        return None
+    if ottenuto >= voluto:
+        return None
+    return (f"il job richiede SEAL-{voluto} ma l'agente '{agent}' gira su un "
+            f"provider {eff}: i dati andrebbero dove il tier non lo consente. "
+            f"Collega ad '{agent}' un provider SEAL-{voluto} o superiore, "
+            f"oppure abbassa il tier del job.")
+
+
 async def fire_job(job_id: int) -> dict:
     """Spawna una chat effimera dell'agent indicato dal job e le consegna il
     prompt in fire-and-forget.
@@ -369,6 +415,16 @@ async def fire_job(job_id: int) -> dict:
     if not known_kind(agent):
         LOG.warning("fire_job: job %s agent '%s' ignoto → fallback clodia", job_id, agent)
         agent = "clodia"
+
+    rifiuto = _provider_not_conformant(job, agent)
+    if rifiuto:
+        # FALLISCE, non degrada. Far girare su un provider più debole un job
+        # dichiarato per dati SEAL-3 manderebbe quei dati dove non devono
+        # andare, e lo farebbe in silenzio: il job risulterebbe eseguito con
+        # successo. Meglio un run in errore, che si vede.
+        LOG.error("job %s (%s): %s", job_id, job.get("name"), rifiuto)
+        db.mark_run(job_id, status=f"error: {rifiuto}", chat_id=None)
+        return {"chat_id": None, "status": f"error: {rifiuto}"}
 
     LOG.info("Firing job id=%s name=%s agent=%s", job_id, job["name"], agent)
     chat_id: Optional[str] = None

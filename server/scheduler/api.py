@@ -37,6 +37,11 @@ class JobCreate(BaseModel):
     # pristine). Risolto dinamicamente: kind statico o agent del registry.
     agent: str = Field("clodia", min_length=1, max_length=100)
     enabled: bool = True
+    # Tier dei DATI che il job tratterà. Vuoto = non dichiarato = nessun
+    # requisito. Se dichiarato, al fire l'agente deve girare su un provider di
+    # SEAL almeno pari, altrimenti il run fallisce (voce 13: la SEAL effettiva è
+    # quella del provider, perché è lì che il dato va).
+    tier: Optional[str] = Field(None, max_length=10)
 
 
 class JobPropose(BaseModel):
@@ -57,6 +62,12 @@ class JobUpdate(BaseModel):
     prompt: Optional[str] = None
     agent: Optional[str] = Field(None, min_length=1, max_length=100)
     enabled: Optional[bool] = None
+    # Tier dei DATI che il job tratterà. Vuoto = non dichiarato = nessun
+    # requisito. Se dichiarato, al fire l'agente deve girare su un provider di
+    # SEAL almeno pari, altrimenti il run fallisce (voce 13: la SEAL effettiva è
+    # quella del provider, perché è lì che il dato va).
+    tier: Optional[str] = Field(None, max_length=10)
+
 
 
 class TopicCronTriggerUpsert(BaseModel):
@@ -240,6 +251,7 @@ async def api_create_job(req: JobCreate, request: Request):
             agent=req.agent,
             enabled=req.enabled,
             owner=owner,
+            tier=req.tier or "",
         )
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail=f"job name '{req.name}' already exists")
@@ -332,6 +344,7 @@ async def api_update_job(job_id: int, req: JobUpdate, request: Request):
             prompt=req.prompt,
             agent=req.agent,
             enabled=req.enabled,
+            tier=req.tier,
         )
     except sqlite3.IntegrityError:
         raise HTTPException(status_code=409, detail=f"job name '{req.name}' already exists")
