@@ -9,11 +9,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import logging
 import secrets as pysecrets
 from datetime import datetime, timezone
 from pathlib import Path
 
 from ..config import data_path
+
+LOG = logging.getLogger("agent-server.hooks.db")
 
 _DIR: Path = data_path("hooks")
 _FILE: Path = _DIR / "hooks.json"
@@ -75,6 +78,19 @@ def _public(row: dict) -> dict:
     return {k: v for k, v in row.items() if k != "secret_hash"}
 
 
+def _topic_exists(tier: str, name: str) -> bool:
+    """Il topic esiste davvero? Su errore risponde True — FAIL CLOSED.
+
+    Un gateway irraggiungibile non deve trasformarsi in «la riga è fantasma,
+    rimuovila»: sarebbe un modo per cancellare hook veri durante un riavvio.
+    """
+    try:
+        from ..api import topics_client
+        return topics_client.open_topic(tier, name) is not None
+    except Exception:  # noqa: BLE001
+        return True
+
+
 def create(tier: str, name: str, label: str, created_by: str,
            author: str | None = None,
            rate_per_min: int = 30) -> tuple[dict, str]:
@@ -85,6 +101,26 @@ def create(tier: str, name: str, label: str, created_by: str,
     all_rows = _load()
     conflict = next(
         (r for r in all_rows if r["name"] == name and r["tier"] != tier), None)
+    if conflict and not _topic_exists(conflict["tier"], conflict["name"]):
+        # RIGA FANTASMA. Il topic è cambiato di tier e questo registro non l'ha
+        # seguito: la riga punta a un posto che non esiste più e blocca il topic
+        # vero. Successo il 7 ago 2026 su `proof-of-flex-2`, passato da SEAL-2 a
+        # SEAL-1: creare il suo hook rispondeva 409 citando un topic assente dal
+        # disco.
+        #
+        # Si ripara invece di rifiutare, e si ripara QUI e non con una migrazione
+        # perché il disallineamento può ripresentarsi a ogni cambio di tier —
+        # nulla, oggi, tiene aggiornato questo registro quando un topic si sposta.
+        # Un controllo che si auto-guarisce non ha bisogno che qualcuno se ne
+        # ricordi.
+        LOG.warning("hook: riga fantasma %s/%s rimossa (il topic non esiste); "
+                    "lo slug torna disponibile per %s/%s",
+                    conflict["tier"], conflict["name"], tier, name)
+        all_rows = [r for r in all_rows
+                    if not (r["name"] == conflict["name"]
+                            and r["tier"] == conflict["tier"])]
+        _save(all_rows)
+        conflict = None
     if conflict:
         raise HookConflictError(
             f"slug '{name}' già usato da {conflict['tier']}/{conflict['name']}")
