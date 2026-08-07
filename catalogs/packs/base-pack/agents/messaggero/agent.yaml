@@ -99,6 +99,14 @@ tool_permissions:
 # quella catena non è in enforcement, il presidio resta la destinazione — e la
 # lista globale contiene solo recapiti dell'owner, quindi togliere questo gate
 # non apre nulla che non fosse già approvato da lui.
+#
+# Dichiarata VUOTA, non omessa: `upsert_agent` è non distruttivo sui campi
+# `None` — un campo assente significa «non mi pronuncio, tieni quello che hai»,
+# non «azzera». È la scelta giusta (un seed parziale non deve poter cancellare
+# in silenzio ciò che non nomina) e ha una conseguenza precisa: una RIMOZIONE va
+# dichiarata. Togliendo solo le righe, il gate sarebbe rimasto vivo nella config
+# del gateway — verificato il 7 ago 2026, restava dopo il deploy.
+gated_in_channel: []
 gated_tools:
 - topic.remote_add
 - topic.remote_commit
