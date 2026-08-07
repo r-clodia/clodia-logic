@@ -2340,7 +2340,13 @@ async def channel_add_participant(tier: str, name: str, request: Request) -> dic
     # No partecipanti inesistenti: dev'essere un agent/umano registrato.
     if registry.get_by_name(agent) is None:
         raise HTTPException(404, f"'{agent}' non esiste: invita un agent/utente registrato")
-    result = topics_client.set_participant(tier, name, agent, add=True)
+    ruolo = (body.get("role") or "").strip().lower() or None
+    if ruolo and ruolo not in ("contributor", "reader"):
+        raise HTTPException(
+            400, f"ruolo non valido: {ruolo}. Ammessi: contributor, reader. "
+                 "La proprietà dello scope non si assegna invitando: si cambia "
+                 "l'owner del topic.")
+    result = topics_client.set_participant(tier, name, agent, add=True, role=ruolo)
     result["introduction_queued"] = _queue_join_introduction(
         tier, name, topic.get("meta", {}), agent, result
     )
