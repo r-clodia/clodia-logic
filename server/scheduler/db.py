@@ -8,7 +8,7 @@ Gerarchia seed → job → spawn: il job è la definizione durevole di lavoro
 schedulato; quando parte materializza uno spawn dell'executor.
 
 Schema job (jobs/<id>.yaml):
-    id, name, cron_expr, prompt, agent, enabled, last_run_at, last_status,
+    id, name, cron_expr, prompt, agent, enabled, tier, last_run_at, last_status,
     last_chat_id, topic_tier, topic_name, created_at, updated_at
 
 `agent` = nome dell'agent (kind) che lo scheduler spawna al fire del job;
@@ -30,7 +30,7 @@ JOBS_DIR = data_path("jobs")
 
 _FIELDS = (
     "id", "name", "cron_expr", "prompt", "agent", "enabled", "owner",
-    "mode", "plan", "topic_tier", "topic_name", "runs", "run_seq",
+    "mode", "plan", "tier", "topic_tier", "topic_name", "runs", "run_seq",
     "last_run_at", "last_status", "last_chat_id", "created_at", "updated_at",
 )
 
@@ -97,8 +97,8 @@ def _next_id() -> int:
 def create_job(name: str, cron_expr: str, prompt: str,
                agent: str = "clodia", enabled: bool = True,
                owner: str = "", mode: str = "agentic",
-               plan: list | None = None, topic_tier: str = "",
-               topic_name: str = "") -> dict:
+               plan: list | None = None, tier: str = "",
+               topic_tier: str = "", topic_name: str = "") -> dict:
     """Crea un nuovo job. Solleva sqlite3.IntegrityError se 'name' è duplicato
     (contratto invariato con api.py → HTTP 409). `owner` = principal umano che ne
     è proprietario (solo lui, o un admin, può agirvi).
@@ -116,6 +116,11 @@ def create_job(name: str, cron_expr: str, prompt: str,
                  else (agent or "clodia"),
         "owner": owner or "",
         "mode": _mode, "plan": plan or [],
+        # Tier RICHIESTO dal job: il livello dei dati che tratterà. Assente = non
+        # dichiarato = nessun requisito, che è il comportamento di ogni job
+        # esistente. Un default diverso da "" farebbe fallire al primo fire job
+        # che oggi girano.
+        "tier": tier or "",
         "topic_tier": topic_tier or "", "topic_name": topic_name or "",
         "enabled": bool(enabled), "last_run_at": None, "last_status": None,
         "last_chat_id": None, "created_at": now, "updated_at": now,
@@ -181,6 +186,7 @@ def update_job(
     prompt: Optional[str] = None,
     agent: Optional[str] = None,
     enabled: Optional[bool] = None,
+    tier: Optional[str] = None,
 ) -> Optional[dict]:
     """Aggiorna i campi non None. Ritorna il job aggiornato o None se non esiste."""
     d = get_job(job_id)
@@ -199,6 +205,11 @@ def update_job(
         d["agent"] = agent
     if enabled is not None:
         d["enabled"] = bool(enabled)
+    if tier is not None:
+        # `""` TOGLIE il requisito, `None` non si pronuncia. Senza la
+        # distinzione un tier dichiarato per errore non si potrebbe più
+        # rimuovere se non riscrivendo il file a mano.
+        d["tier"] = tier
     d["updated_at"] = _now_iso()
     _write(d)
     return d
