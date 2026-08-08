@@ -377,6 +377,20 @@ def _materialize_spawn(kind: str, runtime_override: Optional[dict] = None):
         return None, None
 
 
+def _execution_id(spawn) -> str:
+    """Identità dello SPAWN per il token firmato: `clodia-1`, o `""` se non
+    ancora materializzato.
+
+    Il campo `execution_id` esisteva nel token dal principio e **nessuno lo
+    riempiva**: i quattro punti di conio non lo passavano, quindi valeva `""`.
+    Ottava volta in due giorni che si trova un campo dichiarato che nessuno
+    trasporta, e questa è quella che serviva davvero — senza, il gateway conosce
+    il seed e non lo spawn, e non può esigere che uno spawn scriva nel PROPRIO
+    scratch invece che in quello di un altro (specification §1.1).
+    """
+    return str(_spawn_identity(spawn).get("spawn_id") or "")
+
+
 def _spawn_identity(spawn) -> dict:
     if spawn is None:
         return {"spawn_id": None, "spawn_instance": None}
@@ -926,7 +940,8 @@ class ChatSession:
         # disco). Solo per i kind con identità PKI (clodia); per gli altri il
         # mint fallisce → si salta senza rompere.
         try:
-            ct_token = pki.mint_session_token(self.kind, ttl_seconds=_runtime_token_ttl(
+            ct_token = pki.mint_session_token(self.kind, _execution_id(self._spawn),
+                                              ttl_seconds=_runtime_token_ttl(
                                               self._runtime_override),
                                               principal=self.principal,
                                               clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
@@ -1025,7 +1040,8 @@ class ChatSession:
             return False  # kind senza MCP clodia-tools
         try:
             ct_token = pki.mint_session_token(
-                self.kind, ttl_seconds=_runtime_token_ttl(
+                self.kind, _execution_id(self._spawn),
+                ttl_seconds=_runtime_token_ttl(
                     getattr(self, "_runtime_override", None)),
                 principal=self.principal, clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
                                               origin=getattr(self, "origin", None),
@@ -1762,7 +1778,8 @@ class CodexChatSession:
         # → runtime.current_user resta sempre allineato senza restart.
         try:
             env["CLODIA_TOOLS_TOKEN"] = pki.mint_session_token(
-                self.kind, ttl_seconds=_runtime_token_ttl(self._runtime_override),
+                self.kind, _execution_id(self._spawn),
+                ttl_seconds=_runtime_token_ttl(self._runtime_override),
                 principal=self.principal,
                 clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
                                               origin=getattr(self, "origin", None),
@@ -2104,7 +2121,8 @@ class OpenCodeChatSession:
         # perché l'endpoint interno è http:// (rete docker, non esposto). Il token
         # (col principal + clearance) va nell'header del bridge.
         try:
-            tok = pki.mint_session_token(self.kind, ttl_seconds=_runtime_token_ttl(
+            tok = pki.mint_session_token(self.kind, _execution_id(self._spawn),
+                                              ttl_seconds=_runtime_token_ttl(
                                          self._runtime_override),
                                          principal=self.principal,
                                          clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
