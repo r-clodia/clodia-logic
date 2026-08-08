@@ -46,7 +46,16 @@ def _seeds() -> dict[str, AgentSpec]:
 
 
 def _grants(spec: AgentSpec) -> list[str]:
-    return [str(g).strip() for g in (spec.tool_permissions or []) if str(g).strip()]
+    """I verbi EFFETTIVI del seed: i propri più quelli ereditati.
+
+    Dichiarati ed effettivi hanno smesso di coincidere l'8 ago 2026, quando i
+    seed hanno cominciato a ereditare dall'arciseed. Questo file chiede «il
+    mestiere non si perde per strada», e il mestiere non si perde se un verbo
+    arriva da un antenato invece che dalla riga: guardare la sola dichiarazione
+    farebbe fallire il test proprio quando la pulizia ha funzionato.
+    """
+    from .inheritance import effective_tool_permissions
+    return effective_tool_permissions(getattr(spec, "name", ""), _seeds())
 
 
 class AddParticipantTests(unittest.TestCase):

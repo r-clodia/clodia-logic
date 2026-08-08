@@ -4,7 +4,12 @@ description: "Gemella di Clodia su motore Codex (OpenAI). Super-agent, stessa id
 type: super
 clearance: SEAL-3
 constitution: platform-core
-parents: [archseed, clodia-primal]
+# ANTENATO. `parents` è una relazione di AUTORITÀ: ciò che vi compare concede
+# verbi per ereditarietà. Non è genealogia — le due cose erano confuse finché
+# nessuno risolveva il campo, e il giorno in cui è diventato portante `sysadmin`
+# si sarebbe preso 33 verbi da `parents: [clodia]`, una riga scritta quando non
+# significava niente. Qui resta solo ciò da cui si eredita davvero.
+parents: [archseed]
 # anzianità (tie-break rango): Ophelia nasce subito dopo Clodia
 created_at: "2026-01-01T00:00:01Z"
 agent_sdk: codex

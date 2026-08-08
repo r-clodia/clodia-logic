@@ -4,7 +4,12 @@ description: "Assistente dell'owner sulla piattaforma Clodia. Super-agent su mot
 type: super
 clearance: SEAL-3
 constitution: platform-core
-parents: [archseed, clodia-primal]
+# ANTENATO. `parents` è una relazione di AUTORITÀ: ciò che vi compare concede
+# verbi per ereditarietà. Non è genealogia — le due cose erano confuse finché
+# nessuno risolveva il campo, e il giorno in cui è diventato portante `sysadmin`
+# si sarebbe preso 33 verbi da `parents: [clodia]`, una riga scritta quando non
+# significava niente. Qui resta solo ciò da cui si eredita davvero.
+parents: [archseed]
 # anzianità (tie-break rango): Clodia è la progenitrice, più anziana di Ophelia
 created_at: "2026-01-01T00:00:00Z"
 agent_sdk: claude

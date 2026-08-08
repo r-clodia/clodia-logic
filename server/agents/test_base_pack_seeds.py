@@ -96,3 +96,40 @@ class TradeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class AncestryTests(unittest.TestCase):
+    """`parents` è una relazione di AUTORITÀ, non genealogia.
+
+    Le due cose erano confuse finché nessuno risolveva il campo. Il giorno in cui
+    è diventato portante — 8 ago 2026 — `sysadmin` si sarebbe preso **33 verbi**
+    da `parents: [clodia]`, una riga scritta quando non significava niente. E
+    `clodia-primal`, che come seed non esiste, non concedeva nulla ma era una
+    mina: il giorno in cui qualcuno crea un seed con quel nome, tre agenti si
+    allargano da soli e nessuno collega le due cose.
+    """
+
+    def test_every_declared_parent_exists(self):
+        """Un antenato che non esiste oggi è un permesso che arriva domani."""
+        seeds = _seeds()
+        for nome, y in seeds.items():
+            for g in (y.get("parents") or []):
+                with self.subTest(seed=nome, parent=g):
+                    self.assertIn(g, seeds,
+                                  f"'{nome}' dichiara l'antenato '{g}', che non "
+                                  f"esiste: oggi non concede niente, e il giorno "
+                                  f"in cui quel seed viene creato concede tutto")
+
+    def test_no_seed_inherits_from_another_working_seed(self):
+        """Non è vietato in generale — un `professionista` con sotto `avvocato` e
+        `commercialista` è il caso d'uso della voce 10. Ma nel base-pack di oggi
+        nessuna di queste relazioni è stata decisa: erano genealogia, e lasciarle
+        significa concedere per eredità ciò che nessuno ha concesso."""
+        seeds = _seeds()
+        for nome, y in seeds.items():
+            altri = [g for g in (y.get("parents") or []) if g != "archseed"]
+            with self.subTest(seed=nome):
+                self.assertEqual(
+                    altri, [],
+                    f"'{nome}' eredita da {altri}: se è voluto, va deciso e "
+                    f"misurato — quanti verbi arrivano di lì?")
