@@ -1,9 +1,17 @@
 # Seed "Archseed" — l'ANTENATO ASTRATTO da cui ogni altro seed discende
 # (specification §1.3 e §1.4). Non si spawna: esiste per essere ereditato.
 #
-# COSA CI VA. Un verbo appartiene all'arciseed quando il suo BERSAGLIO è l'agente
-# stesso o la stanza in cui lo spawn già si trova. Tutto il resto attraversa
-# qualcosa, e attraversare è mestiere: il mestiere lo dichiara il seed che eredita.
+# COSA CI VA. Il pavimento è quello che serve a PARTECIPARE: leggere ciò che c'è
+# nella stanza in cui lo spawn si trova, e parlarci. Quello che un agente
+# PRODUCE è il suo mestiere, e il mestiere lo dichiara il seed che eredita.
+#
+# La distinzione non è «dentro o fuori la stanza» — `topic.put` scrive dentro la
+# stanza in cui lo spawn già sta, e resta fuori di qui lo stesso. È «partecipare
+# o produrre», e la prova che è la linea giusta è empirica: `segretario` esiste
+# PROPRIO per scrivere lo stato del topic, e lo dichiara con `topic.save_summary`.
+# Se la scrittura stesse nel pavimento, quel seed non direbbe più niente — e la
+# domanda «cosa fa questo agente» smetterebbe di avere risposta leggendo il suo
+# file.
 #
 # COSA NON CI VA, e la misura che lo decide. L'intersezione reale dei verbi di
 # tutti gli agenti non-wildcard è DUE verbi su un'istanza e VUOTA sull'altra. Due
