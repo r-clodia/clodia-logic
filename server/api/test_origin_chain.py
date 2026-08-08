@@ -1,4 +1,4 @@
-"""Tests for composing and inheriting the origin chain (security-model §4).
+"""Tests for composing and inheriting the origin chain (specification.md §3.3).
 
 What has to hold is one thing: **a delegation inherits, it does not restart**.
 Restarting the chain at each hop is precisely how authority gets amplified —
