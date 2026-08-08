@@ -76,6 +76,17 @@ async def _lifespan(app: FastAPI):
         LOG.warning("sweep spawn orfani al boot fallito: %s", e)
     # Bootstrap: se l'istanza non è reclamata, logga il bootstrap token (serve
     # all'owner per l'enroll del primo admin) e NON creare la chat di default.
+    # I SEED del base-pack arrivano PRIMA di tutto il resto: uno spawn è fatto da
+    # un seed, quindi materializzarli dopo significherebbe poter nascere senza.
+    # Le altre tre sync (skill, rule, costituzioni) girano alla materializzazione
+    # di uno spawn; questa no, e la differenza è quella.
+    try:
+        from .agents.seed_sync import sync_seeds
+        nuovi = sync_seeds()
+        if nuovi:
+            LOG.info("seed materializzati dal base-pack: %s", ", ".join(nuovi))
+    except Exception as e:  # noqa: BLE001 — un seed mancante non blocca il boot
+        LOG.warning("sync dei seed dal pack fallita: %s", e)
     try:
         if not admin.is_initialized():
             LOG.warning("[BOOTSTRAP] istanza NON reclamata — apri la webui e crea il "
