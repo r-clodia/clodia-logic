@@ -495,6 +495,82 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(meta["participants"], ["owner", "helpdesk"])
         self.assertEqual(meta["type"], "infra")
 
+    def test_topic_intro_keeps_eligible_clodia(self) -> None:
+        meta = {"contact_agent": "clodia", "participants": ["owner", "clodia"]}
+        with patch.object(channels, "_provider_seal_ok", return_value=True):
+            intro = channels._select_topic_intro_agent(meta, "SEAL-2")
+
+        self.assertEqual(intro, "clodia")
+        self.assertEqual(meta["participants"], ["owner", "clodia"])
+        self.assertEqual(meta["team_bootstrap_agent"], "clodia")
+
+    def test_topic_intro_replaces_ineligible_clodia_with_segretario(self) -> None:
+        meta = {"contact_agent": "clodia", "participants": ["owner", "clodia"]}
+
+        def provider_ok(spec, _tier):
+            return spec.name == "segretario"
+
+        with patch.object(channels, "_provider_seal_ok", side_effect=provider_ok):
+            intro = channels._select_topic_intro_agent(meta, "SEAL-2")
+
+        self.assertEqual(intro, "segretario")
+        self.assertEqual(meta["contact_agent"], "segretario")
+        self.assertEqual(meta["participants"], ["owner", "segretario"])
+        self.assertEqual(meta["team_bootstrap_agent"], "segretario")
+
+    def test_topic_intro_adds_segretario_without_dropping_custom_contact(self) -> None:
+        meta = {"contact_agent": "worker", "participants": ["owner", "worker"]}
+        with patch.object(channels, "_provider_seal_ok", return_value=True):
+            intro = channels._select_topic_intro_agent(meta, "SEAL-1")
+
+        self.assertEqual(intro, "segretario")
+        self.assertEqual(meta["contact_agent"], "worker")
+        self.assertEqual(meta["participants"], ["owner", "worker", "segretario"])
+
+    def test_team_bootstrap_is_consumed_by_first_human_message(self) -> None:
+        welcome = {
+            "kind": "ai",
+            "author": "segretario",
+            "text": "Ciao\n<!-- team-bootstrap=segretario -->",
+        }
+        with patch.object(channels, "_provider_seal_ok", return_value=True):
+            pending = channels._pending_team_bootstrap(
+                [welcome], ["owner", "segretario"], "SEAL-1")
+            consumed = channels._pending_team_bootstrap(
+                [welcome, {"kind": "human", "author": "owner", "text": "scopo"}],
+                ["owner", "segretario"], "SEAL-1")
+
+        self.assertEqual(pending.name, "segretario")
+        self.assertIsNone(consumed)
+
+    def test_channel_create_posts_welcome_as_segretario_fallback(self) -> None:
+        request = SimpleNamespace(json=AsyncMock(return_value={
+            "name": "bando", "tier": "SEAL-2",
+        }))
+
+        def provider_ok(spec, _tier):
+            return spec.name == "segretario"
+
+        def create(_tier, _name, meta, hook_enabled=True):
+            return dict(meta)
+
+        with (
+            patch.object(channels, "_principal_from_request", return_value="owner"),
+            patch.object(channels, "_provider_seal_ok", side_effect=provider_ok),
+            patch.object(channels.topics_client, "create_topic", side_effect=create),
+            patch.object(channels.topics_client, "post_message") as post,
+            patch("server.api.topic_playbooks.welcome_message",
+                  return_value="Benvenuto\n<!-- team-bootstrap=segretario -->"),
+        ):
+            result = asyncio.run(channels.channel_create(request))
+
+        self.assertEqual(result["meta"]["contact_agent"], "segretario")
+        self.assertEqual(result["meta"]["participants"], ["owner", "segretario"])
+        post.assert_called_once_with(
+            "SEAL-2", "bando", "segretario",
+            "Benvenuto\n<!-- team-bootstrap=segretario -->", kind="ai",
+        )
+
 
 class ChannelTrifectaTests(unittest.TestCase):
     """Profilo trifecta esposto con il meta del canale (issue #77)."""
@@ -814,6 +890,42 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["responders"], ["worker"])
         self.assertEqual(start.await_count, 1)
+
+    async def test_first_topic_description_is_routed_to_bootstrap_agent(self) -> None:
+        segretario = _a("segretario", "normal", "P1")
+        self.agents["segretario"] = segretario
+        start = AsyncMock(return_value=True)
+        welcome = {
+            "kind": "ai",
+            "author": "segretario",
+            "text": "Di cosa tratta?\n<!-- team-bootstrap=segretario -->",
+        }
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {
+                    "tier": "P0",
+                    "owner": "owner",
+                    "participants": ["owner", "segretario"],
+                    "team_bootstrap_agent": "segretario",
+                },
+            }),
+            patch.object(channels.topics_client, "list_messages",
+                         return_value=[welcome]),
+            patch.object(channels.topics_client, "post_message",
+                         return_value={"id": "2"}),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "Serve a preparare un bando regionale", "owner",
+            )
+
+        self.assertEqual(result["responder"], "segretario")
+        self.assertTrue(result["bootstrap"])
+        self.assertEqual(start.await_args.args[6], "topic-bootstrap")
 
     async def test_delegation_involves_one_agent_per_hop(self) -> None:
         start = AsyncMock(return_value=True)

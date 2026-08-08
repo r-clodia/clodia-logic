@@ -51,6 +51,14 @@ def _grants(spec: AgentSpec) -> list[str]:
 
 class AddParticipantTests(unittest.TestCase):
 
+    def test_segretario_can_suggest_but_not_invite_the_bootstrap_team(self) -> None:
+        spec = _seeds()["segretario"]
+        grants = _grants(spec)
+        self.assertIn("base-pack/team-composition", spec.capabilities)
+        self.assertIn("topic.suggest_team", grants)
+        self.assertFalse(any(trifecta._overlap(g, "topic.add_participant")
+                             for g in grants))
+
     def test_only_the_composer_is_granted_add_participant(self) -> None:
         for name, spec in _seeds().items():
             if name in SUPER_BYPASS:

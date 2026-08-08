@@ -646,6 +646,14 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "Concentrati SOLO su questa parte, coordinandoti con gli altri partecipanti "
             "se necessario; non duplicare il lavoro sugli altri sotto-task.\n\n"
             "Parte assegnata:\n" + text)
+    if kind == "topic-bootstrap":
+        return (
+            "[BOOTSTRAP DEL TOPIC] Sei il coordinatore introduttivo di riserva. "
+            "L'owner ha appena descritto lo scopo del topic in risposta al tuo "
+            "benvenuto. Usa topic.suggest_team, proponi una squadra compatibile "
+            "con il tier e chiudi con il marker di invito previsto dalla skill "
+            "team-composition. Non invitare direttamente nessuno.\n\n"
+            "Descrizione dell'owner:\n" + text)
     return None
 
 
@@ -851,6 +859,55 @@ def _channel_meta(body: dict, principal: str, name: str) -> dict:
                                   "folder": (sc.get("folder") or "").strip() or None,
                                   "account": sc.get("account")}
     return meta
+
+
+def _select_topic_intro_agent(meta: dict, tier: str) -> str:
+    """Choose the agent that introduces a new topic.
+
+    Clodia keeps precedence only when she is both present and able to use a
+    provider suitable for the topic. Segretario is the narrow fallback. A
+    custom edition contact remains a participant; only an unavailable default
+    Clodia is replaced entirely.
+    """
+    participants = list(meta.get("participants") or [])
+    clodia = registry.get_by_name("clodia")
+    if "clodia" in participants and clodia and _provider_seal_ok(clodia, tier):
+        meta["team_bootstrap_agent"] = "clodia"
+        return "clodia"
+
+    segretario = registry.get_by_name("segretario")
+    if segretario and _provider_seal_ok(segretario, tier):
+        if meta.get("contact_agent") == "clodia":
+            participants = [p for p in participants if p != "clodia"]
+            meta["contact_agent"] = "segretario"
+        if "segretario" not in participants:
+            participants.append("segretario")
+        meta["participants"] = participants
+        meta["team_bootstrap_agent"] = "segretario"
+        return "segretario"
+
+    return str(meta.get("contact_agent") or "clodia")
+
+
+_TEAM_BOOTSTRAP_RE = re.compile(
+    r"<!--\s*team-bootstrap=([a-z0-9][a-z0-9_-]*)\s*-->", re.IGNORECASE)
+
+
+def _pending_team_bootstrap(messages: list[dict], participants: list[str],
+                            tier: str):
+    """Return the one-shot bootstrap responder before the first human post."""
+    if any((m or {}).get("kind") == "human" for m in messages):
+        return None
+    for message in reversed(messages):
+        match = _TEAM_BOOTSTRAP_RE.search(str((message or {}).get("text") or ""))
+        if not match:
+            continue
+        name = match.group(1).lower()
+        spec = registry.get_by_name(name)
+        if name in participants and spec and _provider_seal_ok(spec, tier):
+            return spec
+        return None
+    return None
 
 
 def _provider_seal_ok(spec, tier: str | None) -> bool:
@@ -1411,6 +1468,16 @@ async def post_channel_message(
             and principal != meta.get("owner")):
         raise HTTPException(403, "non sei partecipante di questo canale")
 
+    # Il marker del benvenuto assegna soltanto la prima risposta dell'owner al
+    # coordinatore introduttivo. Si legge prima di persistere il nuovo messaggio,
+    # così la presenza di qualunque precedente intervento umano consuma il ruolo.
+    bootstrap_responder = None
+    if (meta.get("team_bootstrap_agent") and kind == "human"
+            and principal == meta.get("owner") and not trusted_internal):
+        prior_messages = topics_client.list_messages(tier, name, limit=50)
+        bootstrap_responder = _pending_team_bootstrap(
+            prior_messages, participants, tier_real)
+
     # 1. registra il messaggio nel canale
     topics_client.post_message(tier, name, principal, content, kind=kind)
     await _channel_message(tier, name, principal, kind)
@@ -1483,6 +1550,18 @@ async def post_channel_message(
                 started.append(s.name)
         return {"posted": True, "queued": True, "responders": started,
                 "skipped": skipped, "warning": warning}
+
+    if bootstrap_responder is not None:
+        started = await _start_turn(
+            tier, name, tier_real, bootstrap_responder, principal, content,
+            "topic-bootstrap",
+        )
+        return {
+            "posted": True,
+            "queued": True,
+            "responder": bootstrap_responder.name if started else None,
+            "bootstrap": True,
+        }
 
     # nessun tag → routing per rilevanza, anche multi-intento
     routing: dict = {}
@@ -1702,6 +1781,7 @@ async def channel_create(request: Request) -> dict:
     if not name:
         raise HTTPException(400, "nome richiesto")
     meta = _channel_meta(body, principal, name)
+    intro_agent = _select_topic_intro_agent(meta, tier)
     hook_enabled = bool(body.get("hook_enabled", True))
     try:
         created = topics_client.create_topic(
@@ -1712,13 +1792,18 @@ async def channel_create(request: Request) -> dict:
     # skill dei partecipanti): composto in codice, zero token. Best-effort.
     try:
         from . import topic_playbooks
+        intro_spec = registry.get_by_name(intro_agent)
+        composition_agent = (
+            intro_agent if intro_spec and _provider_seal_ok(intro_spec, tier)
+            else None
+        )
         text = topic_playbooks.welcome_message(
             name, created.get("title") or name, created.get("type") or "",
             created.get("participants") or [],
-            contact_agent=created.get("contact_agent") or "clodia")
+            contact_agent=composition_agent)
         if text:
             topics_client.post_message(
-                tier, name, created.get("contact_agent") or "clodia", text, kind="ai")
+                tier, name, intro_agent, text, kind="ai")
     except Exception as e:  # noqa: BLE001
         LOG.warning("welcome playbook non postato su %s/%s: %s", tier, name, str(e)[:120])
     return {"tier": tier, "name": name, "meta": created}
