@@ -12,7 +12,8 @@ description: |
 # Skill: team-composition
 
 ## Quando
-Un topic nasce con te (il contact agent, di norma Clodia) come unico agente. Il
+Un topic nasce con te (il contact agent, di norma Clodia oppure il Segretario
+quando Clodia non è idonea al tier) come agente introduttivo. Il
 tuo compito NON è rispondere tu a tutto: è **montare la squadra giusta** e poi
 farti da parte quando serve uno specialista. Applica questa skill:
 - appena l'owner descrive di cosa tratta un topic nuovo;
@@ -34,7 +35,7 @@ opzione deselezionabile — se uno specialista copre, l'owner può fare a meno d
    - nome e a cosa serve (usa `expertise`/le sue competenze);
    - la fascia di **costo** (`cost.label`: economy/standard/premium);
    - la **pertinenza** (`score`) se utile a spiegare l'ordine.
-   Poi cita te come **coordinatore opzionale** (il `coordinator`).
+   Poi cita il **coordinatore opzionale** restituito (`coordinator`), se presente.
    NON elencare i candidati non idonei o a punteggio ~0.
 4. **Chiudi con il marker di invito** su una riga a sé, con gli agenti proposti
    (specialisti + eventualmente te), così la UI mostra il bottone «Invita la
@@ -61,7 +62,7 @@ Tu (dopo `topic.suggest_team`):
 
 ## Note
 - Se `embed_ok` è false o `suggested` è vuoto (router non disponibile o nessun
-  match), proponi comunque te come referente e chiedi all'owner se vuole indicare
-  a mano un agente: non bloccarti.
+  match), proponi il `coordinator` restituito; se manca, chiedi all'owner se vuole
+  indicare a mano un agente: non bloccarti.
 - Il tier del topic vincola l'idoneità: `topic.suggest_team` già esclude chi non
   ha clearance/provider adeguati. Non proporre agenti non idonei.

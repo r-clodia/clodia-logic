@@ -89,13 +89,12 @@ def pills_for(topic_type: str, participants: list[str]) -> list[str]:
 
 
 def _coordinator_can_compose(contact_agent: str | None) -> bool:
-    """True se il contact agent è un super-agent (coordinatore): in quel caso il
-    benvenuto invita a descrivere il topic per comporre la squadra (skill
-    team-composition). I super-agent hanno tutto il catalog → hanno la skill."""
+    """True when the contact agent has the read-only team suggestion verb."""
     if not contact_agent:
         return False
     spec = registry.get_by_name(contact_agent)
-    return bool(spec and getattr(spec, "type", None) == "super")
+    return bool(spec and "topic.suggest_team" in
+                (getattr(spec, "tool_permissions", None) or []))
 
 
 def welcome_message(name: str, title: str, topic_type: str,
@@ -136,6 +135,7 @@ def welcome_message(name: str, title: str, topic_type: str,
             f"Di cosa tratta {questo.lower()} {noun}? Descrivimelo in una riga e "
             "ti propongo la **squadra di agenti** più adatta da invitare — i più "
             "specializzati e meno costosi per il caso.")
+        lines.append(f"<!-- team-bootstrap={contact_agent} -->")
     elif pills:
         lines.append("Posso partire subito con una di queste attività:")
         lines.append(f"<!-- choices={','.join(pills)} -->")

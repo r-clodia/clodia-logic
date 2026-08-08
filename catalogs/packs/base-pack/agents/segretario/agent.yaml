@@ -3,12 +3,13 @@
 # del topic. NON è un responder di conversazione: il routing lo sceglie SOLO
 # quando si tratta di salvare/aggiornare lo stato del topic. Niente git, niente
 # email/web/fs generale: solo i verbi di scrittura-stato del topic di cui è
-# partecipante. Modello piccolo ed economico (24B EU-sovrano su Scaleway): il
+# partecipante, più la sola proposta read-only della squadra quando sostituisce
+# Clodia nel bootstrap. Modello piccolo ed economico (24B EU-sovrano su Scaleway): il
 # task è regolare, non richiede ragionamento pesante.
 name: segretario
 parents: [archseed]
 display_name: Segretario
-description: "Segretario del topic: verbalizza le minute e mantiene summary/TLDR e prossimi passi. Non conversa; interviene quando si salva lo stato del topic."
+description: "Segretario del topic: verbalizza minute e stato; se Clodia non è disponibile introduce il topic e propone la squadra."
 type: normal
 clearance: SEAL-2
 constitution: platform-core
@@ -29,12 +30,12 @@ sandbox:
   allow_write: ["{scratch}/**"]
   allow_shell_cmds: []
   deny_shell_patterns: ["*"]
-capabilities: []
+capabilities: [base-pack/team-composition]
 rules:
   - topic-state-boundary
-# SOLO scrittura-stato del topic di cui è partecipante: aprire/leggere lo stato
-# corrente e scrivere summary/minute/file. NIENTE topic.* completo (esclude
-# archive, delete_file, remote_* git, new/list/search).
+# Scrittura-stato del topic di cui è partecipante, più suggest_team read-only.
+# NIENTE topic.* completo (esclude inviti, archive, delete_file, remote_* git,
+# new/list/search).
 # ANTENATO. `archseed` dà i verbi base per ereditarietà (specification §1.3):
 # leggere nella stanza in cui lo spawn sta, parlarci, e la propria memoria. Qui
 # sotto resta SOLO il mestiere di questo seed — se un verbo base ricomparisse in
@@ -42,6 +43,7 @@ rules:
 # risposta, sepolta sotto ciò che fanno tutti.
 tool_permissions:
   - topic.save_summary
+  - topic.suggest_team
 memory:
   dir: memory/
 system_prompt: system-prompt.md
@@ -51,5 +53,6 @@ expertise: >-
   minute delle riunioni e delle decisioni, tenere ordinati i file del topic.
   Interviene solo quando l'utente chiede di salvare lo stato, aggiornare il
   summary, mettere a verbale, chiudere/riepilogare la sessione del topic o
-  aggiornare i prossimi passi. Non risponde a domande tecniche, diagnostica
-  piattaforma, sviluppo, routing, codice o issue tracking.
+  aggiornare i prossimi passi; nei topic nuovi introduce lo scopo e propone la
+  squadra soltanto quando Clodia non è disponibile. Non risponde a domande
+  tecniche, diagnostica piattaforma, sviluppo, routing, codice o issue tracking.
