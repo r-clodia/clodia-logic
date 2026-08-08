@@ -317,12 +317,14 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
                       on_behalf: bool, human_role: Optional[str],
                       chat: Optional[str],
                       scoped_tools: Optional[list[str]],
-                      unattended: bool = False) -> str:
+                      unattended: bool = False,
+                      scope_tier: Optional[str] = None) -> str:
     scoped_key = tuple(scoped_tools or ())
     # `unattended` ENTRA nella chiave di cache: senza, un token coniato per una
     # chat umana verrebbe riusato per un job dello stesso agente e il blocco
     # salterebbe silenziosamente.
     key = (agent, execution_id, int(ttl_seconds), principal, clearance, on_behalf,
+           scope_tier,
            human_role, chat, scoped_key, bool(unattended))
     now = int(time.time())
     hit = _MINT_CACHE.get(key)
@@ -394,7 +396,8 @@ def mint_session_token(agent: str, execution_id: str = "",
                        chat: str | None = None,
                        scoped_tools: list[str] | None = None,
                        unattended: bool = False,
-                       origin: list[str] | None = None) -> str:
+                       origin: list[str] | None = None,
+                       scope_tier: str | None = None) -> str:
     """Firmato dal RUNNER con la chiave privata dell'agente (mai esposta
     al workspace). Nel workspace entra solo il token risultante.
 
@@ -434,6 +437,13 @@ def mint_session_token(agent: str, execution_id: str = "",
         payload["clearance"] = clearance
     if chat:
         payload["chat"] = chat  # chat_id della sessione (per postare in chat le decisioni sudo)
+    if scope_tier:
+        # TIER DELLO SCOPE in cui gira questa esecuzione, quando non è una stanza.
+        # Un job È uno scope e dichiara un tier (voce 33), ma quel tier non
+        # arrivava al gateway: `current_channel()` è None per un job, quindi la
+        # regola della portabilità — «un topic portato viaggia solo dove la
+        # stanza lo regge» — era scritta e non applicata proprio lì.
+        payload["scope_tier"] = scope_tier
     if scoped_tools:
         payload["scoped_tools"] = scoped_tools
     if origin:

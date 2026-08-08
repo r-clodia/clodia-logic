@@ -1,0 +1,48 @@
+# Seed "Archseed" — l'ANTENATO ASTRATTO da cui ogni altro seed discende
+# (specification §1.3 e §1.4). Non si spawna: esiste per essere ereditato.
+#
+# COSA CI VA. Un verbo appartiene all'arciseed quando il suo BERSAGLIO è l'agente
+# stesso o la stanza in cui lo spawn già si trova. Tutto il resto attraversa
+# qualcosa, e attraversare è mestiere: il mestiere lo dichiara il seed che eredita.
+#
+# COSA NON CI VA, e la misura che lo decide. L'intersezione reale dei verbi di
+# tutti gli agenti non-wildcard è DUE verbi su un'istanza e VUOTA sull'altra. Due
+# agenti sono stretti di proposito — `segretario` ne ha tre, `security-engineer`
+# sette di sola lettura — e un arciseed che portasse `topic.*` li allargherebbe
+# senza che nessuno l'avesse deciso. Da qui il pavimento: leggere e parlare, mai
+# scrivere, mai spostare i muri, mai uscire.
+#
+# COME SI RESTRINGE. L'ereditarietà è un DEFAULT, non un tetto: un seed che deve
+# essere più stretto del proprio antenato lo dichiara con `denied_tools`, che
+# batte tutto. Senza quella via, questo file allargherebbe chi era stretto.
+name: archseed
+display_name: Archseed
+description: "Antenato astratto di ogni seed: la propria memoria, la lettura dello scope in cui lo spawn sta, e la parola. Non si spawna."
+type: normal
+
+# NON ISTANZIABILE. Imposto al momento dello spawn, non solo dichiarato: un seed
+# astratto materializzato per errore è un agente con i soli verbi base e nessun
+# mestiere — funziona abbastanza da non farsene accorgere, e poi risponde male
+# senza che nulla lo segnali.
+abstract: true
+
+# Nessun motore: un antenato non gira. I campi del provider restano assenti di
+# proposito — dichiararli suggerirebbe che qualcosa possa eseguirlo.
+
+tool_permissions:
+  # la propria memoria, confinata alla propria cartella
+  - memory.*
+
+  # il pavimento di LETTURA dello scope corrente
+  - topic.open
+  - topic.files
+  - topic.read_file
+  - topic.read_document
+  - topic.search
+  - topic.list
+  - topic.fetch
+
+  # parlare non è mutare: uno spawn che non può parlare nella propria stanza non
+  # può fare niente. È la stessa ragione per cui un `reader` conserva la parola
+  # (§2.9).
+  - topic.post_message
