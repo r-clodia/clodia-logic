@@ -4,7 +4,7 @@ description: "Gemella di Clodia su motore Codex (OpenAI). Super-agent, stessa id
 type: super
 clearance: SEAL-3
 constitution: platform-core
-parents: [clodia-primal]
+parents: [archseed, clodia-primal]
 # anzianità (tie-break rango): Ophelia nasce subito dopo Clodia
 created_at: "2026-01-01T00:00:01Z"
 agent_sdk: codex
