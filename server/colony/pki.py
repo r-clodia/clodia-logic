@@ -437,7 +437,7 @@ def mint_session_token(agent: str, execution_id: str = "",
     if scoped_tools:
         payload["scoped_tools"] = scoped_tools
     if origin:
-        # CATENA D'ORIGINE (docs/security-model.md §4): chi ha causato questo
+        # CATENA D'ORIGINE (docs/specification.md §3.3): chi ha causato questo
         # turno, dall'iniziatore all'esecutore. Firmata come `chat` e
         # `clearance`, e per lo stesso motivo — il gateway interseca le autorità
         # della catena, e se un agente potesse comporla l'intersezione sarebbe la
