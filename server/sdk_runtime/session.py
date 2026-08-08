@@ -420,6 +420,24 @@ def _seal_num(s: Optional[str]) -> Optional[int]:
         return None
 
 
+def _refuse_if_abstract(kind: str) -> None:
+    """Un seed astratto non si spawna (specification §1.4).
+
+    Il flag da solo sarebbe la settima cosa dichiarata che nessuno porta. Qui è
+    imposto nel choke point unico della creazione, così vale per le chat e per i
+    job insieme — `fire_job` passa di qui.
+
+    Il rifiuto dice cosa fare, perché chi ci arriva sta quasi certamente cercando
+    un discendente: un seed astratto è un antenato, e la cosa che voleva spawnare
+    ha un altro nome.
+    """
+    spec = _kind_spec(kind)
+    if spec is not None and getattr(spec, "abstract", False):
+        raise ValueError(
+            f"'{kind}' è un seed astratto: esiste per essere ereditato, non "
+            f"spawnato. Spawna un seed che discende da lui.")
+
+
 def _effective_clearance(kind: str, override: dict | None = None) -> Optional[str]:
     """Clearance EFFETTIVA (per il token) = SEAL del PROVIDER su cui gira QUESTO SPAWN.
 
@@ -2440,6 +2458,7 @@ class ChatManager:
         async with self._lock:
             # Enforcement: un agent col provider scollegato non è disponibile —
             # né per chat (qui) né per job (fire_job passa di qui). Choke point unico.
+            _refuse_if_abstract(kind)
             cid = chat_id or _new_chat_id()
             from .. import scoped_overrides
             resolved_override = scoped_overrides.resolve(kind, chat_id=cid, run_id=run_id)
