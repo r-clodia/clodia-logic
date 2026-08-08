@@ -109,6 +109,13 @@ class AgentSpec(BaseModel):
     # Clodia Primal. Es. ["clodia-primal"]. Vuoto = capostipite.
     parents: list[str] = Field(default_factory=list)
 
+    # Seed ASTRATTO: esiste per essere ereditato, non per essere spawnato
+    # (specification §1.4). Dichiararlo non basta — va imposto al momento dello
+    # spawn, perché un seed astratto materializzato per errore è un agente coi
+    # soli verbi base e nessun mestiere: funziona abbastanza da non farsene
+    # accorgere, e poi risponde male senza che nulla lo segnali.
+    abstract: bool = False
+
     # Riferimento alla costituzione (genoma) fuso in testa al system prompt al
     # render. Risolto da constitution-catalog/<ref>.md (data-over-logic). None
     # o "none" = nessuna costituzione (es. worker minimali). Es. "platform-core".
