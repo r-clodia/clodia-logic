@@ -430,7 +430,8 @@ def has_shell(spec) -> bool:
 
 
 def agent_profile(spec, config: Optional[dict] = None,
-                  egress_conf: Optional[dict] = None) -> dict:
+                  egress_conf: Optional[dict] = None,
+                  all_specs=None) -> dict:
     """Profilo trifecta di un singolo agente, dai suoi grant effettivi.
 
     ⚠️ `score` e `residual` di QUESTO profilo non sono una metrica di prodotto e
@@ -458,8 +459,31 @@ def agent_profile(spec, config: Optional[dict] = None,
                 "why": {leg: [] for leg in LEGS},
                 "shell": False, "expands": False, "unclassified": [],
                 "egress_scope": "none", "residual": 0}
-    grants = [str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])
-              if str(g).strip()]
+    # I verbi EFFETTIVI, non quelli dichiarati: dall'8 ago 2026 un seed eredita
+    # dall'arciseed, e leggere la sola dichiarazione SOTTOSTIMA il rischio.
+    # Misurato: ripulendo i seed dai verbi ridondanti, il punteggio di
+    # `segretario` è sceso da 2 a 0 — un file più pulito non rende un agente meno
+    # pericoloso, e un segnale di sicurezza che si abbassa da solo è la forma
+    # peggiore di errore silenzioso.
+    from .inheritance import effective_tool_permissions
+    try:
+        _tutti = all_specs
+        if _tutti is None:
+            # Nessun chiamante deve poter ottenere un profilo che sottostima solo
+            # perché non ha passato l'elenco: si legge dal registry.
+            from . import registry as _reg
+            _tutti = _reg.list()
+        _specs = {getattr(s, "name", None): s for s in (_tutti or [])}
+        _specs.pop(None, None)
+        _specs.setdefault(name, spec)
+        grants = [g for g in effective_tool_permissions(name, _specs) if g]
+    except Exception as e:  # noqa: BLE001 — un profilo non calcolabile non deve
+        # rompere il canale; si ricade sulla dichiarazione, che sottostima ma non
+        # esplode, e si logga perché quel numero va guardato con sospetto.
+        LOG.warning("verbi ereditati non risolti per '%s' (%s): profilo sulla "
+                    "sola dichiarazione", name, type(e).__name__)
+        grants = [str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])
+                  if str(g).strip()]
     legs, why = {}, {}
     for leg in LEGS:
         matched = _matching_grants(grants, cfg[leg])

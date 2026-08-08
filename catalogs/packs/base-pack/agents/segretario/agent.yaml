@@ -6,6 +6,7 @@
 # partecipante. Modello piccolo ed economico (24B EU-sovrano su Scaleway): il
 # task è regolare, non richiede ragionamento pesante.
 name: segretario
+parents: [archseed]
 display_name: Segretario
 description: "Segretario del topic: verbalizza le minute e mantiene summary/TLDR e prossimi passi. Non conversa; interviene quando si salva lo stato del topic."
 type: normal
@@ -34,9 +35,12 @@ rules:
 # SOLO scrittura-stato del topic di cui è partecipante: aprire/leggere lo stato
 # corrente e scrivere summary/minute/file. NIENTE topic.* completo (esclude
 # archive, delete_file, remote_* git, new/list/search).
+# ANTENATO. `archseed` dà i verbi base per ereditarietà (specification §1.3):
+# leggere nella stanza in cui lo spawn sta, parlarci, e la propria memoria. Qui
+# sotto resta SOLO il mestiere di questo seed — se un verbo base ricomparisse in
+# `tool_permissions`, la domanda «cosa fa questo agente» tornerebbe senza
+# risposta, sepolta sotto ciò che fanno tutti.
 tool_permissions:
-  - topic.open
-  - topic.read_document
   - topic.save_summary
 memory:
   dir: memory/

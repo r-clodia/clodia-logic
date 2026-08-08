@@ -8,7 +8,12 @@ immutable: true
 # per costruzione non può accedere a dati confidenziali. Nessun canale utente.
 clearance: SEAL-1
 constitution: platform-core
-parents: [clodia]
+# ANTENATO. `parents` è una relazione di AUTORITÀ: ciò che vi compare concede
+# verbi per ereditarietà. Non è genealogia — le due cose erano confuse finché
+# nessuno risolveva il campo, e il giorno in cui è diventato portante `sysadmin`
+# si sarebbe preso 33 verbi da `parents: [clodia]`, una riga scritta quando non
+# significava niente. Qui resta solo ciò da cui si eredita davvero.
+parents: [archseed]
 created_at: "2026-07-07T00:00:00Z"
 agent_sdk: claude
 model: claude-sonnet-5
@@ -71,6 +76,11 @@ capabilities:
   - "base-pack/*"
   - "comms-pack/helpdesk"  # è l'agente del widget di assistenza (canale SEAL-1 helpdesk)
 rules: []
+# ANTENATO. `archseed` dà i verbi base per ereditarietà (specification §1.3):
+# leggere nella stanza in cui lo spawn sta, parlarci, e la propria memoria. Qui
+# sotto resta SOLO il mestiere di questo seed — se un verbo base ricomparisse in
+# `tool_permissions`, la domanda «cosa fa questo agente» tornerebbe senza
+# risposta, sepolta sotto ciò che fanno tutti.
 tool_permissions:
   # Remit PLATFORM-OPS pieno (lug 2026): sysadmin amministra la piattaforma su
   # tutti i namespace operativi. NB: quasi tutte le MUTAZIONI qui sotto sono
@@ -130,17 +140,10 @@ tool_permissions:
   - "topic.add_minute"
   - "topic.archive"
   - "topic.delete_file"
-  - "topic.fetch"
-  - "topic.files"
   - "topic.invoke_hook"
-  - "topic.list"
   - "topic.migrate_storage"
   - "topic.new"
-  - "topic.open"
-  - "topic.post_message"
   - "topic.put"
-  - "topic.read_document"
-  - "topic.read_file"
   - "topic.remote_add"
   - "topic.remote_commit"
   - "topic.remote_disable"
@@ -150,7 +153,6 @@ tool_permissions:
   - "topic.remote_status"
   - "topic.remove_participant"
   - "topic.save_summary"
-  - "topic.search"
   - "topic.suggest_team"
   - "topic.write_file"
   - "web.post"          # POST HTTP generica, sempre gated per singola invocazione
