@@ -7,6 +7,7 @@
 # Clodia nel bootstrap. Modello piccolo ed economico (24B EU-sovrano su Scaleway): il
 # task è regolare, non richiede ragionamento pesante.
 name: segretario
+parents: [archseed]
 display_name: Segretario
 description: "Segretario del topic: verbalizza minute e stato; se Clodia non è disponibile introduce il topic e propone la squadra."
 type: normal
@@ -35,9 +36,12 @@ rules:
 # Scrittura-stato del topic di cui è partecipante, più suggest_team read-only.
 # NIENTE topic.* completo (esclude inviti, archive, delete_file, remote_* git,
 # new/list/search).
+# ANTENATO. `archseed` dà i verbi base per ereditarietà (specification §1.3):
+# leggere nella stanza in cui lo spawn sta, parlarci, e la propria memoria. Qui
+# sotto resta SOLO il mestiere di questo seed — se un verbo base ricomparisse in
+# `tool_permissions`, la domanda «cosa fa questo agente» tornerebbe senza
+# risposta, sepolta sotto ciò che fanno tutti.
 tool_permissions:
-  - topic.open
-  - topic.read_document
   - topic.save_summary
   - topic.suggest_team
 memory:

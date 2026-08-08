@@ -28,6 +28,24 @@ def _seed(name) -> AgentSpec:
     return AgentSpec.model_validate(raw)
 
 
+def _all_seeds() -> list:
+    """TUTTI i seed del pack, arciseed compreso.
+
+    Serve perché dall'8 ago 2026 un seed eredita: valutarne uno senza gli
+    antenati misura la sola dichiarazione, e la dichiarazione **sottostima**. Un
+    test che costruisce un mondo deve costruirlo intero, altrimenti misura un
+    sistema che non esiste — ed è così che il punteggio di `segretario` è
+    sembrato scendere da 2 a 0 quando il suo file è diventato più pulito.
+    """
+    out = []
+    for d in sorted(SEEDS_DIR.iterdir()):
+        f = d / "agent.yaml"
+        if f.is_file():
+            out.append(AgentSpec.model_validate(
+                yaml.safe_load(f.read_text(encoding="utf-8"))))
+    return out
+
+
 class ConfigTests(unittest.TestCase):
     """La classificazione è configurazione versionata, non costanti nel codice."""
 
@@ -148,11 +166,11 @@ class SeedAgentsTests(unittest.TestCase):
     def test_seed_scores_match_the_issue_table(self) -> None:
         expected = {"clodia": 3, "ophelia": 3, "sysadmin": 3, "messaggero": 3,
                     "segretario": 2}
-        got = {n: trifecta.agent_profile(_seed(n))["score"] for n in expected}
+        got = {n: trifecta.agent_profile(_seed(n), all_specs=_all_seeds())["score"] for n in expected}
         self.assertEqual(got, expected)
 
     def test_segretario_is_two_thirds_because_it_cannot_send(self) -> None:
-        p = trifecta.agent_profile(_seed("segretario"))
+        p = trifecta.agent_profile(_seed("segretario"), all_specs=_all_seeds())
         self.assertFalse(p["legs"]["egress"])
         self.assertEqual(p["why"]["egress"], [])
 
