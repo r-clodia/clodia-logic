@@ -127,6 +127,18 @@ def create_topic(tier: str, name: str, meta: dict,
 
 
 
+def set_portable(tier: str, name: str, portable: bool) -> dict:
+    url = f"{_base()}/{tier}/{name}/portable"
+    try:
+        r = requests.post(url, headers=_headers(), json={"portable": bool(portable)},
+                          timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway portable irraggiungibile: {e}") from e
+    if r.status_code >= 400:
+        raise TopicsClientError(f"gateway portable → HTTP {r.status_code}: {r.text[:160]}")
+    return r.json()
+
+
 def archive_topic(tier: str, name: str) -> dict:
     url = f"{_base()}/{tier}/{name}/archive"
     try:
