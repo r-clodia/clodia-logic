@@ -156,7 +156,6 @@ tool_permissions:
   - "topic.suggest_team"
   - "topic.write_file"
   - "web.post"          # POST HTTP generica, sempre gated per singola invocazione
-  - "workflows.*"       # lifecycle delle run dei workflow (start/cancel/delete_run, gated) + list/status
   - egress.allow
   - egress.list
   - egress.revoke

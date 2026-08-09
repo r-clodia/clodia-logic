@@ -43,7 +43,7 @@
 # (`clodia-tools/server/main.py`, `Tool(name=…)`). Correzioni:
 #   1. `fs.list_dir` non è lettura di dati privati (restituisce nomi e
 #      dimensioni dentro `allowed_paths`, mai contenuto) → eccezione;
-#   2. i connettori di terze parti (gcalendar, gdocs, trello, image, artifact,
+#   2. i connettori di terze parti (gcalendar, gdocs, image, artifact,
 #      mcp, packs) non erano classificati affatto: un agente con SOLI quei
 #      verbi risultava 0/3 pur potendo esfiltrare;
 #   3. rimosse le eccezioni verso verbi INESISTENTI (`email.send_file`,
@@ -117,10 +117,6 @@ private_data:
   - -gsheets.add_tab
   - -gsheets.append_rows
   - -gsheets.write_range
-  - trello.*
-  - -trello.create_card
-  - -trello.comment
-  - -trello.move_card
   # CRM: anagrafiche e contatti sono dato privato (#104 §8, voce impiegato-tomato)
   - leads.*
   # stato e configurazione dell'istanza (include credenziali e integrazioni)
@@ -137,7 +133,6 @@ private_data:
   - agents.*
   - profile.*
   - runtime.*
-  - workflows.*
   - logs.*
   # `fs.list_dir` è l'unico verbo `fs.*` oggi ed è un FALSO POSITIVO: elenca
   # nomi e dimensioni dentro `allowed_paths` dell'agente, non restituisce mai
@@ -218,10 +213,6 @@ untrusted_input:
   - -gsheets.add_tab
   - -gsheets.append_rows
   - -gsheets.write_range
-  - trello.*
-  - -trello.create_card
-  - -trello.comment
-  - -trello.move_card
   - rag.*
   - eu_corpus.*
   # Corpora di dominio montati come MCP esterni. Erano deliberatamente NON
@@ -293,9 +284,6 @@ egress:
   - gsheets.add_tab
   - gsheets.append_rows
   - gsheets.write_range
-  - trello.create_card
-  - trello.comment
-  - trello.move_card
   # il prompt viene inviato alla API immagini del provider (OpenAI gpt-image)
   - image.generate
   # `artifact.render` scrive DENTRO Clodia (files/artifact.html) e sembrerebbe

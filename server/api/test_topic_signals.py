@@ -96,36 +96,66 @@ class TopicSignalTests(unittest.TestCase):
 
 
 class PendingGatesTests(unittest.TestCase):
-    """_pending_gates_for: assegnazione e riassegnazione (DoD 11-12)."""
+    """`_pending_gates_for`: da dove viene il conteggio dei gate.
 
-    def _runs(self, runs):
-        with patch.object(ts.wf_store, "list_runs", return_value=runs):
-            return ts._pending_gates_for("davide")
+    La fonte è cambiata il 9 ago 2026. Era lo store dei workflow — il badge
+    contava i gate di un run — e coi workflow rimossi sarebbe rimasto a zero per
+    sempre: un badge dichiarato che nessuno alimenta. Ora la fonte è il gateway,
+    che è dove i gate vivono.
 
-    def test_gate_assigned_to_me(self) -> None:
-        runs = [{"gate_pending": True, "wf_owner": "davide",
-                 "topic": {"tier": "SEAL-1", "name": "wf-1"}}]
-        self.assertEqual(self._runs(runs), {"SEAL-1/wf-1": 1})
+    Cosa i test tengono fermo, oltre al conteggio: il badge **non deve poter
+    rompere la pagina**. Se il gateway non risponde, la lista dei topic si vede
+    lo stesso senza pallini, perché un aiuto che rompe ciò che aiuta non è un
+    aiuto — ed è la direzione opposta a quella dei gate, dove un guasto deve
+    fermare l'azione.
+    """
 
-    # DoD 11: gate risolto (gate_pending falso) → sparisce.
-    def test_resolved_gate_disappears(self) -> None:
-        runs = [{"gate_pending": False, "wf_owner": "davide",
-                 "topic": {"tier": "SEAL-1", "name": "wf-1"}}]
-        self.assertEqual(self._runs(runs), {})
+    class _Resp:
+        def __init__(self, code, body):
+            self.status_code = code
+            self._body = body
 
-    # DoD 12: riassegnato ad altri → spento per me (e acceso per lui).
-    def test_reassigned_gate_moves(self) -> None:
-        runs = [{"gate_pending": True, "wf_owner": "anna",
-                 "topic": {"tier": "SEAL-1", "name": "wf-1"}}]
-        self.assertEqual(self._runs(runs), {})
-        with patch.object(ts.wf_store, "list_runs", return_value=runs):
-            self.assertEqual(ts._pending_gates_for("anna"), {"SEAL-1/wf-1": 1})
+        def json(self):
+            return self._body
 
-    def test_fallback_requested_by(self) -> None:
-        runs = [{"gate_pending": True, "wf_owner": "",
-                 "requested_by": "davide",
-                 "topic": {"tier": "SEAL-1", "name": "wf-2"}}]
-        self.assertEqual(self._runs(runs), {"SEAL-1/wf-2": 1})
+    def _gates(self, richieste, code=200, principal="davide"):
+        from . import gate as _gate
+        with patch.object(_gate, "_gw",
+                          lambda m, p, pr: self._Resp(code, {"requests": richieste})):
+            return ts._pending_gates_for(principal)
+
+    def test_a_pending_gate_lights_its_room(self):
+        self.assertEqual(
+            self._gates([{"verb": "topic.put", "chat": "chan:SEAL-1:acme:clodia"}]),
+            {"SEAL-1/acme": 1})
+
+    def test_two_gates_in_one_room_count_two(self):
+        self.assertEqual(
+            self._gates([{"chat": "chan:SEAL-1:acme:clodia"},
+                         {"chat": "chan:SEAL-1:acme:segretario"}]),
+            {"SEAL-1/acme": 2})
+
+    def test_gates_of_different_rooms_do_not_mix(self):
+        out = self._gates([{"chat": "chan:SEAL-1:acme:clodia"},
+                           {"chat": "chan:SEAL-2:beta:clodia"}])
+        self.assertEqual(out, {"SEAL-1/acme": 1, "SEAL-2/beta": 1})
+
+    def test_a_gate_outside_a_room_lights_nothing(self):
+        """Il turno di un job non ha una stanza da illuminare. Inventargliene
+        una accenderebbe il pallino su un topic che non c'entra."""
+        self.assertEqual(self._gates([{"chat": "job:42"}, {"chat": None}, {}]), {})
+
+    def test_an_unreachable_gateway_does_not_break_the_list(self):
+        from . import gate as _gate
+
+        def rotto(m, p, pr):
+            raise RuntimeError("connection refused")
+
+        with patch.object(_gate, "_gw", rotto):
+            self.assertEqual(ts._pending_gates_for("davide"), {})
+
+    def test_an_error_response_is_not_a_count(self):
+        self.assertEqual(self._gates([{"chat": "chan:SEAL-1:acme:clodia"}], code=500), {})
 
 
 class ReadStateTests(unittest.TestCase):

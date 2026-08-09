@@ -154,11 +154,6 @@ async def _lifespan(app: FastAPI):
             LOG.warning("pack ops boot reconcile fallito: %s", e)
     asyncio.create_task(_safe_boot_reconcile())
 
-    # Workflow engine (kanban dichiarativo dai pack): parte solo se la
-    # feature è attiva nel profilo. Stato in datadir → riprende dopo restart.
-    if profile.features.workflows:
-        from .workflows.engine import engine_loop
-        asyncio.create_task(engine_loop())
     # Relay inbound Telegram → topic (modello telegram-proxy): LONG-POLL server-side,
     # trasporto MECCANICO (nessuna logica AI). Ogni ciclo blocca (in un thread) su
     # getUpdates finché arriva un messaggio → latenza quasi zero, meno carico dei
@@ -329,13 +324,14 @@ def create_app() -> FastAPI:
         # Chat Hooks: iniezione di messaggi in una chat via hook/webhook (F1).
         from .hooks import api as hooks_api
         app.include_router(hooks_api.router)
-    if prof.features.workflows:
-        from .workflows import api as workflows_api
-        app.include_router(workflows_api.router)
-        # Pagina di decisione dei gate via link firmato (no login, token-auth):
-        # deve essere raggiungibile senza sessione (arrivi da mail/Telegram).
-        from .api import gate_public
-        app.include_router(gate_public.router)
+    # Pagina di decisione dei gate via link firmato (no login, token-auth):
+    # deve essere raggiungibile senza sessione (arrivi da mail/Telegram).
+    # Montata SEMPRE: serve le proposte di job, ed era dietro il flag dei
+    # workflow solo perché una volta serviva anche quelli. Un link che arriva
+    # per mail e trova 404 perché una feature spenta non c'entra nulla con lui
+    # è indistinguibile da un link scaduto.
+    from .api import gate_public
+    app.include_router(gate_public.router)
     app.include_router(profile.router)
     app.include_router(channel_aliases.router)
     app.include_router(catalog.router)

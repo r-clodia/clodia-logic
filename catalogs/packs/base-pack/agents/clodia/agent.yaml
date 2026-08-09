@@ -96,8 +96,6 @@ tool_permissions:
   - mcp.list
   - packs.list
   - packs.show
-  - workflows.list
-  - workflows.status
   - jobs.list
   - egress.list
   - ingress.list

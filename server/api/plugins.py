@@ -270,22 +270,11 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
         return out
     skills = _dedupe(bucket["skills"])
     rules = _dedupe(bucket["rules"])
-    # Workflow e datastore dichiarati dal plugin (pack ops): esposti così il
-    # pack si auto-descrive nella UI accanto a skill/rule/mcp.
-    wf_raw = manifest.get("workflows") or {}
-    workflows = [
-        {
-            "name": wname,
-            "trigger": wf.get("trigger") or [],
-            "stages": [
-                {"lane": st.get("lane"), "skill": st.get("skill"),
-                 "human_gate": bool(st.get("human_gate"))}
-                for st in (wf.get("stages") or []) if isinstance(st, dict)
-            ],
-        }
-        for wname, wf in sorted(wf_raw.items())
-        if isinstance(wf, dict)
-    ] if isinstance(wf_raw, dict) else []
+    # I datastore dichiarati dal plugin: esposti così il pack si auto-descrive
+    # nella UI accanto a skill/rule/mcp. La sezione `workflows` del manifest non
+    # si legge più — il motore non c'è — e un manifest che la dichiara non è un
+    # errore: resta ignorata, perché rifiutare il pack per una chiave che non
+    # serve più romperebbe i pack di terzi senza guadagnarci nulla.
     ds_raw = manifest.get("datastores") or []
     datastores = [
         {"path": d.get("path"), "purpose": d.get("purpose", ""),
@@ -328,14 +317,12 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
         "skills": skills,
         "rules": rules,
         "mcp_servers": mcp_servers,
-        "workflows": workflows,
         "datastores": datastores,
         "rag_collections": rag_collections,
         "counts": {
             "skills": len(skills),
             "rules": len(rules),
             "mcp_servers": len(mcp_servers),
-            "workflows": len(workflows),
             "datastores": len(datastores),
             "rag_collections": len(rag_collections),
         },

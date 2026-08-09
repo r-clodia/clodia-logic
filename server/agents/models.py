@@ -285,7 +285,7 @@ class AgentSpec(BaseModel):
     # Profilo di costo dichiarato: "economy" (haiku), "standard" (sonnet),
     # "premium" (opus). Usato dalla selection engine come tie-break.
     cost_profile: str = "standard"
-    # Permessi tool MCP granulari (es. ["trello.*", "email.send"]).
+    # Permessi tool MCP granulari (es. ["topic.*", "email.send"]).
     # Enforcement nel gateway MCP; qui dichiarativo per validator/selection.
     tool_permissions: list[str] = Field(default_factory=list)
     #: Verbi che, per QUESTO agent, richiedono un consenso umano a ogni uso.

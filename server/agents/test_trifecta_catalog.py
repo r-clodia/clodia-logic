@@ -55,14 +55,12 @@ class ThirdPartyConnectorTests(unittest.TestCase):
 
     WRITES = ("gcalendar.create_event", "gcalendar.update_event",
               "gcalendar.delete_event", "gdocs.create", "gdocs.append_text",
-              "gdocs.replace_text", "trello.create_card", "trello.comment",
-              "trello.move_card", "image.generate", "gdrive.mkdir",
+              "gdocs.replace_text", "image.generate", "gdrive.mkdir",
               "gdrive.move", "artifact.render", "mcp.add", "packs.import_url",
               "packs.install_npm", "packs.install_pip",
               "gsheets.add_tab", "gsheets.append_rows", "gsheets.write_range")
 
     READS = ("gcalendar.list_events", "gcalendar.freebusy", "gdocs.read",
-             "trello.cards", "trello.boards", "trello.lists",
              "gsheets.read", "gsheets.list_tabs")
 
     def test_writes_towards_third_parties_are_egress(self) -> None:
