@@ -1,50 +1,85 @@
 # clodia-logic
 
-Il **substrato** di Clodia Agency: pure logica, immutabile, versionata. È il build context dell'immagine container e il "patrimonio genetico" trasmesso ai cloni dell'agenzia.
+The **substrate** of Clodia Agency: logic only, versioned, no data. It is the
+build context of the container image and the material a clone of the agency
+inherits.
 
-> ### 📍 Non è il repo di ingresso
+> ### 📍 This is not the entry repository
 >
-> Questo repository è un **componente** di Clodia Platform, non un prodotto
-> installabile per conto proprio. Il repo di ingresso — installazione, quickstart,
-> architettura d'insieme, licenza e **avvertenze di rischio** — è:
+> This repository is a **component** of Clodia Platform, not something you
+> install on its own. Installation, quickstart, architecture, licence and the
+> **risk warnings** live in:
 >
 > ### 👉 **[r-clodia/clodia-platform](https://github.com/r-clodia/clodia-platform)**
 >
-> Non partire da qui per deployare: `clodia-platform` clona i repo componenti,
-> builda le immagini e orchestra lo stack. Prima di installare, leggi il
-> disclaimer as-is e i **difetti noti** nel tracker della platform —
-> [issue `security` aperte](https://github.com/r-clodia/clodia-platform/issues?q=is%3Aissue+is%3Aopen+label%3Asecurity)
-> e [`SECURITY.md`](https://github.com/r-clodia/clodia-platform/blob/main/SECURITY.md).
-> Il software è distribuito **COSÌ COM'È, senza garanzie**: lo esegui a tuo
-> rischio e pericolo.
+> Do not deploy from here: `clodia-platform` clones the component repositories,
+> builds the images and orchestrates the stack. Before installing, read the
+> as-is disclaimer and the **known defects** in the platform tracker —
+> [open `security` issues](https://github.com/r-clodia/clodia-platform/issues?q=is%3Aissue+is%3Aopen+label%3Asecurity)
+> and [`SECURITY.md`](https://github.com/r-clodia/clodia-platform/blob/main/SECURITY.md).
+> The software is distributed **AS IS, without warranty**: you run it at your
+> own risk.
 
-## Cosa contiene (solo logica)
-- `CLAUDE.md` — costituzione / system prompt.
-- `tools/system/`, `tools/app/` — runtime agent-server + tutti i tool.
-- `docker/`, `docker-compose.yml` — build e deploy.
-- `daemons/` — definizioni daemon (lo *stato* va in `clodia-data`).
-- *(Nessun file-template per i nuovi agent: il flusso "crea agente" genera lo scaffold direttamente dallo schema `AgentSpec` in `api/agent_registry.create_agent`.)*
-- `catalogs/agents-seed/{clodia,ophelia,wainston}/` — seed canonici istanziati in `clodia-data/agents/` al bootstrap. `clodia` e `ophelia` sono super-agent (`constitution: platform-core`); `wainston` è l'agent normal dedicato al widget di assistenza in-app. Eventuali agent aggiuntivi dell'istanza vivono solo in `clodia-data/agents/`, non nel repo.
+## What it does
+
+It runs the **spawns**. A seed is a type; a spawn is a live instance of it with
+its own uid, its own scratch directory and its own identity. This component
+mints that identity against the colony CA and signs every call to the gateway
+with the claims that make a decision possible downstream: which spawn, which
+room, which clearance, and the chain of principals the request came through.
+
+It also serves the human-facing API — chats, topics, jobs, agents, packs — that
+the web UI speaks to.
+
+It holds **no vetoes**. Those live in
+[`clodia-tools`](https://github.com/r-clodia/clodia-tools), in a separate
+process and container, because a reference monitor sharing an address space with
+what it monitors is a convention rather than a boundary.
+
+## Layout
+
+| path | what it holds |
+|---|---|
+| `server/` | the API, the spawn runtime, the colony PKI, the scheduler |
+| `server/agents/` | seeds: loading, inheritance, synchronisation to the datadir, the boot-time boundary assertion |
+| `server/sdk_runtime/` | the session that drives an agent SDK (`claude`, `codex`, `opencode`) |
+| `catalogs/packs/` | the bundled packs — `base-pack`, `comms-pack`, `editorial-pack` |
+| `catalogs/PACKS.md` | what a pack is, and what a plugin is |
+| `providers/`, `routing/`, `hooks/` | inference providers, routing, hooks |
+| `docker/` | the image |
+
+The bundled seeds are `archseed` (abstract, the ancestor that holds the base
+verbs and cannot be spawned), `clodia`, `ophelia`, `segretario`, `messaggero`,
+`sysadmin`. An instance's own agents live only in its datadir, never here.
 
 ## Agent SDK
-Gli agenti task-bound sono definiti in modo agnostico in `agent.yaml` tramite
-`agent_sdk` (`claude`, `codex`, `opencode`) + `model`. Il workspace effimero
-converte poi skill, rules e sandbox nel layout richiesto dal runtime agentico
-selezionato.
-Per agenti legacy già presenti in datadir: `python3 -m server.agents.migrate_agent_sdk`.
 
-## Cosa NON contiene
-Nessun dato: `boot/`, `topics/`, `secrets/`, `data/`, `contacts.db`, gli agenti assunti e la loro memoria vivono in **`clodia-data`** (volume montato a runtime).
+Task-bound agents declare their runtime in `agent.yaml` — `agent_sdk`
+(`claude` | `codex` | `opencode`) plus `model`. The ephemeral workspace then
+converts skills, rules and sandbox into the layout that runtime expects.
+
+## What it does **not** hold
+
+No data. Topics, secrets, an instance's hired agents and their memory live in
+the mounted datadir, never in this repository.
 
 ## Governance
-`main` è protetto (require PR + review). Gli agenti **possono** modificare questo repo via fork+PR: token Clodia ha `Contents:read` su upstream e `Contents:write` sul fork `clodiaolivau-r/clodia-logic`, le board "Agent Server Dev" e "Web Dev" sono nate proprio per task di sviluppo sul substrato. Il merge resta gate umano (review di owner). Niente push diretto su upstream/main, niente skip-CI, niente force-push su branch già reviewed.
 
-## Runtime
-`cwd = /clodia` (questo repo). I dati di `clodia-data` sono bind-montati in `/clodia` ai path attesi (`topics/`, `secrets/`, `boot/`, `data/`) + in `/datadir` (`agents/`, `agent-workspaces/`, `agent-state/`).
+`main` is protected: pull request plus review. Agents may propose changes here
+through fork and pull request; the merge is a human gate. No direct push to
+`main`, no skipped CI, no force-push onto a reviewed branch.
 
-## Licenza
+## Rules
+
+Not restated here. See
+[`docs/specification.md`](https://github.com/r-clodia/clodia-platform/blob/main/docs/specification.md)
+for the model and
+[`docs/gap-analysis.md`](https://github.com/r-clodia/clodia-platform/blob/main/docs/gap-analysis.md)
+for what the code enforces today, with the gaps named.
+
+## Licence
 
 Copyright (C) 2026 Davide Carboni.
 
-GNU AGPL v3 — con opzione di licenza commerciale: vedi [LICENSING.md](LICENSING.md).
-Le versioni fino al tag `apache2-final` restano Apache 2.0.
+GNU AGPL v3, with a commercial option: see [LICENSING.md](LICENSING.md).
+Releases up to the `apache2-final` tag remain Apache 2.0.

@@ -1,166 +1,66 @@
-# Rules Catalog — base-pack e pack locali
+# Rules
 
-Catalogo delle **rules** di Clodia. Una rule è un file `.md` con frontmatter
-`globs:` più body con knowledge contestuale. Il catalogo è runtime-neutral: gli
-adapter `agent_sdk` decidono come esporre le rules al CLI/SDK agentico.
+A rule is a `.md` file with a `globs:` front-matter and a body of contextual
+knowledge. The catalogue is runtime-neutral: the `agent_sdk` adapters decide how
+to present rules to the agentic CLI or SDK they drive.
 
-Come per le skill, il concetto utente è il **pack**:
+> **The specification wants this field gone** (§1.6: *no rules, no sandbox*).
+> Rules survive as a live mechanism and are documented here so that what exists
+> is legible — not as something to build on. Anything new belongs in a skill.
 
-| Pack | Significato | Dove vive oggi |
+## What is actually here
+
+This directory holds one rule, `topic-state-boundary.md`. An earlier version of
+this document listed four others — `secrets-handling`, `git-commit-style`,
+`python-style`, `skill-authoring` — that no longer exist. A catalogue that lists
+absent entries is worse than an empty one: it makes a reader conclude they are
+loaded somewhere else.
+
+## Where rules live
+
+| pack | meaning | path |
 |---|---|---|
-| `base-pack` | Rules native di Clodia Agency, presenti in ogni installazione. | `clodia-logic/rules-catalog/` |
-| `local-pack` | Rules create, installate o modificate dall'utente in questa installazione. Include override locali di rules native. | `clodia-data/rules-catalog/` |
-| `<nome>-pack` | Pack installato per un business, cliente, dominio o processo. Esempio: `acme-pack`. | di norma `clodia-data/rules-catalog/`, con metadata `pack` o naming convenzionale |
-
-`logic` e `data` restano solo origini tecniche di storage. Le API readonly
-`/clodia/rules` espongono `pack`, `source`, `available_packs` e `variants` come
-per `/clodia/skills`.
-
-## Layout fisico
+| `base-pack` | native rules, present in every installation | this directory, in git |
+| `local-pack` | rules created or modified by the owner of an instance, local overrides included | `CLODIA_DATA/rules-catalog/` |
+| `<name>-pack` | a pack installed for a business, customer or domain | usually `CLODIA_DATA/rules-catalog/<pack>/` |
 
 ```text
-clodia-logic/rules-catalog/        # base-pack, in git, distribuibile
-├── secrets-handling.md
-├── git-commit-style.md
-├── python-style.md
-└── skill-authoring.md
-
-clodia-data/rules-catalog/         # local-pack e pack installati dell'istanza
-├── agent-server-fastapi.md        # rule FLAT → local-pack
-└── acme-pack/                     # pack-subdir → pack esplicito (dal path)
+CLODIA_DATA/rules-catalog/
+├── agent-server-fastapi.md        # flat rule → local-pack
+└── acme-pack/                     # pack sub-directory → explicit pack, from the path
     ├── blog-voice.md
     └── next-conventions.md
 ```
 
-Come per le skill, il pack di una rule del data catalog è determinato dal
-**path** (`<pack>/<rule>.md`); le rule flat restano `local-pack`. I pack
-importati via `/clodia/packs/import` installano le loro rule nel pack-subdir.
+As with skills, a data-catalogue rule's pack is determined by its **path**;
+flat rules stay in `local-pack`. Packs imported through `/clodia/packs/import`
+install their rules into the pack sub-directory.
 
-## Rules vs Skills vs CLAUDE.md
+A data-only rule may also declare its pack in the front-matter (`pack`,
+`pack_id` or `packId`). Without a declaration the API falls back to
+`local-pack`.
 
-| | CLAUDE.md | Rules | Skills |
+## Rules, skills, and the constitution
+
+| | constitution | rules | skills |
 |---|---|---|---|
-| Caricato | Sempre all'avvio | On-demand per path glob | On-demand per name/description match |
-| Per cosa | Facts brevi sempre veri | Knowledge domain-specific path-triggered | Workflow attivi multi-step |
-| Esempio | Stack tecnologico, convenzioni globali | "Quando tocchi .tsx leggi AGENTS.md" | "Quando devi scrivere un articolo blog Acme esegui questo workflow" |
+| loaded | always, at start | on demand, by path glob | on demand, by name/description match |
+| for | short facts that are always true | domain knowledge triggered by a path | active multi-step workflows |
 
-## Override e varianti
+## Resolution order
 
-Se una rule esiste solo nel `base-pack`, gli agenti usano quella.
+`server/agents/rule_sync.py` materialises every rule named in `agent.yaml.rules`
+as `.agent/rules/<name>.md` inside the ephemeral workspace. It resolves, in
+order:
 
-Se lo stesso nome esiste anche nel catalogo data, la variante data è quella
-attiva a runtime. In questo caso:
-
-- `source = "both"`
-- `available_packs = ["base-pack", "local-pack"]` o pack esplicito
-- `variants` contiene sia la versione base sia quella locale
-
-Questo consente di mantenere la rule nativa e, allo stesso tempo, avere una
-versione personalizzata dell'installazione.
-
-## Pack espliciti
-
-Una rule data-only può dichiarare il pack nel frontmatter:
-
-```yaml
----
-pack: acme-pack
-globs:
-  - "**/BlogArticle*.tsx"
----
-```
-
-Chiavi supportate:
-
-- `pack`
-- `pack_id`
-- `packId`
-
-Se il pack non è dichiarato, l'API applica fallback pragmatici:
-
-- nomi `acme-*` o `acme-*` → `acme-pack`
-- altro data-only → `local-pack`
-- override data di una rule base → `local-pack`
-
-## Loader runtime
-
-`tools/system/agent-server/server/agents/rule_sync.py` materializza ogni rule
-dichiarata in `agent.yaml.rules` come file `.agent/rules/<name>.md` nel
-workspace effimero.
-
-Ordine di risoluzione (speculare a `skill_sync`):
-
-1. nome QUALIFICATO `<pack>/<rule>` → `/datadir/rules-catalog/<pack>/<rule>.md`
-2. nome BARE: `/datadir/rules-catalog/<rule>.md` (flat)
-3. nome BARE: `/datadir/rules-catalog/<pack>/<rule>.md` (primo pack in ordine)
+1. qualified `<pack>/<rule>` → `/datadir/rules-catalog/<pack>/<rule>.md`
+2. bare name → `/datadir/rules-catalog/<rule>.md` (flat)
+3. bare name → `/datadir/rules-catalog/<pack>/<rule>.md` (first pack in order)
 4. `/clodia/rules-catalog/<rule>.md` (base-pack)
 
-Questa precedenza implementa l'override locale: la versione data vince, se
-esiste. In `agent.yaml.rules` sono supportati anche il pack-glob `<pack>/*`
-(tutte le rule di un pack) e la wildcard `*` (tutto il catalogo). Gli adapter
-runtime convertono poi la forma neutra nel layout richiesto dal runtime
-agentico.
+That precedence is what makes a local override work: the data version wins where
+it exists. `agent.yaml.rules` also accepts `<pack>/*` and `*`.
 
-## Dichiarare rules per un agente
-
-```yaml
-name: dev
-capabilities:
-  - acme-blog-integrate
-rules:
-  - secrets-handling
-  - acme-next-conventions
-  - agent-server-fastapi
-```
-
-Al boot del workspace, le rules vengono copiate in `<workspace>/.agent/rules/`.
-
-## Convenzione file rule
-
-```markdown
----
-globs:
-  - "**/*.tsx"
-  - "src/components/**"
----
-
-# Rule: <titolo>
-
-<knowledge contestuale: cosa sapere quando lavori sui path matchati>
-```
-
-Con pack esplicito:
-
-```markdown
----
-pack: <nome-pack>
-globs:
-  - "**/*.tsx"
----
-
-# Rule: <titolo>
-
-<knowledge contestuale>
-```
-
-## Cosa va dove
-
-| Caso | Pack consigliato |
-|---|---|
-| Convenzione generale utile a qualunque installazione Clodia | `base-pack` |
-| Convenzione locale dell'istanza o di un repo dell'owner | `local-pack` |
-| Rule che modifica una nativa mantenendo lo stesso nome | `local-pack` override |
-| Set coerente di rules per business/dominio/processo installabile | `<nome>-pack`, es. `acme-pack` |
-
-Quando una rule specifica diventa generica, può migrare da un pack locale o
-business al `base-pack`.
-
-## Rule di authoring skill
-
-`skill-authoring` e' la rule base che mantiene separati:
-
-- skill di dominio: input, output, workflow, verdict;
-- control plane: kanban, Trello, lane, claim, commenti, move, unassign.
-
-Quando modifichi o crei una skill, applica questa rule: solo
-`kanban-operations` deve dipendere direttamente dal piano kanban/Trello.
+When a name exists in both catalogues, the read-only `/clodia/rules` API reports
+`source: "both"`, the `available_packs`, and both `variants` — so an instance can
+keep the native rule and its own customised version side by side.
