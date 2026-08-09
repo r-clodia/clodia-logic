@@ -434,6 +434,26 @@ def _seal_num(s: Optional[str]) -> Optional[int]:
         return None
 
 
+def _job_scope_tier(run_id: Optional[str]) -> Optional[str]:
+    """Tier dichiarato dal job che ha aperto questa sessione, o `None`.
+
+    `None` fuori da un job, e `None` anche se il job non dichiara un tier: assente
+    significa «nessun requisito», che è lo stato di ogni job esistente. Inventare
+    un default qui trasformerebbe l'assenza di una dichiarazione in un vincolo che
+    nessuno ha scelto.
+    """
+    rid = str(run_id or "")
+    if not rid.startswith("job:"):
+        return None
+    try:
+        from ..scheduler import db as _jobs
+        job = _jobs.get_job(int(rid.split(":", 1)[1]))
+    except Exception as e:  # noqa: BLE001 — un job illeggibile non impedisce il run
+        LOG.warning("tier del job non letto da '%s' (%s)", rid, type(e).__name__)
+        return None
+    return (str((job or {}).get("tier") or "") or None)
+
+
 def _refuse_if_abstract(kind: str) -> None:
     """Un seed astratto non si spawna (specification §1.4).
 
@@ -945,6 +965,7 @@ class ChatSession:
                                               self._runtime_override),
                                               principal=self.principal,
                                               clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
+                                              scope_tier=getattr(self, "scope_tier", None),
                                               origin=getattr(self, "origin", None),
                                               scoped_tools=self._runtime_override.get("tools"),
                                               unattended=getattr(self, "unattended", False))
@@ -1044,6 +1065,7 @@ class ChatSession:
                 ttl_seconds=_runtime_token_ttl(
                     getattr(self, "_runtime_override", None)),
                 principal=self.principal, clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
+                                              scope_tier=getattr(self, "scope_tier", None),
                                               origin=getattr(self, "origin", None),
                 scoped_tools=self._runtime_override.get("tools"))
         except Exception as e:  # noqa: BLE001 — un re-mint fallito non rompe il turno
@@ -1782,6 +1804,7 @@ class CodexChatSession:
                 ttl_seconds=_runtime_token_ttl(self._runtime_override),
                 principal=self.principal,
                 clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
+                                              scope_tier=getattr(self, "scope_tier", None),
                                               origin=getattr(self, "origin", None),
                 scoped_tools=self._runtime_override.get("tools"),
                 unattended=getattr(self, "unattended", False))
@@ -2126,6 +2149,7 @@ class OpenCodeChatSession:
                                          self._runtime_override),
                                          principal=self.principal,
                                          clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
+                                              scope_tier=getattr(self, "scope_tier", None),
                                               origin=getattr(self, "origin", None),
                                          scoped_tools=self._runtime_override.get("tools"))
             cfg["mcp"]["clodia-tools"] = {
@@ -2492,6 +2516,13 @@ class ChatManager:
             # fino al timeout, che è la lezione di #116. Il gateway deve poterlo
             # sapere, e l'unico modo non falsificabile è un claim nel token.
             chat.unattended = bool(run_id and str(run_id).startswith("job:"))
+            # TIER DELLO SCOPE. Un job È uno scope e dichiara un tier (voce 33),
+            # ma quel tier non arrivava al gateway: per un job `current_channel()`
+            # è None, quindi la regola «un topic portato viaggia solo dove la
+            # stanza lo regge» era scritta e non applicata proprio lì. Si legge
+            # QUI, dove il run_id è noto, e viaggia nel claim firmato: dedurlo da
+            # un argomento sarebbe la parola dell'agente su dove si trova.
+            chat.scope_tier = _job_scope_tier(run_id)
             # Pre-popola titolo dalla history se esiste su disco
             existing = chat.read_history()
             if existing:
