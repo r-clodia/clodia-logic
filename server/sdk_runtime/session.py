@@ -207,7 +207,7 @@ KIND_PERMISSION_MODE = {
 # Write/Edit/Bash(git:*)/Bash(python3:*) restano permessi.
 # F1.5 — cutover di Clodia su MCP (14 giu 2026): la webchat Clodia non invoca
 # più i CLI dei tool via Bash; deve passare dal gateway MCP segregato
-# (clodia-tools). I tool già wrappati (trello/email.send/fs/agent) restano
+# (clodia-tools). I tool già wrappati (email.send/fs/agent) restano
 # disponibili via MCP; quelli non ancora migrati sono TEMPORANEAMENTE
 # indisponibili (buco transitorio accettato, fino al wrapping F2). Difesa in
 # profondità sopra F1 (rimozione dei secret dei tool dal runtime): anche se un
@@ -217,7 +217,6 @@ KIND_DISALLOWED_TOOLS: dict[str, list[str]] = {
         "Bash(rm:*)",
         # tool CLI → vietati: usare i corrispettivi MCP quando disponibili
         "Bash(*email_client*)",
-        "Bash(*trello_client*)",
         "Bash(*gdrive_client*)",
         "Bash(*gdocs_client*)",
         "Bash(*gslides_client*)",

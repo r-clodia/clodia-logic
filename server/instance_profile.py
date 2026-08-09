@@ -54,18 +54,7 @@ class Features(BaseModel):
     pwa: bool = True
     # Popup helpdesk della webui (coda Sprint 3): non sempre necessario.
     helpdesk: bool = True
-    # Motore workflow dichiarativi (pack): board /workflows + API + engine.
-    # `kanban` (legacy, era il mirror Trello) resta accettato come ALIAS
-    # deprecato → mappa su workflows.
-    workflows: bool = False
     colony: bool = False
-
-    @model_validator(mode="before")
-    @classmethod
-    def _alias_kanban(cls, data):
-        if isinstance(data, dict) and "kanban" in data and "workflows" not in data:
-            data = {**data, "workflows": data["kanban"]}
-        return data
 
     @field_validator("topics", "rag", "integrations", mode="before")
     @classmethod
@@ -97,7 +86,7 @@ class IntegrationsConfig(BaseModel):
     # In mode fixed: l'admin può comunque montare MCP con paste manuale dalla
     # UI (decisione di terraformazione, spec v0.3 §4b.4).
     allow_manual_mcp: bool = False
-    # Connettori NATIVI dell'edizione (gmail, mailboxes, trello, …).
+    # Connettori NATIVI dell'edizione (gmail, mailboxes, …).
     # None = tutti (storico); lista = solo quelli (gap-1 acme-min, 6 lug).
     connectors: Optional[list[str]] = None
 

@@ -291,60 +291,6 @@ def _sanitize_playbooks(raw: Any) -> dict[str, list[dict[str, str]]]:
     return out
 
 
-def _sanitize_workflows(raw: Any) -> dict[str, dict]:
-    """Workflow dichiarati dal plugin: {nome: {trigger: [...], stages: [...]}}.
-    Ogni stage: {lane, skill, human_gate?, verdetti?}. Lane uniche nel
-    workflow; skill in formato "<plugin>/<skill>" o nome bare (base-pack).
-    Entry malformate scartate senza bloccare l'import (come datastores)."""
-    out: dict[str, dict] = {}
-    if not isinstance(raw, dict):
-        return out
-    for wname, wf in raw.items():
-        if not isinstance(wf, dict) or not isinstance(wf.get("stages"), list):
-            continue
-        stages, lanes = [], set()
-        for st in wf["stages"]:
-            if not isinstance(st, dict):
-                continue
-            lane = str(st.get("lane") or "").strip()
-            skill = str(st.get("skill") or "").strip()
-            if not lane or not skill or lane in lanes:
-                continue
-            lanes.add(lane)
-            stages.append({
-                "lane": lane,
-                "skill": skill,
-                "human_gate": bool(st.get("human_gate", False)),
-                "verdetti": bool(st.get("verdetti", False)),
-            })
-        if not stages:
-            continue
-        trigger = [str(t) for t in (wf.get("trigger") or ["api"])
-                   if str(t) in ("api", "pill", "job")] or ["api"]
-        # Tier del topic effimero del run (workflow conversazionali): default
-        # SEAL-1 (interno). Legacy P0-P3 accettati.
-        tier = str(wf.get("tier") or "SEAL-1").strip().upper()
-        tier = {"P0":"SEAL-0","P1":"SEAL-1","P2":"SEAL-2","P3":"SEAL-3"}.get(tier, tier)
-        if tier not in ("SEAL-0","SEAL-1","SEAL-2","SEAL-3","SEAL-4"):
-            tier = "SEAL-1"
-        owner = str(wf.get("owner") or "").strip()   # agente umano responsabile
-        # workspace: repo git clonato in temp per-run su cui lavorano gli stadi.
-        # Interno (non input): {repo, dir?, credential?} — credential = nome
-        # della credenziale git nel vault (default github_pat).
-        ws = wf.get("workspace")
-        workspace = None
-        if isinstance(ws, dict) and str(ws.get("repo") or "").strip():
-            workspace = {
-                "repo": str(ws["repo"]).strip(),
-                "dir": str(ws.get("dir") or "").strip() or None,
-                "credential": str(ws.get("credential") or "github_pat").strip(),
-            }
-        out[str(wname).strip()] = {"trigger": trigger, "tier": tier,
-                                   "owner": owner, "workspace": workspace,
-                                   "stages": stages}
-    return out
-
-
 def _write_plugin_manifest(
     plugin: str,
     *,
@@ -356,7 +302,6 @@ def _write_plugin_manifest(
     rag_collections: list[dict[str, Any]] | None = None,
     requires: dict[str, list[str]] | None = None,
     topic_playbooks: dict[str, list[dict[str, str]]] | None = None,
-    workflows: dict[str, dict] | None = None,
 ) -> None:
     meta_dir = PLUGINS_META_DIR / plugin
     meta_dir.mkdir(parents=True, exist_ok=True)
@@ -382,8 +327,6 @@ def _write_plugin_manifest(
         manifest["requires"] = requires
     if topic_playbooks:
         manifest["topic_playbooks"] = topic_playbooks
-    if workflows:
-        manifest["workflows"] = workflows
     (meta_dir / "plugin.yaml").write_text(
         yaml.safe_dump(manifest, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -438,7 +381,6 @@ def install_plugin_from_root(
     rag_collections = _sanitize_rag_collections(manifest.get("rag_collections"))
     requires = _sanitize_requires(manifest.get("requires"))
     topic_playbooks = _sanitize_playbooks(manifest.get("topic_playbooks"))
-    workflows = _sanitize_workflows(manifest.get("workflows"))
     _write_plugin_manifest(
         plugin,
         description=description,
@@ -449,7 +391,6 @@ def install_plugin_from_root(
         rag_collections=rag_collections,
         requires=requires,
         topic_playbooks=topic_playbooks,
-        workflows=workflows,
     )
     # I file degli MCP server vanno copiati nella datadir (prima restavano nel
     # tmp dell'import → config esposta ma server non montabile). Il server che

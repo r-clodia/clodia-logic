@@ -58,7 +58,6 @@ from pathlib import Path
 from fastapi import APIRouter, HTTPException, Request
 
 from ..config import data_path
-from ..workflows import store as wf_store
 from . import topics_client
 from .agents import _principal_from_request
 
@@ -179,28 +178,42 @@ def _edge_ids(tier: str, name: str, upto: datetime) -> list[str]:
     return ids[-_EDGE_IDS_MAX:]
 
 
-def _gate_assignee(run: dict) -> str:
-    """Assegnatario del gate: stessa regola delle notifiche (notify.py)."""
-    return (run.get("wf_owner") or "").strip() or (run.get("requested_by") or "")
-
-
 def _pending_gates_for(principal: str) -> dict[str, int]:
-    """Mappa 'tier/name' → numero di gate pendenti assegnati al principal."""
+    """Mappa 'tier/name' → gate pendenti in quella stanza che TOCCA a `principal`.
+
+    La fonte è cambiata il 9 ago 2026. Prima era lo store dei workflow: il
+    badge contava i gate di un run. Rimossi i workflow, quel conteggio sarebbe
+    rimasto a zero per sempre — un badge dichiarato che nessuno alimenta, cioè
+    il difetto che questa settimana ho trovato sette volte. Ora la fonte è il
+    GATEWAY, che è dove i gate vivono davvero.
+
+    Chi decide viene dalla stessa regola dei gate (voce 24): walls e outward li
+    sblocca l'owner dello scope, gli altri un admin. Qui basta la stanza: il
+    badge dice «c'è qualcosa che aspetta te», e chiedere al gateway di
+    rivalutare il titolo per ogni topic della lista costerebbe una chiamata per
+    topic per mostrare un pallino.
+
+    Fallisce in silenzio e ritorna vuoto: un badge è un aiuto, e un aiuto che
+    rompe la pagina quando il gateway tossisce non è un aiuto.
+    """
     out: dict[str, int] = {}
     try:
-        runs = wf_store.list_runs(include_done=False)
-    except Exception:  # noqa: BLE001 — lo store non deve rompere i segnali
+        from . import gate as _gate
+        r = _gate._gw("GET", "/pending", principal)
+        if r.status_code >= 400:
+            return out
+        richieste = (r.json() or {}).get("requests", [])
+    except Exception as e:  # noqa: BLE001 — i segnali non devono rompersi
+        LOG.warning("gate pendenti non leggibili: %s", str(e)[:120])
         return out
-    for run in runs:
-        if not run.get("gate_pending"):
+    for req in richieste:
+        chat = req.get("chat") or ""
+        if not chat.startswith("chan:"):
             continue
-        topic = run.get("topic") or {}
-        tier, name = topic.get("tier"), topic.get("name")
-        if not tier or not name:
+        parti = chat.split(":")
+        if len(parti) < 3:
             continue
-        if _gate_assignee(run) != principal:
-            continue
-        key = f"{tier}/{name}"
+        key = f"{parti[1]}/{parti[2]}"
         out[key] = out.get(key, 0) + 1
     return out
 
