@@ -192,3 +192,88 @@ class ScopeParsingTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WhatTheCardSaysTests(unittest.TestCase):
+    """La card dice cosa attraversa e chi decide (voce 25).
+
+    Prima diceva solo agente, verbo ed età. Chi la guardava non sapeva né
+    quale confine stesse per spostare né, se il rifiuto arrivava, a chi
+    rivolgersi — e i rimedi qui sono persone diverse: un admin per le regole
+    della macchina, l'owner per il confine della sua stanza.
+
+    La tentazione era ricalcolarlo nel frontend a partire dalla classe. Due
+    copie della stessa regola divergono, e la copia che diverge è sempre quella
+    che SPIEGA: si finirebbe a mostrare «decide un admin» su un gate che solo
+    l'owner può sbloccare, mandando la persona sbagliata a cercare un permesso
+    che non ha. Per questo `_standing` è una funzione sola, usata sia da chi
+    decide sia da chi racconta.
+    """
+
+    def test_a_walls_gate_names_the_room_and_its_owner(self):
+        with patch.object(G.topics_client, "open_topic", _topic_ok):
+            out = G._decorate(_walls(), {})
+        self.assertEqual(out["decided_by"], "owner:SEAL-1/proof-of-flex")
+        self.assertEqual(out["decider_name"], "giovanni")
+        self.assertIn("confine", out["crosses"])
+
+    def test_leaving_the_room_is_said_differently_from_moving_its_wall(self):
+        """Sono due atti diversi e la card non deve confonderli: uno allarga chi
+        può entrare, l'altro fa uscire i dati."""
+        muro = G._decorate(_walls(), {})
+        fuori = G._decorate({"verb": "web.post", "class": "outward",
+                             "chat": "chan:SEAL-1:proof-of-flex:clodia"}, {})
+        self.assertNotEqual(muro["crosses"], fuori["crosses"])
+        self.assertIn("uscita", fuori["crosses"])
+
+    def test_a_system_gate_says_admin_and_names_no_room(self):
+        out = G._decorate(_system(), {})
+        self.assertEqual(out["decided_by"], "admin")
+        self.assertNotIn("scope", out)
+
+    def test_an_unreadable_topic_gives_no_name_rather_than_a_wrong_one(self):
+        """Nessun nome è un'informazione; un nome sbagliato manda a bussare
+        alla porta di qualcun altro."""
+        def rotto(tier, name):
+            raise RuntimeError("gateway giù")
+
+        with patch.object(G.topics_client, "open_topic", rotto):
+            out = G._decorate(_walls(), {})
+        self.assertEqual(out["decider_name"], "")
+        self.assertEqual(out["decided_by"], "owner:SEAL-1/proof-of-flex")
+
+    def test_the_owner_is_read_once_per_room(self):
+        """Dieci gate nella stessa stanza non sono dieci letture del topic."""
+        letture = []
+
+        def conta(tier, name):
+            letture.append((tier, name))
+            return META and {"meta": META}
+
+        cache: dict = {}
+        with patch.object(G.topics_client, "open_topic", conta):
+            for _ in range(5):
+                G._decorate(_walls(), cache)
+        self.assertEqual(len(letture), 1)
+
+    def test_the_explanation_and_the_decision_come_from_one_rule(self):
+        """Il test che tiene insieme le due metà: se un giorno `_may_decide`
+        cambiasse senza `_standing`, la card racconterebbe una regola che non è
+        più quella applicata."""
+        import inspect
+        self.assertIn("_standing(req)", inspect.getsource(G._may_decide))
+
+
+class StandingShapeTests(unittest.TestCase):
+    def test_the_decider_is_an_identifier_not_a_sentence(self):
+        """Chi legge deve poterlo confrontare. Una frase italiana si riformula
+        il giorno dopo e ogni confronto smette di funzionare."""
+        chi, _, _ = G._standing(_walls())
+        self.assertEqual(chi, "owner:SEAL-1/proof-of-flex")
+        self.assertEqual(G._standing(_system())[0], "admin")
+
+    def test_an_unclassified_gate_does_not_invent_a_scope(self):
+        chi, cosa, dove = G._standing({"verb": "x", "class": None, "chat": None})
+        self.assertEqual(chi, "admin")
+        self.assertEqual(dove, "")
+        self.assertIn("non ha classificato", cosa)

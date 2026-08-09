@@ -86,6 +86,36 @@ def _is_scope_owner(principal: str, scope: tuple[str, str]) -> bool:
     return bool(principal) and principal == meta.get("owner")
 
 
+def _standing(req: dict) -> tuple[str, str, str]:
+    """Chi ha titolo su QUESTO gate: `(chi, cosa attraversa, dettaglio)`.
+
+    Esiste per non scrivere due volte la stessa regola. La card deve dire «cosa
+    attraversa e chi decide», e la via comoda sarebbe ricalcolarlo nel frontend
+    a partire dalla classe: due copie della stessa regola divergono, e quella
+    che diverge è sempre la copia che spiega — cioè si finisce a mostrare
+    «decide un admin» a un gate che solo l'owner può sbloccare, e a mandare la
+    persona sbagliata a cercare un permesso che non ha.
+
+    `chi` è un identificatore stabile (`owner:<tier>/<name>` oppure `admin`),
+    non una frase: chi lo legge deve poterlo confrontare, e una frase italiana
+    si riformula il giorno dopo.
+    """
+    klass = (req.get("class") or "").strip().lower()
+    scope = _scope_of(req.get("chat"))
+    if klass in ("walls", "outward") and scope:
+        dove = f"{scope[0]}/{scope[1]}"
+        cosa = ("il confine di questa stanza" if klass == "walls"
+                else "l'uscita dei dati da questa stanza")
+        return f"owner:{dove}", cosa, dove
+    if klass == "system":
+        return "admin", "le regole della macchina", ""
+    # Senza classe o fuori da una stanza: la regola di prima, l'admin. Non è un
+    # ripiego silenzioso — la card lo dice, ed è l'unica risposta che non
+    # inventa uno scope.
+    return "admin", ("le regole della macchina" if klass else
+                     "un confine che il gateway non ha classificato"), ""
+
+
 def _may_decide(principal: str, req: dict) -> tuple[bool, str]:
     """Chi ha titolo a sbloccare QUESTO gate. Ritorna (ok, motivo del rifiuto).
 
@@ -114,14 +144,13 @@ def _may_decide(principal: str, req: dict) -> tuple[bool, str]:
     propria stanza.
     """
     verb = (req.get("verb") or "").strip()
-    klass = (req.get("class") or "").strip().lower()
-    scope = _scope_of(req.get("chat"))
+    chi, _cosa, dove = _standing(req)
 
-    if klass in ("walls", "outward") and scope:
-        if _is_scope_owner(principal, scope):
+    if chi.startswith("owner:"):
+        if _is_scope_owner(principal, tuple(dove.split("/", 1))):
             return True, ""
         return False, (
-            f"'{verb}' attraversa il confine di {scope[0]}/{scope[1]}: "
+            f"'{verb}' attraversa il confine di {dove}: "
             f"lo sblocca l'owner di quel topic, non un admin della piattaforma")
 
     if admin.is_admin(principal):
@@ -184,6 +213,42 @@ def _standing_error(principal: str, agent: str, instance: str,
     return JSONResponse({"error": "forbidden", "detail": motivo}, status_code=403)
 
 
+def _owner_of(scope_key: str, cache: dict) -> str:
+    """Nome dell'owner di `tier/name`, letto una volta per stanza.
+
+    La cache è per-richiesta e non globale: con dieci gate nella stessa stanza
+    si leggerebbe dieci volte lo stesso topic, ma tenerla fra una richiesta e
+    l'altra mostrerebbe come owner chi non lo è più — e la card serve proprio a
+    dire a chi rivolgersi.
+    """
+    if scope_key in cache:
+        return cache[scope_key]
+    tier, _, name = scope_key.partition("/")
+    try:
+        meta = (topics_client.open_topic(tier, name) or {}).get("meta") or {}
+        chi = str(meta.get("owner") or "")
+    except Exception as e:  # noqa: BLE001 — illeggibile → nessun nome, non un nome finto
+        LOG.warning("owner di %s illeggibile: %s", scope_key, str(e)[:120])
+        chi = ""
+    cache[scope_key] = chi
+    return chi
+
+
+def _decorate(req: dict, cache: dict) -> dict:
+    """Aggiunge alla richiesta COSA attraversa e CHI decide.
+
+    Calcolato qui e non nel frontend: la regola del titolo vive in `_standing`,
+    e una seconda copia che serve solo a spiegare diverge da quella che decide.
+    """
+    chi, cosa, dove = _standing(req)
+    fuori = {**req, "crosses": cosa, "decided_by": chi}
+    if chi.startswith("owner:"):
+        nome = _owner_of(dove, cache)
+        fuori["decider_name"] = nome
+        fuori["scope"] = dove
+    return fuori
+
+
 @router.get("/api/gate/pending")
 async def pending(request: Request):
     principal = _principal_from_request(request)
@@ -192,7 +257,10 @@ async def pending(request: Request):
     r = _gw("GET", "/pending", principal)
     if r.status_code >= 400:
         return JSONResponse({"requests": []})
-    return JSONResponse(r.json(), status_code=r.status_code)
+    corpo = r.json() or {}
+    cache: dict = {}
+    corpo["requests"] = [_decorate(q, cache) for q in (corpo.get("requests") or [])]
+    return JSONResponse(corpo, status_code=r.status_code)
 
 
 @router.post("/api/gate/approve")
