@@ -80,6 +80,16 @@ async def _lifespan(app: FastAPI):
     # un seed, quindi materializzarli dopo significherebbe poter nascere senza.
     # Le altre tre sync (skill, rule, costituzioni) girano alla materializzazione
     # di uno spawn; questa no, e la differenza è quella.
+    # IL CONFINE, verificato da dentro (invariante 8). Non poggia su codice
+    # nostro ma sui permessi delle directory, cioè su come l'istanza è montata:
+    # va misurato su OGNI istanza a ogni avvio, non dedotto una volta da un
+    # mount letto altrove. Se cade, cade in silenzio — ed è per questo che il
+    # controllo grida.
+    try:
+        from .agents.boundary_check import check as _boundary
+        _boundary()
+    except Exception as e:  # noqa: BLE001 — una verifica che fallisce non blocca
+        LOG.warning("verifica del confine non eseguita: %s", e)
     try:
         from .agents.seed_sync import sync_seeds
         nuovi = sync_seeds()
