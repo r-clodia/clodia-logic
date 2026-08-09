@@ -539,6 +539,27 @@ def archive_topic(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+@router.post("/api/topics/{tier}/{name}/portable")
+async def set_topic_portable(tier: str, name: str, request: Request):
+    """Dichiara o revoca la PORTABILITÀ di un topic. Solo l'owner (o admin).
+
+    La portabilità la dichiara il TOPIC, non l'agente: se la dichiarasse
+    l'agente, chiunque possa scrivere la propria lista si darebbe da solo un
+    canale verso i contenuti di una stanza. Ed è un atto sui muri dello scope —
+    rende leggibili quei contenuti in OGNI altra stanza dove un partecipante si
+    trovi — quindi è dell'owner, non di un partecipante qualunque.
+    """
+    _require_topic_owner(request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    try:
+        return topics_client.set_portable(tier, name, bool((body or {}).get("portable")))
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
 @router.post("/api/topics/{tier}/{name}/status")
 async def set_topic_status(tier: str, name: str, request: Request):
     """Imposta lo status del topic (active|on-hold|done|archived) via il gateway.
