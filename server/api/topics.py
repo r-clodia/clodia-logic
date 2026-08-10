@@ -559,6 +559,94 @@ async def telegram_binding(tier: str, name: str, request: Request):
         raise HTTPException(400, str(e))
 
 
+def _principal_clearance(nome: str) -> str:
+    from ..agents import registry
+    spec = registry.get_by_name(nome)
+    return getattr(spec, "clearance", None) or "SEAL-0"
+
+
+@router.get("/api/topics/{tier}/{name}/mcp-clients")
+def list_mcp_clients(tier: str, name: str, request: Request):
+    """I client MCP collegati a questo topic. Senza token: il valore si consegna
+    una volta, poi si revoca soltanto."""
+    _require_topic_owner(request, tier, name)
+    try:
+        return topics_client.mcp_clients(tier, name)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
+@router.post("/api/topics/{tier}/{name}/mcp-clients")
+async def issue_mcp_client(tier: str, name: str, request: Request):
+    """Conia (o revoca) il token con cui una PERSONA collega il proprio client
+    MCP a questo topic.
+
+    Chi può chiederlo: l'**owner** per chiunque partecipi — è lui che invita — e
+    ciascuno **per sé**, perché quella è la sua identità e non ha senso che debba
+    farsela dare. Nessuno dei due può coniarlo per un topic in cui l'altro non
+    partecipa: il perimetro resta quello dei partecipanti.
+
+    Il tier lo decide il gateway, e lo decide come un obbligo che segue il dato:
+    ciò che Giovanni legge finisce nel SUO motore di inferenza. Qui non si
+    riscrive quella regola — si passano i fatti (chi, quale stanza, che provider
+    dichiara) e si lascia decidere a un punto solo.
+    """
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "autenticazione richiesta")
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    chi = (body.get("principal") or principal).strip()
+    if body.get("action") == "revoke":
+        _require_topic_owner_or_self(request, tier, name, chi)
+        try:
+            return topics_client.mcp_clients(tier, name, body)
+        except topics_client.TopicsClientError as e:
+            raise HTTPException(400, str(e))
+    _require_topic_owner_or_self(request, tier, name, chi)
+    # Partecipare non è un dettaglio da verificare dopo: un token per una stanza
+    # di cui non si fa parte sarebbe rifiutato a ogni chiamata, e la persona lo
+    # scoprirebbe dopo aver configurato il client. Meglio dirlo qui.
+    t = topics_client.open_topic(tier, name) or {}
+    meta = t.get("meta") or {}
+    membri = set(meta.get("participants") or []) | {meta.get("owner")}
+    if chi not in membri:
+        raise HTTPException(403, f"'{chi}' non partecipa a {tier}/{name}: "
+                                 "aggiungilo ai partecipanti, poi collega il client")
+    from . import admin
+    payload = {
+        "action": "issue", "principal": chi,
+        "provider": body.get("provider") or "",
+        "carrier": body.get("carrier") or "clodia",
+        "human_role": "admin" if admin.is_admin(chi) else "user",
+        "clearance": _principal_clearance(chi),
+        "ttl_days": body.get("ttl_days"),
+        "by": principal,
+        # Il consenso al tier lo dà solo l'OWNER, e solo esplicitamente: è lui
+        # che si assume una dichiarazione di provider che nessuno può verificare.
+        "tier_consent": bool(body.get("tier_consent")) and principal == meta.get("owner"),
+        "base_url": body.get("base_url") or "",
+    }
+    try:
+        return topics_client.mcp_clients(tier, name, payload)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(400, str(e))
+
+
+def _require_topic_owner_or_self(request: Request, tier: str, name: str,
+                                 chi: str) -> str:
+    """Owner del topic, oppure la persona stessa. Un partecipante che si conia il
+    proprio token non allarga niente: usa l'identità che ha già."""
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "autenticazione richiesta")
+    if principal == chi:
+        return principal
+    return _require_topic_owner(request, tier, name)
+
+
 @router.post("/api/topics/{tier}/{name}/portable")
 async def set_topic_portable(tier: str, name: str, request: Request):
     """Dichiara o revoca la PORTABILITÀ di un topic. Solo l'owner (o admin).

@@ -145,6 +145,29 @@ def telegram_binding(tier: str, name: str, payload: dict) -> dict:
     return r.json()
 
 
+def mcp_clients(tier: str, name: str, payload: dict | None = None) -> dict:
+    """Client MCP umani di un topic. `payload` None → elenco; altrimenti azione."""
+    url = f"{_base()}/{tier}/{name}/mcp-clients"
+    try:
+        if payload is None:
+            r = requests.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+        else:
+            r = requests.post(url, headers=_headers(), json=payload,
+                              timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway mcp-clients irraggiungibile: {e}") from e
+    if r.status_code >= 400:
+        # Intatto: dice QUALE condizione ha fermato la coniazione (tier troppo
+        # alto, provider non dichiarato, consenso mancante) e ognuna ha un
+        # rimedio diverso.
+        try:
+            det = (r.json() or {}).get("error") or r.text[:200]
+        except Exception:  # noqa: BLE001
+            det = r.text[:200]
+        raise TopicsClientError(det)
+    return r.json()
+
+
 def set_portable(tier: str, name: str, portable: bool) -> dict:
     url = f"{_base()}/{tier}/{name}/portable"
     try:
