@@ -491,6 +491,48 @@ def _tags(text: str) -> tuple[list[str], list[str]]:
     return hard, soft
 
 
+def _humans_tagged(content: str, participants: list[str]) -> list[str]:
+    """Gli UMANI menzionati nel messaggio, fra i partecipanti del canale.
+
+    Serve perché una menzione a una persona non è una richiesta a un'AI. Fino al
+    10 ago 2026 `@matteo` non produceva alcun target — `_pick_responder`
+    restituisce solo agenti — e il codice cadeva nel ramo «nessun tag → routing
+    per rilevanza»: un agente rispondeva a una domanda rivolta a un collega.
+    Non è un'aggiunta di regola, è la chiusura di un buco: l'assenza di un
+    bersaglio veniva letta come assenza di destinatario.
+    """
+    hard, soft = _tags(content)
+    fuori: list[str] = []
+    for nm in hard + soft:
+        seed, _ord = _split_ord(nm)
+        if seed not in participants:
+            continue
+        spec = registry.get_by_name(seed)
+        if spec is not None and getattr(spec, "type", None) == "human" and seed not in fuori:
+            fuori.append(seed)
+    return fuori
+
+
+#: Chi avvisa un umano su Telegram quando il canale ha un gruppo collegato.
+#: Uno solo, e per nome: è l'agente che possiede i verbi `telegram.*` e il grant
+#: sul token. Sceglierlo per capacità («il primo che può») farebbe dipendere da
+#: come sono configurati gli altri chi parla a nome della stanza.
+TELEGRAM_NOTIFIER = "messaggero"
+
+
+def _telegram_group_bound(tier: str, name: str) -> bool:
+    """Vero se il topic ha un gruppo Telegram collegato (un mount `telegram`)."""
+    try:
+        meta = (topics_client.open_topic(tier, name) or {}).get("meta") or {}
+    except Exception as e:  # noqa: BLE001 — illeggibile: si assume di NO
+        LOG.warning("mount telegram di %s/%s non leggibile: %s", tier, name, e)
+        return False
+    for m in (meta.get("mounts") or []):
+        if isinstance(m, dict) and m.get("type") == "telegram":
+            return True
+    return False
+
+
 def _multi_responder_enabled() -> bool:
     """Fan-out multi-agente sullo STESSO messaggio: OFF per default.
 
@@ -1495,6 +1537,43 @@ async def post_channel_message(
     #    il primo @ diretto, o il primo $ soft se non ci sono @. Gli altri
     #    taggati restano raggiungibili dalla catena di delega dell'agente che
     #    risponde. Con CHANNEL_MULTI_RESPONDER=1 partono tutti in parallelo.
+    # ── Un umano menzionato NON instrada un'AI (Davide, 10 ago 2026) ─────────
+    #
+    # «se un messaggio menziona un umano nessun agent ai deve essere routed».
+    # La ragione è che una domanda rivolta a una persona non diventa una
+    # domanda a un'AI perché la persona tarda a rispondere: rispondere al posto
+    # suo è il modo più veloce di rendere il canale inutilizzabile fra umani.
+    #
+    # Unica eccezione, la sua: se il canale ha un gruppo Telegram collegato, il
+    # messaggero prende il turno — uno solo — per dire che sta avvisando la
+    # persona di là. Non risponde nel merito: porta fuori l'avviso e lo dichiara
+    # dentro, così chi resta nella stanza sa che la palla è passata.
+    umani = _humans_tagged(content, participants)
+    if umani:
+        chi = ", ".join(f"@{u}" for u in umani)
+        if (TELEGRAM_NOTIFIER in participants
+                and _telegram_group_bound(tier, name)):
+            notifier = _pick_responder(participants, tier_real, TELEGRAM_NOTIFIER)
+            if notifier is not None and notifier.name == TELEGRAM_NOTIFIER:
+                started = await _start_turn(
+                    tier, name, tier_real, notifier, principal,
+                    f"{content}\n\n[istruzione di canale] Questo messaggio menziona "
+                    f"{chi}, che è una persona. NON rispondere nel merito e non "
+                    f"eseguire la richiesta: non è rivolta a te. Limitati a un "
+                    f"messaggio breve che dice che stai avvisando {chi} sul gruppo "
+                    f"Telegram collegato a questo topic.",
+                    "human-mention-relay")
+                LOG.info("canale %s/%s: menzione umana (%s) → solo %s avvisa su "
+                         "Telegram", tier, name, chi, TELEGRAM_NOTIFIER)
+                return {"posted": True, "queued": True,
+                        "responder": notifier.name if started else None,
+                        "note": f"menzione a {chi}: nessuna AI risponde; "
+                                f"{TELEGRAM_NOTIFIER} avvisa su Telegram"}
+        LOG.info("canale %s/%s: menzione umana (%s) → nessun turno AI",
+                 tier, name, chi)
+        return {"posted": True, "responder": None,
+                "note": f"il messaggio menziona {chi}: nessun agente AI risponde"}
+
     hard, soft = _tags(content)
     targets: list[tuple[object, str, int | None]] = []
     for nm in hard:
@@ -1578,6 +1657,15 @@ async def post_channel_message(
         return {"posted": True, "responder": None,
                 "note": "nessun agente AI partecipante con clearance e provider "
                         f"adeguati al tier {tier_real} del topic"}
+    if not _multi_responder_enabled() and len(plan) > 1:
+        # Il tetto sta QUI, dove i turni partono davvero. Era già applicato sul
+        # ramo dei tag e su quello della delega, ma non su questo: tre punti che
+        # promettono la stessa cosa e uno che non la mantiene sono il modo in cui
+        # «risponde più di un agente» sopravvive a un flag messo a OFF.
+        LOG.info("canale %s/%s: risposta singola, risponde %s (non avviati: %s)",
+                 tier, name, plan[0][0].name,
+                 ", ".join(r.name for r, _a in plan[1:]))
+        plan = plan[:1]
     warning = None
     started: list[str] = []
     skipped: list[str] = []
