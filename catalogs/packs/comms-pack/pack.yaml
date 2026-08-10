@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 1.0.0
+version: 1.1.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
