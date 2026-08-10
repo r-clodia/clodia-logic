@@ -181,3 +181,58 @@ class ItLivesInTheRightClassTests(unittest.TestCase):
                 self.assertIn("_stderr_task", ast.unparse(stop))
                 return
         self.fail("OpenCodeChatSession non trovata")
+
+
+class ResumedSessionTests(unittest.TestCase):
+    """Quando una sessione ripresa non può servire un turno.
+
+    Il 10 ago 2026 messaggero falliva su venere e funzionava su marte. Stesso
+    codice, stessa versione di opencode, stesso proxy con la stessa allowlist,
+    stessa credenziale, stesso modello: la differenza era **una sola sessione**,
+    quella persistita per quel canale.
+
+    Riprodotto: l'id preso da `.ocsession` risponde **500**, un id inventato
+    risponde 404, e una sessione nuova nello stesso processo risponde. Il log
+    interno di opencode — che ora sappiamo drenare — dice perché:
+
+        ProviderModelNotFoundError · providerID "scaleway",
+        modelID "gpt-oss-120b", suggestions ["gpt-oss-120b"]
+
+    Suggerisce lo stesso id che gli abbiamo passato: nel riprendere quella
+    sessione il catalogo dei modelli non si risolve. Dal nostro lato è la
+    stessa condizione del 404 — questa sessione non serve più — e va curata
+    allo stesso modo.
+    """
+
+    class _R:
+        def __init__(self, code, text=""):
+            self.status_code = code
+            self.text = text
+
+    def _u(self, code, text=""):
+        from .session import OpenCodeChatSession
+        return OpenCodeChatSession._session_unusable(self._R(code, text))
+
+    def test_a_missing_session_is_unusable(self):
+        self.assertTrue(self._u(404, '{"name":"NotFoundError","data":{"message":"Session not found: ses_x"}}'))
+
+    def test_the_500_that_broke_venere_is_unusable(self):
+        self.assertTrue(self._u(500, '{"name":"UnknownError","data":{"message":'
+                                     '"Unexpected server error. Check server logs for details.",'
+                                     '"ref":"err_cdeb7f70"}}'))
+
+    def test_a_good_answer_is_not(self):
+        self.assertFalse(self._u(200, '{"parts":[]}'))
+
+    def test_a_provider_failure_is_not_a_dead_session(self):
+        """Un 502 dal provider è un guasto vero: ricreare la sessione non lo
+        curerebbe e perderebbe la storia per niente."""
+        self.assertFalse(self._u(502, "bad gateway"))
+
+    def test_a_rate_limit_is_not_a_dead_session(self):
+        self.assertFalse(self._u(429, '{"error":"too many requests"}'))
+
+    def test_a_500_that_says_something_else_is_left_alone(self):
+        """La firma è stretta di proposito: ricreare la sessione a ogni 500
+        maschererebbe un problema del provider con una perdita di storia."""
+        self.assertFalse(self._u(500, '{"error":"model refused the request"}'))
