@@ -277,3 +277,50 @@ class StandingShapeTests(unittest.TestCase):
         self.assertEqual(chi, "admin")
         self.assertEqual(dove, "")
         self.assertIn("non ha classificato", cosa)
+
+
+class TheWatcherSaysSoTests(unittest.TestCase):
+    """Una presenza legittima che sembra un'intrusione.
+
+    Il 10 ago 2026 Davide ha visto `sysadmin` — non partecipante di quel
+    canale — chiedere un gate in una sua stanza. Era il guardiano della
+    modalità debug, svegliato da un turno fallito lì: comportamento voluto, e
+    del tutto illeggibile sullo schermo.
+
+    Costa quanto un'intrusione finché qualcuno non la spiega — e la persona che
+    guarda la card non ha i log sotto mano. Ora la card lo dice.
+    """
+
+    def _req(self, agent):
+        return {"agent": agent, "verb": "egress:github:https://x/y",
+                "class": "outward", "chat": "chan:SEAL-1:proof-of-flex:clodia"}
+
+    def test_the_watcher_is_labelled(self):
+        with patch.object(G, "_is_watcher", lambda a: a == "sysadmin"), \
+             patch.object(G.topics_client, "open_topic", _topic_ok):
+            out = G._decorate(self._req("sysadmin"), {})
+        self.assertEqual(out["asker_role"], "debug-watcher")
+        self.assertIn("non è un partecipante", out["asker_note"])
+
+    def test_an_ordinary_agent_is_not(self):
+        """L'etichetta deve essere rara: se comparisse su tutti smetterebbe di
+        dire qualcosa."""
+        with patch.object(G, "_is_watcher", lambda a: a == "sysadmin"), \
+             patch.object(G.topics_client, "open_topic", _topic_ok):
+            out = G._decorate(self._req("messaggero"), {})
+        self.assertNotIn("asker_role", out)
+
+    def test_with_debug_off_nobody_is_the_watcher(self):
+        """Fuori dalla modalità debug il guardiano non esiste, e `sysadmin` che
+        chiede un gate è un agente come gli altri — etichettarlo lo stesso
+        direbbe una cosa falsa."""
+        from .. import debug_watch
+        with patch.object(debug_watch, "enabled", lambda: False):
+            self.assertFalse(G._is_watcher(debug_watch.WATCHER))
+
+    def test_the_label_does_not_change_who_decides(self):
+        """Dire chi chiede non sposta il titolo: resta l'owner della stanza."""
+        with patch.object(G, "_is_watcher", lambda a: True), \
+             patch.object(G.topics_client, "open_topic", _topic_ok):
+            out = G._decorate(self._req("sysadmin"), {})
+        self.assertTrue(out["decided_by"].startswith("owner:"))
