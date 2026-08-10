@@ -6,6 +6,7 @@ in file JSONL dedicato. Tutte le chat condividono la stessa identità Clodia
 Il manager `chats` tiene il dict {chat_id → ChatSession}.
 """
 import asyncio
+from collections import deque
 import json
 import logging
 import os
@@ -48,6 +49,9 @@ _CLODIA_TOOLS_TOKEN_TTL = 24 * 3600
 # tool restituisce contenuti grandi (es. topic.read_file di un file) → la riga
 # JSON supera il limite ("Separator is found, but chunk is longer than limit").
 _STREAM_LIMIT = 32 * 1024 * 1024  # 32MB
+#: Righe di stderr di `opencode serve` tenute in memoria per la diagnosi. Poche:
+#: servono a spiegare l'ULTIMO errore, non a fare da log — quello è il logger.
+_OC_STDERR_TAIL = 40
 
 COLLECT_CHUNK_TIMEOUT = 5 * 60    # 5 min silenzio SDK → stallo reale
 
@@ -1649,6 +1653,10 @@ class CodexChatSession:
             LOG.warning("governance seed non applicata per %s: %s", self.kind, e)
 
     async def stop(self) -> None:
+        task = self._stderr_task
+        self._stderr_task = None
+        if task is not None:
+            task.cancel()
         proc = self._proc
         if proc is not None and proc.returncode is None:
             try:
@@ -2079,6 +2087,13 @@ class OpenCodeChatSession:
         self._spawn_dir: Optional[Path] = None
         self.principal: Optional[str] = None
         self._runtime_override = runtime_override or {}
+        # Coda delle ultime righe di stderr di `opencode serve`, e il task che
+        # la riempie. Esistono per due ragioni distinte, entrambe misurate il
+        # 10 ago 2026 su un turno fallito con «UnknownError · Check server logs
+        # for details»: quei log c'erano, e finivano in una pipe che nessuno
+        # leggeva.
+        self._stderr_tail: deque = deque(maxlen=_OC_STDERR_TAIL)
+        self._stderr_task: Optional[asyncio.Task] = None
 
     @property
     def cwd(self) -> Path:
@@ -2180,6 +2195,45 @@ class OpenCodeChatSession:
         except Exception:  # noqa: BLE001
             pass
 
+    async def _drain_stderr(self) -> None:
+        """Legge lo stderr di `opencode serve`, riga per riga, finché vive.
+
+        Non è (solo) diagnostica: è ciò che tiene il processo VIVO. `stderr` è
+        una pipe, e una pipe che nessuno svuota si riempie — sono 64 KB su
+        Linux, non un numero grande per un server che scrive. Alla prima
+        scrittura oltre quella soglia il processo si **blocca**, e da fuori si
+        vede un server che smette di rispondere: HTTP 500 intermittenti, tanto
+        più probabili quanto più a lungo la sessione è viva. `limit=` su
+        `create_subprocess_exec` non c'entra — dimensiona lo StreamReader
+        nostro, non il buffer del kernel.
+
+        Le righe finiscono nel logger E in una coda corta, che accompagna il
+        prossimo errore: «Check server logs for details» è un consiglio inutile
+        se quei log li stiamo buttando via.
+        """
+        proc = self._proc
+        if proc is None or proc.stderr is None:
+            return
+        try:
+            while True:
+                raw = await proc.stderr.readline()
+                if not raw:
+                    break
+                riga = raw.decode(errors="replace").rstrip()
+                if not riga:
+                    continue
+                self._stderr_tail.append(riga)
+                LOG.debug("opencode[%s] %s", self.kind, riga[:400])
+        except asyncio.CancelledError:
+            raise
+        except Exception as e:  # noqa: BLE001 — leggere i log non rompe la sessione
+            LOG.debug("opencode[%s]: stderr non più leggibile: %r", self.kind, e)
+
+    def _stderr_hint(self) -> str:
+        """Le ultime righe di stderr, per accompagnare un errore."""
+        righe = list(self._stderr_tail)[-8:]
+        return (" · stderr: " + " | ".join(r[:200] for r in righe)) if righe else ""
+
     async def _wait_ready(self) -> None:
         import httpx
         for _ in range(60):  # ~30s
@@ -2206,6 +2260,7 @@ class OpenCodeChatSession:
             OPENCODE_BIN, "serve", "--port", str(self._port), "--hostname", "127.0.0.1",
             env=env, cwd=str(run_cwd),
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, limit=_STREAM_LIMIT)
+        self._stderr_task = asyncio.create_task(self._drain_stderr())
         await self._wait_ready()
         # resume sessione OpenCode se la chat è ripresa da disco, altrimenti creane una
         if self._ocsession_file.is_file():
@@ -2332,7 +2387,9 @@ class OpenCodeChatSession:
                 if r.status_code >= 400:
                     activity_log.append(self.kind, "error",
                                         {"error": f"opencode {r.status_code}", "chat_id": self.chat_id})
-                    raise RuntimeError(f"opencode HTTP {r.status_code}: {r.text[:300]}")
+                    raise RuntimeError(
+                        f"opencode HTTP {r.status_code}: {r.text[:300]}"
+                        f"{self._stderr_hint()}")
                 data = r.json() or {}
         except (httpx.ReadTimeout, httpx.TimeoutException):
             # Turno runaway: il modello non converge entro _OPENCODE_TURN_TIMEOUT.
