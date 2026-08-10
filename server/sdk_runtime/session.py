@@ -1653,10 +1653,6 @@ class CodexChatSession:
             LOG.warning("governance seed non applicata per %s: %s", self.kind, e)
 
     async def stop(self) -> None:
-        task = self._stderr_task
-        self._stderr_task = None
-        if task is not None:
-            task.cancel()
         proc = self._proc
         if proc is not None and proc.returncode is None:
             try:
@@ -2282,6 +2278,12 @@ class OpenCodeChatSession:
             asyncio.create_task(self._do_send_bg(intro))
 
     async def stop(self) -> None:
+        # Il lettore dello stderr si ferma con la sessione: un task appeso a un
+        # processo morto è un task che nessuno raccoglie.
+        task = self._stderr_task
+        self._stderr_task = None
+        if task is not None:
+            task.cancel()
         proc = self._proc
         if proc is not None and proc.returncode is None:
             try:

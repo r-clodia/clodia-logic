@@ -134,3 +134,50 @@ class HintTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ItLivesInTheRightClassTests(unittest.TestCase):
+    """Dove sta il codice, non solo cosa fa.
+
+    Il primo tentativo di questa modifica ha messo la cancellazione del task
+    dentro `CodexChatSession.stop()` — una classe che quell'attributo non ce
+    l'ha — perché `async def stop(self)` compare tre volte nel file e una
+    sostituzione testuale ha preso la prima. Risultato: `AttributeError` a ogni
+    chiusura di una sessione codex, in produzione.
+
+    È la seconda volta in una settimana che una sostituzione posizionale
+    colpisce l'occorrenza sbagliata. Un test che guarda il TESTO non l'avrebbe
+    vista: il testo era giusto, era nel posto sbagliato. Questo guarda l'albero.
+    """
+
+    def _classe_di(self, attributo: str) -> set:
+        import ast
+        import pathlib
+        src = pathlib.Path(__file__).with_name("session.py").read_text()
+        albero = ast.parse(src)
+        dentro = set()
+        for nodo in albero.body:
+            if not isinstance(nodo, ast.ClassDef):
+                continue
+            for figlio in ast.walk(nodo):
+                if isinstance(figlio, ast.Attribute) and figlio.attr == attributo:
+                    dentro.add(nodo.name)
+        return dentro
+
+    def test_the_stderr_task_belongs_to_opencode_only(self):
+        self.assertEqual(self._classe_di("_stderr_task"), {"OpenCodeChatSession"})
+
+    def test_the_tail_belongs_to_opencode_only(self):
+        self.assertEqual(self._classe_di("_stderr_tail"), {"OpenCodeChatSession"})
+
+    def test_stopping_an_opencode_session_cancels_the_reader(self):
+        import ast
+        import pathlib
+        src = pathlib.Path(__file__).with_name("session.py").read_text()
+        for nodo in ast.parse(src).body:
+            if isinstance(nodo, ast.ClassDef) and nodo.name == "OpenCodeChatSession":
+                stop = next(m for m in nodo.body
+                            if isinstance(m, ast.AsyncFunctionDef) and m.name == "stop")
+                self.assertIn("_stderr_task", ast.unparse(stop))
+                return
+        self.fail("OpenCodeChatSession non trovata")
