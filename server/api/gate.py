@@ -234,14 +234,37 @@ def _owner_of(scope_key: str, cache: dict) -> str:
     return chi
 
 
+def _is_watcher(agent: str) -> bool:
+    """Vero se chi chiede è il guardiano della modalità debug.
+
+    Serve a dirlo sulla card. Il 10 ago 2026 Davide ha visto `sysadmin` — che
+    non è partecipante di quel canale — chiedere un gate in una sua stanza, e la
+    lettura naturale è che qualcosa fosse scappato dal recinto. Era invece il
+    watcher, svegliato da un turno fallito: comportamento voluto, e illeggibile.
+
+    Una presenza legittima che sembra un'intrusione costa esattamente quanto
+    un'intrusione, finché qualcuno non la spiega.
+    """
+    try:
+        from .. import debug_watch
+        return bool(agent) and agent == debug_watch.WATCHER and debug_watch.enabled()
+    except Exception:  # noqa: BLE001 — senza il modulo non si etichetta nulla
+        return False
+
+
 def _decorate(req: dict, cache: dict) -> dict:
-    """Aggiunge alla richiesta COSA attraversa e CHI decide.
+    """Aggiunge alla richiesta COSA attraversa, CHI decide, e chi sta chiedendo.
 
     Calcolato qui e non nel frontend: la regola del titolo vive in `_standing`,
     e una seconda copia che serve solo a spiegare diverge da quella che decide.
     """
     chi, cosa, dove = _standing(req)
     fuori = {**req, "crosses": cosa, "decided_by": chi}
+    if _is_watcher(req.get("agent") or ""):
+        fuori["asker_role"] = "debug-watcher"
+        fuori["asker_note"] = (
+            "guardiano della modalità debug: non è un partecipante del canale, "
+            "è entrato perché un turno è fallito lì")
     if chi.startswith("owner:"):
         nome = _owner_of(dove, cache)
         fuori["decider_name"] = nome
