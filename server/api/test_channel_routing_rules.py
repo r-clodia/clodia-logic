@@ -88,39 +88,35 @@ class HumansAreNotRoutedTests(unittest.TestCase):
                                           PARTECIPANTI), ["matteo"])
 
 
-class TelegramExceptionTests(unittest.TestCase):
-    def setUp(self):
-        p = patch.object(C.registry, "get_by_name", _reg)
-        p.start()
-        self.addCleanup(p.stop)
+class NobodyAnswersForAPersonTests(unittest.TestCase):
+    """Nemmeno per dire che sta avvisando.
 
-    def test_the_notifier_is_named_not_guessed(self):
-        """Sceglierlo per capacità («il primo che può inviare») farebbe
-        dipendere da come sono configurati gli altri chi parla a nome della
-        stanza."""
-        self.assertEqual(C.TELEGRAM_NOTIFIER, "messaggero")
+    Il primo disegno faceva prendere un turno al messaggero perché annunciasse
+    la notifica su Telegram. Davide, guardandolo in esercizio: «messaggero non
+    si limita a mandare la notifica ma fa un ragionamento che impegna la chat,
+    non deve».
 
-    def test_a_bound_group_is_seen(self):
-        meta = {"meta": {"mounts": [
-            {"name": "drive", "type": "drive", "config": {}},
-            {"name": "telegram", "type": "telegram", "config": {"chat_id": "-1"}}]}}
-        with patch.object(C.topics_client, "open_topic", lambda t, n: meta):
-            self.assertTrue(C._telegram_group_bound("SEAL-1", "acme"))
+    Aveva tre costi e nessun beneficio: un giro di inferenza per un lavoro
+    meccanico; una chat occupata da un ragionamento che nessuno aveva chiesto;
+    e un messaggio che diceva a chi ERA presente una cosa che riguardava chi era
+    assente. Il recapito è coda + job, e non ha bisogno di nessuno che lo
+    racconti nella stanza.
+    """
 
-    def test_other_mounts_are_not_a_telegram_group(self):
-        meta = {"meta": {"mounts": [{"name": "drive", "type": "drive", "config": {}}]}}
-        with patch.object(C.topics_client, "open_topic", lambda t, n: meta):
-            self.assertFalse(C._telegram_group_bound("SEAL-1", "acme"))
+    def test_the_channel_module_no_longer_knows_a_notifier(self):
+        """Non è solo un ramo spento: il concetto è uscito dal modulo. Un nome
+        che resta è un invito a riusarlo."""
+        self.assertFalse(hasattr(C, "TELEGRAM_NOTIFIER"))
+        self.assertFalse(hasattr(C, "_telegram_group_bound"))
 
-    def test_an_unreadable_topic_means_no_group(self):
-        """Fail-closed: nel dubbio non si prende il turno. L'esito è che nessuno
-        risponde — che è la regola generale — invece di far parlare il
-        messaggero su un canale che forse non ha un gruppo."""
-        def rotto(t, n):
-            raise RuntimeError("gateway giù")
-
-        with patch.object(C.topics_client, "open_topic", rotto):
-            self.assertFalse(C._telegram_group_bound("SEAL-1", "acme"))
+    def test_a_human_mention_starts_no_turn_at_all(self):
+        import inspect
+        src = inspect.getsource(C.post_channel_message)
+        blocco = src[src.index("umani = _humans_tagged"):]
+        blocco = blocco[:blocco.index("hard, soft = _tags")]
+        self.assertNotIn("_start_turn", blocco,
+                         "nessun turno, nemmeno per annunciare la notifica")
+        self.assertIn('"responder": None', blocco)
 
 
 class SingleAnswerTests(unittest.TestCase):
