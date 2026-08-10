@@ -145,6 +145,39 @@ def telegram_binding(tier: str, name: str, payload: dict) -> dict:
     return r.json()
 
 
+def read_topic_bytes(tier: str, name: str, path: str) -> tuple[bytes, str]:
+    """Byte grezzi di un file del topic, col content-type del gateway."""
+    url = f"{_base()}/{tier}/{name}/file"
+    try:
+        r = requests.get(url, headers=_headers(), params={"path": path},
+                         timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway file irraggiungibile: {e}") from e
+    if r.status_code >= 400:
+        raise TopicsClientError(f"file non disponibile ({r.status_code})",
+                                status=r.status_code)
+    return r.content, r.headers.get("content-type", "application/octet-stream")
+
+
+def topic_logo(tier: str, name: str, payload: dict | None) -> dict:
+    """Imposta (payload con `data` base64) o toglie (payload None) il logo."""
+    url = f"{_base()}/{tier}/{name}/logo"
+    try:
+        r = (requests.delete(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+             if payload is None else
+             requests.post(url, headers=_headers(), json=payload,
+                           timeout=_HTTP_TIMEOUT))
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway logo irraggiungibile: {e}") from e
+    if r.status_code >= 400:
+        try:
+            det = (r.json() or {}).get("error") or r.text[:200]
+        except Exception:  # noqa: BLE001
+            det = r.text[:200]
+        raise TopicsClientError(det)
+    return r.json()
+
+
 def mcp_clients(tier: str, name: str, payload: dict | None = None) -> dict:
     """Client MCP umani di un topic. `payload` None → elenco; altrimenti azione."""
     url = f"{_base()}/{tier}/{name}/mcp-clients"

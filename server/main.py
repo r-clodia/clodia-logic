@@ -348,6 +348,40 @@ def create_app() -> FastAPI:
         """Profilo pubblico dell'istanza per la webui (nessun segreto)."""
         return instance_profile.public_view()
 
+    @app.get("/profile/logo")
+    async def get_instance_logo():
+        """Il logo dell'istanza, dalla datadir. **Senza autenticazione**, di
+        proposito: deve comparire sulla schermata di accesso, cioè prima che
+        esista una sessione — è lì che un cliente vede per la prima volta il
+        proprio marchio invece del nostro.
+
+        Non è una porta di servizio sui file: il path lo sceglie l'ADMIN nel
+        profilo, non il chiamante, e viene confinato dentro la datadir. Senza
+        quel confinamento un profilo con `logo: ../../etc/passwd` diventerebbe
+        una lettura arbitraria servita pubblicamente — il tipo di difetto che
+        nasce quando un valore di configurazione viene trattato come fidato solo
+        perché lo scrive un admin.
+        """
+        from fastapi.responses import FileResponse
+        from .config import data_path
+        rel = (instance_profile.load().branding.logo or "").strip()
+        if not rel:
+            raise HTTPException(404, "nessun logo configurato")
+        base = data_path("").resolve()
+        try:
+            p = (base / rel).resolve()
+            p.relative_to(base)
+        except (ValueError, OSError):
+            raise HTTPException(400, "branding.logo esce dalla datadir")
+        if not p.is_file():
+            raise HTTPException(404, f"logo non trovato: {rel}")
+        import mimetypes as _mt
+        tipo = _mt.guess_type(str(p))[0] or "application/octet-stream"
+        if not tipo.startswith("image/"):
+            raise HTTPException(400, f"branding.logo non è un'immagine ({tipo})")
+        return FileResponse(p, media_type=tipo,
+                            headers={"Cache-Control": "public, max-age=300"})
+
     @app.patch("/profile")
     async def patch_instance_profile(request: Request) -> dict:
         """Patch admin-only del profilo runtime. Per ora espone solo channel_aliases."""

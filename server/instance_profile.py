@@ -68,7 +68,20 @@ class Features(BaseModel):
 class Branding(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
-    name: str = "Clodia Agency"
+    #: VUOTO significa «nessuna opinione», non «senza nome»: l'interfaccia
+    #: mostra allora il suo aspetto storico. Il default era `"Clodia Agency"`, e
+    #: finché il branding valeva solo per le edizioni custom non faceva danno —
+    #: nessuno lo leggeva altrove. Nel momento in cui vale ovunque sia
+    #: configurato, un default non vuoto **rinominerebbe ogni istanza esistente**
+    #: senza che nessuno l'abbia deciso. È la distinzione fra `None` e `[]` della
+    #: specifica, sul campo più visibile che ci sia.
+    name: str = ""
+    #: Ragione sociale: il nome CON CUI L'AZIENDA SI FIRMA. Distinto da `name`,
+    #: che è come l'istanza si chiama nell'interfaccia — «Studio Carboni» in
+    #: sidebar può convivere con «Uncommon Digital Srl a socio unico» in fondo a
+    #: una pagina o in un documento. Fonderli costringerebbe a scegliere fra un
+    #: titolo lungo e una firma incompleta.
+    legal_name: str = ""
     logo: str = ""                 # path relativo alla datadir (opzionale)
     accent: str = ""               # colore CSS (opzionale)
 

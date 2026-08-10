@@ -559,6 +559,74 @@ async def telegram_binding(tier: str, name: str, request: Request):
         raise HTTPException(400, str(e))
 
 
+@router.get("/api/topics/{tier}/{name}/logo")
+def get_topic_logo(tier: str, name: str, request: Request):
+    """L'immagine del topic. La VEDE chiunque partecipi — è come la stanza si
+    presenta a chi ci entra; la CAMBIA solo l'owner (POST/DELETE qui sotto).
+
+    Serve i byte invece di infilarli come data-URI nella lista dei topic: una
+    lista di venti stanze porterebbe venti immagini in ogni risposta, sempre,
+    anche a chi non le guarda.
+    """
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "autenticazione richiesta")
+    t = topics_client.open_topic(tier, name) or {}
+    meta = t.get("meta") or {}
+    membri = set(meta.get("participants") or []) | {meta.get("owner")}
+    if principal not in membri and not admin.is_admin(principal):
+        raise HTTPException(403, "non partecipi a questo topic")
+    rel = (meta.get("logo") or "").strip()
+    if not rel:
+        raise HTTPException(404, "nessun logo")
+    try:
+        data, ct = topics_client.read_topic_bytes(tier, name, rel)
+    except topics_client.TopicsClientError:
+        raise HTTPException(404, "logo non leggibile")
+    # Il file non ha estensione (il nome è riservato), quindi il gateway non può
+    # indovinare il tipo: lo dice il meta, scritto al caricamento quando i byte
+    # erano sotto gli occhi. Indovinarlo qui significherebbe dichiarare un tipo
+    # che potrebbe essere falso.
+    if not ct.startswith("image/"):
+        ct = meta.get("logo_kind") or "image/png"
+    return Response(content=data, media_type=ct,
+                    headers={"Cache-Control": "private, max-age=60"})
+
+
+@router.post("/api/topics/{tier}/{name}/logo")
+async def set_topic_logo(tier: str, name: str, request: Request):
+    """Immagine del topic. **Solo l'owner**, come per ogni altro atto sui muri.
+
+    Non è una decorazione: il logo è ciò con cui la stanza si presenta a chi la
+    apre e nelle liste. Lasciarlo cambiare a un partecipante qualunque
+    significherebbe che l'aspetto di un dossier lo decide chi passa di lì — e in
+    una lista di venti topic l'immagine è ciò che si guarda per primo, quindi
+    cambiarla è un modo di far sembrare una stanza un'altra.
+
+    I byte arrivano in base64: un logo è piccolo per definizione. Cosa sia
+    davvero un'immagine lo verifica il gateway, sui byte e non sull'estensione.
+    """
+    _require_topic_owner(request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    try:
+        return topics_client.topic_logo(tier, name, {"data": body.get("data") or ""})
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(400, str(e))
+
+
+@router.delete("/api/topics/{tier}/{name}/logo")
+def clear_topic_logo(tier: str, name: str, request: Request):
+    """Toglie l'immagine del topic. Solo l'owner."""
+    _require_topic_owner(request, tier, name)
+    try:
+        return topics_client.topic_logo(tier, name, None)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(400, str(e))
+
+
 def _principal_clearance(nome: str) -> str:
     from ..agents import registry
     spec = registry.get_by_name(nome)
