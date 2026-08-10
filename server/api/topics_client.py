@@ -127,6 +127,24 @@ def create_topic(tier: str, name: str, meta: dict,
 
 
 
+def telegram_binding(tier: str, name: str, payload: dict) -> dict:
+    url = f"{_base()}/{tier}/{name}/telegram"
+    try:
+        r = requests.post(url, headers=_headers(), json=payload, timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway telegram irraggiungibile: {e}") from e
+    if r.status_code >= 400:
+        # Il messaggio del gateway arriva INTATTO: dice quale delle cinque
+        # verifiche ha fermato il collegamento (cap, url pubblico, bot fuori dal
+        # gruppo, mappa vuota, nome sconosciuto), e ognuna ha un rimedio diverso.
+        try:
+            det = (r.json() or {}).get("error") or r.text[:200]
+        except Exception:  # noqa: BLE001
+            det = r.text[:200]
+        raise TopicsClientError(det)
+    return r.json()
+
+
 def set_portable(tier: str, name: str, portable: bool) -> dict:
     url = f"{_base()}/{tier}/{name}/portable"
     try:

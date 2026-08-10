@@ -539,6 +539,26 @@ def archive_topic(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+@router.post("/api/topics/{tier}/{name}/telegram")
+async def telegram_binding(tier: str, name: str, request: Request):
+    """Collega un gruppo Telegram al topic, o lo scollega. Solo l'owner.
+
+    Il gruppo porta la stanza FUORI: le menzioni, e con `excerpt` una riga di
+    testo, arrivano a persone che nel topic non entrano. È un atto sui muri
+    dello scope — la stessa cosa che aggiungere un partecipante, vista
+    dall'altro lato — quindi lo decide chi possiede la stanza.
+    """
+    _require_topic_owner(request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    try:
+        return topics_client.telegram_binding(tier, name, body or {})
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(400, str(e))
+
+
 @router.post("/api/topics/{tier}/{name}/portable")
 async def set_topic_portable(tier: str, name: str, request: Request):
     """Dichiara o revoca la PORTABILITÀ di un topic. Solo l'owner (o admin).
