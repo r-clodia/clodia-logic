@@ -51,8 +51,11 @@ class _Client:
         self.chiesto = payload
         return {"logo": "files/.brand/logo"}
 
-    def read_topic_bytes(self, tier, name, path):
-        return b"\x89PNG\r\n\x1a\n", "application/octet-stream"
+    def read_topic_logo(self, tier, name):
+        # Rotta DEDICATA, non quella generica dei file: il logo sta nel control
+        # plane, mentre `/file` risolve i path del data plane — su un topic con
+        # remote Drive lo cercherebbe su Drive, dove non è mai stato scritto.
+        return b"\x89PNG\r\n\x1a\n", self.meta.get("logo_kind") or "image/png"
 
 
 class OnlyTheOwnerChangesItTests(unittest.TestCase):

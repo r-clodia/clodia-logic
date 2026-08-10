@@ -576,17 +576,15 @@ def get_topic_logo(tier: str, name: str, request: Request):
     membri = set(meta.get("participants") or []) | {meta.get("owner")}
     if principal not in membri and not admin.is_admin(principal):
         raise HTTPException(403, "non partecipi a questo topic")
-    rel = (meta.get("logo") or "").strip()
-    if not rel:
+    if not (meta.get("logo") or "").strip():
         raise HTTPException(404, "nessun logo")
     try:
-        data, ct = topics_client.read_topic_bytes(tier, name, rel)
+        data, ct = topics_client.read_topic_logo(tier, name)
     except topics_client.TopicsClientError:
         raise HTTPException(404, "logo non leggibile")
-    # Il file non ha estensione (il nome è riservato), quindi il gateway non può
-    # indovinare il tipo: lo dice il meta, scritto al caricamento quando i byte
-    # erano sotto gli occhi. Indovinarlo qui significherebbe dichiarare un tipo
-    # che potrebbe essere falso.
+    # Il tipo arriva dal gateway, che lo ha rilevato dai byte al caricamento: il
+    # file non ha estensione, quindi indovinarlo qui significherebbe dichiararne
+    # uno che può essere falso.
     if not ct.startswith("image/"):
         ct = meta.get("logo_kind") or "image/png"
     return Response(content=data, media_type=ct,

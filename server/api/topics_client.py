@@ -145,12 +145,16 @@ def telegram_binding(tier: str, name: str, payload: dict) -> dict:
     return r.json()
 
 
-def read_topic_bytes(tier: str, name: str, path: str) -> tuple[bytes, str]:
-    """Byte grezzi di un file del topic, col content-type del gateway."""
-    url = f"{_base()}/{tier}/{name}/file"
+def read_topic_logo(tier: str, name: str) -> tuple[bytes, str]:
+    """I byte del logo, col tipo che il gateway ha rilevato al caricamento.
+
+    Passa dalla rotta dedicata e non da quella generica dei file: il logo sta nel
+    control plane, mentre `/file` risolve i path del data plane — su un topic con
+    remote Drive lo cercherebbe su Drive, dove non è mai stato scritto.
+    """
+    url = f"{_base()}/{tier}/{name}/logo"
     try:
-        r = requests.get(url, headers=_headers(), params={"path": path},
-                         timeout=_HTTP_TIMEOUT)
+        r = requests.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway file irraggiungibile: {e}") from e
     if r.status_code >= 400:
