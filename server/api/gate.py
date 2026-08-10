@@ -300,11 +300,31 @@ async def approve(request: Request):
     instance = (body.get("instance") or "-").strip() or "-"
     verb = (body.get("verb") or "").strip()
     minutes = body.get("minutes", 10)
+    # Fin dove vale questo sì: solo adesso, sempre in questa stanza, ovunque.
+    ricorda = (body.get("remember") or "once").strip().lower()
     if not (agent and verb):
         return JSONResponse({"error": "agent/verb richiesti"}, status_code=400)
+    if ricorda not in ("once", "topic", "global"):
+        return JSONResponse({"error": f"remember sconosciuto: {ricorda}"},
+                            status_code=400)
     rifiuto = _standing_error(principal, agent, instance, verb)
     if rifiuto is not None:
         return rifiuto
+    # SECONDO titolo, e più stretto del primo: chi possiede la stanza decide per
+    # la stanza; per l'istanza intera decide chi possiede l'istanza.
+    #
+    # Non è pignoleria. «Approva ovunque» scritto nella lista globale vale per
+    # OGNI stanza, comprese quelle di cui chi approva non sa nulla — e un owner
+    # che aprisse una destinazione per tutti starebbe decidendo al posto di
+    # altri owner. Chiedere qui l'admin è ciò che tiene separato «la mia stanza»
+    # da «la macchina», la stessa separazione che regge le classi dei gate.
+    if ricorda == "global" and not admin.is_admin(principal):
+        return JSONResponse(
+            {"error": "forbidden",
+             "detail": "«approva ovunque» scrive nella lista dell'ISTANZA: vale "
+                       "anche nelle stanze che non sono tue, quindi lo decide un "
+                       "admin della piattaforma. Puoi approvare per questa stanza "
+                       "o solo per stavolta."}, status_code=403)
     try:
         cap = pki.mint_capability(agent, instance, minutes, by=principal,
                                   cap=f"gate:{verb}")
@@ -313,11 +333,57 @@ async def approve(request: Request):
         return JSONResponse({"error": "mint_failed", "detail": str(e)}, status_code=500)
     r = _gw("POST", "/grant", principal,
             {"agent": agent, "instance": instance, "verb": verb, "token": cap["token"]})
-    LOG.info("gate approve %s@%s:%s da %s (jti=%s) → %s", agent, instance, verb,
-             principal, cap.get("jti"), r.status_code)
+    LOG.info("gate approve %s@%s:%s da %s (jti=%s, remember=%s) → %s", agent,
+             instance, verb, principal, cap.get("jti"), ricorda, r.status_code)
+    memoria = None
+    if r.status_code == 200 and ricorda != "once":
+        # La capability è già stata concessa: la chiamata in attesa procede
+        # comunque, e questo passo riguarda solo le VOLTE SUCCESSIVE. In
+        # quest'ordine perché se scrivere la lista fallisce, l'agente non resta
+        # bloccato per un difetto della memoria — l'approvazione era valida.
+        # La stanza la dice il GATEWAY, non il corpo della richiesta: chiederla a
+        # chi approva significherebbe fidarsi della sua parola su dove si trovava
+        # l'azione da approvare — e qui quella parola diventa una voce in una
+        # whitelist permanente.
+        try:
+            _req = _pending_request(principal, agent, instance, verb) or {}
+        except _Unavailable:
+            _req = {}
+        scope = _scope_of(_req.get("chat"))
+        dove = f"{scope[0]}/{scope[1]}" if (ricorda == "topic" and scope) else ""
+        if ricorda == "topic" and not dove:
+            memoria = {"remembered": False,
+                       "error": "non so in quale stanza ricordarlo: la richiesta "
+                                "non dichiara un canale"}
+        else:
+            rr = _gw("POST", "/allow", principal,
+                     {"verb": verb, "direction": "egress", "scope": dove})
+            # `remembered` si scrive SEMPRE, anche in caso di errore. Lasciarlo
+            # assente farebbe funzionare i controlli — una chiave mancante è
+            # falsa — al prezzo di un corpo in cui «non ricordato» è
+            # un'informazione implicita: chi legge la risposta non trova la
+            # differenza fra «non è riuscito» e «non è stato chiesto».
+            try:
+                memoria = rr.json()
+            except Exception:  # noqa: BLE001
+                memoria = {"error": rr.text[:200]}
+            if rr.status_code != 200 or "remembered" not in memoria:
+                memoria = {"remembered": False,
+                           "error": str(memoria.get("error") or f"HTTP {rr.status_code}")[:200]}
     if r.status_code == 200:
-        _post_outcome(body.get("chat"), principal, f"🔓 @{agent}: approvato l'uso di {verb} — l'agente procede")
-    return JSONResponse(r.json(), status_code=r.status_code)
+        quanto = {"once": "per stavolta",
+                  "topic": "e ricordato per questa stanza",
+                  "global": "e ricordato per tutta l'istanza"}[ricorda]
+        if memoria and not memoria.get("remembered"):
+            # Dirlo: un'approvazione che si crede permanente e non lo è
+            # ricompare domani, e chi la rivede pensa che il gate sia rotto.
+            quanto = f"per stavolta (non ricordato: {memoria.get('error', '?')})"
+        _post_outcome(body.get("chat"), principal,
+                      f"🔓 @{agent}: approvato l'uso di {verb} — {quanto}")
+    corpo = r.json() if r.status_code == 200 else {"error": r.text[:200]}
+    if memoria is not None:
+        corpo["memory"] = memoria
+    return JSONResponse(corpo, status_code=r.status_code)
 
 
 @router.post("/api/gate/deny")
