@@ -33,7 +33,7 @@ from .. import debug_watch
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import manager, ProviderNotConnected, topic_runtime_override
-from . import access_log, responder_routing, routing_feedback, topics_client
+from . import access_log, presence, responder_routing, routing_feedback, topics_client
 from .gateway_pdp import require_authz
 from .agents import _principal_from_request
 
@@ -511,26 +511,6 @@ def _humans_tagged(content: str, participants: list[str]) -> list[str]:
         if spec is not None and getattr(spec, "type", None) == "human" and seed not in fuori:
             fuori.append(seed)
     return fuori
-
-
-#: Chi avvisa un umano su Telegram quando il canale ha un gruppo collegato.
-#: Uno solo, e per nome: è l'agente che possiede i verbi `telegram.*` e il grant
-#: sul token. Sceglierlo per capacità («il primo che può») farebbe dipendere da
-#: come sono configurati gli altri chi parla a nome della stanza.
-TELEGRAM_NOTIFIER = "messaggero"
-
-
-def _telegram_group_bound(tier: str, name: str) -> bool:
-    """Vero se il topic ha un gruppo Telegram collegato (un mount `telegram`)."""
-    try:
-        meta = (topics_client.open_topic(tier, name) or {}).get("meta") or {}
-    except Exception as e:  # noqa: BLE001 — illeggibile: si assume di NO
-        LOG.warning("mount telegram di %s/%s non leggibile: %s", tier, name, e)
-        return False
-    for m in (meta.get("mounts") or []):
-        if isinstance(m, dict) and m.get("type") == "telegram":
-            return True
-    return False
 
 
 def _multi_responder_enabled() -> bool:
@@ -1551,24 +1531,12 @@ async def post_channel_message(
     umani = _humans_tagged(content, participants)
     if umani:
         chi = ", ".join(f"@{u}" for u in umani)
-        if (TELEGRAM_NOTIFIER in participants
-                and _telegram_group_bound(tier, name)):
-            notifier = _pick_responder(participants, tier_real, TELEGRAM_NOTIFIER)
-            if notifier is not None and notifier.name == TELEGRAM_NOTIFIER:
-                started = await _start_turn(
-                    tier, name, tier_real, notifier, principal,
-                    f"{content}\n\n[istruzione di canale] Questo messaggio menziona "
-                    f"{chi}, che è una persona. NON rispondere nel merito e non "
-                    f"eseguire la richiesta: non è rivolta a te. Limitati a un "
-                    f"messaggio breve che dice che stai avvisando {chi} sul gruppo "
-                    f"Telegram collegato a questo topic.",
-                    "human-mention-relay")
-                LOG.info("canale %s/%s: menzione umana (%s) → solo %s avvisa su "
-                         "Telegram", tier, name, chi, TELEGRAM_NOTIFIER)
-                return {"posted": True, "queued": True,
-                        "responder": notifier.name if started else None,
-                        "note": f"menzione a {chi}: nessuna AI risponde; "
-                                f"{TELEGRAM_NOTIFIER} avvisa su Telegram"}
+        # Nessun turno, nemmeno per dirlo. Il primo disegno faceva prendere un
+        # turno al messaggero perché annunciasse la notifica: costava un giro di
+        # inferenza, occupava la chat con un ragionamento che nessuno aveva
+        # chiesto, e diceva a chi era presente una cosa che riguardava chi era
+        # assente. Il recapito su Telegram è meccanico — coda + job — e non ha
+        # bisogno di nessuno che lo racconti nella stanza.
         LOG.info("canale %s/%s: menzione umana (%s) → nessun turno AI",
                  tier, name, chi)
         return {"posted": True, "responder": None,
@@ -2056,7 +2024,17 @@ async def channel_messages(tier: str, name: str, request: Request, limit: int = 
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
-    _require_member(request, topic.get("meta", {}))
+    # `_require_member` restituisce già chi è: ricavarlo una seconda volta
+    # sarebbe una seconda lettura della stessa verità, che è il modo in cui due
+    # copie divergono.
+    chi = _require_member(request, topic.get("meta", {}))
+    # Questa chiamata è il BATTITO: la webui la ripete ogni cinque secondi
+    # finché la conversazione è aperta, ed è autenticata — dice chi è e quale
+    # stanza sta guardando. Registrarla qui evita di inventare un canale di
+    # presenza a parte, che sarebbe una seconda fonte di verità sulla stessa
+    # cosa. Serve a non mandare su Telegram una menzione a chi era davanti allo
+    # schermo quando è arrivata.
+    presence.touch(chi, tier, name)
     return {"messages": topics_client.list_messages(tier, name, limit=limit)}
 
 
