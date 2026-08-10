@@ -2225,6 +2225,40 @@ class OpenCodeChatSession:
         except Exception as e:  # noqa: BLE001 — leggere i log non rompe la sessione
             LOG.debug("opencode[%s]: stderr non più leggibile: %r", self.kind, e)
 
+    @staticmethod
+    def _session_unusable(r) -> bool:
+        """Vero se QUESTA sessione non può servire un turno, e conviene rifarla.
+
+        Due esiti, non uno. Il **404** era già gestito: la sessione non esiste
+        in questo processo. Il **500** no — e il 10 ago 2026 è quello che ha
+        fermato messaggero su venere mentre su marte andava, il che ha fatto
+        cercare la differenza nell'ambiente per un'ora.
+
+        Riprodotto e letto nel log di opencode, che ora sappiamo drenare:
+
+            ProviderModelNotFoundError
+              providerID: "scaleway", modelID: "gpt-oss-120b",
+              suggestions: ["gpt-oss-120b"]
+
+        Suggerisce **lo stesso id** che gli abbiamo passato: al momento di
+        RIPRENDERE una sessione, il catalogo dei modelli non è risolto. Una
+        sessione nuova, nello stesso processo e con lo stesso provider,
+        risponde. Quindi il difetto è dell'id ripreso, non della
+        configurazione — ed è esattamente ciò che il ramo del 404 già sapeva
+        curare.
+
+        Perché non «ritenta su ogni 500»: un 500 può anche essere un guasto
+        vero del provider, e ricreare la sessione a ogni errore mascherebbe un
+        problema con una perdita di storia. Si ricrea UNA volta per turno, ed è
+        il chiamante a non insistere.
+        """
+        if r.status_code == 404 and "not found" in r.text.lower():
+            return True
+        if r.status_code == 500:
+            t = (r.text or "").lower()
+            return "unknownerror" in t or "unexpected server error" in t
+        return False
+
     def _stderr_hint(self) -> str:
         """Le ultime righe di stderr, per accompagnare un errore."""
         righe = list(self._stderr_tail)[-8:]
@@ -2369,14 +2403,14 @@ class OpenCodeChatSession:
         try:
             async with await self._http() as c:
                 r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
-                if r.status_code == 404 and "not found" in r.text.lower():
+                if self._session_unusable(r):
                     # La sessione OpenCode vive solo dentro il suo processo `opencode
                     # serve`: dopo un restart dell'agent-server l'id .ocsession di un
-                    # processo precedente è invalido → 404. Ne creo una nuova e riprovo
+                    # processo precedente è invalido. Ne creo una nuova e riprovo
                     # (perde la storia OpenCode-interna ma RISPONDE invece di fallire;
                     # il contesto arriva comunque dal prompt).
-                    LOG.warning("opencode %s: sessione %s non trovata → ricreo",
-                                self.kind, self._oc_session)
+                    LOG.warning("opencode %s: sessione %s inutilizzabile (HTTP %s) → ricreo",
+                                self.kind, self._oc_session, r.status_code)
                     sr = await c.post(f"{self._base_url}/session", json={})
                     nid = (sr.json() or {}).get("id") if sr.status_code < 400 else None
                     if nid:
