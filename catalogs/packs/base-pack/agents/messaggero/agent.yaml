@@ -33,9 +33,15 @@ sandbox:
   allow_write: ["{scratch}/**"]
   allow_shell_cmds: []
   deny_shell_patterns: ["*"]
-# Skill comms-pack mirata: attesa di una email via job periodico che controlla la
-# casella, filtra il subject e inietta nel topic con @menzione. Vedi skill check-email.
-capabilities: [comms-pack/check-email, comms-pack/telegram-1to1]
+# Skill comms-pack mirate:
+# - check-email: attesa di una email via job periodico che controlla la casella,
+#   filtra il subject e inietta nel topic con @menzione;
+# - telegram-1to1: la conversazione diretta su Telegram;
+# - mention-relay: recapita sul gruppo collegato a un topic le menzioni che le
+#   persone di quel gruppo ricevono nella conversazione. Il testo lo compone il
+#   gateway, non il messaggero: il taglio dell'estratto e il link non devono
+#   dipendere da come gira un turno.
+capabilities: [comms-pack/check-email, comms-pack/telegram-1to1, comms-pack/mention-relay]
 rules: []
 # Tool comms (la fruizione degli account/token resta gated dai grant del vault:
 # email account + telegram_bot_token delegati a Messaggero dalla sezione
