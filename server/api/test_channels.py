@@ -804,49 +804,67 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             channels.topics_client.post_message = original_post
             channels._maybe_delegate = original_delegate
 
-    async def test_channel_post_queues_routing_plan_per_agent(self) -> None:
+    async def test_a_multi_intent_plan_still_answers_once(self) -> None:
+        """Il contratto è cambiato il 10 ago 2026, e questo test con lui.
+
+        Prima asseriva che due agenti rispondessero a **un** messaggio: il
+        routing multi-intento spezzava la frase e ne avviava uno per pezzo.
+        Davide: «a volte risponde più di un agent al messaggio utente, invece
+        deve essere solo uno». Il fan-out resta possibile, ma dietro un flag
+        acceso apposta — e con il flag spento, che è il default, parte **il
+        primo** e basta.
+
+        Il piano a due voci NON sparisce: il routing continua a calcolarlo, e
+        resta visibile nella barra 🧭. È l'esecuzione a fermarsi a uno, perché
+        è lì che si vedeva il difetto.
+        """
         worker = _a("worker", "normal", "P1")
         accountant = _a("accountant", "normal", "P1")
         start = AsyncMock(return_value=True)
 
         def routing_plan(_participants, _tier, _message, trace=None):
             if trace is not None:
-                trace.update({
-                    "mode": "multi-intent",
-                    "chosen": "worker, accountant",
-                })
-            return [
-                (worker, "Aggiorna il summary"),
-                (accountant, "Invia il preventivo"),
-            ]
+                trace.update({"mode": "multi-intent", "chosen": "worker, accountant"})
+            return [(worker, "Aggiorna il summary"), (accountant, "Invia il preventivo")]
 
         with (
-            patch.object(
-                channels,
-                "_routing_plan",
-                side_effect=routing_plan,
-            ),
+            patch.object(channels, "_routing_plan", side_effect=routing_plan),
             patch.object(channels, "_start_turn", start),
             patch.object(channels, "_provider_seal_ok", return_value=True),
         ):
             result = await channels.post_channel_message(
-                "P0",
-                "ops",
-                "Aggiorna il summary e anche invia il preventivo",
-                "owner",
-            )
+                "P0", "ops", "Aggiorna il summary e anche invia il preventivo", "owner")
+
+        self.assertEqual(start.await_count, 1, "un messaggio, un turno")
+        self.assertEqual(result.get("responder"), "worker")
+        self.assertEqual(start.await_args_list[0].args[5], "Aggiorna il summary")
+
+    async def test_the_fan_out_is_still_there_when_asked_for(self) -> None:
+        """Con `CHANNEL_MULTI_RESPONDER=1` il comportamento precedente torna
+        intero. Il flag non è un residuo: è la via per chi vuole quel modo,
+        acceso deliberatamente invece che per default."""
+        worker = _a("worker", "normal", "P1")
+        accountant = _a("accountant", "normal", "P1")
+        start = AsyncMock(return_value=True)
+
+        def routing_plan(_participants, _tier, _message, trace=None):
+            if trace is not None:
+                trace.update({"mode": "multi-intent", "chosen": "worker, accountant"})
+            return [(worker, "Aggiorna il summary"), (accountant, "Invia il preventivo")]
+
+        with (
+            patch.dict(os.environ, {"CHANNEL_MULTI_RESPONDER": "1"}),
+            patch.object(channels, "_routing_plan", side_effect=routing_plan),
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "Aggiorna il summary e anche invia il preventivo", "owner")
 
         self.assertEqual(result["responders"], ["worker", "accountant"])
         self.assertEqual(start.await_count, 2)
-        self.assertEqual(
-            [call.args[5] for call in start.await_args_list],
-            ["Aggiorna il summary", "Invia il preventivo"],
-        )
-        self.assertEqual(
-            [call.args[6] for call in start.await_args_list],
-            ["routed", "routed"],
-        )
-
+        self.assertEqual([c.args[5] for c in start.await_args_list],
+                         ["Aggiorna il summary", "Invia il preventivo"])
 
 
 class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
