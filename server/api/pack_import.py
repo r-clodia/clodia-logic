@@ -272,7 +272,14 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
     except Exception as e:  # noqa: BLE001 — best-effort, issue-all al boot recupera
         LOG.warning("PKI issue per '%s' fallita (recupero al prossimo boot): %s", name, e)
 
-    # Whitelist gateway: idempotente, best-effort.
+    # Whitelist gateway: idempotente, ma NON opzionale. Senza entry nella config
+    # del gateway l'agente non ottiene «meno verbi»: `agent_config()` solleva e
+    # la lista dei tool torna VUOTA. Un seed installato e non registrato è un
+    # agente che si vede nel pannello, entra nei canali, parla — e non può fare
+    # niente. Succeso l'11 ago con `content-creator`: il gateway rispondeva 500
+    # per un kwarg orfano, qui si scriveva un WARNING e si tirava dritto, e
+    # l'import rispondeva 200 «installato».
+    avviso: str | None = None
     try:
         from . import gateway_admin
         # NIENTE `or None` su questi tre: `[]` significa «dichiarato vuoto» e
@@ -286,7 +293,16 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
             profile_tools=spec.profile_tools,
             carries=spec.carries)
     except Exception as e:  # noqa: BLE001
-        LOG.warning("whitelist gateway per '%s' fallita: %s", name, e)
+        avviso = (f"registrazione nella whitelist del gateway fallita: "
+                  f"{str(e)[:160]} — il seed è installato ma NON avrà nessun "
+                  f"verbo finché non viene registrato")
+        LOG.error("whitelist gateway per '%s' fallita: %s", name, e)
+
+    if avviso:
+        # Lo stato lo dice: chi legge l'esito dell'import deve poter distinguere
+        # un agente pronto da uno muto senza andare a leggere i log.
+        LOG.warning("agent seed '%s' installato SENZA registrazione al gateway", name)
+        return {"name": name, "status": "installed", "warning": avviso}
 
     LOG.info("agent seed '%s' installato e registrato dal pack", name)
     return {"name": name, "status": "installed"}
@@ -406,6 +422,12 @@ def install_pack_from_root(root: Path, *, source: str,
         # cosa sarebbe concesso, con l'avvertenza per ciascuna voce, e cosa il
         # gateway rifiuta comunque (uno `*`, una regola degenere).
         out["flows"] = {"declared": flows, "approved": False, **(checked or {})}
+    # Gli avvisi dei seed risalgono in cima: un import che risponde 200 con un
+    # agente muto dentro è indistinguibile da un import riuscito, e chi installa
+    # se ne accorge solo quando l'agente parla in un canale e non sa fare niente.
+    _avvisi = [f"{a['name']}: {a['warning']}" for a in agents if a.get("warning")]
+    if _avvisi:
+        out["warnings"] = _avvisi
     return out
 
 
