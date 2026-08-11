@@ -123,7 +123,12 @@ class PacksApiTest(unittest.TestCase):
         result = pack_import.import_pack_zip(self._pack_zip(), source="my-pack.zip")
         self.assertEqual(result["kind"], "pack")
         self.assertEqual(result["pack"], "my-pack")
-        self.assertEqual(result["agents"], [{"name": "testbot", "status": "installed"}])
+        # Nome e stato, non il dizionario intero: senza un gateway a cui
+        # registrarsi l'esito porta ANCHE un `warning`, ed è giusto che lo porti
+        # (vedi `test_seed_registration_reported`). Confrontare il dict esatto
+        # rendeva verde un import in cui la registrazione non era mai avvenuta.
+        self.assertEqual([(a["name"], a["status"]) for a in result["agents"]],
+                         [("testbot", "installed")])
         self.assertEqual({p["plugin"] for p in result["plugins"]},
                          {"inner-plugin", "bare-plugin"})
         # seed installato e registrato nel registry
@@ -232,7 +237,8 @@ class PacksApiTest(unittest.TestCase):
         self.assertEqual(result["pack"], "clodia-plugins")
         self.assertEqual({p["plugin"] for p in result["plugins"]},
                          {"studio-commercialista"})  # solo i dichiarati
-        self.assertEqual(result["agents"], [{"name": "mktbot", "status": "installed"}])
+        self.assertEqual([(a["name"], a["status"]) for a in result["agents"]],
+                         [("mktbot", "installed")])
         # skill nel pack-subdir del plugin, non in user-pack
         self.assertTrue((self.data_skills / "studio-commercialista" /
                          "consulenza-normativa" / "SKILL.md").is_file())
@@ -282,8 +288,9 @@ class PacksApiTest(unittest.TestCase):
         self.assertEqual(result["kind"], "packs")
         self.assertEqual(result["imported"], ["pack-a", "pack-b"])
         by_name = {r["pack"]: r for r in result["packs"]}
-        self.assertEqual(by_name["pack-a"]["agents"],
-                         [{"name": "bota", "status": "installed"}])
+        self.assertEqual([(a["name"], a["status"])
+                          for a in by_name["pack-a"]["agents"]],
+                         [("bota", "installed")])
         self.assertEqual({p["plugin"] for p in by_name["pack-b"]["plugins"]}, {"plug-b"})
         # entrambi i pack hanno manifest runtime proprio
         for pack in ("pack-a", "pack-b"):
