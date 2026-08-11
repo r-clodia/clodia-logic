@@ -2035,7 +2035,27 @@ async def channel_messages(tier: str, name: str, request: Request, limit: int = 
     # cosa. Serve a non mandare su Telegram una menzione a chi era davanti allo
     # schermo quando è arrivata.
     presence.touch(chi, tier, name)
-    return {"messages": topics_client.list_messages(tier, name, limit=limit)}
+    # La presenza degli UMANI della stanza viaggia con i messaggi, sulla
+    # chiamata che la pagina fa già: un endpoint dedicato raddoppierebbe le
+    # richieste della vista aperta per un dato che cambia esattamente con la
+    # stessa cadenza. Solo gli umani — un agente non ha un browser, e un pallino
+    # su di lui risponderebbe a una domanda diversa (è vivo? sta lavorando?)
+    # usando lo stesso simbolo.
+    umani = _partecipanti_umani(topic.get("meta", {}))
+    return {"messages": topics_client.list_messages(tier, name, limit=limit),
+            "presence": presence.stati(umani, tier, name)}
+
+
+def _partecipanti_umani(meta: dict) -> list[str]:
+    from ..agents import registry
+    out = []
+    for nome in list(meta.get("participants") or []) + [meta.get("owner")]:
+        if not nome or nome in out:
+            continue
+        spec = registry.get_by_name(nome)
+        if spec is not None and getattr(spec, "type", "") == "human":
+            out.append(nome)
+    return out
 
 
 @router.post("/clodia/channels/{tier}/{name}/reset-context")

@@ -334,6 +334,8 @@ def create_app() -> FastAPI:
     app.include_router(gate_public.router)
     app.include_router(profile.router)
     app.include_router(channel_aliases.router)
+    from .api import presence as presence_api
+    app.include_router(presence_api.router)
     app.include_router(catalog.router)
     app.include_router(packs.router)
     app.include_router(plugins.router)
