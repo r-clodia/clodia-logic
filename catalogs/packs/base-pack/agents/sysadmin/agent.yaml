@@ -189,3 +189,12 @@ memory:
   dir: memory/
 
 system_prompt: system-prompt.md
+
+# `Bash` perché il suo sandbox ammette `*` ed è il suo mestiere: è l'agente delle
+# macchine. `WebFetch` perché legge advisory e release note di ciò che installa —
+# ed è locale, quindi la allowlist del proxy di egress lo arbitra davvero, host per
+# host. NON `WebSearch`: quella la esegue il provider e nessuna lista la vede,
+# quindi darebbe a un agente con la shell una porta d'ingresso non mediata.
+native_tools:
+  - Bash
+  - WebFetch

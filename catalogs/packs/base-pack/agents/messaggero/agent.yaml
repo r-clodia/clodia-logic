@@ -119,3 +119,9 @@ gated_tools:
 memory:
   dir: memory/
 system_prompt: system-prompt.md
+
+# Nessuno strumento nativo oltre il pavimento. È la porta dello scope: tutto ciò
+# che porta dentro e fuori passa dai verbi del gateway, che hanno i gate. Uno
+# strumento nativo qui sarebbe la seconda porta, quella che nessuno guarda.
+native_tools:
+  []

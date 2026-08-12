@@ -288,6 +288,18 @@ class AgentSpec(BaseModel):
     # Permessi tool MCP granulari (es. ["topic.*", "email.send"]).
     # Enforcement nel gateway MCP; qui dichiarativo per validator/selection.
     tool_permissions: list[str] = Field(default_factory=list)
+    #: Strumenti NATIVI del runtime concessi a questo seed (`Read`, `Bash`,
+    #: `WebSearch`, `Agent`, `Cron*`…). ALLOWLIST: `None` = «non mi pronuncio»,
+    #: quindi niente restrizione; `[]` = «nessuno strumento nativo», che è una
+    #: dichiarazione e va rispettata.
+    #:
+    #: Terza cosa che un seed dichiara, accanto ai verbi del gateway
+    #: (`tool_permissions`) e alle skill (`capabilities`), così «cosa può fare
+    #: questo agente» torna ad avere UNA risposta, in un file. Prima nessuno li
+    #: dichiarava e li avevano tutti — compreso `WebSearch`, che nessuna policy
+    #: di rete può arbitrare perché lo esegue il provider (vedi
+    #: `sdk_runtime/native_tools.py` per la misura).
+    native_tools: Optional[list[str]] = None
     #: Verbi che, per QUESTO agent, richiedono un consenso umano a ogni uso.
     #:
     #: Dichiarati qui perché è il posto in cui si sa quali dei propri verbi sono
