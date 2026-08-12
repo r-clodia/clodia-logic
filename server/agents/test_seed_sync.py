@@ -18,13 +18,17 @@ locale» è una domanda di prodotto.
 """
 from __future__ import annotations
 
+import pathlib
 import shutil
 import tempfile
 import unittest
 from pathlib import Path
 from unittest.mock import patch
 
+import yaml
+
 from . import seed_sync
+from . import seed_sync as S
 
 
 class Base(unittest.TestCase):
@@ -104,3 +108,93 @@ class BootTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class BackfillNewFieldsTests(unittest.TestCase):
+    """Un campo che la copia locale non ha non è una modifica dell'owner.
+
+    Il 12 ago `native_tools` è arrivato nel pack e sull'istanza i seed non
+    l'avevano: la restrizione degli strumenti nativi era INERTE — `None` da tutte
+    le parti, zero strumenti negati. La direzione d'errore giusta, ma una funzione
+    di sicurezza che non fa niente e non lo dice è peggio di una assente.
+    """
+
+    def setUp(self):
+        self.tmp = tempfile.mkdtemp()
+        self.pack = pathlib.Path(self.tmp) / "pack"
+        self.data = pathlib.Path(self.tmp) / "data"
+        (self.pack / "alfa").mkdir(parents=True)
+        (self.data / "alfa").mkdir(parents=True)
+        self.p_pack = self.pack / "alfa" / "agent.yaml"
+        self.p_loc = self.data / "alfa" / "agent.yaml"
+        self.ctx = [
+            patch.object(S, "PACK_AGENTS_DIR", str(self.pack)),
+            patch.object(S, "DATA_AGENTS_DIR", str(self.data)),
+        ]
+        for c in self.ctx:
+            c.start()
+
+    def tearDown(self):
+        for c in self.ctx:
+            c.stop()
+        shutil.rmtree(self.tmp, ignore_errors=True)
+
+    def _scrivi(self, pack: dict, locale: dict):
+        self.p_pack.write_text(yaml.safe_dump(pack), encoding="utf-8")
+        self.p_loc.write_text(yaml.safe_dump(locale), encoding="utf-8")
+
+    def _locale(self) -> dict:
+        return yaml.safe_load(self.p_loc.read_text(encoding="utf-8"))
+
+    def test_a_missing_field_is_filled(self):
+        self._scrivi({"name": "alfa", "native_tools": ["Read"]}, {"name": "alfa"})
+        self.assertEqual(S.backfill_new_fields(), {"alfa": ["native_tools"]})
+        self.assertEqual(self._locale()["native_tools"], ["Read"])
+
+    def test_an_empty_declaration_is_not_touched(self):
+        """`[]` è una dichiarazione dell'owner: «nessuno strumento nativo». È la
+        differenza fra `[]` e assente, e tutta la ragione per cui questo backfill
+        può esistere senza cancellare niente."""
+        self._scrivi({"name": "alfa", "native_tools": ["Read", "Bash"]},
+                     {"name": "alfa", "native_tools": []})
+        self.assertEqual(S.backfill_new_fields(), {})
+        self.assertEqual(self._locale()["native_tools"], [])
+
+    def test_a_local_choice_is_not_overwritten(self):
+        self._scrivi({"name": "alfa", "native_tools": ["Read", "Bash"]},
+                     {"name": "alfa", "native_tools": ["Read"]})
+        self.assertEqual(S.backfill_new_fields(), {})
+        self.assertEqual(self._locale()["native_tools"], ["Read"])
+
+    def test_only_the_declared_fields_travel(self):
+        """L'elenco è chiuso di proposito: è la differenza fra «riempire un campo
+        nuovo» e «aggiornare un seed», che resta la domanda aperta della #25."""
+        self._scrivi({"name": "alfa", "model": "un-altro-modello",
+                      "system_prompt": "diverso.md"},
+                     {"name": "alfa"})
+        self.assertEqual(S.backfill_new_fields(), {})
+        loc = self._locale()
+        self.assertNotIn("model", loc)
+        self.assertNotIn("system_prompt", loc)
+
+    def test_other_local_keys_survive_the_rewrite(self):
+        self._scrivi({"name": "alfa", "native_tools": ["Read"]},
+                     {"name": "alfa", "model": "scelto-a-mano",
+                      "tool_permissions": ["topic.open"]})
+        S.backfill_new_fields()
+        loc = self._locale()
+        self.assertEqual(loc["model"], "scelto-a-mano")
+        self.assertEqual(loc["tool_permissions"], ["topic.open"])
+        self.assertEqual(loc["native_tools"], ["Read"])
+
+    def test_a_seed_absent_locally_is_left_to_sync_seeds(self):
+        """Materializzare un seed che non c'è è il lavoro di `sync_seeds`. Qui si
+        riempie un campo, e un campo non si riempie in un file che non esiste."""
+        self.p_pack.write_text(yaml.safe_dump({"name": "alfa",
+                                               "native_tools": ["Read"]}),
+                               encoding="utf-8")
+        # `setUp` non ha creato il file locale in questo caso: lo si rimuove solo
+        # se c'è, perché il test descrive «il seed non è ancora materializzato».
+        if self.p_loc.exists():
+            self.p_loc.unlink()
+        self.assertEqual(S.backfill_new_fields(), {})
