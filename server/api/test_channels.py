@@ -166,10 +166,25 @@ class ResponderTests(unittest.TestCase):
         # canale P2 con solo worker (P1) → nessun risponditore
         self.assertIsNone(channels._pick_responder(["worker"], "P2", None))
 
-    def test_tag_low_clearance_falls_back(self) -> None:
-        # worker taggato ma clearance insufficiente (P2) → escluso → fallback clodia
-        r = channels._pick_responder(["worker", "clodia"], "P2", "worker")
-        self.assertEqual(r.name, "clodia")
+    def test_tag_low_clearance_does_not_fall_back(self) -> None:
+        # @worker è una richiesta diretta: se non può servire P2, nessun altro
+        # risponde al posto suo.
+        trace = {}
+        r = channels._pick_responder(["worker", "clodia"], "P2", "worker", trace=trace)
+
+        self.assertIsNone(r)
+        self.assertEqual(trace["mode"], "tag-unserved")
+        self.assertEqual(trace["tagged"], "worker")
+        self.assertIn("tier P2", trace["reason"])
+
+    def test_tag_non_participant_does_not_fall_back(self) -> None:
+        trace = {}
+        r = channels._pick_responder(["clodia"], "P0", "worker", trace=trace)
+
+        self.assertIsNone(r)
+        self.assertEqual(trace["mode"], "tag-unserved")
+        self.assertEqual(trace["tagged"], "worker")
+        self.assertIn("non è partecipante", trace["reason"])
 
     def test_tag_parse(self) -> None:
         self.assertEqual(channels._tagged("ehi @worker puoi farlo?"), "worker")
@@ -803,6 +818,38 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             channels.topics_client.list_messages = original_list
             channels.topics_client.post_message = original_post
             channels._maybe_delegate = original_delegate
+
+    async def test_unserved_direct_mention_does_not_fall_through_to_routing(self) -> None:
+        agents = {
+            "clodia": _a("clodia", "super", "P3"),
+            "worker": _a("worker", "normal", "P1"),
+            "owner": _a("owner", "human", role="superadmin"),
+        }
+        channels.topics_client.open_topic = lambda _tier, _name: {
+            "meta": {"tier": "P2", "owner": "owner", "participants": ["owner", "worker", "clodia"]}
+        }
+
+        with (
+            patch.object(channels.registry, "get_by_name", side_effect=lambda name: agents.get(name)),
+            patch.object(
+                channels, "_provider_seal_ok",
+                side_effect=lambda spec, tier: channels._can_access(
+                    getattr(spec, "clearance", None), tier
+                ),
+            ),
+            patch.object(channels, "_pick_responder", side_effect=self._orig_pick),
+            patch.object(channels, "_routing_plan") as routing_plan,
+            patch.object(channels, "_start_turn", AsyncMock()) as start_turn,
+        ):
+            result = await channels.post_channel_message(
+                "P2", "ops", "@worker puoi occupartene?", "owner"
+            )
+
+        self.assertTrue(result["posted"])
+        self.assertIsNone(result["responder"])
+        self.assertIn("provider/clearance", result["note"])
+        routing_plan.assert_not_called()
+        start_turn.assert_not_awaited()
 
     async def test_a_multi_intent_plan_still_answers_once(self) -> None:
         """Il contratto è cambiato il 10 ago 2026, e questo test con lui.

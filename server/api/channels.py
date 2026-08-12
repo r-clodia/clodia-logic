@@ -48,7 +48,7 @@ def _track_routing_decision(payload: dict) -> None:
         origin = "exemplar"
     elif mode in {"relevance", "relevance-multi", "multi-intent"}:
         origin = "relevance"
-    elif mode in {"tag", "delega"}:
+    elif mode in {"tag", "tag-unserved", "delega"}:
         origin = "tag"
     else:
         origin = "rank"
@@ -1112,13 +1112,41 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     for s, sc in (scored or [])
                 ],
                 "eligible": [s.name for s in ai],
-            })
+        })
         return chosen
+
+    def _record_unserved_tag(reason: str) -> None:
+        if trace is not None:
+            trace.update({
+                "tier": tier,
+                "mode": "tag-unserved",
+                "reason": reason,
+                "chosen": None,
+                "tagged": tagged,
+                "threshold": responder_routing.THRESHOLD,
+                "margin": responder_routing.MARGIN,
+                "candidates": [],
+                "eligible": [s.name for s in ai],
+            })
 
     if tagged:
         t = next((s for s in ai if s.name == tagged), None)
         if t:
             return _record(t, "tagged", "tag")
+        tagged_spec = next((s for s in specs if s and s.name == tagged), None)
+        if tagged not in participants:
+            _record_unserved_tag(f"@{tagged} non è partecipante del canale")
+        elif tagged_spec is None:
+            _record_unserved_tag(f"@{tagged} non è un agente registrato")
+        elif getattr(tagged_spec, "type", None) not in ("super", "normal"):
+            _record_unserved_tag(f"@{tagged} non è un agente AI instradabile")
+        elif not _provider_seal_ok(tagged_spec, tier):
+            _record_unserved_tag(
+                f"@{tagged} non può servire il tier {tier}: provider/clearance non idonei"
+            )
+        else:
+            _record_unserved_tag(f"@{tagged} non può prendere questo turno")
+        return None
     mode = _routing_mode()
     if message and mode == "relevance":
         specialists = [s for s in ai if s.type != "super"]
@@ -1594,11 +1622,15 @@ async def post_channel_message(
 
     hard, soft = _tags(content)
     targets: list[tuple[object, str, int | None]] = []
+    hard_unserved: dict | None = None
     for nm in hard:
         seed, req_ord = _split_ord(nm)     # @nome#N → istanza esplicita (issue#94)
-        s = _pick_responder(participants, tier_real, seed)   # ritorna il seed solo se idoneo
+        tag_trace: dict = {}
+        s = _pick_responder(participants, tier_real, seed, trace=tag_trace)   # ritorna il seed solo se idoneo
         if s is not None and s.name == seed:
             targets.append((s, "direct", req_ord))
+        elif hard_unserved is None:
+            hard_unserved = tag_trace
     for nm in soft:
         seed, req_ord = _split_ord(nm)
         s = _pick_responder(participants, tier_real, seed)
@@ -1647,6 +1679,18 @@ async def post_channel_message(
                 started.append(s.name)
         return {"posted": True, "queued": True, "responders": started,
                 "skipped": skipped, "warning": warning}
+
+    if hard and hard_unserved is not None:
+        try:
+            payload = {"tier": tier, "name": name, **hard_unserved}
+            _track_routing_decision(payload)
+            await bus.publish(Event(type="routing_decision", payload=payload,
+                timestamp=datetime.now(timezone.utc)))
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("routing_decision tag non servibile non pubblicato: %s", e)
+        return {"posted": True, "responder": None,
+                "note": hard_unserved.get("reason")
+                        or "la menzione diretta non può essere servita"}
 
     if bootstrap_responder is not None:
         started = await _start_turn(
