@@ -116,6 +116,11 @@ class AgentSpec(BaseModel):
     # accorgere, e poi risponde male senza che nulla lo segnali.
     abstract: bool = False
 
+    # Il seed dichiara di poter servire ogni tier usato dall'istanza. Non basta
+    # che oggi il suo stack effettivo arrivi in alto: quel fatto operativo può
+    # cambiare con un override/provider, mentre questo è un contratto del ruolo.
+    all_tier: bool = False
+
     # Riferimento alla costituzione (genoma) fuso in testa al system prompt al
     # render. Risolto da constitution-catalog/<ref>.md (data-over-logic). None
     # o "none" = nessuna costituzione (es. worker minimali). Es. "platform-core".

@@ -33,6 +33,7 @@ class ResponderTests(unittest.TestCase):
             "segretario", "normal", "P1", "2026-02-01T00:00:02Z"
         )
         self.agents["segretario"].routing_mode = "state_writer_only"
+        self.agents["segretario"].all_tier = True
         self._orig = channels.registry.get_by_name
         self._orig_provider_seal_ok = channels._provider_seal_ok
         channels.registry.get_by_name = lambda n: self.agents.get(n)
@@ -532,6 +533,32 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(meta["contact_agent"], "segretario")
         self.assertEqual(meta["participants"], ["owner", "segretario"])
         self.assertEqual(meta["team_bootstrap_agent"], "segretario")
+
+    def test_topic_intro_refuses_undeclared_all_tier_fallback(self) -> None:
+        meta = {"contact_agent": "clodia", "participants": ["owner", "clodia"]}
+        self.agents["segretario"].all_tier = False
+
+        def provider_ok(spec, _tier):
+            return spec.name == "segretario"
+
+        with patch.object(channels, "_provider_seal_ok", side_effect=provider_ok):
+            intro = channels._select_topic_intro_agent(meta, "SEAL-2")
+
+        self.assertEqual(intro, "clodia")
+        self.assertEqual(meta["contact_agent"], "clodia")
+        self.assertEqual(meta["participants"], ["owner", "clodia"])
+        self.assertNotIn("team_bootstrap_agent", meta)
+
+    def test_topic_intro_refuses_all_tier_fallback_below_topic_tier(self) -> None:
+        meta = {"contact_agent": "clodia", "participants": ["owner", "clodia"]}
+
+        with patch.object(channels, "_provider_seal_ok", return_value=False):
+            intro = channels._select_topic_intro_agent(meta, "SEAL-3")
+
+        self.assertEqual(intro, "clodia")
+        self.assertEqual(meta["contact_agent"], "clodia")
+        self.assertEqual(meta["participants"], ["owner", "clodia"])
+        self.assertNotIn("team_bootstrap_agent", meta)
 
     def test_topic_intro_adds_segretario_without_dropping_custom_contact(self) -> None:
         meta = {"contact_agent": "worker", "participants": ["owner", "worker"]}
