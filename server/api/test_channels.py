@@ -572,6 +572,31 @@ class ResponderTests(unittest.TestCase):
         )
 
 
+class ChannelMessageEventTests(unittest.TestCase):
+    def test_channel_message_event_carries_mentions_for_presence_ladder(self) -> None:
+        publish = AsyncMock()
+        msg = {
+            "id": "20260812-120000-abc",
+            "ts": "2026-08-12T12:00:00+00:00",
+            "text": "ciao @Davide",
+            "mentions": ["Davide"],
+        }
+        with patch.object(channels.bus, "publish", publish), \
+                patch.object(channels.access_log, "touch"):
+            asyncio.run(channels._channel_message(
+                "SEAL-1", "acme", "anna", "human",
+                message=msg, topic_title="Acme Board"))
+
+        event = publish.await_args.args[0]
+        self.assertEqual(event.type, "channel_message")
+        self.assertEqual(event.payload["tier"], "SEAL-1")
+        self.assertEqual(event.payload["name"], "acme")
+        self.assertEqual(event.payload["topic_title"], "Acme Board")
+        self.assertEqual(event.payload["id"], "20260812-120000-abc")
+        self.assertEqual(event.payload["mentions"], ["davide"])
+        self.assertEqual(event.payload["text"], "ciao @Davide")
+
+
 class ChannelTrifectaTests(unittest.TestCase):
     """Profilo trifecta esposto con il meta del canale (issue #77)."""
 

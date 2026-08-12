@@ -89,7 +89,15 @@ async def _typing(tier: str, name: str, agent: str, state: str) -> None:
         LOG.debug("typing event non pubblicato: %s", e)
 
 
-async def _channel_message(tier: str, name: str, author: str, kind: str) -> None:
+async def _channel_message(
+    tier: str,
+    name: str,
+    author: str,
+    kind: str,
+    *,
+    message: dict | None = None,
+    topic_title: str | None = None,
+) -> None:
     """Notifica best-effort che il canale ha nuovi messaggi persistiti."""
     # Ogni messaggio (umano o AI) bumpa l'attività del topic → in RECENTS risale
     # in cima anche quando un agente conclude un turno (non solo sui post umani).
@@ -98,9 +106,19 @@ async def _channel_message(tier: str, name: str, author: str, kind: str) -> None
     except Exception:  # noqa: BLE001
         pass
     try:
+        payload = {"tier": tier, "name": name, "author": author, "kind": kind}
+        if topic_title:
+            payload["topic_title"] = topic_title
+        if message:
+            payload.update({
+                "id": message.get("id"),
+                "ts": message.get("ts"),
+                "text": message.get("text") or "",
+                "mentions": [str(m).lower() for m in (message.get("mentions") or [])],
+            })
         await bus.publish(Event(
             type="channel_message",
-            payload={"tier": tier, "name": name, "author": author, "kind": kind},
+            payload=payload,
             timestamp=datetime.now(timezone.utc),
         ))
     except Exception as e:  # noqa: BLE001
@@ -213,8 +231,9 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
 
     autore = _spawn_label(chat, responder)
     try:
-        topics_client.post_message(tier, name, autore, reply, kind="ai")
-        await _channel_message(tier, name, autore, "ai")
+        msg = topics_client.post_message(tier, name, autore, reply, kind="ai")
+        await _channel_message(tier, name, autore, "ai",
+                               message=msg, topic_title=meta.get("title"))
     except Exception as e:  # noqa: BLE001
         LOG.warning("post risposta canale %s/%s da %s fallito: %s", tier, name, responder, e)
         return None
@@ -1551,8 +1570,9 @@ async def post_channel_message(
             prior_messages, participants, tier_real)
 
     # 1. registra il messaggio nel canale
-    topics_client.post_message(tier, name, principal, content, kind=kind)
-    await _channel_message(tier, name, principal, kind)
+    msg = topics_client.post_message(tier, name, principal, content, kind=kind)
+    await _channel_message(tier, name, principal, kind,
+                           message=msg, topic_title=meta.get("title"))
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
     # Log dell'azione nella tab Logs (gli autori senza runtime non hanno run).
     activity_log.append(principal, "message_sent",
