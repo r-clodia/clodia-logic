@@ -144,3 +144,65 @@ class TheGatewayVerbsSurviveTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class TheRootCallbackMustNotSayYesToEverythingTests(unittest.TestCase):
+    """Il callback batte `disallowed_tools`, e per tre mesi ha detto sì a tutto.
+
+    Misurato il 12 ago 2026: clodia ha eseguito una ricerca web in un canale
+    mentre `WebSearch` era nella sua lista dei negati. La sessione era nata DOPO
+    il deploy — quindi non era una sessione vecchia: era che ogni decisione di
+    permesso passa dal callback, e quello approvava.
+
+    Non riguardava solo la restrizione nuova. Rendeva inerte anche la blocklist
+    storica — `Bash(rm:*)`, i CLI dei tool — su ogni istanza che gira come root,
+    cioè entrambe. Un controllo creduto attivo, spento da quando esiste quel ramo.
+    """
+
+    def _gate(self, negati):
+        import asyncio
+        from . import session as S
+        g = S._permission_gate(negati)
+
+        def chiedi(nome):
+            return asyncio.run(g(nome, {}, None))
+
+        return chiedi
+
+    def test_a_denied_tool_is_refused(self):
+        from claude_agent_sdk import PermissionResultDeny
+        esito = self._gate(["WebSearch"])("WebSearch")
+        self.assertIsInstance(esito, PermissionResultDeny)
+
+    def test_everything_else_still_passes(self):
+        from claude_agent_sdk import PermissionResultAllow
+        chiedi = self._gate(["WebSearch"])
+        for nome in ("Read", "Bash", "mcp__clodia-tools__topic.open"):
+            self.assertIsInstance(chiedi(nome), PermissionResultAllow)
+
+    def test_a_pattern_rule_denies_the_base_tool(self):
+        """`Bash(rm:*)` è una regola che applica il CLI — ma se il callback
+        approvasse `Bash`, il CLI non la vedrebbe nemmeno. Si nega la base: è la
+        direzione in cui un errore si vede subito."""
+        from claude_agent_sdk import PermissionResultDeny
+        self.assertIsInstance(self._gate(["Bash(rm:*)"])("Bash"),
+                              PermissionResultDeny)
+
+    def test_an_empty_blocklist_allows_everything(self):
+        """Senza niente da negare il callback deve restare il bypass che era, o
+        un agent senza dichiarazioni smetterebbe di funzionare su root."""
+        from claude_agent_sdk import PermissionResultAllow
+        self.assertIsInstance(self._gate([])("WebSearch"), PermissionResultAllow)
+        self.assertIsInstance(self._gate(None)("Bash"), PermissionResultAllow)
+
+    def test_the_blocklist_is_computed_before_the_root_branch(self):
+        """Statico: se il calcolo tornasse dopo, il callback nascerebbe cieco —
+        ed è esattamente com'era."""
+        import inspect
+        from . import session as S
+        src = inspect.getsource(S.ClaudeSession._build_options) \
+            if hasattr(S, "ClaudeSession") and hasattr(
+                getattr(S, "ClaudeSession"), "_build_options") \
+            else inspect.getsource(S)
+        self.assertLess(src.index("disallowed = list(_resolve_disallowed_tools"),
+                        src.index("opts_kwargs[\"can_use_tool\"]"))

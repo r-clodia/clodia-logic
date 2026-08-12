@@ -21,7 +21,7 @@ from claude_agent_sdk.types import (
     AssistantMessage, UserMessage,
     ToolUseBlock, ToolResultBlock, ThinkingBlock,
     TaskProgressMessage, StreamEvent,
-    PermissionResultAllow, ToolPermissionContext,
+    PermissionResultAllow, PermissionResultDeny, ToolPermissionContext,
 )
 
 from ..config import WORKSPACE_ROOT as _BUNDLE_ROOT, data_path
@@ -259,6 +259,39 @@ DEFAULT_KIND = "clodia"
 # gira come root (Docker): il CLI rifiuta --dangerously-skip-permissions
 # con uid=0. Con can_use_tool il gate di permesso è gestito lato SDK
 # senza passare il flag incriminato al subprocess.
+#
+# ⚠️ E il callback BATTE `disallowed_tools`. Misurato il 12 ago 2026: clodia ha
+# eseguito una ricerca web in un canale mentre `WebSearch` era nella sua lista
+# dei negati, perché ogni decisione di permesso passa di qui e questa diceva sì a
+# tutto. Non riguardava solo la restrizione nuova: rendeva inerte anche la
+# blocklist storica — `Bash(rm:*)`, i CLI dei tool — su ogni istanza che gira
+# come root, cioè entrambe. Un controllo creduto attivo, e spento da tre mesi.
+#
+# Da qui `_permission_gate`: lo stesso «approva tutto» che serviva al flag, meno
+# ciò che qualcuno ha deciso di negare.
+def _permission_gate(disallowed: list[str] | None):
+    """`can_use_tool` che approva tutto TRANNE ciò che è nella blocklist.
+
+    Il confronto è sul nome del tool e sulla sua base (`Bash(rm:*)` → `Bash`):
+    una regola con pattern la applica il CLI, ma se qui passasse comunque il
+    permesso il CLI non la vedrebbe nemmeno. Nel dubbio si nega la base — è la
+    direzione in cui un errore si vede subito, invece di lasciare passare.
+    """
+    negati = {str(x).strip() for x in (disallowed or []) if str(x).strip()}
+    basi = {n.split("(", 1)[0] for n in negati}
+
+    async def _gate(tool_name: str, tool_input: dict,
+                    ctx: ToolPermissionContext):
+        nome = str(tool_name or "")
+        if nome in negati or nome.split("(", 1)[0] in basi:
+            return PermissionResultDeny(
+                message=(f"'{nome}' non è fra gli strumenti dichiarati da questo "
+                         f"agente (native_tools nel suo seed)."))
+        return PermissionResultAllow()
+
+    return _gate
+
+
 async def _allow_all(
     tool_name: str,
     tool_input: dict,
@@ -984,23 +1017,26 @@ class ChatSession:
         model_override = _runtime_model(self.kind, self._runtime_override)
         if model_override:
             opts_kwargs["model"] = model_override
-        permission_mode_override = _resolve_permission_mode(self.kind)
-        if permission_mode_override == "bypassPermissions" and _IS_ROOT:
-            # Root: --dangerously-skip-permissions rifiutato dal CLI.
-            # can_use_tool approva tutto lato SDK senza il flag incriminato.
-            opts_kwargs["can_use_tool"] = _allow_all
-        elif permission_mode_override:
-            opts_kwargs["permission_mode"] = permission_mode_override
         # Blocklist = quella storica per kind (pattern `Bash(...)`) PIÙ la
         # sottrazione dei tool nativi che il seed non dichiara. Due sorgenti, una
         # lista: il ritaglio fine di `Bash` sta nei pattern, l'insieme degli
         # strumenti nel seed.
+        #
+        # Calcolata PRIMA del ramo root, perché su root è il callback a decidere
+        # e deve conoscerla: passarla solo a `disallowed_tools` la rendeva inerte.
         disallowed = list(_resolve_disallowed_tools(self.kind))
         for t in _resolve_native_denied(self.kind):
             if t not in disallowed:
                 disallowed.append(t)
         if disallowed:
             opts_kwargs["disallowed_tools"] = disallowed
+        permission_mode_override = _resolve_permission_mode(self.kind)
+        if permission_mode_override == "bypassPermissions" and _IS_ROOT:
+            # Root: --dangerously-skip-permissions rifiutato dal CLI. Il callback
+            # fa da bypass PER CIÒ CHE NON È NEGATO — non per tutto.
+            opts_kwargs["can_use_tool"] = _permission_gate(disallowed)
+        elif permission_mode_override:
+            opts_kwargs["permission_mode"] = permission_mode_override
         # clodia-tools via MCP HTTP (microservizio segregato): conio un token
         # PKI per l'identità=kind e lo inietto nelle opzioni (in-memory, mai su
         # disco). Solo per i kind con identità PKI (clodia); per gli altri il
