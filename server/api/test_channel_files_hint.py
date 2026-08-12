@@ -45,13 +45,22 @@ class HintNamesTheRealMountsTests(unittest.TestCase):
         self.assertIn("`local/`", self._hint([]))
 
     def test_a_mounted_remote_is_named(self):
-        testo = self._hint([{"name": "drive", "type": "drive"}])
-        self.assertIn("`remote/drive/`", testo)
+        """Al PRIMO livello, col suo nome: `comms/`, non `remote/comms/`."""
+        testo = self._hint([{"name": "comms", "type": "drive"}])
+        self.assertIn("`comms/`", testo)
+        self.assertNotIn("remote/comms", testo)
 
     def test_many_remotes_are_all_named(self):
-        testo = self._hint([{"name": "drive"}, {"name": "archivio"}])
-        self.assertIn("`remote/drive/`", testo)
-        self.assertIn("`remote/archivio/`", testo)
+        testo = self._hint([{"name": "drive", "type": "drive"},
+                            {"name": "archivio", "type": "drive"}])
+        self.assertIn("`drive/`", testo)
+        self.assertIn("`archivio/`", testo)
+
+    def test_a_git_remote_is_not_a_folder(self):
+        """Un remote git sono gli STESSI file in un altro momento: annunciarlo
+        come cartella produce un path che non si apre (visto il 7 ago)."""
+        testo = self._hint([{"name": "repo", "type": "git"}])
+        self.assertNotIn("`repo/`", testo)
 
     def test_it_asks_for_the_path_as_topic_files_returns_it(self):
         """Perché il path serve anche alla persona che legge la risposta."""
