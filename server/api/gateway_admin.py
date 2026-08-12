@@ -36,7 +36,8 @@ def register_agent(agent: str, allowed_tools: list | None = None,
                    gated_tools: list | None = None,
                    gated_in_channel: list | None = None,
                    carries: list | None = None,
-                   profile_tools: list | None = None) -> dict:
+                   profile_tools: list | None = None,
+                   denied_tools: list | None = None) -> dict:
     """Registra/aggiorna l'agent nella whitelist del gateway (config.yaml).
 
     `gated_tools` viaggia con la registrazione perché è dichiarato nel seed e
@@ -59,6 +60,8 @@ def register_agent(agent: str, allowed_tools: list | None = None,
         payload["carries"] = list(carries)
     if profile_tools is not None:
         payload["profile_tools"] = list(profile_tools)
+    if denied_tools is not None:
+        payload["denied_tools"] = list(denied_tools)
     r = requests.post(f"{_base_url()}/whitelist", headers=_headers(),
                       json=payload, timeout=_HTTP_TIMEOUT)
     r.raise_for_status()

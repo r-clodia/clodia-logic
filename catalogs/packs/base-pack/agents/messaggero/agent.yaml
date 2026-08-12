@@ -49,33 +49,24 @@ rules: []
 # post_message è prerogativa di messaggero+super. jobs.propose per creare il job
 # periodico di check-email (l'owner lo approva, gated by design).
 #
-# `topic.*` è stato ESPLOSO nell'elenco puntuale per togliere UN SOLO verbo,
-# `topic.add_participant` (clodia-platform#104 §10.2): il messaggero non compone
-# squadre. Tutto il resto di `topic.*` è conservato verbo per verbo — questa non
-# è la riduzione a TOPIC_RW proposta in #102, che è un passo successivo.
-# L'elenco esplicito ha anche l'effetto voluto in #104 §8: un verbo `topic.*`
-# FUTURO non viene più concesso in automatico.
 # ANTENATO. `archseed` dà i verbi base per ereditarietà (specification §1.3):
-# leggere nella stanza in cui lo spawn sta, parlarci, e la propria memoria. Qui
-# sotto resta SOLO il mestiere di questo seed — se un verbo base ricomparisse in
-# `tool_permissions`, la domanda «cosa fa questo agente» tornerebbe senza
-# risposta, sepolta sotto ciò che fanno tutti.
+# leggere nella stanza, parlarci, e la propria memoria. A2 restringe Messaggero:
+# trasporta riferimenti e allegati, ma non legge né scrive il filesystem del
+# topic. I verbi ereditati incompatibili sono sottratti in `denied_tools`.
 tool_permissions:
   - email.*
   - telegram.*
   - jobs.propose
-  - topic.put
-  - topic.write_file
-  # Drive per il TRASPORTO: prendere un file e depositarlo in un topic,
-  # e il contrario. Dichiarati perché dal 6 ago un grant sul vault apre la
-  # credenziale e non i verbi: quello che serve va deciso, non ereditato.
-  # Fuori di proposito: `gdrive.share` (uscita verso una PERSONA, non
-  # trasporto) e `gdrive.move`/`rename` (riorganizzare il Drive di altri
-  # non è consegnare).
-  - gdrive.list
-  - gdrive.search
-  - gdrive.download
-  - gdrive.upload
+
+# Omettere non restringe un antenato: questi verbi arrivano dall'archseed e
+# vanno negati esplicitamente. `topic.open/search/list` restano metadati e stato
+# conversazionale; non espongono i byte del filesystem. Gli allegati outbound
+# usano i riferimenti server-side `email.topic_files` / `telegram.send_file`.
+denied_tools:
+  - topic.files
+  - topic.read_file
+  - topic.read_document
+  - topic.fetch
 # Verbi che per QUESTO agent richiedono un consenso umano a ogni uso
 # (clodia-platform#104). Dichiarati nel seed perché è qui che si sa quali dei
 # propri verbi sono pericolosi — e perché un controllo che non viaggia col seed
@@ -111,11 +102,7 @@ tool_permissions:
 # dichiarata. Togliendo solo le righe, il gate sarebbe rimasto vivo nella config
 # del gateway — verificato il 7 ago 2026, restava dopo il deploy.
 gated_in_channel: []
-gated_tools:
-- topic.remote_add
-- topic.remote_commit
-- topic.remote_enable
-- topic.remote_push
+gated_tools: []
 memory:
   dir: memory/
 system_prompt: system-prompt.md

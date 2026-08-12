@@ -291,7 +291,8 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
             gated_tools=spec.gated_tools,
             gated_in_channel=spec.gated_in_channel,
             profile_tools=spec.profile_tools,
-            carries=spec.carries)
+            carries=spec.carries,
+            denied_tools=spec.denied_tools)
     except Exception as e:  # noqa: BLE001
         avviso = (f"registrazione nella whitelist del gateway fallita: "
                   f"{str(e)[:160]} — il seed è installato ma NON avrà nessun "

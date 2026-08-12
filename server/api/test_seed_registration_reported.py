@@ -51,7 +51,8 @@ class _Registry:
         from types import SimpleNamespace
         return SimpleNamespace(tool_permissions=SEED["tool_permissions"],
                                gated_tools=None, gated_in_channel=None,
-                               profile_tools=None, carries=None)
+                               profile_tools=None, carries=None,
+                               denied_tools=["topic.read_file"])
 
     def errors(self):
         return {}
@@ -88,6 +89,11 @@ class InstallSeedTests(unittest.TestCase):
         out = self._install(lambda *a, **k: {"ok": True})
         self.assertEqual(out["status"], "installed")
         self.assertNotIn("warning", out)
+
+    def test_registration_transports_denied_tools(self):
+        calls = []
+        self._install(lambda *a, **k: calls.append((a, k)) or {"ok": True})
+        self.assertEqual(calls[0][1]["denied_tools"], ["topic.read_file"])
 
     def test_the_seed_lands_on_disk_either_way(self):
         """L'avviso non annulla l'installazione: il seed c'è, gli manca la

@@ -169,17 +169,25 @@ class GrantHygieneTests(unittest.TestCase):
         sparire.
         """
         seeds = _seeds()
-        # messaggero è il postino: posta, messaggistica, e i verbi del topic che
-        # gli servono per leggere e depositare quello che consegna.
-        for verb in ("email.*", "telegram.*", "jobs.propose",
-                     "topic.open", "topic.post_message", "topic.put"):
+        # messaggero è il postino: comunica e pianifica il polling. Gli allegati
+        # sono materializzati server-side, quindi non richiedono verbi file.
+        for verb in ("email.*", "telegram.*", "jobs.propose"):
             with self.subTest(seed="messaggero", verb=verb):
-                self.assertIn(verb, _grants(seeds["messaggero"]))
+                self.assertIn(verb, seeds["messaggero"].tool_permissions)
         # sysadmin amministra: resta largo per natura del ruolo.
         self.assertGreater(len(_grants(seeds["sysadmin"])), 40)
         for verb in ("agents.*", "settings.*", "web.post"):
             with self.subTest(seed="sysadmin", verb=verb):
                 self.assertIn(verb, _grants(seeds["sysadmin"]))
+
+    def test_messaggero_cannot_read_or_write_scope_files_or_remotes(self) -> None:
+        spec = _seeds()["messaggero"]
+        own = set(spec.tool_permissions)
+        denied = set(spec.denied_tools or [])
+        self.assertTrue({"topic.files", "topic.read_file", "topic.read_document",
+                         "topic.fetch"} <= denied)
+        self.assertFalse({"topic.put", "topic.write_file"} & own)
+        self.assertFalse(any(v.startswith("gdrive.") for v in own))
 
     def test_the_postman_can_be_supervised_inside_a_channel(self) -> None:
         """`gated_in_channel` è la ragione per cui il postino può conservare
