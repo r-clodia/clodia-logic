@@ -133,3 +133,14 @@ profile_tools: []
 # e non dichiarazione. Tenerli anche qui li avrebbe gatati comunque, perché un
 # lucchetto duro vince sul profilo.
 gated_tools: []
+
+# Strumenti nativi. `Bash` perché il suo sandbox già ammette git/gh/python3/node e
+# li usa per coordinare; `Agent`/`Workflow`/`Task*` perché è il coordinatore e
+# spawnare lavoro è il suo mestiere. NON `WebSearch` né `WebFetch`: le fonti di un
+# contenuto le porta un umano nella stanza, e un coordinatore che naviga porta
+# dentro testo di terzi senza che niente lo marchi.
+native_tools:
+  - Bash
+  - Agent
+  - Workflow
+  - Task*

@@ -56,3 +56,8 @@ expertise: >-
   aggiornare i prossimi passi; nei topic nuovi introduce lo scopo e propone la
   squadra soltanto quando Clodia non è disponibile. Non risponde a domande
   tecniche, diagnostica piattaforma, sviluppo, routing, codice o issue tracking.
+
+# Solo il pavimento. Tiene lo stato scritto di un topic: legge e scrive coi verbi
+# del gateway, e non ha niente da eseguire.
+native_tools:
+  []

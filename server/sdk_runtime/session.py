@@ -576,6 +576,42 @@ def _resolve_permission_mode(kind: str) -> Optional[str]:
     return "bypassPermissions"
 
 
+def _resolve_native_allowed(kind: str) -> list[str] | None:
+    """Gli strumenti nativi concessi a questo seed: i suoi PIÙ il pavimento.
+
+    L'unione e non la sostituzione: il pavimento dell'arciseed è quello che serve
+    a lavorare nel proprio spawn, e un seed che dichiara il proprio mestiere non
+    deve per questo perdere `Read`. La sottrazione dal pavimento resta un lavoro
+    a parte — oggi nessun seed ne ha bisogno, e un meccanismo inventato prima del
+    suo caso è un meccanismo che nessuno usa.
+
+    `None` da tutte e due le parti = nessuno si è pronunciato → nessuna
+    restrizione. È la stessa direzione d'errore di ogni altra lista qui: una
+    lista vuota che chiude tutto verrebbe spenta il giorno dopo.
+    """
+    from ..agents.loader import registry
+    proprio = pavimento = None
+    try:
+        spec = registry.get_by_name(kind)
+        proprio = getattr(spec, "native_tools", None) if spec else None
+    except Exception:  # noqa: BLE001 — un registry che non risponde non restringe
+        proprio = None
+    try:
+        arch = registry.get_by_name("archseed")
+        pavimento = getattr(arch, "native_tools", None) if arch else None
+    except Exception:  # noqa: BLE001
+        pavimento = None
+    if proprio is None and pavimento is None:
+        return None
+    return sorted(set(proprio or []) | set(pavimento or []))
+
+
+def _resolve_native_denied(kind: str) -> list[str]:
+    """`NOTI − concessi`: cosa va in `disallowed_tools` per questo seed."""
+    from . import native_tools as _nt
+    return _nt.disallowed_for(_resolve_native_allowed(kind))
+
+
 def _resolve_disallowed_tools(kind: str) -> list[str]:
     if kind in KIND_DISALLOWED_TOOLS:
         return KIND_DISALLOWED_TOOLS[kind]
@@ -955,7 +991,14 @@ class ChatSession:
             opts_kwargs["can_use_tool"] = _allow_all
         elif permission_mode_override:
             opts_kwargs["permission_mode"] = permission_mode_override
-        disallowed = _resolve_disallowed_tools(self.kind)
+        # Blocklist = quella storica per kind (pattern `Bash(...)`) PIÙ la
+        # sottrazione dei tool nativi che il seed non dichiara. Due sorgenti, una
+        # lista: il ritaglio fine di `Bash` sta nei pattern, l'insieme degli
+        # strumenti nel seed.
+        disallowed = list(_resolve_disallowed_tools(self.kind))
+        for t in _resolve_native_denied(self.kind):
+            if t not in disallowed:
+                disallowed.append(t)
         if disallowed:
             opts_kwargs["disallowed_tools"] = disallowed
         # clodia-tools via MCP HTTP (microservizio segregato): conio un token

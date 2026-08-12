@@ -54,3 +54,37 @@ tool_permissions:
   # può fare niente. È la stessa ragione per cui un `reader` conserva la parola
   # (§2.9).
   - topic.post_message
+
+# ── Il pavimento degli strumenti NATIVI del runtime ──────────────────────────
+#
+# I ~30 tool della CLI non passano dal gateway, e nessuno li dichiarava: ogni
+# agente li aveva tutti. Compreso `WebSearch`, che nessun firewall può arbitrare
+# perché lo esegue l'infrastruttura del provider dentro la conversazione con
+# l'API — misurato il 12 ago 2026, sei risultati tornati da un container in cui
+# `curl example.com` non passa.
+#
+# COSA CI VA, con la stessa regola dei verbi qui sopra: quello che serve a
+# LAVORARE nel proprio spawn. Leggere e scrivere nel proprio scratch, eseguire
+# una skill, cercare uno strumento nell'elenco.
+#
+# COSA NON CI VA:
+#   · `WebSearch` e `WebFetch` — portano dentro contenuto di terzi senza che la
+#     piattaforma lo veda, quindi senza marcare il taint. Li dichiara il seed che
+#     ne ha bisogno, e quel seed è per costruzione uno di cui si è deciso che può;
+#   · `Agent` e `Workflow` — spawnano lavoro fuori dal registro degli spawn;
+#   · `Cron*`, `Task*`, `ScheduleWakeup`, `Monitor`, `RemoteTrigger` — pianificano
+#     fuori dal registro dei job;
+#   · `Bash` — NON è nel pavimento. Un agente che deve eseguire comandi lo dice.
+#
+# `Bash` fuori dal pavimento è la scelta che si nota di più, e la ragione è che
+# `Bash` è l'unico strumento che contiene tutti gli altri: con una shell si
+# raggiunge la rete, il filesystem e ogni CLI installata, e nessuna delle liste
+# qui sopra vale più niente. Chi ne ha bisogno lo dichiara, e allora si vede.
+native_tools:
+  - Read
+  - Write
+  - Edit
+  - Skill
+  - ToolSearch
+  - TodoWrite
+  - AskUserQuestion

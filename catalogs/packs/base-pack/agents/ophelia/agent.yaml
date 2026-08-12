@@ -32,3 +32,11 @@ memory:
   dir: memory/
 
 system_prompt: system-prompt.md
+
+# Come clodia: stesso sandbox (git/gh/python3/node), stesso mestiere di
+# coordinamento. Nessuno strumento web.
+native_tools:
+  - Bash
+  - Agent
+  - Workflow
+  - Task*
