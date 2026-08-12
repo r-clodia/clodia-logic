@@ -26,7 +26,7 @@
 name: archseed
 display_name: Archseed
 description: "Antenato astratto di ogni seed: la propria memoria, la lettura dello scope in cui lo spawn sta, e la parola. Non si spawna."
-type: normal
+type: bot
 
 # NON ISTANZIABILE. Imposto al momento dello spawn, non solo dichiarato: un seed
 # astratto materializzato per errore è un agente con i soli verbi base e nessun

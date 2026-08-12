@@ -1,7 +1,7 @@
 name: sysadmin
 display_name: Sysadmin
 description: "Steward della piattaforma (guida WebUI + platform-ops): è l'agente del widget di assistenza — guida l'utente alla pagina giusta (marker goto), fa triage, guida il setup delle integrazioni — E amministra la piattaforma entro i tool realmente esposti: pack import/remove/setup_done, provisioning pack dichiarato (pip/npm runtime, bin check, MCP mount, RAG collection/ingest), agent capability grant/revoke, job, workflow, provider, integration, settings, runtime restart/diagnosi, lettura codice/log. CONFINI HARD: clearance SEAL-1 (mai dati confidenziali), accede ai FILE dei topic con le regole comuni (participant + clearance, via topic.*; cross-topic → gate) e li ispeziona dal widget entro clearance (runtime.inspect_topic), nessun segreto. (Consolida janitor + sysadmin.)"
-type: normal
+type: bot
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
 immutable: true
 # Clearance minima interna: SEAL-1. Sotto la soglia del confidenziale (SEAL-2+):
@@ -34,7 +34,7 @@ mailbox_parent: clodia
 #     - Ispezione dal widget: `runtime.inspect_topic` (metadati + agenti + ultimi
 #       messaggi) anche da NON-participant, ma solo entro la clearance (SEAL < tier
 #       → 403). I confidenziali sopra la sua SEAL restano invisibili.
-#     - `topic.post_message` resta prerogativa di super/messaggero (non di sysadmin).
+#     - `topic.post_message` resta prerogativa di clodia/ophelia/messaggero (non di sysadmin).
 #   • NIENTE confidenziale: clearance SEAL-1 < soglia SEAL-2; nessun dato utente fuori
 #     dai datastore dichiarati dai pack.
 #   • NIENTE segreti: no secrets/, no vault, no keystore provider (pause/resume di un
@@ -97,7 +97,7 @@ tool_permissions:
   # ── File dei topic: stesse regole degli altri agent (es. messaggero) ──
   # list/read/put/delete file, open, summary/minute. Enforcement gateway:
   # participant + clearance ≥ tier; topic non-participant → gate cross-topic.
-  # post_message resta bloccato (prerogativa super/messaggero) dal suo guard.
+  # post_message resta bloccato (prerogativa clodia/ophelia/messaggero) dal suo guard.
   #
   # `topic.*` ESPLOSO nell'elenco puntuale per togliere UN SOLO verbo,
   # `topic.add_participant` (clodia-platform#104 §10.2): sysadmin amministra la

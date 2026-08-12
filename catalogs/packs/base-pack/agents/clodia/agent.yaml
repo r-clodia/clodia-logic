@@ -1,7 +1,8 @@
 name: clodia
 display_name: Clodia
-description: "Assistente dell'owner sulla piattaforma Clodia. Super-agent su motore Claude, poteri pieni, autorità decisionale."
-type: super
+description: "Assistente dell'owner sulla piattaforma Clodia. Bot di coordinamento su motore Claude."
+type: bot
+immutable: true
 clearance: SEAL-3
 constitution: platform-core
 # ANTENATO. `parents` è una relazione di AUTORITÀ: ciò che vi compare concede
@@ -29,7 +30,7 @@ sandbox:
   allow_shell_cmds: ["git", "gh", "python3", "node", "npm"]
   deny_shell_patterns: ["rm -rf *", "sudo *", "git push * main *--force*"]
 
-# super-agent: primitive di piattaforma + pack first-party di ruolo.
+# bot di coordinamento: primitive di piattaforma + pack first-party di ruolo.
 capabilities: ["base-pack/*", "editorial-pack/*", "comms-pack/*", "anthropic-pack/*"]
 rules: ["*"]
 # tutti i tool MCP (enforcement al gateway clodia-tools — wiring in Fase 4).
@@ -40,8 +41,8 @@ rules: ["*"]
 #
 # Raggiungibile non significa libero: ciò che non è in `profile_tools` passa da
 # un consenso umano. Questa lista dice fin dove clodia può arrivare CHIEDENDO —
-# è la «modalità super» del suo prompt, che non è un insieme diverso di poteri ma
-# gli stessi poteri con una domanda davanti.
+# è la modalità con gate del suo prompt: non è un insieme diverso di poteri, ma
+# gli stessi poteri quando serve una domanda davanti.
 #
 # ESCLUSI, irraggiungibili anche con un gate, e perché:
 #   email.*                    mestiere del corriere (messaggero), e uscita

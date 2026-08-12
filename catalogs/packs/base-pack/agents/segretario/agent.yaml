@@ -10,7 +10,7 @@ name: segretario
 parents: [archseed]
 display_name: Segretario
 description: "Segretario del topic: verbalizza minute e stato; se Clodia non è disponibile introduce il topic e propone la squadra."
-type: normal
+type: bot
 clearance: SEAL-2
 constitution: platform-core
 agent_sdk: opencode

@@ -34,6 +34,14 @@ class AgentSpecV2Tests(unittest.TestCase):
         spec = self._minimal(skills=["skills/x.md"], can_delegate_to=["other"])
         self.assertEqual(spec.skills, ["skills/x.md"])
 
+    def test_legacy_agent_types_normalize_to_bot(self):
+        self.assertEqual(self._minimal(type="normal").type, "bot")
+        self.assertEqual(self._minimal(type="super").type, "bot")
+        self.assertEqual(self._minimal(type="bot").type, "bot")
+
+        human = self._minimal(type="human", model=None)
+        self.assertEqual(human.type, "human")
+
 
 if __name__ == "__main__":
     unittest.main()

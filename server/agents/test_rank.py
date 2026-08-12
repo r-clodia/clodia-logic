@@ -23,19 +23,19 @@ class RankTests(unittest.TestCase):
                            rank.rank_tier(_a("g", "human", "member")))
         self.assertGreater(rank.rank_tier(_a("g", "human", "member")),
                            rank.rank_tier(_a("clodia", "super")))
-        self.assertGreater(rank.rank_tier(_a("clodia", "super")),
-                           rank.rank_tier(_a("worker", "normal")))
+        self.assertEqual(rank.rank_tier(_a("clodia", "super")),
+                         rank.rank_tier(_a("worker", "normal")))
 
     def test_seniority_tiebreak_clodia_over_ophelia(self) -> None:
         clodia = _a("clodia", "super", created_at="2026-01-01T00:00:00Z")
         ophelia = _a("ophelia", "super", created_at="2026-01-01T00:00:01Z")
         self.assertEqual(rank.highest([ophelia, clodia]).name, "clodia")
 
-    def test_highest_picks_ai_super_over_normal(self) -> None:
+    def test_highest_picks_oldest_bot_over_human(self) -> None:
         h = _a("owner", "human", "superadmin")
         clodia = _a("clodia", "super", created_at="2026-01-01T00:00:00Z")
         worker = _a("worker", "normal", created_at="2026-02-01T00:00:00Z")
-        # tra i partecipanti AI, vince il super (gli umani non sono risponditori)
+        # tra i partecipanti bot, vince il più anziano (gli umani non sono risponditori)
         self.assertEqual(rank.highest([h, worker, clodia]).name, "clodia")
 
 
@@ -58,7 +58,7 @@ class RankOfNameTests(unittest.TestCase):
     def test_resolves_tiers(self) -> None:
         self.assertEqual(rank.rank_of_name("owner_h"), 4)
         self.assertEqual(rank.rank_of_name("member_h"), 3)
-        self.assertEqual(rank.rank_of_name("clodia_t"), 2)
+        self.assertEqual(rank.rank_of_name("clodia_t"), 1)
         self.assertEqual(rank.rank_of_name("worker_t"), 1)
 
     def test_outside_lattice_is_zero(self) -> None:

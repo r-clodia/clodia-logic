@@ -28,7 +28,7 @@ def _base_url() -> str:
 
 
 # Identità di servizio dell'agent-server verso il gateway: ha chiave server-side
-# (i super-agent sono emessi da issue-all). Gli umani firmano client-side e NON
+# (i bot seed sono emessi da issue-all). Gli umani firmano client-side e NON
 # hanno chiave qui → non possiamo coniare a loro nome. Coniamo come servizio e
 # dichiariamo il principal reale via header; il gateway (che si fida del servizio)
 # applica l'ACL su quel principal.

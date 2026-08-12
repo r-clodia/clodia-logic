@@ -9,6 +9,12 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.7.0] — 2026-08-12
+- **Agent type vocabulary reduced to `bot | human`.** Base seeds now declare
+  `type: bot`; legacy `normal` and `super` still parse as `bot`, but the
+  registry/API emit the canonical value. Native protected seeds keep protection
+  via `immutable: true`, not via a third agent class.
+
 ## [7.6.0] — 2026-08-09
 - **`workflows.*` removed from the seeds.** `clodia` carried `workflows.list`
   and `workflows.status`, `sysadmin` the whole namespace. The engine is gone

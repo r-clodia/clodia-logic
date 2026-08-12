@@ -104,7 +104,7 @@ def welcome_message(name: str, title: str, topic_type: str,
 
     Si posta se ci sono pills per il tipo, se l'edizione dichiara i tipi nel
     profilo (edizione verticale), oppure se il contact agent è un coordinatore
-    (super-agent) che può comporre la squadra: in quel caso chiede di cosa
+    autorizzato che può comporre la squadra: in quel caso chiede di cosa
     tratta il topic per proporre gli agenti da invitare (team-composition)."""
     pills = pills_for(topic_type, participants)
     prof = instance_profile.load()

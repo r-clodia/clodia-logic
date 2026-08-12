@@ -47,7 +47,7 @@ def register_agent(agent: str, allowed_tools: list | None = None,
     # l'assenza come «non mi pronuncio» e la lista vuota come «azzerale». Mandare
     # sempre `[]` sconfiggeva quella guardia dal lato client — e ha azzerato i gate
     # di clodia al primo update del base-pack, cioè ha ALLARGATO l'autorità di un
-    # super-agent con un aggiornamento che doveva solo cambiargli il prompt.
+    # agente immutabile con un aggiornamento che doveva solo cambiargli il prompt.
     payload: dict = {"agent": agent, "allowed_tools": allowed_tools or []}
     if gated_tools is not None:
         payload["gated_tools"] = list(gated_tools)
