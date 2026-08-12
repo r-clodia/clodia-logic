@@ -91,10 +91,19 @@ async def _lifespan(app: FastAPI):
     except Exception as e:  # noqa: BLE001 — una verifica che fallisce non blocca
         LOG.warning("verifica del confine non eseguita: %s", e)
     try:
-        from .agents.seed_sync import sync_seeds
+        from .agents.seed_sync import sync_seeds, backfill_new_fields
         nuovi = sync_seeds()
         if nuovi:
             LOG.info("seed materializzati dal base-pack: %s", ", ".join(nuovi))
+        # Campi NUOVI nei seed già materializzati: un campo che la copia locale
+        # non ha non è una modifica dell'owner, è un campo che non esisteva
+        # quando la copia è stata fatta. Senza questo, una dichiarazione nuova
+        # nel pack resta inerte su ogni istanza esistente — e una funzione di
+        # sicurezza inerte che non lo dice è peggio di una assente.
+        riempiti = backfill_new_fields()
+        if riempiti:
+            LOG.info("campi nuovi riempiti nei seed: %s",
+                     "; ".join(f"{k}={v}" for k, v in riempiti.items()))
     except Exception as e:  # noqa: BLE001 — un seed mancante non blocca il boot
         LOG.warning("sync dei seed dal pack fallita: %s", e)
     try:
