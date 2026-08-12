@@ -1268,10 +1268,58 @@ def _fmt_msg(m: dict) -> str:
     return line
 
 
+def _mounts_of(tier: str, name: str) -> list[str]:
+    """I mount dell'albero dati dello scope: `local` più i `remote/<n>`.
+
+    Best-effort: se il gateway non risponde si torna al solo `local`, che è
+    l'unico mount che esiste sempre. Una lista incompleta fa nominare un path in
+    meno; una lista inventata fa nominare un path sbagliato.
+    """
+    # Il prefisso `remote/<n>` è lo schema di indirizzamento di OGGI, deciso dal
+    # gateway (`_resolve_data_path`). Se lo schema cambia — è stato proposto di
+    # montare una cartella di nome `foo` direttamente come `foo/` — questa riga
+    # cambia con lui: qui si compone, non si decide.
+    fuori = ["local"]
+    try:
+        meta = (topics_client.open_topic(tier, name) or {}).get("meta") or {}
+        for m in (meta.get("mounts") or []):
+            n = str(m.get("name") or "").strip()
+            if n:
+                fuori.append(f"remote/{n}")
+    except Exception:  # noqa: BLE001
+        pass
+    return fuori
+
+
 def _channel_files_hint(tier: str, name: str) -> str:
-    return (f"I file caricati nel canale stanno in files/. Per vederli usa il tool "
-            f"topic.files e per leggerne il contenuto topic.read_file con "
-            f'tier="{tier}", name="{name}" (es. path "files/nomefile").')
+    """Come si nominano i file di questo scope, con i mount VERI.
+
+    Diceva «i file stanno in files/», e lo diceva a ogni turno. `files/` è una
+    forma LEGACY che il gateway accetta ancora, ma risolve al backend
+    *effettivo*: su uno scope con un remote Drive punta a Drive, altrove al
+    locale. Due conseguenze, entrambe viste in esercizio:
+
+    - un file caricato nel canale PRIMA che il remote fosse montato sta in
+      `local/`, e da quel momento `files/<nome>` lo cerca su Drive, dove non è
+      mai stato. Misurato su venere: `files/8.png` caricato alle 14:44, mount
+      creato alle 14:47, e da allora quel path non trova più niente;
+    - un agente che riferisce «files/x» a una persona la manda a cercare un path
+      che nella sidebar non esiste: là si vede `local/x` o `remote/drive/x`.
+
+    Quindi il preambolo smette di insegnarlo. Accettarlo resta giusto — i
+    riferimenti già scritti devono continuare a funzionare — ma un testo iniettato
+    a ogni turno è un maestro, e questo insegnava la forma ambigua.
+    """
+    mounts = _mounts_of(tier, name)
+    elenco = ", ".join(f"`{m}/`" for m in mounts)
+    return (f"I file di questo scope stanno in un albero unico con questi mount: "
+            f"{elenco}. Usa topic.files per vederlo e topic.read_file per leggere, "
+            f'con tier="{tier}", name="{name}". '
+            f"Cita SEMPRE i path come te li restituisce topic.files (es. "
+            f'"{mounts[-1]}/nomefile"): è la forma che una persona ritrova nella '
+            f"sidebar. NON usare il prefisso `files/`: è una forma legacy ancora "
+            f"accettata in lettura, ma risolve a un mount che può non essere quello "
+            f"in cui il file si trova.")
 
 
 # Capacità UI del canale: l'interfaccia trasforma marcatori-commento invisibili
