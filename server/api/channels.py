@@ -1275,17 +1275,19 @@ def _mounts_of(tier: str, name: str) -> list[str]:
     l'unico mount che esiste sempre. Una lista incompleta fa nominare un path in
     meno; una lista inventata fa nominare un path sbagliato.
     """
-    # Il prefisso `remote/<n>` è lo schema di indirizzamento di OGGI, deciso dal
-    # gateway (`_resolve_data_path`). Se lo schema cambia — è stato proposto di
-    # montare una cartella di nome `foo` direttamente come `foo/` — questa riga
-    # cambia con lui: qui si compone, non si decide.
+    # Un mount è una cartella di PRIMO livello col proprio nome: `comms/`, non
+    # `remote/comms/`. Lo schema è deciso dal gateway (`_resolve_data_path`):
+    # qui si compone, non si decide.
     fuori = ["local"]
     try:
         meta = (topics_client.open_topic(tier, name) or {}).get("meta") or {}
         for m in (meta.get("mounts") or []):
             n = str(m.get("name") or "").strip()
-            if n:
-                fuori.append(f"remote/{n}")
+            # Solo i remote che sono davvero un altro filesystem si montano: un
+            # remote git sono gli stessi file in un altro momento, e annunciarlo
+            # come cartella produceva un path che non si apre.
+            if n and str(m.get("type") or "").strip().lower() == "drive":
+                fuori.append(n)
     except Exception:  # noqa: BLE001
         pass
     return fuori
