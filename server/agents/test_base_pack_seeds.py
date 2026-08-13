@@ -90,8 +90,20 @@ class TradeTests(unittest.TestCase):
             if nome == "archseed":
                 continue
             with self.subTest(seed=nome):
+                if nome == "ophelia":
+                    self.assertEqual(y.get("tool_permissions"), [])
+                    continue
                 self.assertTrue(y.get("tool_permissions"),
                                 f"'{nome}' non dichiara alcun mestiere proprio")
+
+    def test_ophelia_declares_no_extra_trade_but_inherits_the_floor(self):
+        seeds = _seeds()
+        self.assertEqual(seeds["ophelia"].get("tool_permissions"), [])
+        from .inheritance import effective_tool_permissions
+        effective = effective_tool_permissions("ophelia", seeds)
+        self.assertIn("topic.post_message", effective)
+        self.assertIn("memory.*", effective)
+        self.assertNotIn("*", effective)
 
 
 if __name__ == "__main__":

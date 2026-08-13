@@ -164,10 +164,26 @@ class SeedAgentsTests(unittest.TestCase):
     """Il calcolo riproduce la misura riportata nell'issue per i seed del base-pack."""
 
     def test_seed_scores_match_the_issue_table(self) -> None:
-        expected = {"clodia": 3, "ophelia": 3, "sysadmin": 3, "messaggero": 3,
+        # `ophelia` è scesa da 3 a 2 il 13 ago 2026, quando le è stato tolto il
+        # wildcard (#202): senza `*` non dichiara più nessun verbo d'uscita, e le
+        # restano le due gambe che il pavimento dell'arciseed le dà — leggere e
+        # la propria memoria.
+        #
+        # Un punteggio che cala va guardato due volte, perché rc3 registra il
+        # caso opposto: il punteggio di `segretario` era sceso perché un file era
+        # diventato più pulito, cioè un segnale di sicurezza che si abbassava
+        # senza che l'agente fosse più sicuro. Qui non è così — il verbo è stato
+        # tolto davvero, e la misura lo segue.
+        expected = {"clodia": 3, "ophelia": 2, "sysadmin": 3, "messaggero": 3,
                     "segretario": 2}
         got = {n: trifecta.agent_profile(_seed(n), all_specs=_all_seeds())["score"] for n in expected}
         self.assertEqual(got, expected)
+
+    def test_ophelia_lost_the_outward_leg_and_not_the_others(self) -> None:
+        """Quale gamba è caduta, non solo che il numero è sceso."""
+        p = trifecta.agent_profile(_seed("ophelia"), all_specs=_all_seeds())
+        self.assertFalse(p["legs"]["egress"], "senza wildcard non ha più uscite")
+        self.assertEqual(p["why"]["egress"], [])
 
     def test_segretario_is_two_thirds_because_it_cannot_send(self) -> None:
         p = trifecta.agent_profile(_seed("segretario"), all_specs=_all_seeds())
