@@ -1,6 +1,6 @@
 name: ophelia
 display_name: Ophelia
-description: "Gemella di Clodia su motore Codex (OpenAI). Bot di coordinamento, stesso profilo operativo di Clodia, motore diverso."
+description: "Gemella di Clodia su motore Codex (OpenAI). Bot operativo per sviluppo, debug e automazione."
 type: bot
 immutable: true
 clearance: SEAL-3
@@ -24,10 +24,11 @@ sandbox:
   allow_shell_cmds: ["git", "gh", "python3", "node", "npm"]
   deny_shell_patterns: ["rm -rf *", "sudo *", "git push * main *--force*"]
 
-# bot di coordinamento: primitive di piattaforma + pack first-party di ruolo.
+# bot operativo: nessun trade largo dichiarato. I verbi base arrivano
+# dall'archseed; [] significa «nessun mestiere extra qui», non «nessun verbo».
 capabilities: ["base-pack/*", "editorial-pack/*", "comms-pack/*", "openai-curated-pack/*"]
 rules: ["*"]
-tool_permissions: ["*"]
+tool_permissions: []
 
 memory:
   dir: memory/
