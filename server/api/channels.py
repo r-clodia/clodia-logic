@@ -2903,7 +2903,7 @@ def _queue_join_introduction(
     inviti idempotenti e principal umani non generano turni.
     """
     spec = registry.get_by_name(agent)
-    if not result.get("added") or spec is None or getattr(spec, "type", None) == "human":
+    if not result.get("added") or spec is None or getattr(spec, "type", None) != "bot":
         return False
     updated_meta = {**meta, "participants": list(result.get("participants") or [])}
     _spawn_bg(run_topic_turn(

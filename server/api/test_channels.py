@@ -16,7 +16,7 @@ def _a(name, type="normal", clearance="P0", created_at=None, role=None) -> Agent
     return AgentSpec.model_validate({
         "name": name, "description": "d", "display_name": name, "type": type,
         "clearance": clearance, "created_at": created_at, "role": role,
-        **({"model": "m", "system_prompt": "s.md"} if type != "human" else {}),
+        **({"model": "m", "system_prompt": "s.md"} if type not in {"human", "proxy"} else {}),
     })
 
 
@@ -28,6 +28,7 @@ class ResponderTests(unittest.TestCase):
             "worker": _a("worker", "normal", "P1", "2026-02-01T00:00:00Z"),
             "accountant": _a("accountant", "normal", "P1", "2026-02-01T00:00:01Z"),
             "owner": _a("owner", "human", role="superadmin"),
+            "github-hook": _a("github-hook", "proxy"),
         }
         self.agents["segretario"] = _a(
             "segretario", "normal", "P1", "2026-02-01T00:00:02Z"
@@ -85,6 +86,16 @@ class ResponderTests(unittest.TestCase):
         )
 
         self.assertEqual(r.name, "segretario")
+
+    def test_proxy_is_not_a_responder_even_when_tagged(self) -> None:
+        r = channels._pick_responder(
+            ["owner", "github-hook", "worker"],
+            "P0",
+            "github-hook",
+            "@github-hook stato?",
+        )
+
+        self.assertIsNone(r)
 
     def test_exemplar_can_select_an_eligible_super_agent(self) -> None:
         trace = {}
@@ -884,16 +895,21 @@ class ParticipantJoinTests(unittest.IsolatedAsyncioTestCase):
             channels.run_topic_turn = original_run
             channels._spawn_bg = original_spawn
 
-    async def test_idempotent_or_human_add_does_not_trigger(self) -> None:
+    async def test_idempotent_human_or_proxy_add_does_not_trigger(self) -> None:
         human = _a("owner", "human", role="superadmin")
+        proxy = _a("github-hook", "proxy")
         original_get = channels.registry.get_by_name
         original_spawn = channels._spawn_bg
         try:
-            channels.registry.get_by_name = lambda _name: human
+            channels.registry.get_by_name = lambda name: proxy if name == "github-hook" else human
             channels._spawn_bg = lambda _coroutine: self.fail("non deve accodare")
             self.assertFalse(channels._queue_join_introduction(
                 "P1", "ops", {}, "owner",
                 {"participants": ["owner"], "added": True},
+            ))
+            self.assertFalse(channels._queue_join_introduction(
+                "P1", "ops", {}, "github-hook",
+                {"participants": ["owner", "github-hook"], "added": True},
             ))
             self.assertFalse(channels._queue_join_introduction(
                 "P1", "ops", {}, "worker",

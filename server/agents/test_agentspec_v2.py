@@ -3,6 +3,8 @@ from __future__ import annotations
 
 import unittest
 
+from pydantic import ValidationError
+
 from .models import AgentSpec
 
 
@@ -41,6 +43,37 @@ class AgentSpecV2Tests(unittest.TestCase):
 
         human = self._minimal(type="human", model=None)
         self.assertEqual(human.type, "human")
+
+    def test_proxy_is_a_registered_non_runtime_principal(self):
+        spec = AgentSpec.model_validate({
+            "name": "webhook",
+            "description": "Sistema terzo ammesso nel topic",
+            "display_name": "Webhook",
+            "type": "proxy",
+            "tool_permissions": ["topic.post_message"],
+        })
+        self.assertEqual(spec.type, "proxy")
+        self.assertIsNone(spec.model)
+        self.assertIsNone(spec.system_prompt)
+        self.assertIsNone(spec.memory)
+
+    def test_proxy_rejects_runtime_and_extra_tools(self):
+        with self.assertRaises(ValidationError):
+            AgentSpec.model_validate({
+                "name": "webhook",
+                "description": "Sistema terzo",
+                "display_name": "Webhook",
+                "type": "proxy",
+                "model": "claude-haiku-4-5",
+            })
+        with self.assertRaises(ValidationError):
+            AgentSpec.model_validate({
+                "name": "webhook",
+                "description": "Sistema terzo",
+                "display_name": "Webhook",
+                "type": "proxy",
+                "tool_permissions": ["topic.read_file"],
+            })
 
 
 if __name__ == "__main__":

@@ -13,7 +13,7 @@ def _a(name, type="normal", role=None, created_at=None, telegram=None) -> AgentS
         "name": name, "description": "d", "display_name": name,
         "type": type, "role": role, "created_at": created_at,
         **({"telegram": telegram} if telegram is not None else {}),
-        **({"model": "m", "system_prompt": "s.md"} if type != "human" else {}),
+        **({"model": "m", "system_prompt": "s.md"} if type not in {"human", "proxy"} else {}),
     })
 
 
@@ -37,6 +37,14 @@ class RankTests(unittest.TestCase):
         worker = _a("worker", "normal", created_at="2026-02-01T00:00:00Z")
         # tra i partecipanti bot, vince il più anziano (gli umani non sono risponditori)
         self.assertEqual(rank.highest([h, worker, clodia]).name, "clodia")
+
+    def test_proxy_is_outside_lattice_and_never_highest(self) -> None:
+        proxy = _a("github-hook", "proxy")
+        h = _a("owner", "human", "member")
+        self.assertEqual(rank.rank_tier(proxy), rank.RANK_OUTSIDE)
+        self.assertEqual(rank.rank_label(proxy), "outside")
+        self.assertEqual(rank.highest([proxy, h]).name, "owner")
+        self.assertIsNone(rank.highest([proxy]))
 
 
 class RankOfNameTests(unittest.TestCase):
