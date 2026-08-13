@@ -802,7 +802,7 @@ class AgentCreate(BaseModel):
     display_name: Optional[str] = None
     description: str = ""
     avatar_color: str = "#888888"
-    # categoria identità: qui resta ammesso solo `human`; i bot arrivano dai pack.
+    # categoria identità: qui restano ammessi `human` e `proxy`; i bot arrivano dai pack.
     type: str = "human"
     # costituzione di default per i nuovi agent (baseline lite). "none" = nessuna.
     constitution: Optional[str] = "platform-core"
@@ -845,15 +845,16 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
     from . import admin as _admin_state
     if _admin_state.is_initialized():
         gateway_pdp.require_authz(request, "agents.create")  # admin-only (PDP gateway)
+    body_type = (body.type or "human").strip().lower()
     # Gli AGENT SEED (agenti AI) si installano SOLO via pack (import): un seed è
-    # contenuto di pack, non un artefatto generato a runtime. Qui resta ammesso
-    # solo `type=human` (onboarding di un principal umano — un'identità, non un
-    # seed). Per un nuovo agente AI: crea un pack che contiene il seed e importalo.
-    if (body.type or "human") != "human":
+    # contenuto di pack, non un artefatto generato a runtime. Qui restano ammessi
+    # `human` (onboarding) e `proxy` (sistema terzo con presenza in topic, senza
+    # runtime). Per un nuovo agente AI: crea un pack che contiene il seed e importalo.
+    if body_type not in {"human", "proxy"}:
         raise HTTPException(
             400, "gli agent seed AI si installano solo via pack: crea un pack "
                  "con il seed e importalo (sezione Packs → Importa). "
-                 "Qui è ammesso solo type=human (onboarding).")
+                 "Qui sono ammessi solo type=human e type=proxy.")
     name = body.name.strip().lower()
     if not re.fullmatch(r"[a-z0-9][a-z0-9_-]{0,30}", name):
         raise HTTPException(400, "nome invalido (usa [a-z0-9_-], inizia con alfanumerico)")
@@ -866,7 +867,7 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
     display = body.display_name or name.capitalize()
     created_at = datetime.now(timezone.utc).isoformat()  # anzianità (tie-break rango)
 
-    if body.type == "human":
+    if body_type == "human":
         # Principal UMANO (Admin Auth): è un'identità, NON un agente eseguito →
         # niente motore (model/agent_sdk), niente sandbox/system-prompt/memory.
         # Il PRIMO human reclama l'istanza come superadmin. Se arriva la pubkey
@@ -906,48 +907,22 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
         except Exception as e:
             shutil.rmtree(target, ignore_errors=True)
             raise HTTPException(500, f"creazione fallita: {e}")
-    else:
-        spec_yaml: dict = {
+    elif body_type == "proxy":
+        spec_yaml = {
             "name": name,
             "display_name": display,
-            "description": body.description or f"Agente {name}",
-            "type": body.type,
-            "agent_sdk": body.agent_sdk,
-            "model": body.model,
+            "description": body.description or f"Proxy esterno {name}",
+            "type": "proxy",
             "avatar_color": body.avatar_color,
             "created_at": created_at,
+            "tool_permissions": ["topic.post_message"],
+            "system_prompt": None,
+            "memory": None,
         }
-        if body.constitution and body.constitution.lower() != "none":
-            spec_yaml["constitution"] = body.constitution
-        if body.parents:
-            spec_yaml["parents"] = [p.strip() for p in body.parents if p.strip()][:2]
-        spec_yaml.update({
-            "sandbox": {
-                "allow_read": ["{scratch}/**"],
-                "deny_read": ["secrets/**", "topics/**"],
-                "allow_write": ["{scratch}/**"],
-                "allow_shell_cmds": [],
-                "deny_shell_patterns": ["rm -rf *", "sudo *"],
-            },
-            "capabilities": [],
-            "rules": [],
-            "tool_permissions": [],
-            "memory": {"dir": "memory/"},
-            "system_prompt": "system-prompt.md",
-        })
-        system_prompt = (
-            f"# {display}\n\n{body.description or ''}\n\n"
-            "(Definisci qui identità, compiti e modo di operare dell'agente. "
-            "Le Leggi della Robotica arrivano dal layer costituzione: non vanno "
-            "ripetute qui.)\n"
-        )
         try:
             target.mkdir(parents=True)
             (target / "agent.yaml").write_text(
                 yaml.safe_dump(spec_yaml, sort_keys=False, allow_unicode=True))
-            (target / "system-prompt.md").write_text(system_prompt)
-            (target / "memory").mkdir()
-            (target / "memory" / "MEMORY.md").write_text("# Memory Index\n")
         except Exception as e:
             shutil.rmtree(target, ignore_errors=True)
             raise HTTPException(500, f"creazione fallita: {e}")

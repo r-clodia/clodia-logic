@@ -16,15 +16,19 @@ from .models import AgentSpec
 _T_SUPERADMIN_HUMAN = 4
 _T_HUMAN = 3
 _T_BOT = 1
+RANK_OUTSIDE = 0
 
 _LABEL = {
     _T_SUPERADMIN_HUMAN: "superadmin-human",
     _T_HUMAN: "human",
     _T_BOT: "bot",
+    RANK_OUTSIDE: "outside",
 }
 
 
 def rank_tier(spec: AgentSpec) -> int:
+    if spec.type == "proxy":
+        return RANK_OUTSIDE
     if spec.type == "human":
         return _T_SUPERADMIN_HUMAN if spec.role == "superadmin" else _T_HUMAN
     return _T_BOT
@@ -37,7 +41,6 @@ def rank_label(spec: AgentSpec) -> str:
 # Fuori dal lattice: proxy (`tg:*`, utenti Telegram non registrati) e nomi ignoti.
 # È il rango 0 → fail-closed nell'enforcement (un committente fuori-lattice non
 # autorizza alcun ordine).
-RANK_OUTSIDE = 0
 
 
 def rank_of_name(name: str | None) -> int:
@@ -65,5 +68,5 @@ def rank_key(spec: AgentSpec) -> tuple:
 def highest(specs: list[AgentSpec]) -> AgentSpec | None:
     """L'agente di rango più alto (anzianità come tie-break), o None."""
     ai = [s for s in specs if s.type == "bot"]
-    pool = ai or list(specs)
+    pool = ai or [s for s in specs if s.type != "proxy"]
     return sorted(pool, key=rank_key)[0] if pool else None

@@ -9,7 +9,8 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
-AgentType = Literal["bot", "human"]
+AgentType = Literal["bot", "human", "proxy"]
+_PROXY_ALLOWED_TOOLS = {"topic.post_message"}
 
 
 def normalize_agent_type(value: object) -> str:
@@ -114,7 +115,8 @@ class AgentSpec(BaseModel):
     display_name: str
     avatar_color: str = "#888888"
 
-    # Categoria identità: `bot` (seed eseguibile) o `human` (principal umano).
+    # Categoria identità: `bot` (seed eseguibile), `human` (principal umano) o
+    # `proxy` (sistema terzo ammesso in uno scope, non eseguito).
     # Legacy accettati in lettura: `normal` e `super` -> `bot`.
     type: AgentType = "bot"
 
@@ -214,6 +216,38 @@ class AgentSpec(BaseModel):
         elif self.providers and self.model:
             self.stacks = [StackSpec(model=self.provider_models.get(p, self.model),
                                      provider=p) for p in self.providers]
+        return self
+
+    @model_validator(mode="after")
+    def _proxy_has_no_runtime(self):
+        """Un proxy parla nel topic ma non ha runtime, memoria o file propri."""
+        if self.type != "proxy":
+            return self
+        if self.model or self.provider or self.providers or self.provider_models or self.stacks:
+            raise ValueError("proxy: nessun model/provider/stack ammesso")
+        if self.system_prompt:
+            raise ValueError("proxy: nessun system_prompt ammesso")
+        if self.memory is not None:
+            raise ValueError("proxy: nessuna memory ammessa")
+        sandbox = self.sandbox
+        if any((
+            sandbox.allow_read,
+            sandbox.deny_read,
+            sandbox.allow_write,
+            sandbox.allow_shell_cmds,
+            sandbox.deny_shell_patterns,
+        )):
+            raise ValueError("proxy: nessun sandbox/file access ammesso")
+        if self.native_tools:
+            raise ValueError("proxy: nessun native_tool ammesso")
+        extra_tools = set(self.tool_permissions or []) - _PROXY_ALLOWED_TOOLS
+        if extra_tools:
+            raise ValueError(
+                "proxy: ammesso solo topic.post_message, non "
+                + ", ".join(sorted(extra_tools))
+            )
+        if any((self.rag_read, self.rag_write, self.volumes, self.credentials, self.carries or [])):
+            raise ValueError("proxy: nessun file/RAG/volume/credential ammesso")
         return self
     # ── Multi-spawn (issue clodia-platform#94): N istanze concorrenti ──────
     # True = in un contesto (topic) il seed può materializzare più spawn
