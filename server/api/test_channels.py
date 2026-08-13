@@ -1008,6 +1008,64 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["responders"], ["worker"])
         self.assertEqual(start.await_count, 1)
 
+    async def test_human_to_human_mention_is_social_only(self) -> None:
+        start = AsyncMock(return_value=True)
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0", "participants": ["owner", "worker"]},
+            }),
+            patch.object(channels.topics_client, "post_message", return_value={"id": "1"}),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "@owner puoi guardare?", "owner",
+            )
+
+        self.assertIsNone(result["responder"])
+        start.assert_not_awaited()
+
+    async def test_bot_to_human_mention_is_social_only(self) -> None:
+        start = AsyncMock(return_value=True)
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0", "participants": ["owner", "worker"]},
+            }),
+            patch.object(channels.topics_client, "post_message", return_value={"id": "1"}),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "$owner se vuoi puoi rispondere", "worker", kind="ai",
+            )
+
+        self.assertIsNone(result["responder"])
+        start.assert_not_awaited()
+
+    async def test_human_mention_does_not_suppress_explicit_bot_target(self) -> None:
+        start = AsyncMock(return_value=True)
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0", "participants": ["owner", "worker"]},
+            }),
+            patch.object(channels.topics_client, "post_message", return_value={"id": "1"}),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "@owner per conoscenza, @worker rispondi", "owner",
+            )
+
+        self.assertEqual(result["responders"], ["worker"])
+        start.assert_awaited_once()
+
     async def test_first_topic_description_is_routed_to_bootstrap_agent(self) -> None:
         segretario = _a("segretario", "normal", "P1")
         self.agents["segretario"] = segretario

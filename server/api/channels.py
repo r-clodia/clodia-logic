@@ -1619,31 +1619,18 @@ async def post_channel_message(
     #    il primo @ diretto, o il primo $ soft se non ci sono @. Gli altri
     #    taggati restano raggiungibili dalla catena di delega dell'agente che
     #    risponde. Con CHANNEL_MULTI_RESPONDER=1 partono tutti in parallelo.
-    # ── Un umano menzionato NON instrada un'AI (Davide, 10 ago 2026) ─────────
+    # ── Una menzione rivolta solo a umani NON instrada un bot ────────────────
     #
-    # «se un messaggio menziona un umano nessun agent ai deve essere routed».
-    # La ragione è che una domanda rivolta a una persona non diventa una
+    # Una domanda rivolta a una persona non diventa una
     # domanda a un'AI perché la persona tarda a rispondere: rispondere al posto
     # suo è il modo più veloce di rendere il canale inutilizzabile fra umani.
+    # Se però lo stesso messaggio menziona esplicitamente anche un bot, quella
+    # richiesta è operativa e il bot è tenuto a prendere il turno.
     #
     # Unica eccezione, la sua: se il canale ha un gruppo Telegram collegato, il
     # messaggero prende il turno — uno solo — per dire che sta avvisando la
     # persona di là. Non risponde nel merito: porta fuori l'avviso e lo dichiara
     # dentro, così chi resta nella stanza sa che la palla è passata.
-    umani = _humans_tagged(content, participants)
-    if umani:
-        chi = ", ".join(f"@{u}" for u in umani)
-        # Nessun turno, nemmeno per dirlo. Il primo disegno faceva prendere un
-        # turno al messaggero perché annunciasse la notifica: costava un giro di
-        # inferenza, occupava la chat con un ragionamento che nessuno aveva
-        # chiesto, e diceva a chi era presente una cosa che riguardava chi era
-        # assente. Il recapito su Telegram è meccanico — coda + job — e non ha
-        # bisogno di nessuno che lo racconti nella stanza.
-        LOG.info("canale %s/%s: menzione umana (%s) → nessun turno AI",
-                 tier, name, chi)
-        return {"posted": True, "responder": None,
-                "note": f"il messaggio menziona {chi}: nessun agente AI risponde"}
-
     hard, soft = _tags(content)
     targets: list[tuple[object, str, int | None]] = []
     hard_unserved: dict | None = None
@@ -1700,6 +1687,17 @@ async def post_channel_message(
                 started.append(s.name)
         return {"posted": True, "queued": True, "responders": started,
                 "skipped": skipped, "warning": warning}
+
+    umani = _humans_tagged(content, participants)
+    if umani:
+        chi = ", ".join(f"@{u}" for u in umani)
+        # La menzione umana è sociale e non crea un turno o uno stato. Questo
+        # ramo viene valutato DOPO i target bot: in un messaggio misto, una
+        # richiesta esplicita a un bot resta operativa e deve essere servita.
+        LOG.info("canale %s/%s: sola menzione umana (%s) → nessun turno AI",
+                 tier, name, chi)
+        return {"posted": True, "responder": None,
+                "note": f"il messaggio menziona {chi}: nessun agente AI risponde"}
 
     if hard and hard_unserved is not None:
         try:
