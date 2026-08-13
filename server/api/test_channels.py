@@ -1169,7 +1169,68 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         channels.registry.get_by_name = self._orig_get
         channels._track_routing_decision = self._orig_track_routing
 
-    async def test_two_hard_tags_start_only_the_first_agent(self) -> None:
+    async def test_two_hard_tags_post_a_routing_choice_instead_of_starting(self) -> None:
+        start = AsyncMock(return_value=True)
+        posts = []
+
+        def post(_tier, _name, author, text, kind="human", **_kwargs):
+            row = {"id": str(len(posts) + 1), "author": author, "text": text, "kind": kind}
+            posts.append(row)
+            return row
+
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0",
+                         "participants": ["owner", "worker", "accountant"]},
+            }),
+            patch.object(channels.topics_client, "post_message", side_effect=post),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "@worker @accountant guardate qui", "owner",
+            )
+
+        self.assertTrue(result["routing_dialog"])
+        self.assertEqual(result["choices"], ["worker", "accountant", "both"])
+        self.assertEqual(posts[-1]["author"], "router")
+        self.assertIn("<!-- choices=worker,accountant,both -->", posts[-1]["text"])
+        start.assert_not_awaited()
+
+    async def test_three_hard_tags_refuse_routing_and_start_nobody(self) -> None:
+        self.agents["reviewer"] = _a("reviewer", "normal", "P1")
+        start = AsyncMock(return_value=True)
+        posts = []
+
+        def post(_tier, _name, author, text, kind="human", **_kwargs):
+            row = {"id": str(len(posts) + 1), "author": author, "text": text, "kind": kind}
+            posts.append(row)
+            return row
+
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0",
+                         "participants": ["owner", "worker", "accountant", "reviewer"]},
+            }),
+            patch.object(channels.topics_client, "post_message", side_effect=post),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "@worker @accountant @reviewer guardate qui", "owner",
+            )
+
+        self.assertTrue(result["routing_refused"])
+        self.assertIn("tre o più agenti", posts[-1]["text"])
+        start.assert_not_awaited()
+
+    async def test_routing_choice_both_starts_the_two_named_agents(self) -> None:
         start = AsyncMock(return_value=True)
         with (
             patch.object(channels, "_start_turn", start),
@@ -1185,7 +1246,32 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
             patch.object(channels, "_channel_message", AsyncMock()),
         ):
             result = await channels.post_channel_message(
-                "P0", "ops", "@worker @accountant guardate qui", "owner",
+                "P0", "ops",
+                "> router: Routing: scegli worker, accountant o both.\n\n@router both",
+                "owner",
+            )
+
+        self.assertTrue(result["routing_choice"])
+        self.assertEqual(result["responders"], ["worker", "accountant"])
+        self.assertEqual(start.await_count, 2)
+
+    async def test_soft_mentions_do_not_count_for_the_routing_dialog(self) -> None:
+        start = AsyncMock(return_value=True)
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0",
+                         "participants": ["owner", "worker", "accountant"]},
+            }),
+            patch.object(channels.topics_client, "post_message",
+                         return_value={"id": "1"}),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "@worker $accountant guardate qui", "owner",
             )
 
         self.assertEqual(result["responders"], ["worker"])
