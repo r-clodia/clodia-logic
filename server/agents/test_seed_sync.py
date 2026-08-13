@@ -166,6 +166,29 @@ class BackfillNewFieldsTests(unittest.TestCase):
         self.assertEqual(S.backfill_new_fields(), {})
         self.assertEqual(self._locale()["native_tools"], ["Read"])
 
+    def test_the_declared_fields_are_all_restrictions(self):
+        """L'elenco contiene solo campi che RESTRINGONO o dichiarano un vincolo.
+
+        L'assenza di uno di quelli, nella copia locale, significa sempre «copiata
+        prima che il vincolo esistesse» e mai «l'owner ha deciso di non averlo».
+        Un campo che allarga non può entrare qui con la stessa leggerezza:
+        riempirlo darebbe a un agente un potere che su quell'istanza nessuno gli
+        ha dato.
+        """
+        self.assertEqual(set(S.BACKFILL_FIELDS),
+                         {"native_tools", "denied_tools", "all_tier"})
+        for allargante in ("tool_permissions", "capabilities", "providers",
+                           "model", "clearance"):
+            self.assertNotIn(allargante, S.BACKFILL_FIELDS)
+
+    def test_denied_tools_reaches_a_seed_that_predates_it(self):
+        """Il caso del 13 ago: A2 restringe messaggero con `denied_tools`, e la
+        copia locale non ha quella chiave — senza backfill la PR resta inerte."""
+        self._scrivi({"name": "alfa", "denied_tools": ["topic.read_file"]},
+                     {"name": "alfa", "tool_permissions": ["email.*"]})
+        self.assertEqual(S.backfill_new_fields(), {"alfa": ["denied_tools"]})
+        self.assertEqual(self._locale()["denied_tools"], ["topic.read_file"])
+
     def test_only_the_declared_fields_travel(self):
         """L'elenco è chiuso di proposito: è la differenza fra «riempire un campo
         nuovo» e «aggiornare un seed», che resta la domanda aperta della #25."""
