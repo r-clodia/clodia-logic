@@ -48,6 +48,11 @@ what it monitors is a convention rather than a boundary.
 | `providers/`, `routing/`, `hooks/` | inference providers, routing, hooks |
 | `docker/` | the image |
 
+Semantic responder routing defaults live in `catalogs/router.yaml`. An instance
+can change `recent_messages`, `threshold`, or `margin` without rebuilding or
+restarting by writing `CLODIA_DATA/routing/router.yaml`; partial overrides are
+merged over the versioned defaults and picked up on the next routing decision.
+
 The bundled seeds are `archseed` (abstract, the ancestor that holds the base
 verbs and cannot be spawned), `clodia`, `ophelia`, `segretario`, `messaggero`,
 `sysadmin`. An instance's own agents live only in its datadir, never here.
