@@ -15,6 +15,7 @@ clearance: SEAL-2
 constitution: platform-core
 agent_sdk: opencode
 routing_mode: state_writer_only
+all_tier: true
 # Modello piccolo ottimizzato per task AGENTICI: gemma-4-26b-a4b-it su Scaleway
 # (EU-hosted, SEAL-2). Scelto perché il segretario DEVE invocare i verbi
 # (topic.save_summary/add_minute) da solo: verificato che con tool_choice=auto

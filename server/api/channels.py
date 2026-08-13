@@ -619,6 +619,10 @@ def _auto_routing_allowed(spec, message: str) -> bool:
     return _is_state_writer_request(message)
 
 
+def _declares_all_tier(spec) -> bool:
+    return bool(getattr(spec, "all_tier", False))
+
+
 def _soft_ack_rate() -> float:
     """Frazione di citazioni `$` che producono un cenno. 0 = mai."""
     raw = (os.environ.get("CHANNEL_SOFT_ACK_RATE") or "0.2").strip()
@@ -917,7 +921,7 @@ def _select_topic_intro_agent(meta: dict, tier: str) -> str:
         return "clodia"
 
     segretario = registry.get_by_name("segretario")
-    if segretario and _provider_seal_ok(segretario, tier):
+    if segretario and _declares_all_tier(segretario) and _provider_seal_ok(segretario, tier):
         if meta.get("contact_agent") == "clodia":
             participants = [p for p in participants if p != "clodia"]
             meta["contact_agent"] = "segretario"
@@ -926,6 +930,13 @@ def _select_topic_intro_agent(meta: dict, tier: str) -> str:
         meta["participants"] = participants
         meta["team_bootstrap_agent"] = "segretario"
         return "segretario"
+
+    if segretario and not _declares_all_tier(segretario):
+        LOG.error("segretario non dichiara all_tier: impossibile usarlo come "
+                  "coordinatore fallback per topic %s", tier)
+    elif segretario:
+        LOG.error("segretario dichiara all_tier ma il provider effettivo non "
+                  "copre il topic %s", tier)
 
     return str(meta.get("contact_agent") or "clodia")
 
