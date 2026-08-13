@@ -184,5 +184,43 @@ class ExemplarRoutingTest(unittest.TestCase):
         self.assertEqual(metrics["accuracy"], 1.0)
 
 
+class RoutingContextTest(unittest.TestCase):
+    def test_window_includes_agents_and_humans_and_drops_older_turns(self):
+        messages = [
+            {"author": "owner", "kind": "human", "text": "troppo vecchio"},
+            {"author": "owner", "kind": "human", "text": "serve un contratto"},
+            {"author": "avvocato", "kind": "ai", "text": "quale controparte?"},
+            {"author": "owner", "kind": "human", "text": "una startup"},
+        ]
+
+        text = responder_routing.compose_routing_context(
+            messages,
+            config=responder_routing.router_config.RouterConfig(
+                recent_messages=3, threshold=0.80, margin=0.015
+            ),
+        )
+
+        self.assertNotIn("troppo vecchio", text)
+        self.assertEqual(
+            text.splitlines(),
+            [
+                "[human @owner] serve un contratto",
+                "[agent @avvocato] quale controparte?",
+                "[human @owner] una startup",
+            ],
+        )
+
+    def test_newest_message_survives_the_embedding_budget(self):
+        messages = [
+            {"author": "owner", "kind": "human", "text": "x" * 1990},
+            {"author": "fiscalista", "kind": "ai", "text": "ULTIMO"},
+        ]
+
+        text = responder_routing.compose_routing_context(messages)
+
+        self.assertLessEqual(len(text), responder_routing._MAX_QUERY_CHARS)
+        self.assertIn("ULTIMO", text)
+
+
 if __name__ == "__main__":
     unittest.main()

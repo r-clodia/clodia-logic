@@ -109,14 +109,44 @@ class NobodyAnswersForAPersonTests(unittest.TestCase):
         self.assertFalse(hasattr(C, "TELEGRAM_NOTIFIER"))
         self.assertFalse(hasattr(C, "_telegram_group_bound"))
 
-    def test_a_human_mention_starts_no_turn_at_all(self):
+    def test_a_human_only_mention_starts_no_turn_at_all(self):
+        """Il ramo umano non avvia turni, nemmeno per annunciare la notifica.
+
+        La prima stesura di questo test tagliava il sorgente fra
+        `umani = _humans_tagged` e `hard, soft = _tags`. Ha smesso di compilare
+        quando i target bot sono stati spostati PRIMA del ramo umano — cioè
+        quando è stato corretto il difetto del messaggio misto: il marcatore
+        finale non esisteva più e il test moriva con un ValueError, che è il modo
+        peggiore in cui una guardia può fallire, perché non dice se la proprietà
+        vale ancora.
+
+        Ora si taglia il **corpo del ramo**, che è ciò che la proprietà riguarda:
+        qualunque cosa lo preceda, lì dentro non si avvia niente.
+        """
         import inspect
         src = inspect.getsource(C.post_channel_message)
-        blocco = src[src.index("umani = _humans_tagged"):]
-        blocco = blocco[:blocco.index("hard, soft = _tags")]
-        self.assertNotIn("_start_turn", blocco,
+        inizio = src.index("umani = _humans_tagged")
+        corpo = src[inizio:]
+        # fine del ramo: il `return` che lo chiude
+        fine = corpo.index('"responder": None')
+        corpo = corpo[:fine]
+        self.assertNotIn("_start_turn", corpo,
                          "nessun turno, nemmeno per annunciare la notifica")
-        self.assertIn('"responder": None', blocco)
+        self.assertIn('"responder": None', src[inizio:])
+
+    def test_a_bot_explicitly_asked_is_served_even_beside_a_person(self):
+        """La proprietà nuova, e il motivo per cui il taglio di prima è saltato.
+
+        «@matteo per conoscenza, @worker rispondi» non avviava nessun turno: la
+        guardia umana usciva prima che i target bot fossero valutati, quindi una
+        richiesta operativa esplicita veniva mangiata da una menzione di cortesia.
+        L'ordine dei due blocchi È la correzione, e va custodito qui — altrimenti
+        un riordino futuro rimette il difetto senza che niente lo dica.
+        """
+        import inspect
+        src = inspect.getsource(C.post_channel_message)
+        self.assertLess(src.index("_start_turn"), src.index("umani = _humans_tagged"),
+                        "i target bot vanno valutati PRIMA del ramo umano")
 
 
 class SingleAnswerTests(unittest.TestCase):

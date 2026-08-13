@@ -274,7 +274,10 @@ class ResponderTests(unittest.TestCase):
                 return_value=scored,
             ),
             patch.object(channels.responder_routing, "decide", return_value=None),
-            patch.object(channels.responder_routing, "THRESHOLD", 0.75),
+            patch.object(
+                channels.router_config, "load",
+                return_value=channels.router_config.RouterConfig(3, 0.75, 0.015),
+            ),
             patch.object(channels.responder_routing, "FALLBACK_SOFT_RATIO", 0.87),
         ):
             picked = channels._pick_responder(
@@ -308,8 +311,14 @@ class ResponderTests(unittest.TestCase):
                 return_value=scored,
             ),
             patch.object(channels.responder_routing, "decide", return_value=None),
-            patch.object(channels.responder_routing, "THRESHOLD", 0.80),
-            patch.object(channels.responder_routing, "MARGIN", 0.015),
+            # Soglia e margine vengono dalla configurazione VIVA (#185): erano
+            # costanti del modulo, e questi due test le mockavano lì. Patcharle
+            # dove non esistono più farebbe fallire il test per un attributo
+            # mancante — non per la proprietà che sta verificando.
+            patch.object(
+                channels.router_config, "load",
+                return_value=channels.router_config.RouterConfig(3, 0.80, 0.015),
+            ),
         ):
             picked = channels._pick_responder(
                 ["clodia", "worker", "accountant"],
@@ -350,7 +359,7 @@ class ResponderTests(unittest.TestCase):
             ),
             patch.object(
                 channels.responder_routing, "decide",
-                side_effect=lambda scored: scored[0],
+                side_effect=lambda scored, **_kwargs: scored[0],
             ),
         ):
             plan = channels._routing_plan(
@@ -394,7 +403,7 @@ class ResponderTests(unittest.TestCase):
             ),
             patch.object(
                 channels.responder_routing, "decide",
-                side_effect=lambda scored: (
+                side_effect=lambda scored, **_kwargs: (
                     scored[0] if scored and scored[0][1] >= 0.75 else None
                 ),
             ),
@@ -435,7 +444,10 @@ class ResponderTests(unittest.TestCase):
                 channels.responder_routing, "score_specialists", return_value=scored
             ),
             patch.object(channels.responder_routing, "decide", return_value=None),
-            patch.object(channels.responder_routing, "THRESHOLD", 0.75),
+            patch.object(
+                channels.router_config, "load",
+                return_value=channels.router_config.RouterConfig(3, 0.75, 0.015),
+            ),
             patch.object(channels.responder_routing, "FALLBACK_SOFT_RATIO", 0.87),
         ):
             os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
@@ -463,7 +475,10 @@ class ResponderTests(unittest.TestCase):
                 channels.responder_routing, "score_specialists", return_value=scored
             ),
             patch.object(channels.responder_routing, "decide", return_value=None),
-            patch.object(channels.responder_routing, "THRESHOLD", 0.75),
+            patch.object(
+                channels.router_config, "load",
+                return_value=channels.router_config.RouterConfig(3, 0.75, 0.015),
+            ),
             patch.object(channels.responder_routing, "FALLBACK_SOFT_RATIO", 0.87),
         ):
             os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
@@ -498,7 +513,7 @@ class ResponderTests(unittest.TestCase):
             ),
             patch.object(
                 channels.responder_routing, "decide",
-                side_effect=lambda scored: scored[0],
+                side_effect=lambda scored, **_kwargs: scored[0],
             ),
         ):
             os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
@@ -510,6 +525,63 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(plan[0][0].name, "worker")
         self.assertEqual(plan[0][1], message)            # nessuna decomposizione
         self.assertNotEqual(trace.get("mode"), "multi-intent")
+
+    def test_routing_plan_scores_the_live_message_window(self) -> None:
+        seen = {}
+        messages = [
+            {"author": "owner", "kind": "human", "text": "vecchio"},
+            {"author": "worker", "kind": "ai", "text": "parliamo del contratto"},
+            {"author": "owner", "kind": "human", "text": "si, quello startup"},
+        ]
+
+        def score(_specialists, semantic_message):
+            seen["message"] = semantic_message
+            return [(self.agents["worker"], 0.91)]
+
+        with (
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.router_config, "load",
+                return_value=channels.router_config.RouterConfig(2, 0.80, 0.015),
+            ),
+            patch.object(
+                channels.responder_routing, "pick_by_exemplar", return_value=None
+            ),
+            patch.object(
+                channels.responder_routing, "score_specialists", side_effect=score
+            ),
+            patch.object(
+                channels.responder_routing, "decide",
+                side_effect=lambda scored, **_kwargs: scored[0],
+            ),
+        ):
+            plan = channels._routing_plan(
+                ["clodia", "worker"], "P0", "si, quello startup",
+                routing_messages=messages,
+            )
+
+        self.assertEqual(plan[0][0].name, "worker")
+        self.assertNotIn("vecchio", seen["message"])
+        self.assertIn("[agent @worker] parliamo del contratto", seen["message"])
+        self.assertIn("[human @owner] si, quello startup", seen["message"])
+
+    def test_feedback_rebuilds_window_before_the_agent_reply(self) -> None:
+        messages = [
+            {"author": "owner", "kind": "human", "text": "tema fiscale"},
+            {"author": "fiscalista", "kind": "ai", "text": "quale periodo?"},
+            {"author": "owner", "kind": "human", "text": "il 2026"},
+            {"author": "fiscalista", "kind": "ai", "text": "risposta successiva"},
+        ]
+
+        text = channels._latest_human_routing_context(
+            messages, channels.router_config.RouterConfig(3, 0.80, 0.015)
+        )
+
+        self.assertIn("tema fiscale", text)
+        self.assertIn("quale periodo?", text)
+        self.assertIn("il 2026", text)
+        self.assertNotIn("risposta successiva", text)
 
     def test_agents_md_framed_untrusted(self) -> None:
         # AGENTS.md scrivibile da chiunque → nel prompt dev'essere framato come
@@ -647,7 +719,11 @@ class ResponderTests(unittest.TestCase):
         )
 
     def test_ambiguous_routing_posts_router_choice_dialog(self) -> None:
-        def routing_plan(_participants, _tier, _message, trace=None):
+        # `routing_messages` è la finestra degli N messaggi (#185): il doppio
+        # deve accettarla, o il test fallisce sulla firma invece che sulla cosa
+        # che verifica.
+        def routing_plan(_participants, _tier, _message, trace=None,
+                         routing_messages=None):
             trace.update({
                 "mode": "ambiguous",
                 "reason": "routing ambiguity within margin",
@@ -1026,7 +1102,8 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         accountant = _a("accountant", "normal", "P1")
         start = AsyncMock(return_value=True)
 
-        def routing_plan(_participants, _tier, _message, trace=None):
+        def routing_plan(_participants, _tier, _message, trace=None,
+                         routing_messages=None):
             if trace is not None:
                 trace.update({"mode": "multi-intent", "chosen": "worker, accountant"})
             return [(worker, "Aggiorna il summary"), (accountant, "Invia il preventivo")]
@@ -1051,7 +1128,8 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         accountant = _a("accountant", "normal", "P1")
         start = AsyncMock(return_value=True)
 
-        def routing_plan(_participants, _tier, _message, trace=None):
+        def routing_plan(_participants, _tier, _message, trace=None,
+                         routing_messages=None):
             if trace is not None:
                 trace.update({"mode": "multi-intent", "chosen": "worker, accountant"})
             return [(worker, "Aggiorna il summary"), (accountant, "Invia il preventivo")]
@@ -1112,6 +1190,64 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
 
         self.assertEqual(result["responders"], ["worker"])
         self.assertEqual(start.await_count, 1)
+
+    async def test_human_to_human_mention_is_social_only(self) -> None:
+        start = AsyncMock(return_value=True)
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0", "participants": ["owner", "worker"]},
+            }),
+            patch.object(channels.topics_client, "post_message", return_value={"id": "1"}),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "@owner puoi guardare?", "owner",
+            )
+
+        self.assertIsNone(result["responder"])
+        start.assert_not_awaited()
+
+    async def test_bot_to_human_mention_is_social_only(self) -> None:
+        start = AsyncMock(return_value=True)
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0", "participants": ["owner", "worker"]},
+            }),
+            patch.object(channels.topics_client, "post_message", return_value={"id": "1"}),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "$owner se vuoi puoi rispondere", "worker", kind="ai",
+            )
+
+        self.assertIsNone(result["responder"])
+        start.assert_not_awaited()
+
+    async def test_human_mention_does_not_suppress_explicit_bot_target(self) -> None:
+        start = AsyncMock(return_value=True)
+        with (
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0", "participants": ["owner", "worker"]},
+            }),
+            patch.object(channels.topics_client, "post_message", return_value={"id": "1"}),
+            patch.object(channels.access_log, "touch", lambda *a, **k: None),
+            patch.object(channels.activity_log, "append", lambda *a, **k: None),
+            patch.object(channels, "_channel_message", AsyncMock()),
+        ):
+            result = await channels.post_channel_message(
+                "P0", "ops", "@owner per conoscenza, @worker rispondi", "owner",
+            )
+
+        self.assertEqual(result["responders"], ["worker"])
+        start.assert_awaited_once()
 
     async def test_first_topic_description_is_routed_to_bootstrap_agent(self) -> None:
         segretario = _a("segretario", "normal", "P1")

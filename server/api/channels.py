@@ -33,7 +33,8 @@ from .. import debug_watch
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import manager, ProviderNotConnected, topic_runtime_override
-from . import access_log, presence, responder_routing, routing_feedback, topics_client
+from . import (access_log, presence, responder_routing, router_config,
+               routing_feedback, topics_client)
 from .gateway_pdp import require_authz
 from .agents import _principal_from_request
 
@@ -41,22 +42,28 @@ router = APIRouter()
 LOG = logging.getLogger("agent-server.api.channels")
 
 
-def _routing_ambiguity(scored: list[tuple]) -> list[tuple]:
+def _routing_ambiguity(scored: list[tuple], config=None) -> list[tuple]:
     """Top candidates that should be asked about instead of guessed.
 
     Ambiguity is the R8 case: the best candidate is relevant enough, but the
     runner-up sits within the configured margin. Below threshold we still fall
     back normally because the router has no evidence worth asking about.
+
+    `config` è la configurazione VIVA del router (#185): soglia e margine sono
+    quelli con cui la decisione è stata presa, non le costanti del modulo. Senza,
+    cambiare `router.yaml` avrebbe spostato la scelta e lasciato fermo il criterio
+    per chiedere — due letture della stessa soglia, che divergono in silenzio.
     """
     if len(scored) < 2:
         return []
+    cfg = config or router_config.load()
     top_score = scored[0][1]
-    if top_score < responder_routing.THRESHOLD:
+    if top_score < cfg.threshold:
         return []
     ambiguous = [
         (spec, score)
         for spec, score in scored
-        if (top_score - score) < responder_routing.MARGIN
+        if (top_score - score) < cfg.margin
     ]
     return ambiguous if len(ambiguous) >= 2 else []
 
@@ -1105,7 +1112,7 @@ def suggest_team(tier: str, description: str) -> dict:
 
 def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     message: str = "", trace: dict | None = None,
-                    multi: bool = False):
+                    multi: bool = False, routing_message: str | None = None):
     """Chi risponde in un canale. Priorità:
     1. agente TAGGATO (@nome), se idoneo — override esplicito;
     2. routing per RILEVANZA: il bot il cui dominio matcha il messaggio
@@ -1114,6 +1121,8 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
     3. il più alto di RANGO fra gli idonei.
     Idoneità: provider scelto per il topic con SEAL ≥ tier."""
     specs = [registry.get_by_name(n) for n in participants]
+    route_cfg = router_config.load()
+    semantic_message = routing_message if routing_message is not None else message
 
     def eligible(s) -> bool:
         if not s or s.type != "bot":
@@ -1133,8 +1142,9 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
             "mode": mode,
             "reason": reason,
             "chosen": getattr(chosen, "name", None),
-            "threshold": responder_routing.THRESHOLD,
-            "margin": responder_routing.MARGIN,
+            "threshold": route_cfg.threshold,
+            "margin": route_cfg.margin,
+            "recent_messages": route_cfg.recent_messages,
             "candidates": [
                 {"name": s.name, "score": round(sc, 3),
                  "bot": s.type == "bot", "super": False}
@@ -1152,12 +1162,13 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                 "reason": "multi-match fallback",
                 "chosen": ", ".join(s.name for s in chosen),
                 "chosen_agents": [s.name for s in chosen],
-                "threshold": responder_routing.THRESHOLD,
+                "threshold": route_cfg.threshold,
                 "soft_threshold": (
-                    responder_routing.THRESHOLD
+                    route_cfg.threshold
                     * responder_routing.FALLBACK_SOFT_RATIO
                 ),
-                "margin": responder_routing.MARGIN,
+                "margin": route_cfg.margin,
+                "recent_messages": route_cfg.recent_messages,
                 "candidates": [
                     {"name": s.name, "score": round(sc, 3),
                      "bot": s.type == "bot", "super": False}
@@ -1175,8 +1186,9 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                 "reason": reason,
                 "chosen": None,
                 "tagged": tagged,
-                "threshold": responder_routing.THRESHOLD,
-                "margin": responder_routing.MARGIN,
+                "threshold": route_cfg.threshold,
+                "margin": route_cfg.margin,
+                "recent_messages": route_cfg.recent_messages,
                 "candidates": [],
                 "eligible": [s.name for s in ai],
             })
@@ -1212,7 +1224,8 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                 if s and s.type == "bot"
             }
             ex = responder_routing.pick_by_exemplar(
-                message, [s.name for s in ai], known, topic=trace.get("topic") if trace else None
+                semantic_message, [s.name for s in ai], known,
+                topic=trace.get("topic") if trace else None
             )
         except Exception:  # noqa: BLE001
             ex = None
@@ -1227,13 +1240,16 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     trace["exemplar_confidence"] = ex[1]
                 return result
         try:
-            scored = responder_routing.score_specialists(specialists, message)
-            hit = responder_routing.decide(scored)
+            scored = responder_routing.score_specialists(specialists, semantic_message)
+            hit = responder_routing.decide(scored, config=route_cfg)
         except Exception:  # noqa: BLE001
             scored, hit = [], None
         if hit:
             return _record(hit[0], "relevance", "relevance", scored)
-        ambiguous = _routing_ambiguity(scored)
+        # Ambiguità (#186) letta con la configurazione VIVA (#185): soglia e
+        # margine sono quelli effettivi della decisione, non le costanti — e la
+        # traccia mostra gli stessi numeri con cui la scelta è stata abbandonata.
+        ambiguous = _routing_ambiguity(scored, config=route_cfg)
         if ambiguous:
             if trace is not None:
                 trace.update({
@@ -1242,8 +1258,9 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     "reason": "routing ambiguity within margin",
                     "chosen": None,
                     "chosen_agents": [],
-                    "threshold": responder_routing.THRESHOLD,
-                    "margin": responder_routing.MARGIN,
+                    "threshold": route_cfg.threshold,
+                    "margin": route_cfg.margin,
+                    "recent_messages": route_cfg.recent_messages,
                     "candidates": [
                         {"name": s.name, "score": round(sc, 3),
                          "bot": s.type == "bot", "super": False}
@@ -1253,7 +1270,7 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     "choices": [s.name for s, _score in ambiguous],
                 })
             return None
-        soft_hits = responder_routing.soft_matches(scored)
+        soft_hits = responder_routing.soft_matches(scored, config=route_cfg)
         if multi and _multi_responder_enabled() and len(soft_hits) >= 2:
             return _record_multi([spec for spec, _score in soft_hits], scored)
         if soft_hits:
@@ -1269,15 +1286,21 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
 
 
 def _routing_plan(participants: list[str], tier: str, message: str,
-                  trace: dict | None = None) -> list[tuple[object, str]]:
+                  trace: dict | None = None,
+                  routing_messages: list[dict] | None = None) -> list[tuple[object, str]]:
     """Build a per-agent plan, batching unmatched intents on the coordinator.
 
     Con risposta singola (default) NON si decompone il messaggio: un solo turno
     per l'agente best fit, che vede il messaggio integro."""
+    route_cfg = router_config.load()
     intents = _decompose_intents(message) if _multi_responder_enabled() else [message]
     if len(intents) == 1:
+        semantic_message = responder_routing.compose_routing_context(
+            routing_messages or [], config=route_cfg
+        ) or message
         picked = _pick_responder(
-            participants, tier, None, message, trace=trace, multi=True
+            participants, tier, None, message, trace=trace, multi=True,
+            routing_message=semantic_message,
         )
         responders = picked if isinstance(picked, list) else [picked]
         return [(spec, message) for spec in responders if spec is not None]
@@ -1290,8 +1313,15 @@ def _routing_plan(participants: list[str], tier: str, message: str,
 
     for intent in intents:
         intent_trace: dict = {}
+        context = list(routing_messages or [])
+        if context:
+            context[-1] = {**context[-1], "text": intent}
+        semantic_message = responder_routing.compose_routing_context(
+            context, config=route_cfg
+        ) or intent
         picked = _pick_responder(
-            participants, tier, None, intent, trace=intent_trace
+            participants, tier, None, intent, trace=intent_trace,
+            routing_message=semantic_message,
         )
         mode = intent_trace.get("mode")
         if picked is not None and mode in ("relevance", "exemplar", "correction"):
@@ -1332,8 +1362,9 @@ def _routing_plan(participants: list[str], tier: str, message: str,
             "reason": f"{len(intents)} sotto-task instradati",
             "chosen": ", ".join(spec.name for spec, _prompt in plan),
             "chosen_agents": [spec.name for spec, _prompt in plan],
-            "threshold": responder_routing.THRESHOLD,
-            "margin": responder_routing.MARGIN,
+            "threshold": route_cfg.threshold,
+            "margin": route_cfg.margin,
+            "recent_messages": route_cfg.recent_messages,
             "candidates": [
                 {"name": name, "score": round(score, 3),
                  "bot": getattr(registry.get_by_name(name), "type", None) == "bot",
@@ -1357,6 +1388,26 @@ def _routing_mode() -> str:
         return (td.get("responder_routing") or "relevance").strip().lower()
     except Exception:  # noqa: BLE001
         return "relevance"
+
+
+def _latest_human_routing_context(messages: list[dict],
+                                  config: router_config.RouterConfig) -> str:
+    """Rebuild the window that ended at the latest human routing trigger.
+
+    Feedback may be sent after an agent has replied. Those later messages must
+    not leak backwards into the exemplar for the earlier routing decision.
+    """
+    index = next(
+        (i for i in range(len(messages) - 1, -1, -1)
+         if messages[i].get("kind") == "human"
+         and str(messages[i].get("text") or "").strip()),
+        None,
+    )
+    if index is None:
+        return ""
+    return responder_routing.compose_routing_context(
+        messages[:index + 1], config=config
+    )
 
 
 def _fmt_msg(m: dict) -> str:
@@ -1669,31 +1720,18 @@ async def post_channel_message(
     #    il primo @ diretto, o il primo $ soft se non ci sono @. Gli altri
     #    taggati restano raggiungibili dalla catena di delega dell'agente che
     #    risponde. Con CHANNEL_MULTI_RESPONDER=1 partono tutti in parallelo.
-    # ── Un umano menzionato NON instrada un'AI (Davide, 10 ago 2026) ─────────
+    # ── Una menzione rivolta solo a umani NON instrada un bot ────────────────
     #
-    # «se un messaggio menziona un umano nessun agent ai deve essere routed».
-    # La ragione è che una domanda rivolta a una persona non diventa una
+    # Una domanda rivolta a una persona non diventa una
     # domanda a un'AI perché la persona tarda a rispondere: rispondere al posto
     # suo è il modo più veloce di rendere il canale inutilizzabile fra umani.
+    # Se però lo stesso messaggio menziona esplicitamente anche un bot, quella
+    # richiesta è operativa e il bot è tenuto a prendere il turno.
     #
     # Unica eccezione, la sua: se il canale ha un gruppo Telegram collegato, il
     # messaggero prende il turno — uno solo — per dire che sta avvisando la
     # persona di là. Non risponde nel merito: porta fuori l'avviso e lo dichiara
     # dentro, così chi resta nella stanza sa che la palla è passata.
-    umani = _humans_tagged(content, participants)
-    if umani:
-        chi = ", ".join(f"@{u}" for u in umani)
-        # Nessun turno, nemmeno per dirlo. Il primo disegno faceva prendere un
-        # turno al messaggero perché annunciasse la notifica: costava un giro di
-        # inferenza, occupava la chat con un ragionamento che nessuno aveva
-        # chiesto, e diceva a chi era presente una cosa che riguardava chi era
-        # assente. Il recapito su Telegram è meccanico — coda + job — e non ha
-        # bisogno di nessuno che lo racconti nella stanza.
-        LOG.info("canale %s/%s: menzione umana (%s) → nessun turno AI",
-                 tier, name, chi)
-        return {"posted": True, "responder": None,
-                "note": f"il messaggio menziona {chi}: nessun agente AI risponde"}
-
     hard, soft = _tags(content)
     targets: list[tuple[object, str, int | None]] = []
     hard_unserved: dict | None = None
@@ -1751,6 +1789,17 @@ async def post_channel_message(
         return {"posted": True, "queued": True, "responders": started,
                 "skipped": skipped, "warning": warning}
 
+    umani = _humans_tagged(content, participants)
+    if umani:
+        chi = ", ".join(f"@{u}" for u in umani)
+        # La menzione umana è sociale e non crea un turno o uno stato. Questo
+        # ramo viene valutato DOPO i target bot: in un messaggio misto, una
+        # richiesta esplicita a un bot resta operativa e deve essere servita.
+        LOG.info("canale %s/%s: sola menzione umana (%s) → nessun turno AI",
+                 tier, name, chi)
+        return {"posted": True, "responder": None,
+                "note": f"il messaggio menziona {chi}: nessun agente AI risponde"}
+
     if hard and hard_unserved is not None:
         try:
             payload = {"tier": tier, "name": name, **hard_unserved}
@@ -1777,7 +1826,20 @@ async def post_channel_message(
 
     # nessun tag → routing per rilevanza, anche multi-intento
     routing: dict = {}
-    plan = _routing_plan(participants, tier_real, content, trace=routing)
+    # La finestra degli N messaggi (#185) e il dialogo di ambiguità (#186) si
+    # incontrano qui: si instrada sulla finestra, e se la scelta resta ambigua si
+    # chiede, invece di ripiegare su un rango.
+    route_cfg = router_config.load()
+    try:
+        routing_messages = topics_client.list_messages(
+            tier, name, limit=route_cfg.recent_messages
+        )
+    except Exception:  # noqa: BLE001
+        routing_messages = [msg]
+    plan = _routing_plan(
+        participants, tier_real, content, trace=routing,
+        routing_messages=routing_messages,
+    )
     if routing.get("mode") == "ambiguous":
         candidates = [
             (registry.get_by_name(row["name"]), row.get("score", 0.0))
@@ -2018,8 +2080,25 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         # trace del routing → barra "🧭 Routing" anche per i path non-POST
         # (trigger/hook/telegram): così la barra riflette CHI parte davvero.
         routing: dict = {}
+        route_cfg = router_config.load()
+        try:
+            recent = topics_client.list_messages(
+                tier, name, limit=route_cfg.recent_messages
+            )
+        except Exception:  # noqa: BLE001
+            recent = []
+        if trigger_text and (not recent or recent[-1].get("text") != trigger_text):
+            recent.append({
+                "author": principal_hint or "channel",
+                "kind": "human",
+                "text": trigger_text,
+            })
+        semantic_message = responder_routing.compose_routing_context(
+            recent, config=route_cfg
+        ) or (trigger_text or "")
         responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""),
-                                    trigger_text or "", trace=routing)
+                                    trigger_text or "", trace=routing,
+                                    routing_message=semantic_message)
         if routing.get("chosen"):
             try:
                 payload = {"tier": tier, "name": name, **routing}
@@ -2400,6 +2479,12 @@ def routing_stats(request: Request) -> dict:
     result["leave_one_out"] = responder_routing.evaluate_exemplars(
         exemplars, sorted(known)
     )
+    relevance = router_config.load()
+    result["relevance"] = {
+        "recent_messages": relevance.recent_messages,
+        "threshold": relevance.threshold,
+        "margin": relevance.margin,
+    }
     # Stato del classificatore: `shadow` traccia senza applicare, `enforce`
     # applica. Le soglie sono qui perché la decisione di passare a enforce si
     # prende guardando `leave_one_out` in questa stessa risposta.
@@ -2417,9 +2502,9 @@ def routing_stats(request: Request) -> dict:
 @router.post("/clodia/routing/correct")
 async def routing_correct(request: Request) -> dict:
     """CORREZIONE del routing: l'utente indica l'agente che AVREBBE usato. Salviamo
-    un esempio (embedding dell'ultimo messaggio umano del topic + agente corretto),
-    così i prossimi messaggi simili vengono instradati a quell'agente. NON salva il
-    testo, solo il vettore."""
+    un esempio (embedding della finestra terminata con l'ultimo messaggio umano +
+    agente corretto), così contesti simili vengono instradati a quell'agente. NON
+    salva il testo, solo il vettore."""
     principal = _principal_from_request(request)
     if not principal:
         raise HTTPException(401, "login richiesto")
@@ -2435,12 +2520,13 @@ async def routing_correct(request: Request) -> dict:
     _require_contributor(request, topic.get("meta", {}))
     if registry.get_by_name(correct_agent) is None:
         raise HTTPException(404, f"agente '{correct_agent}' non registrato")
-    # ultimo messaggio UMANO del topic = quello che ha innescato il routing
+    # Ricostruisce la stessa finestra che terminava col messaggio umano che ha
+    # innescato il routing; eventuali risposte AI successive restano fuori.
     msgs = topics_client.list_messages(tier, name, limit=50)
-    human = next((m for m in reversed(msgs) if m.get("kind") == "human"), None)
-    if not human or not (human.get("text") or "").strip():
+    semantic_message = _latest_human_routing_context(msgs, router_config.load())
+    if not semantic_message:
         raise HTTPException(400, "nessun messaggio umano recente da cui imparare")
-    vec = responder_routing.embed_text(human["text"], role="query")
+    vec = responder_routing.embed_text(semantic_message, role="query")
     if not vec:
         raise HTTPException(503, "embedder non disponibile")
     routing_feedback.record_correction(vec, correct_agent,
@@ -2473,10 +2559,12 @@ async def routing_feedback_record(request: Request) -> dict:
         if registry.get_by_name(agent) is None:
             raise HTTPException(404, f"agente '{agent}' non registrato")
     messages = topics_client.list_messages(tier, name, limit=50)
-    human = next((m for m in reversed(messages) if m.get("kind") == "human"), None)
-    if not human or not (human.get("text") or "").strip():
+    semantic_message = _latest_human_routing_context(
+        messages, router_config.load()
+    )
+    if not semantic_message:
         raise HTTPException(400, "nessun messaggio umano recente da cui imparare")
-    vec = responder_routing.embed_text(human["text"], role="query")
+    vec = responder_routing.embed_text(semantic_message, role="query")
     if not vec:
         raise HTTPException(503, "embedder non disponibile")
     routing_feedback.record_feedback(
