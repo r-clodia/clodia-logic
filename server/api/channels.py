@@ -42,6 +42,40 @@ router = APIRouter()
 LOG = logging.getLogger("agent-server.api.channels")
 
 
+def _routing_ambiguity(scored: list[tuple], config=None) -> list[tuple]:
+    """Top candidates that should be asked about instead of guessed.
+
+    Ambiguity is the R8 case: the best candidate is relevant enough, but the
+    runner-up sits within the configured margin. Below threshold we still fall
+    back normally because the router has no evidence worth asking about.
+
+    `config` è la configurazione VIVA del router (#185): soglia e margine sono
+    quelli con cui la decisione è stata presa, non le costanti del modulo. Senza,
+    cambiare `router.yaml` avrebbe spostato la scelta e lasciato fermo il criterio
+    per chiedere — due letture della stessa soglia, che divergono in silenzio.
+    """
+    if len(scored) < 2:
+        return []
+    cfg = config or router_config.load()
+    top_score = scored[0][1]
+    if top_score < cfg.threshold:
+        return []
+    ambiguous = [
+        (spec, score)
+        for spec, score in scored
+        if (top_score - score) < cfg.margin
+    ]
+    return ambiguous if len(ambiguous) >= 2 else []
+
+
+def _routing_choices_marker(candidates: list[tuple]) -> str:
+    names = []
+    for spec, _score in candidates:
+        if spec.name not in names:
+            names.append(spec.name)
+    return "<!-- routing-choices=" + ",".join(names) + " -->"
+
+
 def _track_routing_decision(payload: dict) -> None:
     """Persist aggregate routing telemetry without message contents."""
     mode = payload.get("mode")
@@ -51,6 +85,8 @@ def _track_routing_decision(payload: dict) -> None:
         origin = "relevance"
     elif mode in {"tag", "tag-unserved", "delega"}:
         origin = "tag"
+    elif mode == "ambiguous":
+        origin = "ambiguity"
     else:
         origin = "rank"
     chosen = payload.get("chosen_agents")
@@ -1210,6 +1246,30 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
             scored, hit = [], None
         if hit:
             return _record(hit[0], "relevance", "relevance", scored)
+        # Ambiguità (#186) letta con la configurazione VIVA (#185): soglia e
+        # margine sono quelli effettivi della decisione, non le costanti — e la
+        # traccia mostra gli stessi numeri con cui la scelta è stata abbandonata.
+        ambiguous = _routing_ambiguity(scored, config=route_cfg)
+        if ambiguous:
+            if trace is not None:
+                trace.update({
+                    "tier": tier,
+                    "mode": "ambiguous",
+                    "reason": "routing ambiguity within margin",
+                    "chosen": None,
+                    "chosen_agents": [],
+                    "threshold": route_cfg.threshold,
+                    "margin": route_cfg.margin,
+                    "recent_messages": route_cfg.recent_messages,
+                    "candidates": [
+                        {"name": s.name, "score": round(sc, 3),
+                         "bot": s.type == "bot", "super": False}
+                        for s, sc in scored
+                    ],
+                    "eligible": [s.name for s in ai],
+                    "choices": [s.name for s, _score in ambiguous],
+                })
+            return None
         soft_hits = responder_routing.soft_matches(scored, config=route_cfg)
         if multi and _multi_responder_enabled() and len(soft_hits) >= 2:
             return _record_multi([spec for spec, _score in soft_hits], scored)
@@ -1766,6 +1826,9 @@ async def post_channel_message(
 
     # nessun tag → routing per rilevanza, anche multi-intento
     routing: dict = {}
+    # La finestra degli N messaggi (#185) e il dialogo di ambiguità (#186) si
+    # incontrano qui: si instrada sulla finestra, e se la scelta resta ambigua si
+    # chiede, invece di ripiegare su un rango.
     route_cfg = router_config.load()
     try:
         routing_messages = topics_client.list_messages(
@@ -1777,6 +1840,32 @@ async def post_channel_message(
         participants, tier_real, content, trace=routing,
         routing_messages=routing_messages,
     )
+    if routing.get("mode") == "ambiguous":
+        candidates = [
+            (registry.get_by_name(row["name"]), row.get("score", 0.0))
+            for row in routing.get("candidates", [])
+            if row.get("name") in set(routing.get("choices") or [])
+        ]
+        candidates = [(s, sc) for s, sc in candidates if s is not None]
+        if candidates:
+            labels = ", ".join(s.name for s, _score in candidates)
+            text = (
+                f"Routing ambiguo: chi deve rispondere a questo turno? {labels}\n"
+                f"{_routing_choices_marker(candidates)}"
+            )
+            dialog = topics_client.post_message(tier, name, "router", text, kind="ai")
+            await _channel_message(tier, name, "router", "ai",
+                                   message=dialog, topic_title=meta.get("title"))
+            try:
+                payload = {"tier": tier, "name": name, **routing}
+                _track_routing_decision(payload)
+                await bus.publish(Event(type="routing_decision", payload=payload,
+                    timestamp=datetime.now(timezone.utc)))
+            except Exception as e:  # noqa: BLE001
+                LOG.debug("routing_decision ambigua non pubblicata: %s", e)
+            return {"posted": True, "queued": False, "responder": None,
+                    "routing_ambiguous": True,
+                    "choices": [s.name for s, _score in candidates]}
     if routing.get("chosen"):
         try:
             payload = {"tier": tier, "name": name, **routing}
@@ -1830,6 +1919,64 @@ async def channel_post(tier: str, name: str, req: MessageRequest, request: Reque
     return await post_channel_message(
         tier, name, req.content, principal, respond=respond,
     )
+
+
+@router.post("/clodia/channels/{tier}/{name}/routing-choice")
+async def channel_routing_choice(tier: str, name: str, request: Request) -> dict:
+    """Resolve a router ambiguity dialog.
+
+    The human choice both starts the selected agent on the original human turn
+    and records the choice as supervised routing feedback. The text itself is
+    never stored in the exemplar corpus: only its embedding is appended.
+    """
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "login richiesto")
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    meta = topic.get("meta", {})
+    _require_contributor(request, meta)
+    body = await request.json()
+    chosen = (body.get("agent") or "").strip()
+    if not chosen:
+        raise HTTPException(400, "agent richiesto")
+    tier_real = meta.get("tier", tier)
+    participants = meta.get("participants", [])
+    messages = topics_client.list_messages(tier, name, limit=50)
+    human = next((m for m in reversed(messages) if m.get("kind") == "human"), None)
+    if not human or not (human.get("text") or "").strip():
+        raise HTTPException(400, "nessun messaggio umano recente da instradare")
+    trace: dict = {}
+    responder = _pick_responder(
+        participants, tier_real, chosen, human["text"], trace=trace
+    )
+    if responder is None or responder.name != chosen:
+        raise HTTPException(400, trace.get("reason")
+                            or f"agente '{chosen}' non instradabile")
+    vec = responder_routing.embed_text(human["text"], role="query")
+    if vec:
+        routing_feedback.record_feedback(
+            vec, kind="correction", chosen_agent=None, correct_agent=chosen,
+            tier=tier_real, by=principal, topic=f"{tier}/{name}",
+        )
+    started = await _start_turn(
+        tier, name, tier_real, responder, principal, human["text"], "routed-choice"
+    )
+    payload = {
+        "tier": tier, "name": name, "mode": "correction",
+        "reason": "routing ambiguity resolved by human",
+        "chosen": chosen, "chosen_agents": [chosen],
+        "candidates": [], "eligible": [chosen],
+    }
+    try:
+        _track_routing_decision(payload)
+        await bus.publish(Event(type="routing_decision", payload=payload,
+            timestamp=datetime.now(timezone.utc)))
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("routing_decision scelta ambigua non pubblicata: %s", e)
+    return {"ok": True, "queued": started, "responder": chosen if started else None,
+            "learned": bool(vec)}
 
 
 @router.post("/clodia/channels/{tier}/{name}/interrupt")

@@ -294,6 +294,45 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(trace["chosen"], "worker, accountant")
         self.assertEqual(trace["chosen_agents"], ["worker", "accountant"])
 
+    def test_close_relevance_scores_open_ambiguity_dialog(self) -> None:
+        scored = [
+            (self.agents["worker"], 0.91),
+            (self.agents["accountant"], 0.905),
+        ]
+        trace = {}
+        with (
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+            patch.object(channels, "_routing_mode", return_value="relevance"),
+            patch.object(
+                channels.responder_routing, "pick_by_exemplar", return_value=None
+            ),
+            patch.object(
+                channels.responder_routing, "score_specialists",
+                return_value=scored,
+            ),
+            patch.object(channels.responder_routing, "decide", return_value=None),
+            # Soglia e margine vengono dalla configurazione VIVA (#185): erano
+            # costanti del modulo, e questi due test le mockavano lì. Patcharle
+            # dove non esistono più farebbe fallire il test per un attributo
+            # mancante — non per la proprietà che sta verificando.
+            patch.object(
+                channels.router_config, "load",
+                return_value=channels.router_config.RouterConfig(3, 0.80, 0.015),
+            ),
+        ):
+            picked = channels._pick_responder(
+                ["clodia", "worker", "accountant"],
+                "P0",
+                None,
+                "richiesta ambigua",
+                trace=trace,
+            )
+
+        self.assertIsNone(picked)
+        self.assertEqual(trace["mode"], "ambiguous")
+        self.assertEqual(trace["choices"], ["worker", "accountant"])
+        self.assertIsNone(trace["chosen"])
+
     def test_multi_intent_plan_routes_and_batches_by_agent(self) -> None:
         # modalità opt-in CHANNEL_MULTI_RESPONDER=1 (il default è risposta singola)
         def score(_specialists, intent):
@@ -678,6 +717,82 @@ class ResponderTests(unittest.TestCase):
             "SEAL-2", "bando", "segretario",
             "Benvenuto\n<!-- team-bootstrap=segretario -->", kind="ai",
         )
+
+    def test_ambiguous_routing_posts_router_choice_dialog(self) -> None:
+        # `routing_messages` è la finestra degli N messaggi (#185): il doppio
+        # deve accettarla, o il test fallisce sulla firma invece che sulla cosa
+        # che verifica.
+        def routing_plan(_participants, _tier, _message, trace=None,
+                         routing_messages=None):
+            trace.update({
+                "mode": "ambiguous",
+                "reason": "routing ambiguity within margin",
+                "chosen": None,
+                "choices": ["worker", "accountant"],
+                "candidates": [
+                    {"name": "worker", "score": 0.91},
+                    {"name": "accountant", "score": 0.905},
+                ],
+                "eligible": ["worker", "accountant"],
+            })
+            return []
+
+        def post(_tier, _name, author, text, kind="human"):
+            return {"id": f"{author}-{kind}", "author": author, "text": text, "kind": kind}
+
+        with (
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"title": "Demo", "tier": "SEAL-1",
+                         "participants": ["owner", "worker", "accountant"]},
+            }),
+            patch.object(channels.topics_client, "list_messages", return_value=[]),
+            patch.object(channels.topics_client, "post_message", side_effect=post) as post_message,
+            patch.object(channels, "_routing_plan", side_effect=routing_plan),
+            patch.object(channels, "_channel_message", new_callable=AsyncMock),
+            patch.object(channels.bus, "publish", new_callable=AsyncMock),
+            patch.object(channels.access_log, "touch"),
+            patch.object(channels.activity_log, "append"),
+            patch.object(channels, "_track_routing_decision"),
+        ):
+            result = asyncio.run(channels.post_channel_message(
+                "SEAL-1", "demo", "messaggio ambiguo", "owner"))
+
+        self.assertTrue(result["routing_ambiguous"])
+        self.assertEqual(result["choices"], ["worker", "accountant"])
+        self.assertEqual(post_message.call_args_list[1].args[:3],
+                         ("SEAL-1", "demo", "router"))
+        self.assertIn("<!-- routing-choices=worker,accountant -->",
+                      post_message.call_args_list[1].args[3])
+
+    def test_routing_choice_records_feedback_and_starts_selected_agent(self) -> None:
+        worker = _a("worker", "normal", "P1")
+        request = SimpleNamespace(
+            headers={},
+            json=AsyncMock(return_value={"agent": "worker"}),
+        )
+        with (
+            patch.object(channels, "_principal_from_request", return_value="owner"),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "SEAL-1", "participants": ["owner", "worker"]},
+            }),
+            patch.object(channels, "_require_contributor"),
+            patch.object(channels.topics_client, "list_messages", return_value=[
+                {"kind": "human", "author": "owner", "text": "messaggio ambiguo"},
+            ]),
+            patch.object(channels, "_pick_responder", return_value=worker),
+            patch.object(channels.responder_routing, "embed_text", return_value=[0.1, 0.2]),
+            patch.object(channels.routing_feedback, "record_feedback") as record,
+            patch.object(channels, "_start_turn", new_callable=AsyncMock, return_value=True) as start,
+            patch.object(channels, "_track_routing_decision"),
+            patch.object(channels.bus, "publish", new_callable=AsyncMock),
+        ):
+            result = asyncio.run(channels.channel_routing_choice("SEAL-1", "demo", request))
+
+        self.assertEqual(result, {"ok": True, "queued": True,
+                                  "responder": "worker", "learned": True})
+        record.assert_called_once()
+        self.assertEqual(record.call_args.kwargs["correct_agent"], "worker")
+        start.assert_awaited_once()
 
 
 class ChannelMessageEventTests(unittest.TestCase):
