@@ -1525,6 +1525,48 @@ def _reused_turn_prompt(tier: str, name: str, responder: str, principal: str,
     return fallback
 
 
+_ROUTING_DIALOG_AUTHOR = "router"
+_ROUTING_DIALOG_RE = re.compile(
+    r"Routing:\s*scegli\s+@?([a-z0-9_-]+)\s*,\s*@?([a-z0-9_-]+)\s+o\s+both",
+    re.IGNORECASE,
+)
+
+
+def _routing_dialog_reply(content: str, participants: list[str], tier: str) -> list:
+    """Risposta a una pill del router: `@router worker` o `@router both`.
+
+    La UI invia le choices come reply al messaggio che le ha proposte. Per i
+    dialoghi di routing quell'autore non è un agente vero: è il router. Qui
+    consumiamo quella risposta prima che `@router` diventi una mention non
+    servibile e blocchi la scelta dell'umano.
+    """
+    quote, body = "", content or ""
+    if body.lstrip().startswith(">"):
+        parts = body.split("\n\n", 1)
+        quote = parts[0]
+        body = parts[1] if len(parts) > 1 else ""
+    if f"@{_ROUTING_DIALOG_AUTHOR}" not in body.lower():
+        return []
+    m = _ROUTING_DIALOG_RE.search(quote)
+    if not m:
+        return []
+    choices = [m.group(1).lower(), m.group(2).lower()]
+    body_words = {
+        w.lower().strip(".,;:!?")
+        for w in re.findall(r"@?[a-z0-9_-]+", body)
+        if w.lower().lstrip("@") != _ROUTING_DIALOG_AUTHOR
+    }
+    selected = choices if "both" in body_words else [c for c in choices if c in body_words]
+    out = []
+    for seed in selected:
+        if seed not in participants:
+            continue
+        spec = _pick_responder(participants, tier, seed)
+        if spec is not None and spec.name == seed:
+            out.append(spec)
+    return out
+
+
 def _context_messages(messages: list[dict]) -> list[dict]:
     """Solo i messaggi successivi all'ultimo reset contesto entrano nel prompt."""
     for i in range(len(messages) - 1, -1, -1):
@@ -1615,10 +1657,8 @@ async def post_channel_message(
 
     # 2. DESTINATARI. @tag = richiesta diretta; $tag = menzione soft (l'agente
     #    giudica se intervenire). Nessun tag → routing per rilevanza.
-    #    Risposta singola (default): anche con più tag risponde UN solo agente —
-    #    il primo @ diretto, o il primo $ soft se non ci sono @. Gli altri
-    #    taggati restano raggiungibili dalla catena di delega dell'agente che
-    #    risponde. Con CHANNEL_MULTI_RESPONDER=1 partono tutti in parallelo.
+    #    Due @ diretti chiedono all'umano chi deve rispondere; tre o più sono
+    #    rifiutati. Le $ soft non contano per quella soglia.
     # ── Un umano menzionato NON instrada un'AI (Davide, 10 ago 2026) ─────────
     #
     # «se un messaggio menziona un umano nessun agent ai deve essere routed».
@@ -1645,6 +1685,19 @@ async def post_channel_message(
                 "note": f"il messaggio menziona {chi}: nessun agente AI risponde"}
 
     hard, soft = _tags(content)
+    router_choice = _routing_dialog_reply(content, participants, tier_real)
+    if router_choice:
+        started: list[str] = []
+        skipped: list[str] = []
+        for s in router_choice:
+            if skip_if_busy and _responder_busy(tier, name, s.name):
+                skipped.append(s.name)
+                continue
+            if await _start_turn(tier, name, tier_real, s, principal, content, "direct"):
+                started.append(s.name)
+        return {"posted": True, "queued": bool(started), "responders": started,
+                "skipped": skipped, "routing_choice": True}
+
     targets: list[tuple[object, str, int | None]] = []
     hard_unserved: dict | None = None
     for nm in hard:
@@ -1660,6 +1713,34 @@ async def post_channel_message(
         s = _pick_responder(participants, tier_real, seed)
         if s is not None and s.name == seed and not any(t[0].name == s.name for t in targets):
             targets.append((s, "soft", req_ord))
+
+    hard_targets = [(s, req_ord) for s, kind, req_ord in targets if kind == "direct"]
+    if len(hard_targets) == 2:
+        a, b = hard_targets[0][0].name, hard_targets[1][0].name
+        text = (
+            f"Routing: scegli @{a}, @{b} o both.\n\n"
+            f"<!-- choices={a},{b},both -->"
+        )
+        routed_msg = topics_client.post_message(
+            tier, name, _ROUTING_DIALOG_AUTHOR, text, kind="system")
+        await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
+                               message=routed_msg, topic_title=meta.get("title"))
+        return {"posted": True, "queued": False, "responder": None,
+                "routing_dialog": True, "choices": [a, b, "both"]}
+
+    if len(hard_targets) >= 3:
+        names = ", ".join(f"@{s.name}" for s, _req_ord in hard_targets)
+        text = (
+            "Routing: hai menzionato tre o più agenti "
+            f"({names}). Il multi-routing diretto non è supportato: "
+            "decidete nel canale chi deve prendere il turno."
+        )
+        routed_msg = topics_client.post_message(
+            tier, name, _ROUTING_DIALOG_AUTHOR, text, kind="system")
+        await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
+                               message=routed_msg, topic_title=meta.get("title"))
+        return {"posted": True, "queued": False, "responder": None,
+                "routing_refused": True}
 
     dropped_tags: list[str] = []
     if targets and not _multi_responder_enabled() and len(targets) > 1:
