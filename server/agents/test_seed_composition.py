@@ -27,12 +27,8 @@ SEEDS_DIR = workspace_path("catalogs/packs/base-pack/agents")
 #: `_DEFAULT_GATED_EXACT`), quindi ogni invito passa da una conferma umana.
 COMPOSER = "clodia"
 
-#: Seed che restano `super` e bypassano la whitelist per-agente
-#: (`_SUPER_AGENTS` in clodia-tools `whitelist.py` e `main.py`): per loro il
-#: contenuto di `tool_permissions` non è enforced, quindi togliere il grant non
-#: avrebbe alcun effetto. Vedi il PR di §10.2 e #104 §8 («ophelia: candidata a
-#: uscire dal base-pack»).
-SUPER_BYPASS = {"clodia", "ophelia"}
+#: Seed che conserva deliberatamente la composizione delle squadre.
+SUPER_BYPASS = {"clodia"}
 
 
 def _seeds() -> dict[str, AgentSpec]:
@@ -129,18 +125,16 @@ class ExpansionClosureTests(unittest.TestCase):
         self.assertEqual(lit, ["agents.*"])
         self.assertNotIn("topic.add_participant", lit)
 
-    def test_super_agents_bypass_the_grant_anyway(self) -> None:
-        """Per clodia e ophelia `tool_permissions` non è enforced.
-
-        `_SUPER_AGENTS` in clodia-tools (`whitelist.py:283`, `main.py:1823`)
-        short-circuita la whitelist prima del match dei grant. Togliere il verbo
-        dal seed di ophelia sarebbe **teatro**: non cambierebbe nulla a runtime.
-        Il test documenta il limite del §10.2 così com'è ordinato — l'unico modo
-        di toglierlo a ophelia è farla uscire dai super (#104 §8).
-        """
+    def test_clodia_keeps_expansion_by_design(self) -> None:
         for name in sorted(SUPER_BYPASS):
             with self.subTest(seed=name):
                 self.assertTrue(trifecta.agent_profile(_seeds()[name])["expands"])
+
+    def test_ophelia_has_no_wildcard_and_does_not_expand(self) -> None:
+        spec = _seeds()["ophelia"]
+        self.assertEqual(spec.tool_permissions, [])
+        self.assertNotIn("*", _grants(spec))
+        self.assertFalse(trifecta.agent_profile(spec)["expands"])
 
 
 class GrantHygieneTests(unittest.TestCase):

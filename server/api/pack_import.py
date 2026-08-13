@@ -287,7 +287,7 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
         # seed non si pronuncia». Collassarli rendeva impossibile RIMUOVERE una
         # voce: si toglieva dal seed e restava viva nella config del gateway.
         gateway_admin.register_agent(
-            name, spec.tool_permissions or None,
+            name, spec.tool_permissions,
             gated_tools=spec.gated_tools,
             gated_in_channel=spec.gated_in_channel,
             profile_tools=spec.profile_tools,
