@@ -48,6 +48,34 @@ class OpenCodeConfigTests(unittest.TestCase):
             "https://api.scaleway.ai/v1",
         )
 
+    def _config_with_native(self, concessi):
+        """Scrive il config con questa dichiarazione di strumenti nativi."""
+        spec = SimpleNamespace(reasoning_effort=None)
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(S, "_runtime_provider", return_value="scaleway"), \
+             mock.patch.object(S, "_runtime_model", return_value="gpt-oss-120b"), \
+             mock.patch.object(S, "_kind_spec", return_value=spec), \
+             mock.patch.object(S, "_resolve_native_allowed", return_value=concessi), \
+             mock.patch("server.api.providers._read", return_value={}), \
+             mock.patch("server.api.providers.provider_extra_env", return_value={}), \
+             mock.patch.object(S.pki, "mint_session_token", return_value="ckt1.test"):
+            _session()._write_config(Path(td))
+            return json.loads((Path(td) / "opencode.json").read_text(encoding="utf-8"))
+
+    def test_the_seed_declaration_reaches_the_opencode_permissions(self):
+        """Il buco chiuso il 13 ago 2026: `native_tools` restringeva solo claude,
+        e su opencode il seed dichiarava senza che nessuno applicasse."""
+        cfg = self._config_with_native(["Read", "Bash"])
+        self.assertEqual(cfg["permission"]["websearch"], "deny")
+        self.assertEqual(cfg["permission"]["webfetch"], "deny")
+        self.assertNotIn("read", cfg["permission"])
+        self.assertNotIn("bash", cfg["permission"])
+
+    def test_a_seed_that_says_nothing_gets_no_permission_section(self):
+        """Non pronunciarsi non restringe — qui come su claude. Una sezione
+        emessa a vuoto negherebbe tutto al primo seed non aggiornato."""
+        self.assertNotIn("permission", self._config_with_native(None))
+
     def test_glm_52_defaults_to_no_reasoning_for_stale_imported_seed(self):
         stale_spec = SimpleNamespace(reasoning_effort=None)
 

@@ -90,6 +90,30 @@ def _connected_safe() -> set[str]:
         return set()
 
 
+def _native_tools_info(spec: AgentSpec) -> dict:
+    """Gli strumenti nativi del seed, e **quanto ne applica questo runtime**.
+
+    Il campo `native_tools` di un agent.yaml si legge uguale su tutti e tre i
+    runtime, ma fino al 13 ago 2026 lo applicava solo claude: Ophelia (codex) ha
+    cercato sul web con lo stesso identico seed con cui Clodia non poteva. Una
+    dichiarazione che non si sa se conti è peggio di una dichiarazione assente,
+    quindi `unenforced` viaggia accanto alla lista, sempre, e la scheda lo dice.
+    """
+    if spec.type in ("human", "proxy"):
+        return {"declared": None, "denied": [], "unenforced": []}
+    try:
+        from ..sdk_runtime import native_tools as nt
+        from ..sdk_runtime.session import _resolve_native_denied
+        negati = _resolve_native_denied(spec.name)
+        return {"declared": getattr(spec, "native_tools", None),
+                "denied": negati,
+                "unenforced": nt.unenforced_denied(spec.agent_sdk, negati)}
+    except Exception as e:  # noqa: BLE001 — diagnostica, non un percorso critico
+        LOG.warning("strumenti nativi non risolti per %s: %s", spec.name, e)
+        return {"declared": getattr(spec, "native_tools", None),
+                "denied": [], "unenforced": []}
+
+
 def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
     """Provider risolto (esplicito o derivato dall'agent_sdk) + flag di
     connessione. Completa lo stack agent/model/provider nelle risposte API e
@@ -213,6 +237,7 @@ async def get_agent(name: str, request: Request) -> dict:
     d["rank_tier"] = rank_mod.rank_tier(spec)
     d["rank_label"] = rank_mod.rank_label(spec)
     d["contact_channels"] = contacts.channels(spec)
+    d["native_tools_info"] = _native_tools_info(spec)
     d.update(_provider_fields(spec, _connected_safe()))
     return d
 
