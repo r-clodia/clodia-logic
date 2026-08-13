@@ -38,15 +38,18 @@ class ModelTests(unittest.TestCase):
         self.assertIsNone(s.gated_in_channel)
         self.assertIsNone(s.gated_tools)
         self.assertIsNone(s.profile_tools)
+        self.assertIsNone(s.denied_tools)
 
     def test_declared_empty_is_an_empty_list(self):
         """E un seed che lo dichiara vuoto deve poter azzerare. Se questi due
         casi tornano a coincidere, le rimozioni smettono di funzionare di nuovo
         e nessun test fallisce: è precisamente come è passata inosservata."""
-        s = AgentSpec(**BASE, gated_in_channel=[], gated_tools=[], profile_tools=[])
+        s = AgentSpec(**BASE, gated_in_channel=[], gated_tools=[], profile_tools=[],
+                      denied_tools=[])
         self.assertEqual(s.gated_in_channel, [])
         self.assertEqual(s.gated_tools, [])
         self.assertEqual(s.profile_tools, [])
+        self.assertEqual(s.denied_tools, [])
 
     def test_a_declared_list_survives(self):
         s = AgentSpec(**BASE, gated_in_channel=["email.send"])
@@ -60,7 +63,8 @@ class TransportTests(unittest.TestCase):
     def test_the_transport_does_not_collapse_empty_into_none(self):
         from ..api import pack_import
         src = inspect.getsource(pack_import)
-        for campo in ("gated_tools", "gated_in_channel", "profile_tools"):
+        for campo in ("gated_tools", "gated_in_channel", "profile_tools",
+                      "denied_tools"):
             with self.subTest(campo=campo):
                 self.assertNotIn(
                     f"{campo}=spec.{campo} or None", src,

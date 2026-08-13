@@ -288,6 +288,9 @@ class AgentSpec(BaseModel):
     # Permessi tool MCP granulari (es. ["topic.*", "email.send"]).
     # Enforcement nel gateway MCP; qui dichiarativo per validator/selection.
     tool_permissions: list[str] = Field(default_factory=list)
+    #: Sottrazioni dai permessi effettivi, inclusi quelli ereditati. `None`
+    #: significa «non modificare la copia custodita dal gateway»; `[]` la azzera.
+    denied_tools: Optional[list[str]] = None
     #: Strumenti NATIVI del runtime concessi a questo seed (`Read`, `Bash`,
     #: `WebSearch`, `Agent`, `Cron*`…). ALLOWLIST: `None` = «non mi pronuncio»,
     #: quindi niente restrizione; `[]` = «nessuno strumento nativo», che è una
