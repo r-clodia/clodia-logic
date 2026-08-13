@@ -53,7 +53,14 @@ DATA_AGENTS_DIR = data_path("agents")
 #: Campi che si riempiono nella copia locale quando lì NON esistono. Elenco
 #: chiuso di proposito: è la differenza fra «riempire un campo nuovo» e
 #: «aggiornare un seed», che resta la domanda aperta della #25.
-BACKFILL_FIELDS: tuple[str, ...] = ("native_tools",)
+#:
+#: Tutti e tre sono campi che RESTRINGONO o dichiarano un vincolo, e non è un
+#: caso: sono quelli in cui l'assenza nella copia locale significa «questo seed è
+#: stato copiato prima che il vincolo esistesse», mai «l'owner ha deciso di non
+#: averlo». Un campo che ALLARGA non entrerebbe in questa lista con la stessa
+#: leggerezza — riempirlo darebbe a un agente un potere che nessuno gli ha dato
+#: su quell'istanza.
+BACKFILL_FIELDS: tuple[str, ...] = ("native_tools", "denied_tools", "all_tier")
 
 
 def sync_seeds() -> list[str]:
