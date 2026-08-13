@@ -20,19 +20,18 @@ import urllib.request
 import json
 from datetime import datetime, timezone
 
+from . import router_config
+
 LOG = logging.getLogger("agent-server.responder_routing")
 
 EMBED_URL = os.environ.get("EU_RAG_SEARCH_URL", "http://192.168.1.45:7900").rstrip("/")
 
-# Soglie di routing (calibrabili via env). Ora su multilingual-e5-small con prefissi
-# query/passage: le cosine sono più ALTE e compresse rispetto a MiniLM-paraphrase
-# → soglia assoluta più alta. Valori di partenza, da rifinire con l'osservazione.
-THRESHOLD = float(os.environ.get("RESPONDER_ROUTING_THRESHOLD", "0.80"))
-MARGIN = float(os.environ.get("RESPONDER_ROUTING_MARGIN", "0.015"))
 # Rapporto della soglia soft rispetto a quella hard: deve stare in (0, 1], altrimenti
-# soft_threshold ≥ THRESHOLD e il multi-fallback diventa codice morto senza avviso.
+# soft_threshold >= threshold e il multi-fallback diventa codice morto senza avviso.
 FALLBACK_SOFT_RATIO = min(1.0, max(
     0.01, float(os.environ.get("RESPONDER_FALLBACK_SOFT_RATIO", "0.87"))))
+
+_MAX_QUERY_CHARS = 2000
 
 # cache profilo: {agent_name: (pieces_hash, [vettori per-pezzo])}
 _PROFILE_CACHE: dict[str, tuple[str, list[list[float]]]] = {}
@@ -47,7 +46,7 @@ def embed_text(text: str, role: str = "query") -> list[float] | None:
         return None
     try:
         url = f"{EMBED_URL}/embed_route?" + urllib.parse.urlencode(
-            {"text": text[:2000], "role": role})
+            {"text": text[:_MAX_QUERY_CHARS], "role": role})
         with urllib.request.urlopen(url, timeout=6) as r:
             data = json.loads(r.read())
         v = data.get("vector")
@@ -173,6 +172,33 @@ def _cosine(a: list[float], b: list[float]) -> float:
     return sum(x * y for x, y in zip(a, b))
 
 
+def compose_routing_context(messages: list[dict], *,
+                            config: router_config.RouterConfig | None = None) -> str:
+    """Concatenate the latest configured human and agent messages.
+
+    One query embedding keeps routing to one offline call. Role and author
+    labels preserve turn boundaries; when the query budget is exhausted the
+    newest turns win, which is the useful direction on a topic change.
+    """
+    cfg = config or router_config.load()
+    usable = [m for m in messages if str(m.get("text") or "").strip()]
+    selected = usable[-cfg.recent_messages:]
+    remaining = _MAX_QUERY_CHARS
+    lines: list[str] = []
+    for message in reversed(selected):
+        kind = str(message.get("kind") or "message").lower()
+        role = "agent" if kind == "ai" else "human" if kind == "human" else kind
+        author = str(message.get("author") or "unknown")
+        line = f"[{role} @{author}] {str(message.get('text') or '').strip()}"
+        if lines:
+            remaining -= 1
+        if remaining <= 0:
+            break
+        lines.append(line[:remaining])
+        remaining -= min(len(line), remaining)
+    return "\n".join(reversed(lines))
+
+
 def score_specialists(specialists: list, message: str) -> list[tuple]:
     """[(spec, score)] ordinato per rilevanza (max-sim sui pezzi del profilo).
     [] se /embed non disponibile o nessun profilo. Base sia del picker sia del
@@ -191,21 +217,24 @@ def score_specialists(specialists: list, message: str) -> list[tuple]:
     return scored
 
 
-def decide(scored: list):
+def decide(scored: list, *, config: router_config.RouterConfig | None = None):
     """Applica soglia+margine a uno scored già ordinato → (spec, score) o None."""
+    cfg = config or router_config.load()
     if not scored:
         return None
     best, best_score = scored[0]
-    if best_score < THRESHOLD:
+    if best_score < cfg.threshold:
         return None
-    if len(scored) > 1 and (best_score - scored[1][1]) < MARGIN:
+    if len(scored) > 1 and (best_score - scored[1][1]) < cfg.margin:
         return None
     return best, best_score
 
 
-def soft_matches(scored: list) -> list[tuple]:
+def soft_matches(scored: list, *,
+                 config: router_config.RouterConfig | None = None) -> list[tuple]:
     """Specialisti sopra la soglia morbida usata dal fallback multi-match."""
-    soft_threshold = THRESHOLD * FALLBACK_SOFT_RATIO
+    cfg = config or router_config.load()
+    soft_threshold = cfg.threshold * FALLBACK_SOFT_RATIO
     return [(spec, score) for spec, score in scored if score >= soft_threshold]
 
 
@@ -213,7 +242,8 @@ def pick_by_relevance(specialists: list, message: str):
     """Fra gli specialisti idonei ritorna (spec, score) del più
     pertinente se supera soglia E batte il 2° del margine, altrimenti None
     (→ fallback a rango/Clodia)."""
-    return decide(score_specialists(specialists, message))
+    cfg = router_config.load()
+    return decide(score_specialists(specialists, message), config=cfg)
 
 
 # Il classificatore degli esemplari usa un criterio RELATIVO: i top-k vicini

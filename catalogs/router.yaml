@@ -1,0 +1,9 @@
+version: 1
+
+# Number of latest channel messages used for semantic responder routing.
+# The window includes human and agent messages, in chronological order.
+recent_messages: 3
+
+# multilingual-e5-small cosine floor and minimum lead over the runner-up.
+threshold: 0.80
+margin: 0.015
