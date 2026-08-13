@@ -63,13 +63,14 @@ class TransportTests(unittest.TestCase):
     def test_the_transport_does_not_collapse_empty_into_none(self):
         from ..api import pack_import
         src = inspect.getsource(pack_import)
-        for campo in ("gated_tools", "gated_in_channel", "profile_tools",
-                      "denied_tools"):
+        for campo in ("tool_permissions", "gated_tools", "gated_in_channel",
+                      "profile_tools", "denied_tools"):
             with self.subTest(campo=campo):
                 self.assertNotIn(
                     f"{campo}=spec.{campo} or None", src,
                     f"`or None` su {campo} rimanda a «non mi pronuncio» una lista "
                     "dichiarata vuota: la rimozione non arriva al gateway")
+        self.assertNotIn("spec.tool_permissions or None", src)
 
     def test_the_receiving_side_still_treats_none_as_no_opinion(self):
         """L'altra metà del contratto: se il gateway iniziasse ad azzerare su
