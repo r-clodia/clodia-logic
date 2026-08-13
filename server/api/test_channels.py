@@ -763,6 +763,10 @@ class ResponderTests(unittest.TestCase):
                          ("SEAL-1", "demo", "router"))
         self.assertIn("<!-- routing-choices=worker,accountant -->",
                       post_message.call_args_list[1].args[3])
+        self.assertIn(
+            '<!-- routing-request={"owner":"owner","source":"owner-human"} -->',
+            post_message.call_args_list[1].args[3],
+        )
 
     def test_routing_choice_records_feedback_and_starts_selected_agent(self) -> None:
         worker = _a("worker", "normal", "P1")
@@ -777,7 +781,12 @@ class ResponderTests(unittest.TestCase):
             }),
             patch.object(channels, "_require_contributor"),
             patch.object(channels.topics_client, "list_messages", return_value=[
-                {"kind": "human", "author": "owner", "text": "messaggio ambiguo"},
+                {"id": "source-1", "kind": "human", "author": "owner",
+                 "text": "messaggio ambiguo"},
+                {"id": "dialog-1", "kind": "ai", "author": "router",
+                 "text": "Routing ambiguo: chi deve rispondere?\n"
+                         '<!-- routing-request={"owner":"owner",'
+                         '"source":"source-1"} -->'},
             ]),
             patch.object(channels, "_pick_responder", return_value=worker),
             patch.object(channels.responder_routing, "embed_text", return_value=[0.1, 0.2]),
@@ -793,6 +802,47 @@ class ResponderTests(unittest.TestCase):
         record.assert_called_once()
         self.assertEqual(record.call_args.kwargs["correct_agent"], "worker")
         start.assert_awaited_once()
+
+    def test_only_source_author_can_resolve_semantic_routing_dialog(self) -> None:
+        request = SimpleNamespace(
+            headers={}, json=AsyncMock(return_value={"agent": "worker"}),
+        )
+        messages = [
+            {"id": "source-1", "kind": "human", "author": "owner",
+             "text": "messaggio ambiguo"},
+            {"id": "dialog-1", "kind": "ai", "author": "router",
+             "text": "Routing ambiguo\n"
+                     '<!-- routing-request={"owner":"owner",'
+                     '"source":"source-1"} -->'},
+        ]
+        with (
+            patch.object(channels, "_principal_from_request", return_value="guest"),
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "SEAL-1",
+                         "participants": ["owner", "guest", "worker"]},
+            }),
+            patch.object(channels, "_require_contributor"),
+            patch.object(channels.topics_client, "list_messages",
+                         return_value=messages),
+            patch.object(channels, "_start_turn", new_callable=AsyncMock) as start,
+        ):
+            with self.assertRaises(channels.HTTPException) as raised:
+                asyncio.run(channels.channel_routing_choice(
+                    "SEAL-1", "demo", request
+                ))
+
+        self.assertEqual(raised.exception.status_code, 403)
+        start.assert_not_awaited()
+
+    def test_a_router_refusal_is_not_a_pending_choice(self) -> None:
+        messages = [
+            {"id": "source-1", "kind": "human", "author": "owner",
+             "text": "@a @b @c fate questo"},
+            {"id": "refusal-1", "kind": "system", "author": "router",
+             "text": "Il multi-routing diretto non è supportato."},
+        ]
+
+        self.assertIsNone(channels._latest_routing_request(messages))
 
 
 class ChannelMessageEventTests(unittest.TestCase):
@@ -1198,6 +1248,10 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(result["choices"], ["worker", "accountant", "both"])
         self.assertEqual(posts[-1]["author"], "router")
         self.assertIn("<!-- choices=worker,accountant,both -->", posts[-1]["text"])
+        self.assertIn(
+            '<!-- routing-request={"owner":"owner","source":"1"} -->',
+            posts[-1]["text"],
+        )
         start.assert_not_awaited()
 
     async def test_three_hard_tags_refuse_routing_and_start_nobody(self) -> None:
@@ -1232,6 +1286,13 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_routing_choice_both_starts_the_two_named_agents(self) -> None:
         start = AsyncMock(return_value=True)
+        history = [
+            {"id": "source-1", "author": "owner", "kind": "human",
+             "text": "@worker @accountant guardate il contratto"},
+            {"id": "dialog-1", "author": "router", "kind": "system",
+             "text": "Routing: scegli @worker, @accountant o both.\n\n"
+                     '<!-- routing-request={"owner":"owner","source":"source-1"} -->'},
+        ]
         with (
             patch.object(channels, "_start_turn", start),
             patch.object(channels, "_provider_seal_ok", return_value=True),
@@ -1241,6 +1302,8 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
             }),
             patch.object(channels.topics_client, "post_message",
                          return_value={"id": "1"}),
+            patch.object(channels.topics_client, "list_messages",
+                         return_value=history),
             patch.object(channels.access_log, "touch", lambda *a, **k: None),
             patch.object(channels.activity_log, "append", lambda *a, **k: None),
             patch.object(channels, "_channel_message", AsyncMock()),
@@ -1254,6 +1317,39 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(result["routing_choice"])
         self.assertEqual(result["responders"], ["worker", "accountant"])
         self.assertEqual(start.await_count, 2)
+        self.assertEqual(
+            [call.args[5] for call in start.await_args_list],
+            ["@worker @accountant guardate il contratto"] * 2,
+        )
+
+    async def test_another_participant_cannot_answer_the_routing_dialog(self) -> None:
+        history = [
+            {"id": "source-1", "author": "owner", "kind": "human",
+             "text": "@worker @accountant guardate qui"},
+            {"id": "dialog-1", "author": "router", "kind": "system",
+             "text": "Routing: scegli @worker, @accountant o both.\n\n"
+                     '<!-- routing-request={"owner":"owner","source":"source-1"} -->'},
+        ]
+        post = AsyncMock()
+        with (
+            patch.object(channels.topics_client, "open_topic", return_value={
+                "meta": {"tier": "P0",
+                         "participants": ["owner", "guest", "worker", "accountant"]},
+            }),
+            patch.object(channels.topics_client, "list_messages",
+                         return_value=history),
+            patch.object(channels.topics_client, "post_message", post),
+        ):
+            with self.assertRaises(channels.HTTPException) as raised:
+                await channels.post_channel_message(
+                    "P0", "ops",
+                    "> router: Routing: scegli worker, accountant o both.\n\n"
+                    "@router worker",
+                    "guest",
+                )
+
+        self.assertEqual(raised.exception.status_code, 403)
+        post.assert_not_called()
 
     async def test_soft_mentions_do_not_count_for_the_routing_dialog(self) -> None:
         start = AsyncMock(return_value=True)
