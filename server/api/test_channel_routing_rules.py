@@ -41,9 +41,9 @@ class _Spec:
 REGISTRO = {
     "davide": _Spec("davide", "human"),
     "matteo": _Spec("matteo", "human"),
-    "clodia": _Spec("clodia", "super"),
-    "messaggero": _Spec("messaggero", "normal"),
-    "segretario": _Spec("segretario", "normal"),
+    "clodia": _Spec("clodia", "bot"),
+    "messaggero": _Spec("messaggero", "bot"),
+    "segretario": _Spec("segretario", "bot"),
 }
 PARTECIPANTI = list(REGISTRO)
 

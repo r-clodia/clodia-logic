@@ -115,7 +115,7 @@ class AgentProfileTests(unittest.TestCase):
     """Profilo per agente dai grant effettivi."""
 
     def test_full_wildcard_is_three_of_three(self) -> None:
-        p = trifecta.agent_profile(_spec("clodia", ["*"], kind="super"))
+        p = trifecta.agent_profile(_spec("clodia", ["*"], kind="bot"))
         self.assertEqual(p["score"], 3)
         self.assertEqual(p["legs"], {leg: True for leg in trifecta.LEGS})
 

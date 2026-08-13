@@ -11,7 +11,7 @@ name: messaggero
 parents: [archseed]
 display_name: Messaggero
 description: "Agente messaggero: email e Telegram per conto della colonia. Clearance SEAL-2 (le comunicazioni attraversano documenti di più topic)."
-type: normal
+type: bot
 clearance: SEAL-2
 constitution: platform-core
 # Runtime segue il provider effettivo: scaleway→opencode, aws-region-eu→claude.
@@ -46,7 +46,7 @@ rules: []
 # Tool comms (la fruizione degli account/token resta gated dai grant del vault:
 # email account + telegram_bot_token delegati a Messaggero dalla sezione
 # Connettori/Integrations). Enforcement effettivo nel gateway (config.yaml).
-# post_message è prerogativa di messaggero+super. jobs.propose per creare il job
+# post_message è prerogativa di messaggero e bot autorizzati. jobs.propose per creare il job
 # periodico di check-email (l'owner lo approva, gated by design).
 #
 # ANTENATO. `archseed` dà i verbi base per ereditarietà (specification §1.3):

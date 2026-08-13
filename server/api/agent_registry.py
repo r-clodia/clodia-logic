@@ -280,7 +280,7 @@ async def generate_agent_pfp(name: str, body: PfpGenerateBody) -> dict:
     if spec is None:
         raise HTTPException(404, f"agent '{name}' non trovato")
     if _is_immutable(spec):
-        raise HTTPException(403, f"agent '{name}' è immutabile (super o protetto): "
+        raise HTTPException(403, f"agent '{name}' è immutabile/protetto: "
                                  "PFP modificabile solo via codice/rebuild del seed")
     prompt = (body.prompt or "").strip()
     if not prompt and not body.image_b64:
@@ -417,15 +417,16 @@ class AgentPatch(BaseModel):
     clearance: Optional[str] = None
     email: Optional[str] = None
     telegram: Optional[str] = None          # opzionale
-    mailbox_parent: Optional[str] = None    # super genitore per il subaddress (regular)
+    mailbox_parent: Optional[str] = None    # parent mailbox per il subaddress dei bot
 
 
 def _is_immutable(spec) -> bool:
-    """Un agent è immutabile a runtime se è un super-agent (nucleo) o porta il
-    flag immutable:true (es. Janitor). Gli immutabili si modificano SOLO via
+    """Un agent è immutabile a runtime se porta il flag immutable:true.
+
+    Gli immutabili si modificano SOLO via
     codice/rebuild del seed: nessuna via applicativa (PATCH, PFP, agents.*) può
     toccarli."""
-    return getattr(spec, "type", None) == "super" or bool(getattr(spec, "immutable", False))
+    return bool(getattr(spec, "immutable", False))
 
 
 def _set_yaml_scalar(text: str, key: str, value: str) -> str:
@@ -505,16 +506,13 @@ def _validate_catalog_refs(items: list[str], kind: str) -> None:
 
 def _agent_can_admin(caller: str | None) -> bool:
     """True se il principal (agent) può amministrare le capability di altri agent:
-    super-agent (poteri pieni) o agent con permesso `agents.*` (o `*`) in
-    tool_permissions. È l'authz lato backend, ridondante con la whitelist del
-    gateway (difesa in profondità)."""
+    agent con permesso `agents.*` (o `*`) in tool_permissions. È l'authz lato
+    backend, ridondante con la whitelist del gateway (difesa in profondità)."""
     if not caller:
         return False
     cs = registry.get_by_name(caller)
     if cs is None:
         return False
-    if getattr(cs, "type", None) == "super":
-        return True
     perms = getattr(cs, "tool_permissions", []) or []
     return "*" in perms or "agents.*" in perms or any(
         p == "agents" or p.startswith("agents.") for p in perms)
@@ -571,7 +569,7 @@ async def create_scoped_override(
     """Concede un overlay runtime approvato, scoped e con TTL; non muta il seed."""
     caller = _principal_from_request(request)
     if not _agent_can_admin(caller):
-        raise HTTPException(403, "richiede un super-agent o il permesso 'agents.*'")
+        raise HTTPException(403, "richiede il permesso 'agents.*'")
     approval = _verified_gate(body.approval_token, caller, "agents.grant_scoped")
     spec = registry.get_by_name(name)
     if spec is None:
@@ -645,7 +643,7 @@ async def revoke_scoped_override(
 ) -> dict:
     caller = _principal_from_request(request)
     if not _agent_can_admin(caller):
-        raise HTTPException(403, "richiede un super-agent o il permesso 'agents.*'")
+        raise HTTPException(403, "richiede il permesso 'agents.*'")
     approval = _verified_gate(body.approval_token, caller, "agents.revoke_scoped")
     if not any(row.get("id") == override_id for row in scoped_overrides.list_active(name)):
         raise HTTPException(404, "override scoped non trovato")
@@ -665,17 +663,17 @@ async def revoke_scoped_override(
 @router.patch("/{name}/caps", response_model=AgentSpec)
 async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -> AgentSpec:
     """Edita capabilities / rules / tool_permissions di un agent EDITABILE.
-    Autorizzazione per AGENT principal (token ckt1 inoltrato dal gateway): solo
-    super-agent o agent con `agents.*`. Target immutabile → 403 (super/protetti
-    si cambiano solo via codice/rebuild). Le liste sono set completi."""
+    Autorizzazione per AGENT principal (token ckt1 inoltrato dal gateway): agent
+    con `agents.*`. Target immutabile → 403 (protetti si cambiano solo via
+    codice/rebuild). Le liste sono set completi."""
     caller = _principal_from_request(request)
     if not _agent_can_admin(caller):
-        raise HTTPException(403, "richiede un super-agent o il permesso 'agents.*'")
+        raise HTTPException(403, "richiede il permesso 'agents.*'")
     spec = registry.get_by_name(name)
     if spec is None:
         raise HTTPException(404, f"agent '{name}' non trovato")
     if _is_immutable(spec):
-        raise HTTPException(403, f"agent '{name}' è immutabile (super o protetto): "
+        raise HTTPException(403, f"agent '{name}' è immutabile/protetto: "
                                  "modificabile solo via codice/rebuild del seed")
     if patch.capabilities is not None:
         _validate_catalog_refs(patch.capabilities, "skill")
@@ -711,15 +709,15 @@ async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -
 
 @router.patch("/{name}", response_model=AgentSpec)
 async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSpec:
-    """Edita system prompt, meta, canali di contatto, model, sdk di un agent
-    (anche super). SOLO admin."""
+    """Edita system prompt, meta, canali di contatto, model, sdk di un agent.
+    SOLO admin."""
     if not admin.is_admin(_principal_from_request(request)):
         raise HTTPException(403, "solo un admin può modificare un agent")
     spec = registry.get_by_name(name)
     if spec is None:
         raise HTTPException(404, f"agent '{name}' non trovato")
     if _is_immutable(spec):
-        raise HTTPException(403, f"agent '{name}' è immutabile (super o protetto): "
+        raise HTTPException(403, f"agent '{name}' è immutabile/protetto: "
                                  "modificabile solo via codice/rebuild del seed")
     if patch.clearance is not None and patch.clearance and _norm_clearance(patch.clearance) not in _CLR_VALID:
         raise HTTPException(400, f"clearance invalida: {patch.clearance} (SEAL-0..4)")
@@ -765,8 +763,8 @@ class ProviderSelect(BaseModel):
 async def select_provider(name: str, body: ProviderSelect, request: Request) -> dict:
     """Fissa il provider da usare per l'agent, scelto dalla sua lista dichiarata.
 
-    È STATO OPERATIVO (routing), non identità: consentito ANCHE sui super/immutabili
-    (clodia/janitor) — non tocca l'agent.yaml, quindi non viola l'immutabilità.
+    È STATO OPERATIVO (routing), non identità: consentito anche sugli immutabili
+    (clodia/sysadmin) — non tocca l'agent.yaml, quindi non viola l'immutabilità.
     Solo admin. Il provider deve appartenere alla lista di preferenza dell'agent
     (non si può assegnare un provider che l'agent non dichiara)."""
     if not admin.is_admin(_principal_from_request(request)):
@@ -804,9 +802,8 @@ class AgentCreate(BaseModel):
     display_name: Optional[str] = None
     description: str = ""
     avatar_color: str = "#888888"
-    # categoria KYA: gli agent user-defined nascono "normal". super = solo i
-    # nativi clodia/ophelia (non ricreabili da qui).
-    type: str = "normal"
+    # categoria identità: qui resta ammesso solo `human`; i bot arrivano dai pack.
+    type: str = "human"
     # costituzione di default per i nuovi agent (baseline lite). "none" = nessuna.
     constitution: Optional[str] = "platform-core"
     # ancestor (1-2) da cui ereditare le skill come attributi di specie.
@@ -824,10 +821,8 @@ class AgentCreate(BaseModel):
     telegram: Optional[str] = None
 
 
-# Nomi riservati ai super-agent nativi (seed nel repo, non ricreabili via API).
 # Agenti NATIVI della piattaforma: seed nel repo (catalogs/agents-seed), clonati
-# con ogni istanza. Nome riservato → non ricreabili via API. clodia/ophelia sono
-# anche super; messaggero (agente messaggero) è nativo ma normal.
+# con ogni istanza. Nome riservato → non ricreabili via API.
 _NATIVE_AGENTS = {"clodia", "ophelia", "messaggero"}
 
 
@@ -854,7 +849,7 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
     # contenuto di pack, non un artefatto generato a runtime. Qui resta ammesso
     # solo `type=human` (onboarding di un principal umano — un'identità, non un
     # seed). Per un nuovo agente AI: crea un pack che contiene il seed e importalo.
-    if (body.type or "normal") != "human":
+    if (body.type or "human") != "human":
         raise HTTPException(
             400, "gli agent seed AI si installano solo via pack: crea un pack "
                  "con il seed e importalo (sezione Packs → Importa). "

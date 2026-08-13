@@ -1,9 +1,9 @@
 """Routing del risponditore per RILEVANZA (embedding).
 
-Invece di far rispondere sempre il super-agent di rango più alto (Clodia), si
+Invece di far rispondere sempre il bot di rango più alto (Clodia), si
 instrada il messaggio all'agente specialista il cui DOMINIO matcha meglio — con
 un embedding locale (MiniLM del micro-servizio eu-rag), quindi SENZA un turno
-LLM di dispatch. I super-agent restano il FALLBACK quando nessuno specialista è
+LLM di dispatch. Il rango resta il FALLBACK quando nessuno specialista è
 chiaramente pertinente.
 
 Costo: 1 chiamata /embed per messaggio (~ms, offline); i profili degli agenti
@@ -210,7 +210,7 @@ def soft_matches(scored: list) -> list[tuple]:
 
 
 def pick_by_relevance(specialists: list, message: str):
-    """Fra gli specialisti (idonei, NON super), ritorna (spec, score) del più
+    """Fra gli specialisti idonei ritorna (spec, score) del più
     pertinente se supera soglia E batte il 2° del margine, altrimenti None
     (→ fallback a rango/Clodia)."""
     return decide(score_specialists(specialists, message))

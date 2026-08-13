@@ -43,7 +43,7 @@ LOGIC_CATALOG_DIR = workspace_path("catalogs/packs/base-pack/plugins/base-pack/s
 DATA_CATALOG_DIR = data_path("skills-catalog")
 
 # Token wildcard in capabilities/rules/tools = "tutto il catalog". Usato dai
-# super-agent (clodia/ophelia) che hanno per definizione l'intero set.
+# bot amministrativi (clodia/ophelia) che hanno per definizione l'intero set.
 WILDCARDS = {"*", "**", "**/*"}
 
 
@@ -156,7 +156,7 @@ def _resolve_skill_source(cap: str) -> Optional[Path]:
 
 def _all_skill_names() -> list[str]:
     """Tutte le skill disponibili (data flat + pack-subdir + logic; data precede,
-    dedup per nome con first-wins). Usato per la wildcard dei super-agent."""
+    dedup per nome con first-wins). Usato per la wildcard dei bot amministrativi."""
     names: list[str] = []
     seen: set[str] = set()
 

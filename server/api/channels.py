@@ -451,7 +451,7 @@ def _seed_name(label: str | None) -> str | None:
 
 def _effective_clearance(spec) -> str:
     """SEAL EFFETTIVA di un agente = quella del PROVIDER che usa (il dato va lì),
-    per TUTTI — super inclusi (clodia/ophelia): NESSUNO tratta dati SEAL-3+ su un
+    per TUTTI i bot: NESSUNO tratta dati SEAL-3+ su un
     provider SEAL-2-. Il campo `clearance` del seed è solo una SEAL MINIMA
     dichiarata (floor), non l'effettiva. Provider non risolto → fallback alla
     minima dichiarata dal seed."""
@@ -703,7 +703,7 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
 
 
 def _provider_below_tier_warning(spec, tier_real: str) -> dict:
-    """Warning UI quando un super-agent risponde con provider sotto il tier."""
+    """Warning UI quando un bot risponde con provider sotto il tier."""
     from ..sdk_runtime.session import agent_effective_provider
     from .providers import provider_seal
     pid = agent_effective_provider(spec.name)
@@ -976,10 +976,9 @@ def _provider_seal_ok(spec, tier: str | None) -> bool:
 def _eligibility(spec, tier: str | None) -> dict:
     """Idoneità di un AeI al tier del topic, per la UI.
     - umani: sempre idonei (non trattano dati via provider).
-    - agenti (normal E super, clodia/ophelia inclusi): idoneo SOLO se la SEAL
-      EFFETTIVA (= quella del provider) ≥ tier. NESSUNA eccezione per i super:
-      nessuno tratta dati SEAL-3+ su un provider SEAL-2-. Stessa regola per tutti."""
-    if not spec or spec.type not in ("super", "normal"):
+    - bot: idoneo SOLO se la SEAL EFFETTIVA (= quella del provider) ≥ tier.
+      Nessuno tratta dati SEAL-3+ su un provider SEAL-2-. Stessa regola per tutti."""
+    if not spec or spec.type != "bot":
         return {"eligible": True, "warn": False}
     ok = _provider_seal_ok(spec, tier)
     return {"eligible": bool(ok), "warn": False}
@@ -1014,9 +1013,6 @@ def _agent_cost(spec) -> dict:
         if key in model:
             price, label = p, lab
             break
-    if getattr(spec, "type", None) == "super":
-        label = "premium"  # generalista full-power: prompt grande + top model
-        price = max(price, 3)
     return {
         "price": price, "label": label,
         "skills": len(getattr(spec, "skills", []) or []),
@@ -1028,12 +1024,11 @@ def _agent_cost(spec) -> dict:
 def suggest_team(tier: str, description: str) -> dict:
     """Proposta di squadra per un topic di dato tier data una descrizione.
     Ritorna candidati (idonei ordinati per rilevanza+costo), `suggested` (gli
-    specialisti proposti) e `coordinator` (super-agent idoneo, opzionale)."""
+    specialisti proposti) e `coordinator` (riservato a policy esplicite)."""
     tier = _norm(tier)
-    specs = [s for s in registry.list() if s and s.type in ("super", "normal")]
+    specs = [s for s in registry.list() if s and s.type == "bot"]
     elig = {s.name: _eligibility(s, tier) for s in specs}
-    specialists = [s for s in specs
-                   if s.type != "super" and elig[s.name]["eligible"]]
+    specialists = [s for s in specs if elig[s.name]["eligible"]]
     scored = responder_routing.score_specialists(specialists, description or "")
     score_of = {s.name: sc for s, sc in scored}
 
@@ -1067,15 +1062,12 @@ def suggest_team(tier: str, description: str) -> dict:
     above.sort(key=_rank_key)
     suggested = [s.name for s, _ in above[:TEAM_MAX_SPECIALISTS]]
 
-    supers = [s for s in specs if s.type == "super" and elig[s.name]["eligible"]]
-    coordinator = supers[0].name if supers else None
-
     return {
         "tier": tier,
         "description": description or "",
         "candidates": rows,
         "suggested": suggested,
-        "coordinator": coordinator,
+        "coordinator": None,
         "threshold": TEAM_THRESHOLD,
         "embed_ok": bool(scored) or not specialists,
     }
@@ -1086,15 +1078,15 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     multi: bool = False):
     """Chi risponde in un canale. Priorità:
     1. agente TAGGATO (@nome), se idoneo — override esplicito;
-    2. routing per RILEVANZA: lo specialista (non-super) il cui dominio matcha il
-       messaggio (embedding, zero turni LLM) — così il super-agent non intercetta
-       tutto; fallback al rango se non pertinente o router non disponibile;
-    3. il più alto di RANGO fra gli idonei (il super = Clodia).
-    Idoneità: provider scelto per il topic con SEAL ≥ tier, per normal e super."""
+    2. routing per RILEVANZA: il bot il cui dominio matcha il messaggio
+       (embedding, zero turni LLM); fallback al rango se non pertinente o router
+       non disponibile;
+    3. il più alto di RANGO fra gli idonei.
+    Idoneità: provider scelto per il topic con SEAL ≥ tier."""
     specs = [registry.get_by_name(n) for n in participants]
 
     def eligible(s) -> bool:
-        if not s or s.type not in ("super", "normal"):
+        if not s or s.type != "bot":
             return False
         if not _provider_seal_ok(s, tier):
             return False
@@ -1115,7 +1107,7 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
             "margin": responder_routing.MARGIN,
             "candidates": [
                 {"name": s.name, "score": round(sc, 3),
-                 "super": s.type == "super"}
+                 "bot": s.type == "bot", "super": False}
                 for s, sc in (scored or [])
             ],
             "eligible": [s.name for s in ai],
@@ -1138,7 +1130,7 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                 "margin": responder_routing.MARGIN,
                 "candidates": [
                     {"name": s.name, "score": round(sc, 3),
-                     "super": s.type == "super"}
+                     "bot": s.type == "bot", "super": False}
                     for s, sc in (scored or [])
                 ],
                 "eligible": [s.name for s in ai],
@@ -1168,7 +1160,7 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
             _record_unserved_tag(f"@{tagged} non è partecipante del canale")
         elif tagged_spec is None:
             _record_unserved_tag(f"@{tagged} non è un agente registrato")
-        elif getattr(tagged_spec, "type", None) not in ("super", "normal"):
+        elif getattr(tagged_spec, "type", None) != "bot":
             _record_unserved_tag(f"@{tagged} non è un agente AI instradabile")
         elif not _provider_seal_ok(tagged_spec, tier):
             _record_unserved_tag(
@@ -1179,15 +1171,15 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         return None
     mode = _routing_mode()
     if message and mode == "relevance":
-        specialists = [s for s in ai if s.type != "super"]
+        specialists = list(ai)
         # 2a. ESEMPLARI: conferme e correzioni votano fra tutti gli agenti
-        # idonei, inclusi i super-agent, prima del routing per rilevanza.
+        # idonei prima del routing per rilevanza.
         # In modalità shadow (default) la decisione è solo tracciata: qui `ex`
         # resta None e si prosegue col routing per rilevanza.
         try:
             known = {
                 s.name for s in registry.list()
-                if s and s.type in ("super", "normal")
+                if s and s.type == "bot"
             }
             ex = responder_routing.pick_by_exemplar(
                 message, [s.name for s in ai], known, topic=trace.get("topic") if trace else None
@@ -1294,7 +1286,8 @@ def _routing_plan(participants: list[str], tier: str, message: str,
             "margin": responder_routing.MARGIN,
             "candidates": [
                 {"name": name, "score": round(score, 3),
-                 "super": getattr(registry.get_by_name(name), "type", None) == "super"}
+                 "bot": getattr(registry.get_by_name(name), "type", None) == "bot",
+                 "super": False}
                 for name, score in sorted(
                     candidate_scores.items(), key=lambda item: item[1], reverse=True
                 )
@@ -1702,9 +1695,6 @@ async def post_channel_message(
             if skip_if_busy and _responder_busy(tier, name, s.name):
                 skipped.append(s.name)
                 continue
-            if (kind == "direct" and getattr(s, "type", None) == "super"
-                    and not _provider_seal_ok(s, tier_real) and warning is None):
-                warning = _provider_below_tier_warning(s, tier_real)
             if await _start_turn(tier, name, tier_real, s, principal, content, kind,
                                  ordinal=req_ord):
                 started.append(s.name)
@@ -1767,9 +1757,6 @@ async def post_channel_message(
         if skip_if_busy and _responder_busy(tier, name, responder.name):
             skipped.append(responder.name)
             continue
-        if (responder.type == "super" and not _provider_seal_ok(responder, tier_real)
-                and warning is None):
-            warning = _provider_below_tier_warning(responder, tier_real)
         if await _start_turn(
             tier, name, tier_real, responder, principal, assigned,
             "routed" if routed else "plain",
@@ -2272,7 +2259,7 @@ def routing_stats(request: Request) -> dict:
         raise HTTPException(401, "login richiesto")
     known = {
         spec.name for spec in registry.list()
-        if spec and spec.type in ("super", "normal")
+        if spec and spec.type == "bot"
     }
     exemplars = routing_feedback.load_exemplars(known)
     result = routing_feedback.stats()
@@ -2543,7 +2530,7 @@ async def channel_feedback_lesson_delete(tier: str, name: str, lesson_id: str,
 @router.get("/clodia/channels/{tier}/{name}/eligibility")
 def channel_eligibility(tier: str, name: str, request: Request) -> dict:
     """Idoneità di ogni AeI registrato rispetto al tier del topic.
-    Usato dalla UI per (a) nascondere i partecipanti non idonei — tranne i super,
+    Usato dalla UI per (a) nascondere i partecipanti non idonei,
     mostrati con ⚠️ — e (b) filtrare il dropdown «aggiungi agente»."""
     topic = topics_client.open_topic(tier, name)
     if not topic:
@@ -2666,7 +2653,7 @@ async def channel_remove_participant(tier: str, name: str, request: Request) -> 
 async def channel_set_participant_internal(tier: str, name: str, request: Request) -> dict:
     """Aggiunge/rimuove un partecipante su richiesta di un AGENTE (via gateway).
     Body: {agent, by, add}. Autorizzazione: `by` (il chiamante) deve essere
-    l'owner, un partecipante del canale, o un super-agent — chi è "nella stanza"
+    l'owner o un partecipante del canale — chi è "nella stanza"
     può gestire la squadra (come invitare in un canale Slack). L'idoneità SEAL
     dell'agente aggiunto resta enforced al momento della risposta (un agente
     sotto-tier può entrare ma non risponde). Nessun principal: endpoint interno."""
@@ -2681,10 +2668,8 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     if not agent or not by:
         raise HTTPException(400, "agent e by richiesti")
     # autorizzazione del CHIAMANTE
-    by_spec = registry.get_by_name(by)
-    is_super = bool(by_spec and getattr(by_spec, "type", None) == "super")
-    if not (is_super or by == meta.get("owner") or by in (meta.get("participants") or [])):
-        raise HTTPException(403, f"'{by}' non è owner/partecipante/super di questo canale")
+    if not (by == meta.get("owner") or by in (meta.get("participants") or [])):
+        raise HTTPException(403, f"'{by}' non è owner/partecipante di questo canale")
     # l'agente aggiunto dev'essere registrato
     if registry.get_by_name(agent) is None:
         raise HTTPException(404, f"'{agent}' non esiste: aggiungi un agent/utente registrato")
@@ -2700,7 +2685,7 @@ async def channel_trigger_internal(tier: str, name: str, request: Request) -> di
     """Innesca il RISPONDITORE del topic su un messaggio già postato (via gateway).
     Body: {text, by}. `text` = il testo appena iniettato (di norma con una
     @menzione: il responder viene scelto dal tag). `by` = agente chiamante (deve
-    essere owner/partecipante/super del canale). Fire-and-forget: l'agente taggato
+    essere owner/partecipante del canale). Fire-and-forget: l'agente taggato
     prende in carico il messaggio in un turno in background. Nessun principal
     (endpoint interno) → il turno gira con authority di proxy (barriera azioni)."""
     topic = topics_client.open_topic(tier, name)
@@ -2712,10 +2697,8 @@ async def channel_trigger_internal(tier: str, name: str, request: Request) -> di
     by = (body.get("by") or "").strip()
     if not text:
         raise HTTPException(400, "text richiesto")
-    by_spec = registry.get_by_name(by)
-    is_super = bool(by_spec and getattr(by_spec, "type", None) == "super")
-    if not (is_super or by == meta.get("owner") or by in (meta.get("participants") or [])):
-        raise HTTPException(403, f"'{by}' non è owner/partecipante/super di questo canale")
+    if not (by == meta.get("owner") or by in (meta.get("participants") or [])):
+        raise HTTPException(403, f"'{by}' non è owner/partecipante di questo canale")
     _spawn_bg(run_topic_turn(tier, name, meta, trigger_text=text, principal_hint="channel"))
     return {"triggered": True}
 

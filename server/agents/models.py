@@ -9,6 +9,21 @@ from typing import Literal, Optional
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
 
+AgentType = Literal["bot", "human"]
+
+
+def normalize_agent_type(value: object) -> str:
+    """Canonical agent vocabulary.
+
+    `normal` and `super` are accepted on read as legacy seed/API values, but the
+    registry stores and emits the single executable-agent type: `bot`.
+    """
+    raw = str(value or "bot").strip().lower()
+    if raw in {"normal", "super"}:
+        return "bot"
+    return raw
+
+
 class Sandbox(BaseModel):
     """Permessi applicati al workspace effimero via .claude/settings.json.
 
@@ -93,16 +108,20 @@ class AgentSpec(BaseModel):
     # documenti lunghi, minute, preventivi"). Se vuota, il routing ripiega su
     # description+capabilities (segnale più debole). Vedi responder_routing.
     expertise: str = ""
-    # Modello d'inferenza. Obbligatorio per gli agent ESEGUITI (normal/super);
+    # Modello d'inferenza. Obbligatorio per gli agent ESEGUITI (`bot`);
     # None per i principal `human` (non eseguiti: nessun motore).
     model: Optional[str] = None
     display_name: str
     avatar_color: str = "#888888"
 
-    # Categoria KYA (modello identità, agent-identity-model-spec.md §1):
-    # "super" (clodia/ophelia, poteri pieni + CA), "normal" (worker sandboxati),
-    # "human" (principal umani, es. owner). Guida i default di poteri/clearance.
-    type: Literal["super", "normal", "human"] = "normal"
+    # Categoria identità: `bot` (seed eseguibile) o `human` (principal umano).
+    # Legacy accettati in lettura: `normal` e `super` -> `bot`.
+    type: AgentType = "bot"
+
+    @field_validator("type", mode="before")
+    @classmethod
+    def _coerce_type(cls, v):
+        return normalize_agent_type(v)
 
     # Genealogia del seed (modello ereditario): progenitore/i da cui questo seed
     # discende. Rende tracciabile il "drift" delle costituzioni dal genoma di
@@ -235,12 +254,12 @@ class AgentSpec(BaseModel):
     clearance: Optional[str] = None
 
     # ── Canali di contatto ────────────────────────────────────────────
-    # email/telegram espliciti (super e umani). Se assenti vengono derivati:
-    # i super da convenzione, i regular come subaddress dell'email del super
+    # email/telegram espliciti (bot e umani). Se assenti vengono derivati:
+    # clodia da convenzione, gli altri bot come subaddress dell'email parent
     # genitore (mailbox_parent, default "clodia"). Vedi api.contacts.
     email: Optional[str] = None
     telegram: Optional[str] = None          # handle o chat_id Telegram
-    mailbox_parent: Optional[str] = None    # per i regular: super di cui usare il subaddress
+    mailbox_parent: Optional[str] = None    # per i bot: parent di cui usare il subaddress
 
     # DEPRECATO (AgentSpec v2): meccanismo di delega v3 via sub-card alle
     # inbox. Nel modello skill-driven la delega è il movimento di card fra
@@ -269,11 +288,10 @@ class AgentSpec(BaseModel):
             return [{"name": item} if isinstance(item, str) else item for item in v]
         return v
 
-    # Immutabilità a runtime: se True (o se type=="super"), l'agent NON è
+    # Immutabilità a runtime: se True, l'agent NON è
     # modificabile da nessuna via applicativa (PATCH admin, PFP, tool agents.*).
-    # Si cambia SOLO via codice/rebuild del seed. Protegge il nucleo (super) e
-    # gli agent "di sistema" critici (es. Janitor) dall'auto-escalation e da
-    # riscritture indebite. Vedi api.agent_registry._is_immutable.
+    # Si cambia SOLO via codice/rebuild del seed. Protegge gli agent di sistema
+    # critici dall'auto-escalation e da riscritture indebite.
     immutable: bool = False
 
     # ── Campi CAP (Colony Agent Platform, spec §3.1) ──────────────────

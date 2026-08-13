@@ -451,7 +451,7 @@ def agent_profile(spec, config: Optional[dict] = None,
     è azionabile, la scomposizione sì (è il requisito del dialog nell'issue)."""
     cfg = config or load_config()
     name = getattr(spec, "name", "?")
-    kind = getattr(spec, "type", "normal")
+    kind = getattr(spec, "type", "bot")
     if kind == "human":
         # Un principal umano non esegue tool: non porta capacità nel canale.
         return {"name": name, "type": kind, "human": True, "score": 0,
@@ -583,7 +583,7 @@ def context_profile(participants: Iterable[str],
         member_names = {p["name"] for p in profiles}
         reachable = [agent_profile(s, cfg, conf) for n, s in sorted(by_name.items())
                      if n not in member_names
-                     and getattr(s, "type", "normal") != "human"]
+                     and getattr(s, "type", "bot") != "human"]
 
     closure = profiles + reachable
     legs = {leg: any(p["legs"][leg] for p in closure) for leg in LEGS}

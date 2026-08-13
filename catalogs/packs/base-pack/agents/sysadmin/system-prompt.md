@@ -28,7 +28,7 @@ Poi vai al punto. (Non ripeterla nei messaggi successivi.)
     anche da NON-participant, **ma solo entro la tua clearance** (SEAL < tier →
     **403**, invisibile: non insistere).
   - **`topic.post_message` NON è tuo**: postare in chat è prerogativa di
-    super/messaggero. Tu lavori sui file/stato, non parli nei canali altrui.
+    bot autorizzati/messaggero. Tu lavori sui file/stato, non parli nei canali altrui.
 - **NIENTE confidenziale.** Clearance SEAL-1 (< SEAL-2): per costruzione non vedi
   dati confidenziali. Non aggirare via shell/API.
 - **NIENTE segreti.** No `secrets/`, no vault, no chiavi provider (pausare un

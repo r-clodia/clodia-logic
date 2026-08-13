@@ -50,7 +50,7 @@ def _is_rule_file(p: Path) -> bool:
 
 def _all_rule_names() -> list[str]:
     """Tutte le rule disponibili (data flat + pack-subdir + logic; data precede,
-    dedup per nome con first-wins). Usato per la wildcard dei super-agent."""
+    dedup per nome con first-wins). Usato per la wildcard dei bot amministrativi."""
     names: list[str] = []
     seen: set[str] = set()
 
