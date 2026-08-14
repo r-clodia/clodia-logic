@@ -74,6 +74,27 @@ class AgentSpecV2Tests(unittest.TestCase):
                 "type": "proxy",
                 "tool_permissions": ["topic.read_file"],
             })
+    def test_a_proxy_may_declare_the_four_verbs_it_will_be_given(self):
+        """Ciò che il seed dichiara dev'essere ciò che il token conia. Finché
+        qui c'era il solo `topic.post_message`, il gateway ne consegnava dieci:
+        una restrizione che nessuno applicava, scritta come se lo fosse."""
+        spec = AgentSpec.model_validate({
+            "name": "crm-esterno",
+            "description": "Sistema terzo ammesso nel topic",
+            "display_name": "CRM",
+            "type": "proxy",
+            "tool_permissions": ["topic.post_message", "topic.messages",
+                                 "topic.my_mentions", "topic.mark_seen"],
+        })
+        self.assertEqual(len(spec.tool_permissions), 4)
+
+    def test_the_proxy_surface_stops_at_the_chat(self):
+        """Legge il canale, non la stanza: file, ricerca e scrittura restano
+        fuori — è la linea che separa un partecipante da una persona."""
+        from .models import _PROXY_ALLOWED_TOOLS
+        for v in ("topic.read_file", "topic.files", "topic.search", "topic.put",
+                  "topic.open", "topic.save_summary", "topic.add_participant"):
+            self.assertNotIn(v, _PROXY_ALLOWED_TOOLS)
 
 
 if __name__ == "__main__":

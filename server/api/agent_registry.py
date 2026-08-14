@@ -38,7 +38,7 @@ LOG = logging.getLogger("agent-server.agent-registry")
 from pydantic import BaseModel, Field
 
 from ..agents import activity_log, pause as pause_mod, rank as rank_mod, registry
-from ..agents.models import AgentSpec
+from ..agents.models import AgentSpec, _PROXY_ALLOWED_TOOLS
 from ..colony import pki
 from .. import scoped_overrides
 from .providers import (connected_provider_ids, candidate_providers, effective_provider,
@@ -940,7 +940,10 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
             "type": "proxy",
             "avatar_color": body.avatar_color,
             "created_at": created_at,
-            "tool_permissions": ["topic.post_message"],
+            # Ciò che un proxy fa: parla e legge la stanza in cui è invitato.
+            # Stessa lista che il gateway conia nel suo token — dichiarare meno
+            # di quel che si riceve è come non dichiarare.
+            "tool_permissions": sorted(_PROXY_ALLOWED_TOOLS),
             "system_prompt": None,
             "memory": None,
         }

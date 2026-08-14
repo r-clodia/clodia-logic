@@ -682,8 +682,16 @@ async def issue_mcp_client(tier: str, name: str, request: Request):
         raise HTTPException(403, f"'{chi}' non partecipa a {tier}/{name}: "
                                  "aggiungilo ai partecipanti, poi collega il client")
     from . import admin
+    from ..agents import registry as _reg
+    _spec = _reg.get_by_name(chi)
+    _kind = getattr(_spec, "type", None) or "human"
     payload = {
         "action": "issue", "principal": chi,
+        # Persona o proxy. Il gateway ne ricava i verbi: una persona porta i suoi
+        # dieci, un proxy i quattro con cui parla e legge la stanza. Finché non
+        # si diceva, un proxy riceveva un token da persona — dieci verbi contro
+        # l'unico che il suo seed dichiara.
+        "principal_kind": _kind,
         "provider": body.get("provider") or "",
         "carrier": body.get("carrier") or "clodia",
         "human_role": "admin" if admin.is_admin(chi) else "user",
