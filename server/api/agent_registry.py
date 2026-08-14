@@ -933,6 +933,24 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
             shutil.rmtree(target, ignore_errors=True)
             raise HTTPException(500, f"creazione fallita: {e}")
     elif body_type == "proxy":
+        # Un proxy SENZA chiave non è un'identità: è un nome. Fino al 14 ago
+        # 2026 la sua credenziale era un bearer a novanta giorni firmato da
+        # Clodia, col nome del proxy scritto dentro come claim — chi copiava
+        # quella stringa ERA quel proxy. Ora la privkey sta dal sistema esterno
+        # e ce ne prova il possesso a ogni token (vedi proxy_auth nel gateway),
+        # quindi la pubkey è il presupposto della creazione, non un extra.
+        pub = (body.pubkey or "").strip()
+        if not pub:
+            raise HTTPException(
+                400, "un proxy si crea con la sua pubkey ed25519 (PEM): è la "
+                     "sua identità. Generala nel sistema esterno — la privkey "
+                     "non deve mai passare di qui — oppure falla generare "
+                     "dalla webui e consegnala all'operatore.")
+        from ..colony import pki
+        try:
+            pki.issue_cert_for_pubkey(name, pub)
+        except Exception as e:  # noqa: BLE001 — superficie esterna
+            raise HTTPException(400, f"emissione certificato fallita: {str(e)[:160]}")
         spec_yaml = {
             "name": name,
             "display_name": display,
