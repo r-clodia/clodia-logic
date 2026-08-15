@@ -45,7 +45,13 @@ rules: ["*"]
 # gli stessi poteri quando serve una domanda davanti.
 #
 # ESCLUSI, irraggiungibili anche con un gate, e perché:
-#   email.*                    mestiere del corriere (messaggero), e uscita
+#   email.list/read/search     la posta IN ARRIVO è il mestiere del corriere, e
+#                              ha una fonte diversa a ogni messaggio
+#   email.reply                il destinatario non sta negli argomenti: viene dal
+#                              messaggio a cui si risponde, cioè da contenuto non
+#                              fidato. `egress._emails` non lo può estrarre, e una
+#                              destinazione illeggibile è la via dell'injection
+#                              («l'attaccante scrive, l'agente risponde coi dati»)
 #   gdrive.share               uscita verso una PERSONA, non trasporto
 #   settings.* mcp.add/remove  infrastruttura: mestiere di sysadmin
 #   packs.import_url/install_* esegue codice di terzi nel gateway
@@ -68,6 +74,33 @@ tool_permissions:
 # Quando le verrà chiesto un task che richiede un verbo che non possiede,
 # riceverà un GRANT specifico attraverso un gate. Quel meccanismo non è ancora
 # implementato (6 ago 2026): per ora il set è statico e questo file lo dichiara.
+# Leggere il web e spedire una relazione (14 ago 2026, decisione di Davide). Il
+# 6 agosto `email.*` era escluso in blocco perché «uscita»: la ragione era giusta
+# ma il rimedio era nel posto sbagliato. Un permesso tolto a un agente e lasciato
+# a un altro non riduce l'autorità della colonia — la sposta, e infatti il
+# digest quotidiano è rimasto orfano di entrambe le metà del suo mestiere.
+#
+# Il confinamento vero è per DESTINAZIONE e per FONTE, non per agente: è ciò che
+# `egress.py` dichiara nella propria intestazione, dove annota che la riduzione
+# dei verbi per-agente, da sola, è stata MISURATA come quasi inutile. Quindi
+# `email.send` torna qui, e ciò che lo rende accettabile vive nella config del
+# gateway (volume gateway-only, irraggiungibile da chi esegue il codice
+# dell'agente):
+#
+#   egress_allow.email  →  i soli destinatari a cui può arrivare senza chiedere
+#   ingress             →  le fonti che non contaminano il canale
+#
+# `web.fetch` è la lettura del web che PASSA di qui, e per questo è arbitrabile:
+# `WebSearch`/`WebFetch` nativi restano fuori da `native_tools` (sotto), perché
+# li esegue il provider dentro la conversazione con l'API — nessuna nostra regola
+# viene consultata e nessun taint si accende. Averli entrambi sarebbe tenere la
+# porta di servizio accanto a quella controllata.
+#
+# La catena si chiude da sé: fonte vagliata → niente taint → l'invio esce; fonte
+# sconosciuta → canale contaminato → l'uscita CHIEDE, dicendo da dove è entrato
+# il contenuto non fidato.
+  - web.fetch
+  - email.send
   - topic.remote_status
   - topic.add_minute
   - topic.save_summary
@@ -137,9 +170,12 @@ gated_tools: []
 
 # Strumenti nativi. `Bash` perché il suo sandbox già ammette git/gh/python3/node e
 # li usa per coordinare; `Agent`/`Workflow`/`Task*` perché è il coordinatore e
-# spawnare lavoro è il suo mestiere. NON `WebSearch` né `WebFetch`: le fonti di un
-# contenuto le porta un umano nella stanza, e un coordinatore che naviga porta
-# dentro testo di terzi senza che niente lo marchi.
+# spawnare lavoro è il suo mestiere. NON `WebSearch` né `WebFetch`: li esegue il
+# provider dentro la conversazione con l'API, quindi portano dentro testo di terzi
+# senza che niente lo marchi. Clodia il web lo legge, ma con `web.fetch` — che
+# passa dal gateway, dove l'URL viene pesato contro le fonti dichiarate. Tenere
+# anche i nativi vanificherebbe l'altro: una porta di servizio accanto a quella
+# controllata rende la seconda un ornamento.
 native_tools:
   - Bash
   - Agent
