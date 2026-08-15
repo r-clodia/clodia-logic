@@ -9,6 +9,21 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.10.0] — 2026-08-15
+- **`rules: ["*"]` removed from `clodia` and `ophelia`.** The catalogue holds
+  exactly one rule — `topic-state-boundary` — and it belongs to the secretary:
+  it confines whoever maintains a topic's written state, declares "using tools
+  other than the topic-state ones" out of domain, and prescribes "a short,
+  operational refusal". Under the wildcard both agents inherited it, so the
+  wildcard effectively said *behave like the secretary*.
+- Measured: the `Daily digest GRC` job closed `success` for four mornings while
+  replying "non rientra nel mio ambito: il mio ruolo qui è mantenere lo stato
+  scritto del topic" — the rule's own words, from an agent whose job was to read
+  the web and mail a report.
+- Same defect as the tool wildcard retired on 6 Aug, seen from the other side:
+  there it silently granted every power added tomorrow, here every LIMIT written
+  for someone else's trade. Rules get declared one by one, like verbs.
+
 ## [7.9.0] — 2026-08-14
 - **`clodia` gets `web.fetch` and `email.send` back.** On 6 Aug `email.*` was
   excluded in one block as "outbound"; the reason held but the remedy sat in the
