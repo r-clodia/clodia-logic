@@ -1711,3 +1711,43 @@ class GenerateFeedbackLessonTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SelfTagTests(unittest.TestCase):
+    """`@nome#N` fra istanze dello stesso seed è delega, non automenzione.
+
+    Il confronto per solo SEED scartava anche il fan-out fra ordinali, cioè
+    l'unico modo che `multi_spawn` ha di produrre un secondo turno: si vedeva
+    l'agente taggarsi e nessun clone partire.
+    """
+
+    def setUp(self) -> None:
+        self._orig = channels.registry.get_by_name
+        spec = _a("fullstack-dev", "normal", "P1", "2026-02-01T00:00:00Z")
+        channels.registry.get_by_name = lambda n: (
+            spec if n == "fullstack-dev" else None)
+
+    def tearDown(self) -> None:
+        channels.registry.get_by_name = self._orig
+
+    def test_bare_tag_to_own_seed_is_self(self) -> None:
+        """La riconvocazione che non termina: è il motivo per cui il filtro c'è."""
+        self.assertTrue(channels._is_self_tag("fullstack-dev", "fullstack-dev#1"))
+        self.assertTrue(channels._is_self_tag("fullstack-dev", "fullstack-dev"))
+
+    def test_same_ordinal_is_self(self) -> None:
+        self.assertTrue(channels._is_self_tag("fullstack-dev#2", "fullstack-dev#2"))
+
+    def test_other_ordinal_is_not_self(self) -> None:
+        """Il caso per cui il multispawn esiste."""
+        self.assertFalse(channels._is_self_tag("fullstack-dev#2", "fullstack-dev#1"))
+        self.assertFalse(channels._is_self_tag("fullstack-dev#1", "fullstack-dev#3"))
+
+    def test_another_seed_is_never_self(self) -> None:
+        self.assertFalse(channels._is_self_tag("segretario", "fullstack-dev#1"))
+        self.assertFalse(channels._is_self_tag("segretario#2", "fullstack-dev#2"))
+
+    def test_ordinal_one_and_bare_label_are_the_same_instance(self) -> None:
+        """`fullstack-dev` e `fullstack-dev#1` sono la stessa istanza scritta in
+        due modi: il tag esplicito verso di sé non deve riaprirsi un turno."""
+        self.assertTrue(channels._is_self_tag("fullstack-dev", "fullstack-dev#1"))

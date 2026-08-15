@@ -407,10 +407,10 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             requested_by=from_agent))
 
     eligible_soft = [t for t in soft
-                     if _seed_name(t) in participants and _seed_name(t) != self_seed]
+                     if _seed_name(t) in participants and not _is_self_tag(t, from_agent)]
     plan: list[tuple[str, str]] = (
         [(t, "direct") for t in hard
-         if _seed_name(t) in participants and _seed_name(t) != self_seed]
+         if _seed_name(t) in participants and not _is_self_tag(t, from_agent)]
         # `$tag` NON avvia un turno. Prima lo avviava, con l'aggravante che la
         # direttiva soft ORDINAVA un cenno anche a chi non aveva nulla da dire:
         # costava come un `@` e produceva in più un messaggio vuoto. La citazione
@@ -538,6 +538,32 @@ def _is_known_seed(nome: str) -> bool:
 def _seed_name(label: str | None) -> str | None:
     """Nome del seed da un'etichetta istanza ('fullstack-dev#2' → 'fullstack-dev')."""
     return _split_ord(label)[0]
+
+
+def _is_self_tag(tag: str | None, from_agent: str | None) -> bool:
+    """Il tag punta a chi lo ha scritto — non solo al suo seed?
+
+    Il filtro anti-auto-delega confrontava i soli SEED, e quindi rispondeva `sì`
+    anche a `@fullstack-dev#2` letto da `fullstack-dev#1`: il guard-rail contro
+    la riconvocazione infinita mangiava il fan-out FRA ISTANZE, che è l'unica
+    cosa per cui `multi_spawn` esiste. Dall'esterno si vedeva l'agente taggarsi
+    e nessun clone partire, senza una riga di log — il tag cadeva in silenzio
+    insieme a quelli verso i non-partecipanti.
+
+    Le due domande sono diverse:
+
+    - `@fullstack-dev` da `fullstack-dev#1` → sé stesso: si scarta, ed è il
+      motivo per cui il filtro esiste (nessuno la interrompe, quella catena);
+    - `@fullstack-dev#2` da `fullstack-dev#1` → un'ALTRA istanza: si delega. A
+      limitare restano `max_spawns` e `_MAX_DELEGATION_HOPS`, che sono espliciti;
+      qui non se ne aggiunge un terzo per effetto collaterale.
+    """
+    seed, ordinale = _split_ord(tag)
+    if seed != _seed_name(from_agent):
+        return False
+    if ordinale is None:
+        return True                                   # tag nudo al proprio seed
+    return ordinale == _split_ord(from_agent)[1]      # stessa istanza esatta
 
 
 def _effective_clearance(spec) -> str:
