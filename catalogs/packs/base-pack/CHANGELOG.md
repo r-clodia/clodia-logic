@@ -9,6 +9,24 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.9.0] — 2026-08-14
+- **`clodia` gets `web.fetch` and `email.send` back.** On 6 Aug `email.*` was
+  excluded in one block as "outbound"; the reason held but the remedy sat in the
+  wrong place — a permission taken from one agent and left with another does not
+  reduce the colony's authority, it moves it, and the daily digest job was left
+  without either half of its trade. Confinement belongs to DESTINATION and
+  SOURCE (`egress_allow` / `ingress`, in the gateway-only config), which is what
+  `egress.py` states in its own header when it records that per-agent verb
+  reduction was *measured* to be nearly worthless on its own.
+- **Still excluded, and now for a stated reason**: `email.list/read/search` (the
+  inbound post is the courier's trade, with a different sender each message) and
+  `email.reply` — its recipient is not in the arguments, it comes from the
+  message being replied to, so `egress` cannot read the destination at all.
+- **`WebSearch`/`WebFetch` stay out of `native_tools`.** The provider runs them
+  inside the API conversation, where no rule of ours is consulted: keeping them
+  next to `web.fetch` would be a service door beside the controlled one.
+  Requires clodia-tools ≥ 1.90.0, which is where `web.fetch` lands.
+
 ## [7.7.0] — 2026-08-12
 - **Agent type vocabulary reduced to `bot | human`.** Base seeds now declare
   `type: bot`; legacy `normal` and `super` still parse as `bot`, but the
