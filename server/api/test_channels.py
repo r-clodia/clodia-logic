@@ -1118,6 +1118,86 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             channels.topics_client.post_message = original_post
             channels._maybe_delegate = original_delegate
 
+    async def test_final_reply_posts_and_still_delegates(self) -> None:
+        """Il percorso NORMALE: la risposta la posta questa funzione, non un tool.
+
+        Era l'unico ramo scoperto, e ci è passato dentro un `NameError` che
+        pubblicava il messaggio e poi usciva con `return None` prima di
+        `_maybe_delegate`: un tag a un altro agente compariva in chat e il suo
+        turno non partiva mai. Il test guarda le due cose insieme — il messaggio
+        pubblicato E la delega chiamata — perché separate non avrebbero visto
+        nulla: il post riusciva davvero.
+        """
+        class PlainChat:
+            principal = ""
+
+            async def send_user_message(chat_self, _prompt: str) -> str:
+                return "fatto. @worker tocca a te"
+
+        delegated: list[tuple] = []
+
+        async def spy_delegate(tier, name, responder, text, principal, hop, **_kw):
+            delegated.append((tier, name, responder, text, hop))
+
+        original_list = channels.topics_client.list_messages
+        original_delegate = channels._maybe_delegate
+        try:
+            channels.topics_client.list_messages = lambda *_a, **_k: []
+            channels._maybe_delegate = spy_delegate
+
+            reply = await channels._run_and_post_response(
+                "P0", "ops", "clodia", PlainChat(), "prompt",
+            )
+
+            self.assertEqual(reply, "fatto. @worker tocca a te")
+            self.assertEqual(self.posts[-1], ("clodia", "fatto. @worker tocca a te", "ai"))
+            self.assertEqual(len(delegated), 1, "la delega non è stata innescata")
+            self.assertEqual(delegated[0][2], "clodia")
+        finally:
+            channels.topics_client.list_messages = original_list
+            channels._maybe_delegate = original_delegate
+
+    async def test_failing_sse_notification_does_not_swallow_the_turn(self) -> None:
+        """Se la notifica SSE cade, il messaggio resta pubblicato e la delega parte.
+
+        La notifica decora un evento: non decide niente. Prima stava nello stesso
+        `try` del post, quindi un suo errore veniva letto come «post fallito» —
+        falso — e fermava la catena.
+        """
+        class PlainChat:
+            principal = ""
+
+            async def send_user_message(chat_self, _prompt: str) -> str:
+                return "ok @worker"
+
+        delegated: list[tuple] = []
+
+        async def boom(*_a, **_k):
+            raise RuntimeError("SSE giù")
+
+        async def spy_delegate(*args, **_kw):
+            delegated.append(args)
+
+        original_list = channels.topics_client.list_messages
+        original_delegate = channels._maybe_delegate
+        original_channel_message = channels._channel_message
+        try:
+            channels.topics_client.list_messages = lambda *_a, **_k: []
+            channels._maybe_delegate = spy_delegate
+            channels._channel_message = boom
+
+            reply = await channels._run_and_post_response(
+                "P0", "ops", "clodia", PlainChat(), "prompt",
+            )
+
+            self.assertEqual(reply, "ok @worker")
+            self.assertEqual(self.posts[-1], ("clodia", "ok @worker", "ai"))
+            self.assertEqual(len(delegated), 1, "la delega si è persa con la notifica")
+        finally:
+            channels.topics_client.list_messages = original_list
+            channels._maybe_delegate = original_delegate
+            channels._channel_message = original_channel_message
+
     async def test_unserved_direct_mention_does_not_fall_through_to_routing(self) -> None:
         agents = {
             "clodia": _a("clodia", "super", "P3"),

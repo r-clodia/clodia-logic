@@ -260,6 +260,19 @@ def _new_ai_messages(before: list[dict], after: list[dict], author: str) -> list
     ]
 
 
+def _topic_title(tier: str, name: str) -> str | None:
+    """Titolo del topic per la notifica, o None se non si riesce a leggerlo.
+
+    Best-effort di proposito: serve a decorare un evento SSE, non a decidere
+    nulla. Fallire qui non deve fermare un turno — che è esattamente ciò che
+    accadeva quando il titolo veniva preso da una variabile inesistente.
+    """
+    try:
+        return (topics_client.open_topic(tier, name).get("meta") or {}).get("title")
+    except Exception:  # noqa: BLE001
+        return None
+
+
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
                                  principal: str | None = None, hop: int = 0) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
@@ -323,11 +336,24 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     autore = _spawn_label(chat, responder)
     try:
         msg = topics_client.post_message(tier, name, autore, reply, kind="ai")
-        await _channel_message(tier, name, autore, "ai",
-                               message=msg, topic_title=meta.get("title"))
     except Exception as e:  # noqa: BLE001
         LOG.warning("post risposta canale %s/%s da %s fallito: %s", tier, name, responder, e)
         return None
+    # La NOTIFICA sta in un try suo, e il motivo è ciò che è successo con l'altro:
+    # `meta` non esiste in questa funzione (è una variabile di
+    # `post_channel_message`), quindi ogni turno finiva in NameError DOPO aver
+    # pubblicato. L'except lo leggeva come «post fallito» — falso, il messaggio
+    # era nel canale — e usciva con `return None`, saltando `_maybe_delegate`:
+    # il turno dell'agente taggato non partiva mai. Un tag a @fullstack-dev
+    # compariva in chat e non succedeva nulla, senza che l'errore nominasse la
+    # delega. Separarli tiene la catena in piedi anche quando la notifica cade,
+    # ed è il motivo per cui la delega non sta più dentro lo stesso try.
+    try:
+        await _channel_message(tier, name, autore, "ai",
+                               message=msg, topic_title=_topic_title(tier, name))
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("notifica SSE %s/%s da %s fallita (messaggio gia' pubblicato): %s",
+                    tier, name, responder, e)
     if hop < _MAX_DELEGATION_HOPS:
         try:
             await _maybe_delegate(tier, name, responder, reply, principal, hop,
