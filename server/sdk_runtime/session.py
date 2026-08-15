@@ -1696,6 +1696,15 @@ class CodexChatSession:
                 encoding="utf-8")
         except Exception as e:  # noqa: BLE001
             LOG.warning("config.toml MCP per codex non scritto: %s", e)
+        # Il residuo: cosa il seed nega e codex non toglie. Detto una volta per
+        # sessione, perché una dichiarazione inapplicata che non compare da
+        # nessuna parte è peggio di una dichiarazione assente.
+        from . import native_tools as _nt
+        residuo = _nt.unenforced_denied("codex", _resolve_native_denied(self.kind))
+        if residuo:
+            LOG.warning("codex: %s dichiara di negare %d strumenti nativi che "
+                        "questo runtime NON toglie: %s", self.kind, len(residuo),
+                        ", ".join(residuo))
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         # webchat = SPAWN: materializza il seed (costituzione + skill + memory +
         # scratch). Per codex l'AGENTS.md dello spawn include già la governance
@@ -1869,6 +1878,11 @@ class CodexChatSession:
         # niente -C: il workdir è già imposto via cwd= sul subprocess (e `resume`
         # non accetta -C). --skip-git-repo-check: il workspace non è un repo git.
         cmd += ["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]
+        # L'unico strumento nativo che codex 0.137 sa spegnere. Si passa solo il
+        # diniego: `tools.web_search=true` forzerebbe una concessione che il seed
+        # non ha chiesto, e la sottrazione resta l'unico canale.
+        if "WebSearch" in _resolve_native_denied(self.kind):
+            cmd += ["-c", "tools.web_search=false"]
         # `-` rende esplicito il contratto stdin sia per exec sia per exec resume.
         cmd.append("-")
         return cmd
@@ -2249,6 +2263,15 @@ class OpenCodeChatSession:
                 "enabled": True}
         except Exception as e:  # noqa: BLE001
             LOG.warning("opencode: MCP clodia-tools non cablato per %s: %s", self.kind, e)
+        # Gli strumenti nativi dichiarati dal seed. Su claude la sottrazione va in
+        # `disallowed_tools`; qui nella sezione `permission`, che è il solo posto
+        # dove opencode la sa leggere. Stessa lista, stessa direzione: si nega.
+        from . import native_tools as _nt
+        perm = _nt.opencode_permission(_resolve_native_allowed(self.kind))
+        if perm:
+            cfg["permission"] = perm
+            LOG.info("opencode: %s — permessi negati: %s", self.kind,
+                     ", ".join(sorted(perm)))
         cwd.mkdir(parents=True, exist_ok=True)
         (cwd / "opencode.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         return env

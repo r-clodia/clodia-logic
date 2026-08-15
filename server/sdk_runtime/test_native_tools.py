@@ -126,6 +126,98 @@ class TheFloorAndTheSeedUnionTests(unittest.TestCase):
         self.assertIsNone(self._resolve(None, None))
 
 
+class TheSameDeclarationOnOpenCodeTests(unittest.TestCase):
+    """opencode non ha `disallowed_tools`: ha una sezione `permission` con ~15
+    chiavi a grana grossa. Si traduce ciò che ha un corrispondente e si emettono
+    solo i dinieghi, che è la stessa direzione tenuta su claude."""
+
+    def test_nobody_declaring_writes_no_permission(self):
+        self.assertEqual(nt.opencode_permission(None), {})
+
+    def test_what_is_not_granted_is_denied_by_name(self):
+        perm = nt.opencode_permission(["Read", "Bash", "Grep"])
+        self.assertEqual(perm["websearch"], "deny")
+        self.assertEqual(perm["webfetch"], "deny")
+        self.assertEqual(perm["task"], "deny")
+        for concesso in ("read", "bash", "grep"):
+            self.assertNotIn(concesso, perm)
+
+    def test_a_granted_tool_is_not_rewritten_as_allow(self):
+        """Emettere `allow` scriverebbe una concessione che il seed non ha
+        chiesto (niente più conferme) al posto di lasciare il default."""
+        self.assertNotIn("allow", set(nt.opencode_permission(["Read"]).values()))
+
+    def test_write_alone_keeps_the_single_edit_permission(self):
+        """opencode ha UN permesso per write+edit+patch: chi ha `Write` ma non
+        `Edit` non deve perderlo per un difetto di traduzione."""
+        self.assertNotIn("edit", nt.opencode_permission(["Write"]))
+
+    def test_a_bash_pattern_becomes_a_pattern_map(self):
+        """`Bash(git:*)` non è né tutto né niente: opencode accetta una mappa
+        pattern→azione, che è dove quel ritaglio sopravvive."""
+        perm = nt.opencode_permission(["Bash(git:*)"])
+        self.assertEqual(perm["bash"]["git *"], "allow")
+        self.assertEqual(perm["bash"]["git"], "allow")
+        self.assertEqual(perm["bash"]["*"], "deny")
+
+    def test_plain_bash_is_not_narrowed_by_a_sibling_pattern(self):
+        """Se il seed concede `Bash` intero, un `Bash(git:*)` accanto non deve
+        trasformare la concessione in una restrizione."""
+        self.assertNotIn("bash", nt.opencode_permission(["Bash", "Bash(git:*)"]))
+
+    def test_the_unmapped_keys_are_never_emitted(self):
+        """Decidere `lsp` o `doom_loop` da una lista che non li nomina sarebbe
+        inventare una policy e attribuirla al seed."""
+        perm = nt.opencode_permission([])
+        for chiave in nt.OPENCODE_UNMAPPED:
+            self.assertNotIn(chiave, perm)
+
+
+class WhatEachRuntimeActuallyEnforcesTests(unittest.TestCase):
+    """La domanda a cui il file del seed da solo non risponde: questa lista
+    conta qualcosa? Per tre mesi la risposta era «su un runtime su tre», e non
+    era scritta da nessuna parte."""
+
+    def test_claude_and_opencode_carry_the_whole_declaration(self):
+        negati = nt.disallowed_for(["Read"])
+        self.assertEqual(nt.unenforced_denied("claude", negati), [])
+        self.assertEqual(nt.unenforced_denied("opencode", negati), [])
+
+    def test_codex_carries_only_the_web_search_knob(self):
+        """Misurato su codex-cli 0.137.0 con `--strict-config`: `tools.web_search`
+        è l'unica chiave riconosciuta, `tools.shell` e le altre no."""
+        residuo = nt.unenforced_denied("codex", ["WebSearch", "Bash", "Agent"])
+        self.assertNotIn("WebSearch", residuo)
+        self.assertEqual(residuo, ["Agent", "Bash"])
+
+    def test_an_unknown_runtime_is_assumed_to_enforce_nothing(self):
+        """Un adapter nuovo non deve nascere silenziosamente «conforme»: la
+        direzione d'errore giusta è dichiararsi scoperto."""
+        self.assertEqual(nt.unenforced_denied("qualcosa-di-nuovo", ["Bash"]), ["Bash"])
+
+    def test_a_seed_declaring_nothing_leaves_no_residue_anywhere(self):
+        self.assertEqual(nt.unenforced_denied("codex", []), [])
+
+
+class TheCodexCommandLineTests(unittest.TestCase):
+    def _cmd(self, negati):
+        from unittest.mock import patch
+        from . import session as S
+        sess = S.CodexChatSession.__new__(S.CodexChatSession)
+        sess.kind = "ophelia"
+        sess._thread_id = None
+        with patch.object(S, "_resolve_native_denied", return_value=negati):
+            return sess._codex_cmd("gpt-5.5")
+
+    def test_a_seed_that_denies_web_search_gets_the_knob(self):
+        self.assertIn("tools.web_search=false", self._cmd(["WebSearch", "Bash"]))
+
+    def test_a_seed_that_grants_it_is_left_alone(self):
+        """Passare `tools.web_search=true` forzerebbe una concessione che il seed
+        non ha chiesto: la sottrazione resta l'unico canale."""
+        self.assertFalse([a for a in self._cmd(["Bash"]) if "web_search" in a])
+
+
 class TheGatewayVerbsSurviveTests(unittest.TestCase):
     """Trappola 1 di A9. Il gateway è montato come server MCP e i suoi ~90 verbi
     arrivano al modello come `mcp__clodia-tools__*`. Negare per nome i soli tool
