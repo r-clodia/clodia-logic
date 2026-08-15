@@ -25,7 +25,8 @@ from . import topics as T
 
 
 META = {"tier": "SEAL-1", "owner": "davide",
-        "participants": {"davide": "owner", "giovanni": "member"}}
+        "participants": {"davide": "owner", "giovanni": "member",
+                         "crm-esterno": "member"}}
 
 
 class _Req:
@@ -135,3 +136,36 @@ class RevokeTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class WhichNatureTravelsTests(unittest.TestCase):
+    """Persona o proxy: il gateway ne ricava i verbi, dieci contro quattro.
+
+    Finché non viaggiava, un proxy riceveva il token di una persona — con
+    `topic.read_file`, `topic.search` e `topic.put` — mentre il suo seed
+    dichiarava il solo `topic.post_message`.
+    """
+
+    def _con_registry(self, tipo):
+        from types import SimpleNamespace
+        from ..agents import registry
+        spec = SimpleNamespace(type=tipo) if tipo else None
+        return patch.object(registry, "get_by_name", lambda n: spec)
+
+    def test_a_proxy_is_declared_as_such(self):
+        with self._con_registry("proxy"):
+            _, chiesto = _chiama("davide", {"principal": "crm-esterno",
+                                            "provider": "sistema-crm"})
+        self.assertEqual(chiesto["principal_kind"], "proxy")
+
+    def test_a_person_stays_a_person(self):
+        with self._con_registry("human"):
+            _, chiesto = _chiama("giovanni", {"provider": "anthropic-api"})
+        self.assertEqual(chiesto["principal_kind"], "human")
+
+    def test_an_unknown_principal_does_not_become_a_proxy_by_accident(self):
+        """La registry che non risponde non deve DEGRADARE il caso umano: il
+        default resta ciò che questo endpoint ha coniato per mesi."""
+        with self._con_registry(None):
+            _, chiesto = _chiama("giovanni", {"provider": "anthropic-api"})
+        self.assertEqual(chiesto["principal_kind"], "human")

@@ -10,7 +10,21 @@ from pydantic import BaseModel, Field, ConfigDict, field_validator, model_valida
 
 
 AgentType = Literal["bot", "human", "proxy"]
-_PROXY_ALLOWED_TOOLS = {"topic.post_message"}
+#: Ciò che un proxy può dichiarare: parla e legge LA SUA stanza, e basta.
+#:
+#: Fino al 14 ago 2026 qui c'era il solo `topic.post_message`, e il token che il
+#: gateway coniava per un proxy ne portava dieci — quelli di una persona. Il
+#: seed prometteva una cosa e la credenziale ne consegnava un'altra, che è il
+#: modo in cui una restrizione smette di essere una restrizione.
+#:
+#: Deve restare allineato a `PROXY_VERBS` in `human_mcp.py` (clodia-tools):
+#: questo è ciò che si dichiara, quello è ciò che si conia.
+_PROXY_ALLOWED_TOOLS = {
+    "topic.post_message",   # scrive nel canale (e menziona: la menzione è testo)
+    "topic.messages",       # legge il canale — senza, non dialoga: è un webhook
+    "topic.my_mentions",    # sa di essere stato chiamato
+    "topic.mark_seen",
+}
 
 
 def normalize_agent_type(value: object) -> str:
@@ -243,8 +257,8 @@ class AgentSpec(BaseModel):
         extra_tools = set(self.tool_permissions or []) - _PROXY_ALLOWED_TOOLS
         if extra_tools:
             raise ValueError(
-                "proxy: ammesso solo topic.post_message, non "
-                + ", ".join(sorted(extra_tools))
+                "proxy: ammessi solo " + ", ".join(sorted(_PROXY_ALLOWED_TOOLS))
+                + " — non " + ", ".join(sorted(extra_tools))
             )
         if any((self.rag_read, self.rag_write, self.volumes, self.credentials, self.carries or [])):
             raise ValueError("proxy: nessun file/RAG/volume/credential ammesso")
