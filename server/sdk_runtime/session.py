@@ -1397,6 +1397,16 @@ class ChatSession:
                 raise
 
             self._last_event_at = asyncio.get_event_loop().time()  # progresso → watchdog quieto
+            # E anche `last_activity`, che è ciò che l'API legge per dire se una
+            # sessione è viva (`_live_status`: `thinking` + silenzio > 180s =
+            # `blocked`). Prima si muoveva solo in `_record`, cioè quando un
+            # MESSAGGIO veniva scritto: un turno che passa dieci minuti in tool
+            # call non aggiornava niente e veniva dichiarato fermo mentre
+            # lavorava. La quantità misurata era «non ha parlato», presentata
+            # come «non sta lavorando» — e sbagliata proprio sui turni lunghi,
+            # che sono quelli su cui un umano ha bisogno del segnale
+            # (agents-notebook A13).
+            self.last_activity = datetime.now(timezone.utc)
             if isinstance(message, StreamEvent):
                 # Delta token-by-token (include_partial_messages=True). L'evento
                 # raw dell'API è in message.event: content_block_delta porta
@@ -1988,6 +1998,12 @@ class CodexChatSession:
     async def _handle_event(
         self, ev: dict, parts: list[str], errors: Optional[list[str]] = None,
     ) -> None:
+        # Stesso motivo del runtime claude (A13): `last_activity` è ciò che
+        # l'API legge per distinguere «sta lavorando» da «è piantato», e senza
+        # questo si muoveva solo quando veniva registrato un messaggio. Qui
+        # passano gli eventi dei runtime a subprocess (codex, opencode), quindi
+        # è l'unico punto che li vede tutti.
+        self.last_activity = datetime.now(timezone.utc)
         t = ev.get("type")
         if t == "thread.started":
             tid = ev.get("thread_id")
@@ -2547,6 +2563,12 @@ class OpenCodeChatSession:
         return full
 
     async def _handle_parts(self, data: dict) -> str:
+        # Stesso motivo di `ChatSession._collect_response` e
+        # `CodexChatSession._handle_event` (A13): qui passano le parti prodotte
+        # dal turno opencode, ed è il punto che vede il progresso di questo
+        # runtime. Senza, `last_activity` si muoverebbe solo a messaggio
+        # registrato e un turno lungo verrebbe dichiarato piantato mentre lavora.
+        self.last_activity = datetime.now(timezone.utc)
         parts_out: list[str] = []
         for p in data.get("parts", []) or []:
             t = p.get("type")
