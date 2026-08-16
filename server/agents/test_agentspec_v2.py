@@ -37,6 +37,8 @@ class AgentSpecV2Tests(unittest.TestCase):
         self.assertEqual(spec.skills, ["skills/x.md"])
 
     def test_legacy_agent_types_normalize_to_bot(self):
+
+        """agents-notebook A3: esistono solo `bot` e `human` — «non esiste più questa classificazione» per super."""
         self.assertEqual(self._minimal(type="normal").type, "bot")
         self.assertEqual(self._minimal(type="super").type, "bot")
         self.assertEqual(self._minimal(type="bot").type, "bot")
@@ -45,6 +47,8 @@ class AgentSpecV2Tests(unittest.TestCase):
         self.assertEqual(human.type, "human")
 
     def test_proxy_is_a_registered_non_runtime_principal(self):
+
+        """agents-notebook A11: il proxy è una terza classe — parla e non fa altro."""
         spec = AgentSpec.model_validate({
             "name": "webhook",
             "description": "Sistema terzo ammesso nel topic",
@@ -99,3 +103,42 @@ class AgentSpecV2Tests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ActivationMechanicsTests(unittest.TestCase):
+    """Il seed dichiara come si attiva: coda, parallelo o rifiuto.
+
+    router-notebook R15: «coda, parallelo e rifiuto sono tutte valide, il profilo
+    del seed dovrebbe riportare la sua meccanica di attivazione fra queste tre».
+
+    Oggi il seed dichiara `routing_mode` (se può essere scelto senza essere
+    nominato) e `multi_spawn` (che copre il «parallelo», e solo in parte): «coda»
+    e «rifiuto» esistono come COMPORTAMENTO — il lock FIFO della sessione, il
+    cap di `max_spawns` — ma nessuno dei due è dichiarato, quindi non si può né
+    leggere né scegliere per seed. Issue clodia-platform#191.
+    """
+
+    @unittest.expectedFailure   # clodia-platform#191 — R15 non ancora consegnata
+    def test_the_seed_declares_its_activation_mechanics(self) -> None:
+        """ROSSO ATTESO finché #191 è aperta.
+
+        Diventerà `unexpected success` il giorno in cui il campo arriva, il che
+        è il segnale giusto: cade su questa riga, che è dove il requisito è
+        scritto (decision record 34). Senza il test, R15 sarebbe indistinguibile
+        da una voce consegnata — che è come A7 è rimasta aperta senza che la sua
+        assenza si notasse.
+        """
+        from .models import AgentSpec
+        self.assertIn("activation", AgentSpec.model_fields)
+
+    def test_what_exists_today_covers_only_parallel(self) -> None:
+        """La metà che c'è, dichiarata: `multi_spawn` è il «parallelo» di R15.
+
+        Questo test non è un ripiego del precedente — fissa che il pezzo
+        esistente resti dichiarativo e leggibile dal seed, così quando arriverà
+        `activation` si saprà cosa assorbe.
+        """
+        from .models import AgentSpec
+        self.assertIn("multi_spawn", AgentSpec.model_fields)
+        self.assertIn("max_spawns", AgentSpec.model_fields)
+        self.assertIn("routing_mode", AgentSpec.model_fields)

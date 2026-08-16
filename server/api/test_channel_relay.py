@@ -29,6 +29,8 @@ class AddressesBotTests(unittest.TestCase):
         self.assertTrue(_addresses_bot("@Clodia rispondi", []))
 
     def test_mention_agent_participant(self):
+
+        """router-notebook R5: il relay verso il gruppo resta (decisione ribaltata il 12 ago)."""
         self.assertTrue(_addresses_bot("@ophelia che ne pensi?", ["ophelia", "davide"]))
 
     def test_human_chatter_not_addressed(self):
