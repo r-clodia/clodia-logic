@@ -59,6 +59,8 @@ class HumansAreNotRoutedTests(unittest.TestCase):
         self.addCleanup(p.stop)
 
     def test_a_human_tag_is_recognised(self):
+
+        """router-notebook R1: il router stabilisce «quale agente ai **o umano**» tratta il messaggio."""
         self.assertEqual(C._humans_tagged("@matteo puoi guardare?", PARTECIPANTI),
                          ["matteo"])
 

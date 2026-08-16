@@ -54,10 +54,14 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(r.name, "clodia")
 
     def test_tag_overrides_rank(self) -> None:
+
+        """router-notebook R2: una menzione diretta non è un consiglio — batte il rango."""
         r = channels._pick_responder(["clodia", "worker"], "P0", "worker")
         self.assertEqual(r.name, "worker")
 
     def test_state_writer_only_agent_is_not_auto_routed_for_technical_questions(self) -> None:
+
+        """agents-notebook A1: il profilo stretto del segretario — non viene scelto dal router per ciò che non è stato del topic."""
         r = channels._pick_responder(
             ["owner", "segretario"],
             "P0",
@@ -78,6 +82,8 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(r.name, "segretario")
 
     def test_direct_tag_still_reaches_state_writer_only_agent(self) -> None:
+
+        """agents-notebook A1: il profilo stretto vale per la SCELTA del router, non per una convocazione diretta."""
         r = channels._pick_responder(
             ["owner", "segretario"],
             "P0",
@@ -88,6 +94,8 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(r.name, "segretario")
 
     def test_proxy_is_not_a_responder_even_when_tagged(self) -> None:
+
+        """agents-notebook A11: un proxy non prende turni nemmeno se convocato."""
         r = channels._pick_responder(
             ["owner", "github-hook", "worker"],
             "P0",
@@ -172,6 +180,8 @@ class ResponderTests(unittest.TestCase):
         )
 
     def test_clearance_excludes_low(self) -> None:
+
+        """router-notebook R14: gli inidonei non sono nello scope, quindi non sono candidati."""
         # canale P2: worker (P1) escluso, clodia (P3) ok
         r = channels._pick_responder(["worker", "clodia"], "P2", None)
         self.assertEqual(r.name, "clodia")
@@ -396,6 +406,8 @@ class ResponderTests(unittest.TestCase):
         )
 
     def test_multi_intent_unmatched_tasks_go_to_coordinator(self) -> None:
+
+        """router-notebook R10: quando il router non sa scegliere, sceglie un agente intelligente."""
         # modalità opt-in CHANNEL_MULTI_RESPONDER=1 (il default è risposta singola)
         def score(_specialists, intent):
             if "summary" in intent:
@@ -474,6 +486,8 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(trace["chosen"], "worker")
 
     def test_no_soft_match_still_falls_back_to_rank(self) -> None:
+
+        """router-notebook R6: il routing semantico è il fallback, non la via maestra."""
         scored = [(self.agents["worker"], 0.10)]
         trace = {}
         with (
@@ -628,6 +642,8 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(meta["type"], "infra")
 
     def test_topic_intro_keeps_eligible_clodia(self) -> None:
+
+        """agents-notebook A4: clodia coordina la stanza quando il tier glielo consente."""
         meta = {"contact_agent": "clodia", "participants": ["owner", "clodia"]}
         with patch.object(channels, "_provider_seal_ok", return_value=True):
             intro = channels._select_topic_intro_agent(meta, "SEAL-2")
@@ -666,6 +682,8 @@ class ResponderTests(unittest.TestCase):
         self.assertNotIn("team_bootstrap_agent", meta)
 
     def test_topic_intro_refuses_all_tier_fallback_below_topic_tier(self) -> None:
+
+        """agents-notebook A4: e il tier glielo toglie — «il tier dello scope è superiore a quello che può usare clodia»."""
         meta = {"contact_agent": "clodia", "participants": ["owner", "clodia"]}
 
         with patch.object(channels, "_provider_seal_ok", return_value=False):
@@ -730,6 +748,8 @@ class ResponderTests(unittest.TestCase):
         )
 
     def test_ambiguous_routing_posts_router_choice_dialog(self) -> None:
+
+        """router-notebook R8: l'ambiguità è una domanda, non una scelta a caso."""
         # `routing_messages` è la finestra degli N messaggi (#185): il doppio
         # deve accettarla, o il test fallisce sulla firma invece che sulla cosa
         # che verifica.
@@ -780,6 +800,8 @@ class ResponderTests(unittest.TestCase):
         )
 
     def test_routing_choice_records_feedback_and_starts_selected_agent(self) -> None:
+
+        """router-notebook R9: l'umano scavalca il router, e la risposta viene ricordata (R8)."""
         worker = _a("worker", "normal", "P1")
         request = SimpleNamespace(
             headers={},
@@ -858,6 +880,7 @@ class ResponderTests(unittest.TestCase):
 
 class ChannelMessageEventTests(unittest.TestCase):
     def test_channel_message_event_carries_mentions_for_presence_ladder(self) -> None:
+        """router-notebook R4: la menzione di una persona escala secondo quanto è presente."""
         publish = AsyncMock()
         msg = {
             "id": "20260812-120000-abc",
@@ -911,6 +934,8 @@ class ChannelTrifectaTests(unittest.TestCase):
         self.assertEqual(prof["symbol"], "⚠️")
 
     def test_failure_degrades_to_none_instead_of_breaking_the_channel(self) -> None:
+
+        """router-notebook R13: un router degradato lo dice, invece di rompere il canale."""
         with patch.object(channels.trifecta, "context_profile",
                           side_effect=RuntimeError("registry ko")):
             self.assertIsNone(channels._channel_trifecta({"participants": ["x"]}))
@@ -1316,6 +1341,8 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         channels._track_routing_decision = self._orig_track_routing
 
     async def test_two_hard_tags_post_a_routing_choice_instead_of_starting(self) -> None:
+
+        """router-notebook R3: due menzioni chiedono."""
         start = AsyncMock(return_value=True)
         posts = []
 
@@ -1351,6 +1378,8 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         start.assert_not_awaited()
 
     async def test_three_hard_tags_refuse_routing_and_start_nobody(self) -> None:
+
+        """router-notebook R3: tre rifiutano."""
         self.agents["reviewer"] = _a("reviewer", "normal", "P1")
         start = AsyncMock(return_value=True)
         posts = []
@@ -1528,6 +1557,8 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         start.assert_awaited_once()
 
     async def test_first_topic_description_is_routed_to_bootstrap_agent(self) -> None:
+
+        """agents-notebook A5: il bootstrap va a chi il tier ammette."""
         segretario = _a("segretario", "normal", "P1")
         self.agents["segretario"] = segretario
         start = AsyncMock(return_value=True)
@@ -1602,6 +1633,10 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         ordinava un cenno anche a chi non aveva nulla da dire: costava come un `@`
         e produceva in più un messaggio vuoto. La citazione resta nel campo
         `mentions` — badge e notifica — e l'agente la legge al suo turno naturale.
+
+
+        router-notebook R12: `$` cita e non attiva mai.
+
         """
         start = await self._delegate("Come diceva $worker, il punto regge")
         self.assertEqual(start.await_count, 0)
