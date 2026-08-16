@@ -407,10 +407,12 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             requested_by=from_agent))
 
     eligible_soft = [t for t in soft
-                     if _seed_name(t) in participants and not _is_self_tag(t, from_agent)]
+                     if _seed_name(t) in participants
+                     and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
     plan: list[tuple[str, str]] = (
         [(t, "direct") for t in hard
-         if _seed_name(t) in participants and not _is_self_tag(t, from_agent)]
+         if _seed_name(t) in participants
+         and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
         # `$tag` NON avvia un turno. Prima lo avviava, con l'aggravante che la
         # direttiva soft ORDINAVA un cenno anche a chi non aveva nulla da dire:
         # costava come un `@` e produceva in più un messaggio vuoto. La citazione
@@ -540,30 +542,49 @@ def _seed_name(label: str | None) -> str | None:
     return _split_ord(label)[0]
 
 
-def _is_self_tag(tag: str | None, from_agent: str | None) -> bool:
-    """Il tag punta a chi lo ha scritto — non solo al suo seed?
+def _spec_of(label: str | None):
+    """Spec del seed di un'etichetta istanza. `None` se il seed non esiste più —
+    e allora `_is_self_tag` ricade sul comportamento prudente (nessun fork)."""
+    return registry.get_by_name(_seed_name(label) or "")
 
-    Il filtro anti-auto-delega confrontava i soli SEED, e quindi rispondeva `sì`
-    anche a `@fullstack-dev#2` letto da `fullstack-dev#1`: il guard-rail contro
-    la riconvocazione infinita mangiava il fan-out FRA ISTANZE, che è l'unica
-    cosa per cui `multi_spawn` esiste. Dall'esterno si vedeva l'agente taggarsi
-    e nessun clone partire, senza una riga di log — il tag cadeva in silenzio
-    insieme a quelli verso i non-partecipanti.
 
-    Le due domande sono diverse:
+def _is_self_tag(tag: str | None, from_agent: str | None, spec=None) -> bool:
+    """Il tag riconvoca CHI LO HA SCRITTO — o convoca il seed?
 
-    - `@fullstack-dev` da `fullstack-dev#1` → sé stesso: si scarta, ed è il
-      motivo per cui il filtro esiste (nessuno la interrompe, quella catena);
-    - `@fullstack-dev#2` da `fullstack-dev#1` → un'ALTRA istanza: si delega. A
-      limitare restano `max_spawns` e `_MAX_DELEGATION_HOPS`, che sono espliciti;
-      qui non se ne aggiunge un terzo per effetto collaterale.
+    La distinzione è il cuore di `multi_spawn`, e per un po' non l'abbiamo fatta:
+    il filtro confrontava i soli SEED, quindi `@agent` scritto da `agent#1`
+    risultava «sé stesso» e veniva scartato. Ma un tag nudo NON si rivolge
+    all'istanza che lo scrive: si rivolge al **seed**, che risponde con
+    l'ordinale libero più basso o ne forka uno nuovo. Che l'autore sia a sua
+    volta un'istanza di quel seed non cambia il destinatario, perché il
+    destinatario non era un'istanza (agents-notebook A12).
+
+    > «un seed deve poter spawnare se stesso, ad esempio agent-1 se menziona
+    > @agent deve spawnare agent-2, non c'è niente di sbagliato»
+
+    Riconvocazione vera è solo il tag verso QUESTA istanza — `@agent#1` letto da
+    `agent#1` — dove autore e destinatario sono la stessa sessione e la catena
+    non ha chi la chiuda.
+
+    Per un seed SENZA `multi_spawn` non esiste un'altra istanza a cui girare il
+    turno: lì `@agent` da `agent` resta la riconvocazione di sempre, e si scarta.
+    È per questo che serve lo `spec` e non bastano le due etichette.
     """
     seed, ordinale = _split_ord(tag)
     if seed != _seed_name(from_agent):
         return False
+    mio_ordinale = _split_ord(from_agent)[1]
     if ordinale is None:
-        return True                                   # tag nudo al proprio seed
-    return ordinale == _split_ord(from_agent)[1]      # stessa istanza esatta
+        # Tag nudo. Con multi_spawn è una convocazione del seed → fork/ordinale
+        # libero, non un'automenzione. Senza, è sé stesso.
+        if not getattr(spec, "multi_spawn", False):
+            return True
+        # `agent` e `agent#1` sono la stessa istanza scritta in due modi: il tag
+        # nudo scritto DALL'ordinale 1 andrebbe risolto proprio su di lui se
+        # fosse libero — ma non lo è, sta scrivendo. `_resolve_ordinal` lo vede
+        # occupato e passa oltre, che è esattamente il comportamento voluto.
+        return False
+    return ordinale == mio_ordinale                  # stessa istanza esatta
 
 
 def _effective_clearance(spec) -> str:
