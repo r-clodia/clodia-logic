@@ -305,6 +305,7 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             f"Il turno di {responder} è terminato con un'eccezione: nel canale non "
             f"è comparso nulla, quindi dall'esterno sembra che non abbia risposto.",
             error=repr(e)[:300], hop=hop))
+        _spawn_bg(_announce_failure(tier, name, responder, e))
         return None
     finally:
         await _typing(tier, name, responder, "stop")
@@ -361,6 +362,57 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
             LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
     return reply
+
+
+async def _announce_failure(tier: str, name: str, responder: str, err: Exception) -> None:
+    """Un turno morto si dice nel CANALE, sempre, e si passa a sysadmin.
+
+    Prima esisteva solo `_watch_report`, che vive dietro `debug_watch.enabled()`
+    e sveglia il guardiano senza scrivere niente dove si guarda. Con la
+    diagnostica spenta — cioè di norma — il turno moriva, il log lo sapeva e la
+    stanza restava muta: chi aveva scritto vedeva soltanto un agente che non
+    risponde, e la prima ipotesi non è mai «è andato in crash». Il 16 ago 2026
+    questa differenza è costata mezza giornata su `@fullstack-dev`, con due
+    guasti diversi che avevano la stessa faccia.
+
+    Best-effort dal principio alla fine: annunciare un guasto non deve poterne
+    produrre un secondo.
+    """
+    try:
+        testo = (f"⚠️ Il turno di **@{responder}** è terminato con un errore, "
+                 f"quindi nel canale non è comparsa nessuna risposta.\n\n"
+                 f"```\n{repr(err)[:400]}\n```\n")
+        # ANTI-LOOP. Se a cadere è il guardiano stesso, chiamarlo lo farebbe
+        # cadere di nuovo sullo stesso errore, e ogni caduta ne chiamerebbe
+        # un'altra. Il messaggio resta — è la parte che serve a chi guarda — e
+        # la chiamata no.
+        watcher = registry.get_by_name(debug_watch.WATCHER)
+        chiama = _seed_name(responder) != debug_watch.WATCHER and watcher is not None
+        if chiama:
+            testo += (f"@{debug_watch.WATCHER} puoi guardare cosa è successo e dire "
+                      f"se è un guasto di piattaforma o del provider?")
+        else:
+            testo += ("Nessuno a cui passare la diagnosi: il guasto riguarda il "
+                      "guardiano stesso.")
+        msg = topics_client.post_message(tier, name, "system", testo, kind="system")
+        await _channel_message(tier, name, "system", "system",
+                               message=msg, topic_title=_topic_title(tier, name))
+        if not chiama:
+            return
+        meta = (topics_client.open_topic(tier, name) or {}).get("meta", {})
+        tier_real = meta.get("tier", tier)
+        # Il guardiano entra solo dove la sua clearance lo porta, come in
+        # `_watch_report`: un topic non si declassa per farci entrare la
+        # diagnostica.
+        if not _provider_seal_ok(watcher, tier_real):
+            LOG.warning("turno fallito su %s/%s: %s non idoneo al tier, nessuna "
+                        "diagnosi richiesta", tier, name, debug_watch.WATCHER)
+            return
+        await _start_turn(tier, name, tier_real, watcher, "system",
+                          testo, "direct", hop=_MAX_DELEGATION_HOPS)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("annuncio del turno fallito non riuscito su %s/%s: %s",
+                    tier, name, e)
 
 
 async def _watch_report(tier: str, name: str, kind: str, subject: str,
