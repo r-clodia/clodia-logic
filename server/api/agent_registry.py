@@ -260,7 +260,7 @@ async def get_agent_verbs(name: str, request: Request):
     intestazioni = {"Cache-Control": "no-store, must-revalidate",
                     "Pragma": "no-cache"}
     try:
-        return JSONResponse(status_code=200, content=gateway_admin.agent_verbs(name),
+        return JSONResponse(status_code=200, content=await gateway_admin.agent_verbs_async(name),
                             headers=intestazioni)
     except Exception as e:  # noqa: BLE001 — diagnostica, non un percorso critico
         return JSONResponse(status_code=200, headers=intestazioni,

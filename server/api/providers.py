@@ -480,6 +480,19 @@ def _write(pid: str, data: dict) -> None:
     invalidate_connected_cache()
 
 
+async def _read_async(pid: str) -> dict | None:
+    try:
+        return await provider_store.read_async(pid)
+    except provider_store.ProviderStoreError as e:
+        LOG.error("provider_store.read(%s) fallita: %s", pid, e)
+        return None
+
+
+async def _write_async(pid: str, data: dict) -> None:
+    await provider_store.write_async(pid, data)
+    invalidate_connected_cache()
+
+
 def _gc_states() -> None:
     now = time.time()
     for k in [k for k, v in _login_states.items() if v["exp"] < now]:
@@ -511,7 +524,7 @@ async def list_providers() -> dict:
     for pid, meta in _CATALOG.items():
         if edition is not None and pid not in edition:
             continue
-        d = _read(pid)
+        d = await _read_async(pid)
         out.append({
             "id": pid, "name": meta["name"],
             "connected": _bundle_usable(pid, d), "via": (d or {}).get("method"),
@@ -545,7 +558,7 @@ async def set_key(pid: str, body: KeyBody, request: Request) -> dict:
     if not body.api_key.strip():
         raise HTTPException(400, "api_key vuota")
     try:
-        _write(pid, {"method": "apikey", "api_key": body.api_key.strip()})
+        await _write_async(pid, {"method": "apikey", "api_key": body.api_key.strip()})
     except provider_store.ProviderStoreError as e:
         raise HTTPException(502, f"salvataggio sul gateway fallito: {str(e)[:160]}")
     return {"connected": True, "via": "apikey"}
@@ -603,7 +616,7 @@ async def login_complete(pid: str, body: CodeBody, request: Request) -> dict:
     except Exception as e:  # noqa: BLE001 — superficie esterna, niente dettagli al modello
         raise HTTPException(502, f"exchange fallito: {str(e)[:160]}")
     try:
-        _write(pid, stored)
+        await _write_async(pid, stored)
     except provider_store.ProviderStoreError as e:
         raise HTTPException(502, f"salvataggio sul gateway fallito: {str(e)[:160]}")
     return {"connected": True, "via": "subscription"}
@@ -613,7 +626,7 @@ async def login_complete(pid: str, body: CodeBody, request: Request) -> dict:
 async def disconnect(pid: str, request: Request) -> dict:
     gateway_pdp.require_authz(request, "providers.disconnect")  # admin-only (PDP gateway)
     try:
-        provider_store.delete(pid)
+        await provider_store.delete_async(pid)
         invalidate_connected_cache()
     except provider_store.ProviderStoreError as e:
         raise HTTPException(502, f"disconnect fallito sul gateway: {str(e)[:160]}")

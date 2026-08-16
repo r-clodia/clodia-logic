@@ -5,6 +5,7 @@ from __future__ import annotations
 
 import logging
 import os
+import asyncio
 
 import requests
 
@@ -96,3 +97,29 @@ def agent_verbs(agent: str) -> dict:
                      timeout=_HTTP_TIMEOUT)
     r.raise_for_status()
     return r.json()
+
+
+async def register_agent_async(agent: str, allowed_tools: list | None = None,
+                               gated_tools: list | None = None,
+                               gated_in_channel: list | None = None,
+                               carries: list | None = None,
+                               profile_tools: list | None = None,
+                               denied_tools: list | None = None) -> dict:
+    return await asyncio.to_thread(
+        register_agent,
+        agent,
+        allowed_tools,
+        gated_tools,
+        gated_in_channel,
+        carries,
+        profile_tools,
+        denied_tools,
+    )
+
+
+async def flow_allow_async(flows: dict, source: str = "", validate: bool = False) -> dict:
+    return await asyncio.to_thread(flow_allow, flows, source, validate)
+
+
+async def agent_verbs_async(agent: str) -> dict:
+    return await asyncio.to_thread(agent_verbs, agent)

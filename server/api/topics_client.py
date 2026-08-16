@@ -8,6 +8,7 @@ leggiamo solo per servirli alla pagina Topics.
 from __future__ import annotations
 
 import os
+import asyncio
 
 import requests
 
@@ -16,6 +17,10 @@ from ..colony import pki
 _PRINCIPAL = os.environ.get("CLODIA_PROVIDER_PRINCIPAL", "clodia")
 _TOKEN_TTL = 300
 _HTTP_TIMEOUT = 15
+
+
+async def _to_thread(func, /, *args, **kwargs):
+    return await asyncio.to_thread(func, *args, **kwargs)
 
 
 class TopicsConflictError(RuntimeError):
@@ -435,3 +440,53 @@ def get_file(tier: str, name: str, path: str) -> bytes | None:
     if r.status_code != 200:
         raise TopicsClientError(f"gateway topic file → HTTP {r.status_code}: {r.text[:160]}")
     return r.content
+
+
+async def async_list_topics(tier: str | None = None,
+                            include_archived: bool = False) -> list[dict]:
+    return await _to_thread(list_topics, tier=tier, include_archived=include_archived)
+
+
+async def async_open_topic(tier: str, name: str) -> dict | None:
+    return await _to_thread(open_topic, tier, name)
+
+
+async def async_create_topic(tier: str, name: str, meta: dict,
+                             hook_enabled: bool = True) -> dict:
+    return await _to_thread(create_topic, tier, name, meta, hook_enabled)
+
+
+async def async_get_agents_md(tier: str, name: str) -> tuple[str | None, str | None, bool]:
+    return await _to_thread(get_agents_md, tier, name)
+
+
+async def async_save_agents_md(tier: str, name: str, text: str,
+                               base_version: str | None) -> dict:
+    return await _to_thread(save_agents_md, tier, name, text, base_version)
+
+
+async def async_list_messages(tier: str, name: str, limit: int = 200) -> list[dict]:
+    return await _to_thread(list_messages, tier, name, limit)
+
+
+async def async_post_message(tier: str, name: str, author: str, text: str,
+                             kind: str = "human",
+                             attachments: list[str] | None = None) -> dict:
+    return await _to_thread(post_message, tier, name, author, text, kind, attachments)
+
+
+async def async_remote_action(tier: str, name: str, action: str, **params) -> dict:
+    return await _to_thread(remote_action, tier, name, action, **params)
+
+
+async def async_list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
+    return await _to_thread(list_files, tier, name, subpath)
+
+
+async def async_get_file(tier: str, name: str, path: str) -> bytes | None:
+    return await _to_thread(get_file, tier, name, path)
+
+
+async def async_put_file(tier: str, name: str, filename: str, content_b64: str,
+                         provenance: str = "untrusted") -> dict:
+    return await _to_thread(put_file, tier, name, filename, content_b64, provenance)
