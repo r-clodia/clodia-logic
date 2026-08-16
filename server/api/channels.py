@@ -2647,21 +2647,61 @@ async def channel_reset_context(tier: str, name: str, request: Request) -> dict:
     return {"reset": True, "sessions_deleted": deleted}
 
 
+def _live_instances(tier: str, name: str, participants: list[str]) -> dict[str, list[dict]]:
+    """Istanze VIVE di ogni partecipante su questo canale: ordinale e stato.
+
+    agents-notebook A13: «quando un seed è multi spawn dovrebbe vedersi nella
+    lista participant che il seed è un super nodo dei vari spawn ognuno con la
+    sua riga». La lista dei partecipanti è fatta di NOMI DI SEED, quindi quattro
+    istanze concorrenti e una si leggono uguali — ed è esattamente ciò che è
+    successo il 16 ago: dopo una seconda menzione non si capiva più quante ne
+    stessero girando.
+
+    Il dato non va inventato: le sessioni esistono già, una per istanza, con
+    chiave `chan:<tier>:<name>:<seed>#<n>`. Qui si raccolgono per seed.
+
+    Un seed senza istanze vive NON compare: la sua assenza è informazione — è
+    partecipante, e in questo momento non sta girando niente.
+    """
+    prefisso = f"chan:{tier}:{name}:"
+    ammessi = set(participants)
+    out: dict[str, list[dict]] = {}
+    for chat in manager.list():
+        cid = getattr(chat, "chat_id", "")
+        if not cid.startswith(prefisso):
+            continue
+        etichetta = cid[len(prefisso):]
+        seed, ordinale = _split_ord(etichetta)
+        if seed not in ammessi:
+            continue
+        t = getattr(chat, "_current_turn_task", None)
+        attivo = t is not None and not t.done()
+        out.setdefault(seed, []).append({
+            # `None` per un seed a istanza singola: la UI mostra il seed e basta,
+            # senza un `#1` che suggerirebbe l'esistenza di un `#2`.
+            "ordinal": ordinale,
+            "state": "working" if attivo else "idle",
+        })
+    for righe in out.values():
+        righe.sort(key=lambda r: (r["ordinal"] is None, r["ordinal"] or 0))
+    return out
+
+
 def _active_responders(tier: str, name: str, participants: list[str]) -> list[str]:
     """Responder con un turno ATTUALMENTE in corso su questo canale. Serve alla UI:
     riaprendo il topic a metà turno, il box "ragionamento" (costruito dagli eventi
     SSE, già passati al re-mount) sarebbe vuoto e l'agente sembrerebbe morto anche
-    se sta lavorando. Con questo la UI mostra subito l'indicatore di attività."""
-    active = []
-    for a in participants:
-        try:
-            chat = manager.get(f"chan:{tier}:{name}:{a}")
-        except KeyError:
-            continue
-        t = getattr(chat, "_current_turn_task", None)
-        if t is not None and not t.done():
-            active.append(a)
-    return active
+    se sta lavorando. Con questo la UI mostra subito l'indicatore di attività.
+
+    Cercava `chan:<tier>:<name>:<seed>` ESATTO, e la sessione di un seed
+    multi-spawn si chiama `…:<seed>#<n>`: il `manager.get` sollevava `KeyError` e
+    un agente multi-spawn non risultava MAI attivo. È la ragione per cui la
+    bolla di attività spariva e non si capiva se stesse lavorando (A13). Ora
+    passa dalle istanze, che le trovano entrambe.
+    """
+    vive = _live_instances(tier, name, participants)
+    return [seed for seed, righe in vive.items()
+            if any(r["state"] == "working" for r in righe)]
 
 
 def _channel_trifecta(meta: dict, tainted: bool | None = None) -> dict | None:
@@ -2696,8 +2736,13 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(404, "canale non trovato")
     _require_member(request, topic.get("meta", {}))
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
-    topic["active_responders"] = _active_responders(
-        tier, name, topic.get("meta", {}).get("participants", []))
+    _partecipanti = topic.get("meta", {}).get("participants", [])
+    # `active_responders` resta una lista di SEED (contratto invariato per la UI
+    # esistente); `participant_instances` è il dettaglio per il super-nodo.
+    topic["participant_instances"] = _live_instances(tier, name, _partecipanti)
+    topic["active_responders"] = [
+        seed for seed, righe in topic["participant_instances"].items()
+        if any(r["state"] == "working" for r in righe)]
     # Il primo bit del vettore viene dal gateway insieme al topic: senza, il
     # punteggio conterebbe solo i due bit statici — cioè quelli che non cambiano.
     _t = topic.get("taint") or {}
