@@ -183,42 +183,47 @@ class GrantHygieneTests(unittest.TestCase):
         self.assertFalse({"topic.put", "topic.write_file"} & own)
         self.assertFalse(any(v.startswith("gdrive.") for v in own))
 
-    def test_the_postman_can_be_supervised_inside_a_channel(self) -> None:
-        """`gated_in_channel` è la ragione per cui il postino può conservare
-        `email.*` senza che un partecipante lo usi come canale d'uscita: fuori dal
-        canale spedisce, dentro serve un admin. Se la dichiarazione sparisse dal
-        seed, i verbi resterebbero e la supervisione no — cioè il difetto
-        silenzioso."""
-        spec = _seeds()["messaggero"]
-        gic = getattr(spec, "gated_in_channel", None) or []
-        self.assertIn("email.send", gic)
-        self.assertIn("email.reply", gic)
-        # la LETTURA non va gatata: smistare la posta in arrivo è lavoro
-        # legittimo anche dentro un canale
-        for verb in ("email.list", "email.read", "email.search"):
-            self.assertNotIn(verb, gic)
+    def test_the_postman_declares_the_retired_gate_empty(self) -> None:
+        """`gated_in_channel` è stato RITIRATO, e il seed deve dirlo azzerandolo.
 
-    def test_every_outbound_verb_of_the_postman_is_supervised_in_channel(self) -> None:
-        """Le uscite vanno trattate allo stesso modo, o l'asimmetria è la falla.
+        Il gate era un surrogato della domanda «chi sta chiedendo?», posta per
+        approssimazione — *qualcuno è in un canale* — e sbagliava in due modi: una
+        DM è un canale, quindi chiedeva l'approvazione all'owner per la propria
+        richiesta nella propria stanza; e non guardava affatto CHI avesse chiesto,
+        che è ciò che diceva di proteggere. Oggi il presidio è la DESTINAZIONE
+        (`egress_allow`, che contiene solo recapiti dell'owner), in attesa che la
+        catena `origin` sia in enforcement.
 
-        `telegram.send` era fuori da `gated_in_channel` mentre `email.send` era
-        dentro: in un canale con dei collaboratori un invio Telegram non chiedeva
-        niente e una mail sì. Non era una scelta, era un'omissione — e un test che
-        ENUMERA le uscite la trova, mentre uno che ne controlla una sola la
-        conferma.
+        Ciò che questo test protegge è la forma della rimozione: **dichiarata
+        vuota, non omessa**. `upsert_agent` non è distruttivo sui campi `None`, e
+        un campo assente significa «tieni quello che hai» — togliendo solo le
+        righe, il gate sarebbe rimasto vivo nella config del gateway (verificato
+        il 7 ago 2026: restava dopo il deploy).
+
+        I due test che stavano qui asserivano la decisione PRECEDENTE e sono stati
+        rossi dal ritiro fino al 16 ago 2026, senza che nessuno li eseguisse —
+        decision record 34.
         """
         spec = _seeds()["messaggero"]
-        gic = set(getattr(spec, "gated_in_channel", None) or [])
-        uscite = {v for v in _grants(spec)
-                  if v.endswith((".send", ".send_file", ".reply"))}
-        # i wildcard coprono le uscite senza nominarle: si espandono qui
-        if "email.*" in _grants(spec):
-            uscite |= {"email.send", "email.reply"}
-        if "telegram.*" in _grants(spec):
-            uscite |= {"telegram.send", "telegram.send_file"}
-        mancanti = sorted(uscite - gic)
-        self.assertEqual(mancanti, [],
-                         f"uscite senza supervisione in canale: {mancanti}")
+        gic = getattr(spec, "gated_in_channel", None)
+        self.assertIsNotNone(
+            gic,
+            "campo OMESSO invece che vuoto: `upsert_agent` lascerebbe il gate "
+            "vivo nella config del gateway, e la rimozione non arriverebbe mai")
+        self.assertEqual([], list(gic or []),
+                         "il gate ritirato deve restare dichiarato e vuoto")
+
+    def test_the_postman_still_holds_its_outbound_verbs(self) -> None:
+        """Ritirare il gate non toglie il mestiere: il corriere spedisce ancora.
+
+        È la coppia del test sopra: se un giorno sparissero i verbi invece del
+        gate, il seed resterebbe «coerente» e il postino muto.
+        """
+        grants = set(_grants(_seeds()["messaggero"]))
+        self.assertTrue(
+            {"email.*", "telegram.*"} <= grants or
+            {"email.send", "telegram.send"} <= grants,
+            f"il corriere non ha più i verbi d'uscita: {sorted(grants)}")
 
 
 if __name__ == "__main__":  # pragma: no cover

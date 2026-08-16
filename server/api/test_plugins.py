@@ -26,8 +26,29 @@ def _skill_md(name: str, description: str = "una skill") -> str:
     return f"---\nname: {name}\ndescription: {description}\n---\n# {name}\n"
 
 
+def _req():
+    """Una `Request` finta per gli endpoint che ora chiedono un principal.
+
+    `delete_plugin` è passato admin-only (`gateway_pdp.require_authz`): questi
+    test verificano la RIMOZIONE, non chi può chiederla, e l'autorizzazione è
+    coperta dai suoi test. Senza questo argomento i tre test morivano con un
+    TypeError, cioè senza verificare niente.
+    """
+    class FakeRequest:
+        headers: dict = {}
+        cookies: dict = {}
+    return FakeRequest()
+
+
 class PluginsApiTest(unittest.TestCase):
     def setUp(self) -> None:
+        # `delete_plugin` è admin-only: qui si verifica la RIMOZIONE, non chi
+        # può chiederla — l'autorizzazione ha i suoi test (`gateway_pdp`). Senza
+        # questo, i tre test morivano con un TypeError prima ancora di misurare
+        # qualcosa, ed è così che sono rimasti rossi senza dire niente.
+        _authz = plugins.gateway_pdp.require_authz
+        plugins.gateway_pdp.require_authz = lambda *a, **k: "davide"
+        self.addCleanup(lambda: setattr(plugins.gateway_pdp, "require_authz", _authz))
         self.tmp = tempfile.TemporaryDirectory()
         root = Path(self.tmp.name)
         self.logic_skills = root / "logic-skills"
@@ -112,7 +133,12 @@ class PluginsApiTest(unittest.TestCase):
         self.assertEqual([r["name"] for r in acme["rules"]], ["blog-voice"])
         self.assertEqual(acme["origin"], "imported")
         self.assertTrue(acme["deletable"])
-        self.assertEqual(acme["counts"], {"skills": 1, "rules": 1, "mcp_servers": 0})
+        # Sottoinsieme e non uguaglianza: `counts` ha guadagnato `datastores` e
+        # `rag_collections`, e un test che pretende il dizionario intero si rompe
+        # a ogni componente nuovo senza che nulla sia peggiorato.
+        self.assertEqual({"skills": 1, "rules": 1, "mcp_servers": 0},
+                         {k: acme["counts"][k]
+                          for k in ("skills", "rules", "mcp_servers")})
 
     def test_external_origin_from_manifest(self) -> None:
         self._skill(self.data_skills, "anthropic-pack", "pdf")
@@ -139,7 +165,9 @@ class PluginsApiTest(unittest.TestCase):
             },
         }), encoding="utf-8")
         item = self._by_name("mcp-only")
-        self.assertEqual(item["counts"], {"skills": 0, "rules": 0, "mcp_servers": 1})
+        self.assertEqual({"skills": 0, "rules": 0, "mcp_servers": 1},
+                         {k: item["counts"][k]
+                          for k in ("skills", "rules", "mcp_servers")})
         srv = item["mcp_servers"][0]
         self.assertEqual(srv["name"], "weather")
         self.assertEqual(srv["transport"], "http")
@@ -322,18 +350,18 @@ class PluginsApiTest(unittest.TestCase):
         (self.plugins_meta / "acme-pack" / "plugin.yaml").write_text(
             "name: acme-pack\n", encoding="utf-8")
 
-        res = asyncio.run(plugins.delete_plugin("acme-pack"))
+        res = asyncio.run(plugins.delete_plugin("acme-pack", _req()))
         self.assertEqual(res, {"deleted": "acme-pack"})
         self.assertFalse((self.data_skills / "acme-pack").exists())
         self.assertFalse((self.data_rules / "acme-pack").exists())
         self.assertFalse((self.plugins_meta / "acme-pack").exists())
 
     def test_delete_reserved_plugin_forbidden(self) -> None:
-        res = asyncio.run(plugins.delete_plugin("base-pack"))
+        res = asyncio.run(plugins.delete_plugin("base-pack", _req()))
         self.assertEqual(res.status_code, 403)
 
     def test_delete_missing_plugin_404(self) -> None:
-        res = asyncio.run(plugins.delete_plugin("ghost-plugin"))
+        res = asyncio.run(plugins.delete_plugin("ghost-plugin", _req()))
         self.assertEqual(res.status_code, 404)
 
 
