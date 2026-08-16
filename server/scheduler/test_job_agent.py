@@ -208,5 +208,51 @@ class ProviderEnforcementTests(unittest.TestCase):
         s._ensure_provider_connected("oc")  # non solleva
 
 
+class AsyncScopeHasOneAgentTests(unittest.TestCase):
+    """Uno scope asincrono ha UN agente — ed è da lì che discende R11.
+
+    router-notebook R11: «negli scope asincroni (job) c'è un solo agent
+    assegnato. I job con multipli agents non sono ancora previsti». La voce non
+    descrive un comportamento: **afferma che una condizione non può presentarsi**,
+    e su quell'affermazione poggia il fatto che il router non gira mai su un job.
+
+    È il tipo di verità che smette di valere in silenzio: il giorno in cui
+    `agent` diventasse una lista non si romperebbe nulla, esisterebbe solo uno
+    scope con due agenti e nessuna regola su chi risponde. Il test serve a
+    rendere rumorosa quella modifica (decision record 34).
+    """
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old_dir = db.JOBS_DIR
+        db.JOBS_DIR = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        db.JOBS_DIR = self._old_dir
+        self._tmp.cleanup()
+
+    def test_a_job_carries_a_single_agent_name(self) -> None:
+        job = db.create_job("uno", "0 9 * * *", "x", agent="clodia")
+        letto = db.get_job(job["id"])["agent"]
+        self.assertIsInstance(letto, str)
+        self.assertEqual("clodia", letto)
+
+    @unittest.expectedFailure   # clodia-platform#213 — R11 non è imposta da nulla
+    def test_a_list_of_agents_does_not_survive_the_round_trip(self) -> None:
+        """Se un giorno qualcuno passasse due nomi, il campo non li conserva come
+        due: o è una stringa, o questo test cade e la decisione torna sul tavolo."""
+        job = db.create_job("due", "0 9 * * *", "x", agent=["clodia", "ophelia"])
+        letto = db.get_job(job["id"])["agent"]
+        self.assertIsInstance(
+            letto, str,
+            "R11: un job ha UN agente. Se il campo accetta una lista, lo scope "
+            "asincrono ha due responder e nessuno ha deciso chi risponde.")
+
+    def test_the_agentic_default_is_a_single_named_agent(self) -> None:
+        """Nessun job resta senza responder: agentico senza `agent` → clodia."""
+        job = db.create_job("tre", "0 9 * * *", "x")
+        self.assertEqual("clodia", db.get_job(job["id"])["agent"])
+
+
 if __name__ == "__main__":
     unittest.main()

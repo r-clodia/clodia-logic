@@ -21,6 +21,8 @@ E la ragione per cui serve, misurata nello stesso container col proxy attivo e
 `WebFetch` lo esegue la CLI e il proxy lo arbitra; `WebSearch` lo esegue il
 provider (`type:"web_search_20250305"` nel bundle) e nessuna policy di rete lo
 vede. Contro quello, l'unico strato è la configurazione del runtime.
+
+agents-notebook A8: i tool del runtime stanno fuori dal modello dei verbi, e per questo vanno dichiarati (A9).
 """
 from __future__ import annotations
 

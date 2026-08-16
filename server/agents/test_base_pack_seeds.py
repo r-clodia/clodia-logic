@@ -145,3 +145,89 @@ class AncestryTests(unittest.TestCase):
                     altri, [],
                     f"'{nome}' eredita da {altri}: se è voluto, va deciso e "
                     f"misurato — quanti verbi arrivano di lì?")
+
+
+class ClodiaMandateTests(unittest.TestCase):
+    """Il mandato di clodia: sei namespace di verbi, tre pack, e nulla d'altro.
+
+    agents-notebook A6 e A7. Erano rimaste senza test automatico fino al 16 ago
+    2026, e sono esattamente il tipo di requisito che si sfalda in silenzio: un
+    verbo aggiunto «già che ci siamo» non rompe niente, e nessuno se ne accorge
+    finché non si rilegge il seed riga per riga.
+    """
+
+    #: A6: «mantiene tutti i verbi topic, artifact, agents, memory, fs e github.
+    #: Perde tutti gli altri». `web.fetch` ed `email.send` sono l'eccezione
+    #: decisa il 15 ago (A12 non li tocca, li aggiunge il pack 7.9.0): stanno
+    #: qui perché l'elenco dica la verità, non perché A6 sia stata allargata.
+    NAMESPACE_AMMESSI = {"topic", "artifact", "agents", "memory", "fs", "github",
+                         "runtime", "integrations", "providers", "mcp", "packs",
+                         "jobs", "egress", "ingress", "rag", "web", "email"}
+
+    #: A7: «confermiamo base, editorial, e anthropic. Perde comms»
+    PACK_ATTESI = {"base-pack", "editorial-pack", "anthropic-pack"}
+
+    def setUp(self) -> None:
+        self.clodia = _seeds()["clodia"]
+
+    def test_no_verb_outside_the_declared_namespaces(self) -> None:
+        fuori = sorted(
+            v for v in (self.clodia.get("tool_permissions") or [])
+            if v.split(".", 1)[0] not in self.NAMESPACE_AMMESSI
+        )
+        self.assertEqual([], fuori, f"verbi fuori dai namespace di A6: {fuori}")
+
+    def test_the_verbs_are_enumerated_not_a_wildcard(self) -> None:
+        """«clodia non può più avere [*]» (6 ago). Il wildcard non era pericoloso
+        per ciò che concedeva allora: lo era perché avrebbe concesso in automatico
+        ogni verbo aggiunto dopo, senza che nessuno lo valutasse."""
+        verbi = self.clodia.get("tool_permissions") or []
+        self.assertNotIn("*", verbi)
+        self.assertTrue(verbi, "clodia senza verbi: il seed non dichiara più il mestiere")
+
+    @unittest.expectedFailure   # clodia-platform#198 — A7 non ancora consegnata
+    def test_comms_pack_is_gone_and_the_other_three_stay(self) -> None:
+        """ROSSO ATTESO. Il seed dichiara ancora `comms-pack`: A7 è registrata nel
+        notebook ma non implementata, e la issue #198 è aperta.
+
+        Il test resta qui invece di aspettare la consegna, perché è la forma in
+        cui un requisito non implementato si vede: quando #198 sarà chiusa questo
+        diventerà un `unexpected success`, che è rumoroso quanto un rosso e cade
+        esattamente sulla riga da aggiornare. Un requisito che nessun test nomina
+        è indistinguibile da uno consegnato — ed è così che A7 è rimasta aperta
+        senza che la sua assenza si notasse (decision record 34).
+        """
+        pack = {c.split("/", 1)[0] for c in (self.clodia.get("capabilities") or [])}
+        self.assertNotIn("comms-pack", pack, "A7: comms se ne va — la posta è del corriere")
+        self.assertLessEqual(self.PACK_ATTESI, pack)
+
+    def test_rules_are_declared_one_by_one(self) -> None:
+        """Non `["*"]`: il catalogo contiene una sola rule, del segretario, e il
+        wildcard la imponeva a clodia — che per quattro mattine ha risposto «non
+        rientra nel mio ambito» a un job suo (clodia-logic#290)."""
+        self.assertNotIn("*", self.clodia.get("rules") or [])
+
+
+class HumanContactFieldTests(unittest.TestCase):
+    """Telegram è un recapito, quindi è un campo della persona.
+
+    agents-notebook A10: «essendo telegram un metodo di contatto per gli umani lo
+    metterei come campo fisso e non extra». Un recapito negli `extras` è una
+    stringa che nessuno valida e che ogni lettore interpreta a modo suo.
+    """
+
+    def test_telegram_is_a_declared_field_of_the_spec(self) -> None:
+        from .models import AgentSpec
+        self.assertIn("telegram", AgentSpec.model_fields,
+                      "A10: telegram è tornato un extra")
+
+    def test_a_human_carries_it_outside_the_extras(self) -> None:
+        from .models import AgentSpec
+        s = AgentSpec.model_validate({
+            "name": "davide", "description": "d", "display_name": "Davide",
+            "type": "human", "role": "superadmin", "telegram": "76632169",
+        })
+        self.assertEqual("76632169", s.telegram)
+        extras = getattr(s, "extras", None) or {}
+        self.assertNotIn("telegram", extras,
+                         "A10: il valore è finito anche negli extras — due fonti, una divergerà")

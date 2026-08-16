@@ -186,6 +186,7 @@ class ExemplarRoutingTest(unittest.TestCase):
 
 class RoutingContextTest(unittest.TestCase):
     def test_window_includes_agents_and_humans_and_drops_older_turns(self):
+        """router-notebook R7: cosa confronta il router semantico — la finestra di messaggi, contro i profili."""
         messages = [
             {"author": "owner", "kind": "human", "text": "troppo vecchio"},
             {"author": "owner", "kind": "human", "text": "serve un contratto"},
