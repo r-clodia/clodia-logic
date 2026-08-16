@@ -1791,3 +1791,61 @@ class GenerateFeedbackLessonTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class SelfTagTests(unittest.TestCase):
+    """Un tag nudo convoca il SEED; solo il tag a questa istanza è riconvocazione.
+
+    agents-notebook A12: «un seed deve poter spawnare se stesso, ad esempio
+    agent-1 se menziona @agent deve spawnare agent-2». Il confronto per solo
+    SEED scartava il tag nudo, cioè l'unico modo che `multi_spawn` ha di
+    produrre un fork: si vedeva l'agente taggarsi e nessun clone partire.
+    """
+
+    def setUp(self) -> None:
+        self._orig = channels.registry.get_by_name
+        self.multi = _a("fullstack-dev", "normal", "P1", "2026-02-01T00:00:00Z")
+        self.multi.multi_spawn = True
+        self.multi.max_spawns = 4
+        self.singolo = _a("segretario", "normal", "P1", "2026-02-01T00:00:02Z")
+        agenti = {"fullstack-dev": self.multi, "segretario": self.singolo}
+        channels.registry.get_by_name = lambda n: agenti.get(n)
+
+    def tearDown(self) -> None:
+        channels.registry.get_by_name = self._orig
+
+    def test_bare_tag_forks_the_seed(self) -> None:
+        """Il caso del notebook: `agent#1` scrive `@agent` e nasce `agent#2`."""
+        self.assertFalse(channels._is_self_tag(
+            "fullstack-dev", "fullstack-dev#1", self.multi))
+
+    def test_bare_tag_from_any_ordinal_forks(self) -> None:
+        self.assertFalse(channels._is_self_tag(
+            "fullstack-dev", "fullstack-dev#3", self.multi))
+
+    def test_own_ordinal_is_still_self(self) -> None:
+        """L'unica catena senza chi la chiuda: autore e destinatario coincidono."""
+        self.assertTrue(channels._is_self_tag(
+            "fullstack-dev#1", "fullstack-dev#1", self.multi))
+        self.assertTrue(channels._is_self_tag(
+            "fullstack-dev#3", "fullstack-dev#3", self.multi))
+
+    def test_other_ordinal_is_delegation(self) -> None:
+        self.assertFalse(channels._is_self_tag(
+            "fullstack-dev#2", "fullstack-dev#1", self.multi))
+
+    def test_without_multi_spawn_a_bare_self_tag_stays_a_loop(self) -> None:
+        """Senza `multi_spawn` non esiste un'altra istanza a cui girare il turno,
+        quindi il tag nudo resta la riconvocazione di sempre."""
+        self.assertTrue(channels._is_self_tag("segretario", "segretario", self.singolo))
+        self.assertTrue(channels._is_self_tag("segretario", "segretario#1", self.singolo))
+
+    def test_unknown_seed_does_not_fork(self) -> None:
+        """Spec assente → prudenza: nessun fork inventato su un seed che non c'è."""
+        self.assertTrue(channels._is_self_tag("sparito", "sparito#1", None))
+
+    def test_another_seed_is_never_self(self) -> None:
+        self.assertFalse(channels._is_self_tag(
+            "segretario", "fullstack-dev#1", self.multi))
+        self.assertFalse(channels._is_self_tag(
+            "segretario#2", "fullstack-dev#2", self.multi))

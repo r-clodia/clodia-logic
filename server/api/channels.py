@@ -433,10 +433,12 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             requested_by=from_agent))
 
     eligible_soft = [t for t in soft
-                     if _seed_name(t) in participants and _seed_name(t) != self_seed]
+                     if _seed_name(t) in participants
+                     and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
     plan: list[tuple[str, str]] = (
         [(t, "direct") for t in hard
-         if _seed_name(t) in participants and _seed_name(t) != self_seed]
+         if _seed_name(t) in participants
+         and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
         # `$tag` NON avvia un turno. Prima lo avviava, con l'aggravante che la
         # direttiva soft ORDINAVA un cenno anche a chi non aveva nulla da dire:
         # costava come un `@` e produceva in più un messaggio vuoto. La citazione
@@ -564,6 +566,51 @@ def _is_known_seed(nome: str) -> bool:
 def _seed_name(label: str | None) -> str | None:
     """Nome del seed da un'etichetta istanza ('fullstack-dev#2' → 'fullstack-dev')."""
     return _split_ord(label)[0]
+
+
+def _spec_of(label: str | None):
+    """Spec del seed di un'etichetta istanza. `None` se il seed non esiste più —
+    e allora `_is_self_tag` ricade sul comportamento prudente (nessun fork)."""
+    return registry.get_by_name(_seed_name(label) or "")
+
+
+def _is_self_tag(tag: str | None, from_agent: str | None, spec=None) -> bool:
+    """Il tag riconvoca CHI LO HA SCRITTO — o convoca il seed?
+
+    La distinzione è il cuore di `multi_spawn`, e per un po' non l'abbiamo fatta:
+    il filtro confrontava i soli SEED, quindi `@agent` scritto da `agent#1`
+    risultava «sé stesso» e veniva scartato. Ma un tag nudo NON si rivolge
+    all'istanza che lo scrive: si rivolge al **seed**, che risponde con
+    l'ordinale libero più basso o ne forka uno nuovo. Che l'autore sia a sua
+    volta un'istanza di quel seed non cambia il destinatario, perché il
+    destinatario non era un'istanza (agents-notebook A12).
+
+    > «un seed deve poter spawnare se stesso, ad esempio agent-1 se menziona
+    > @agent deve spawnare agent-2, non c'è niente di sbagliato»
+
+    Riconvocazione vera è solo il tag verso QUESTA istanza — `@agent#1` letto da
+    `agent#1` — dove autore e destinatario sono la stessa sessione e la catena
+    non ha chi la chiuda.
+
+    Per un seed SENZA `multi_spawn` non esiste un'altra istanza a cui girare il
+    turno: lì `@agent` da `agent` resta la riconvocazione di sempre, e si scarta.
+    È per questo che serve lo `spec` e non bastano le due etichette.
+    """
+    seed, ordinale = _split_ord(tag)
+    if seed != _seed_name(from_agent):
+        return False
+    mio_ordinale = _split_ord(from_agent)[1]
+    if ordinale is None:
+        # Tag nudo. Con multi_spawn è una convocazione del seed → fork/ordinale
+        # libero, non un'automenzione. Senza, è sé stesso.
+        if not getattr(spec, "multi_spawn", False):
+            return True
+        # `agent` e `agent#1` sono la stessa istanza scritta in due modi: il tag
+        # nudo scritto DALL'ordinale 1 andrebbe risolto proprio su di lui se
+        # fosse libero — ma non lo è, sta scrivendo. `_resolve_ordinal` lo vede
+        # occupato e passa oltre, che è esattamente il comportamento voluto.
+        return False
+    return ordinale == mio_ordinale                  # stessa istanza esatta
 
 
 def _effective_clearance(spec) -> str:
