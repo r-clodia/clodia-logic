@@ -12,7 +12,11 @@ from fastapi import APIRouter, Request
 
 from sse_starlette.sse import EventSourceResponse
 
+from starlette.responses import JSONResponse
+
+from ..agents import registry
 from ..core.events import bus
+from . import topics_client
 from ..sdk_runtime.session import manager
 from ..agents.workspace import SPAWNS_ROOT
 from ..sdk_runtime.process_reaper import runtime_process_metrics
@@ -158,10 +162,107 @@ def _principal_from_request(request: Request) -> str | None:
         return None
 
 
+#: Meta delle stanze, per decidere la visibilità di un evento senza rileggere il
+#: topic a ogni battito. TTL corto: un partecipante appena tolto non deve
+#: continuare a ricevere per minuti.
+_ROOM_META_TTL = 20.0
+_room_meta_cache: dict[tuple[str, str], tuple[float, dict]] = {}
+
+
+def _room_meta(tier: str, name: str) -> dict | None:
+    import time as _time
+
+    key = (tier, name)
+    hit = _room_meta_cache.get(key)
+    now = _time.monotonic()
+    if hit and now - hit[0] < _ROOM_META_TTL:
+        return hit[1]
+    try:
+        meta = (topics_client.open_topic(tier, name) or {}).get("meta") or {}
+    except Exception:  # noqa: BLE001 — stanza illeggibile → nessuna consegna
+        return None
+    _room_meta_cache[key] = (now, meta)
+    return meta
+
+
+def _stream_principal(request: Request) -> tuple[str | None, bool]:
+    """Chi sta ascoltando, e se è un proxy. `(principal, is_proxy)`.
+
+    Il token arriva dall'header quando il client è un programma, e dalla query
+    quando è un browser: `EventSource` non sa mandare header, e senza questa
+    seconda via l'endpoint resterebbe aperto — che è esattamente com'era.
+    """
+    from ..colony import pki
+
+    auth = request.headers.get("authorization", "")
+    token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+    if not token:
+        token = (request.query_params.get("token") or "").strip()
+    if not token:
+        return None, False
+    try:
+        payload = pki.verify_session_token(token)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("events: token rifiutato: %s", e)
+        return None, False
+    # `principal` è chi agisce (una persona, un proxy); `agent` è il carrier che
+    # ha firmato. Filtrare sul carrier darebbe a un proxy la visibilità di
+    # clodia, che partecipa quasi ovunque.
+    chi = str(payload.get("principal") or payload.get("agent") or "").strip()
+    if not chi:
+        return None, False
+    spec = registry.get_by_name(chi)
+    return chi, bool(spec is not None and getattr(spec, "type", "") == "proxy")
+
+
+def _event_visible(chi: str, is_proxy: bool, ev) -> bool:
+    """Un evento raggiunge chi ha diritto di vedere la stanza da cui viene.
+
+    Gli eventi di canale portano `tier`, `name` **e il testo del messaggio**:
+    finché questo stream era aperto e non filtrato, chiunque raggiungesse la
+    porta leggeva le conversazioni di ogni topic, tier alti inclusi.
+
+    Gli eventi senza stanza (attività di un agente, ciclo di vita di una chat)
+    restano per chi opera nella webui, ma **non** per un proxy: un sistema terzo
+    vede la stanza in cui è stato ammesso e nient'altro.
+    """
+    # Import qui e non in testa: `topics` importa da questo modulo, e la
+    # dipendenza circolare romperebbe l'avvio.
+    from .topics import _visible_to
+
+    payload = getattr(ev, "payload", None) or {}
+    tier = str(payload.get("tier") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if not (tier and name):
+        return not is_proxy
+    meta = _room_meta(tier, name)
+    if meta is None:
+        return False
+    return _visible_to(chi, {"owner": meta.get("owner"),
+                             "participants": meta.get("participants") or []})
+
+
 @router.get("/clodia/events")
-async def events():
-    """SSE globale: tutti gli eventi di tutte le chat, ogni evento porta chat_id nel payload."""
+async def events(request: Request):
+    """SSE: gli eventi delle stanze che chi ascolta ha diritto di vedere.
+
+    Era un broadcast globale senza autenticazione — nato aperto perché
+    `EventSource` non manda header, e rimasto tale mentre gli eventi si
+    arricchivano del testo dei messaggi.
+    """
+    chi, is_proxy = _stream_principal(request)
+    if not chi:
+        return JSONResponse(
+            {"error": "questo stream richiede un token: header Authorization "
+                      "oppure ?token= (EventSource non manda header)"},
+            status_code=401)
+
     async def event_stream():
         async for ev in bus.subscribe():
+            try:
+                if not _event_visible(chi, is_proxy, ev):
+                    continue
+            except Exception:  # noqa: BLE001 — in dubbio non si consegna
+                continue
             yield {"data": json.dumps(ev.model_dump(), default=str)}
     return EventSourceResponse(event_stream())
