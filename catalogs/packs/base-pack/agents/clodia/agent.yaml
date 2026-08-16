@@ -32,7 +32,19 @@ sandbox:
 
 # bot di coordinamento: primitive di piattaforma + pack first-party di ruolo.
 capabilities: ["base-pack/*", "editorial-pack/*", "comms-pack/*", "anthropic-pack/*"]
-rules: ["*"]
+# NON `["*"]`. Il catalogo contiene UNA rule, `topic-state-boundary`, ed è del
+# segretario: circoscrive chi mantiene lo stato scritto di un topic e dichiara
+# fuori dominio «usare strumenti diversi dai tool di stato del topic»,
+# prescrivendo «un rifiuto breve e operativo». Con il wildcard questo agente la
+# ereditava, e il rifiuto arrivava parola per parola — misurato il 15 ago 2026
+# sul job del digest, che per quattro mattine ha chiuso in `success` rispondendo
+# «non rientra nel mio ambito: il mio ruolo qui è mantenere lo stato scritto del
+# topic».
+#
+# È il difetto del wildcard sui tool, visto dall'altro lato: là si prendeva ogni
+# potere aggiunto domani, qui ogni LIMITE scritto per un altro mestiere. Le
+# rules si dichiarano una per una, come i verbi.
+rules: []
 # tutti i tool MCP (enforcement al gateway clodia-tools — wiring in Fase 4).
 # VERBI RAGGIUNGIBILI. Enumerati e non `*` (6 ago 2026, decisione di Davide:
 # «clodia non può più avere [*]»). Il wildcard non era pericoloso per ciò che
