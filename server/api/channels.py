@@ -332,7 +332,9 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                                           origin_chain=getattr(chat, "origin", None))
                 except Exception as e:  # noqa: BLE001
                     LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
-        return posted_during_turn[-1].get("text") or reply
+        _ultimo = posted_during_turn[-1].get("text") or reply
+        _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
+        return _ultimo
 
     autore = _spawn_label(chat, responder)
     try:
@@ -361,7 +363,68 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                                   origin_chain=getattr(chat, "origin", None))
         except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
             LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
+    _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
     return reply
+
+
+def _caller_of(chain: list | None, executor: str) -> str | None:
+    """L'agente che ha innescato questo turno, dalla catena `origin`.
+
+    La catena è `[human:davide, agent:clodia, agent:fullstack-dev]`: chi ha
+    delegato è l'anello `agent:` precedente all'esecutore. Nessuno prima →
+    `None`, e il turno non deve niente a nessuno.
+    """
+    agenti = [x.split(":", 1)[1] for x in (chain or []) if str(x).startswith("agent:")]
+    agenti = [a for a in agenti if a != _seed_name(executor)]
+    return agenti[-1] if agenti else None
+
+
+async def _report_back(tier: str, name: str, responder: str, chat,
+                       esito: str, hop: int) -> None:
+    """Il turno finito torna a CHI l'ha lanciato, senza che nessuno debba aspettare.
+
+    Un orchestratore che delega non può restare appeso al turno del delegato: il
+    modello è asincrono, e un `await` metterebbe una chiamata bloccante dentro un
+    sistema a turni — con il chiamante fermo su qualcosa che, se il delegato
+    muore, non arriva mai. È il difetto del gate dell'11 ago, visto da un'altra
+    parte.
+
+    Quindi il ritorno è un EVENTO. La piattaforma sa già chi ha delegato (la
+    catena `origin`, che esiste per un'altra ragione), e lo richiama con l'esito.
+    L'istruzione «chiudi taggando l'orchestratore» resta utile, ma cambia ruolo:
+    porta il CONTENUTO — cosa è stato fatto — mentre il fatto che il turno sia
+    finito lo dice il meccanismo. Un'istruzione dimenticata, o un turno morto,
+    non lasciano più nessuno in attesa di un messaggio che non arriverà.
+
+    Non fa nulla se il delegato ha GIÀ taggato il chiamante: in quel caso lo ha
+    già svegliato `_maybe_delegate`, e due inneschi sullo stesso ritorno
+    darebbero due turni per un solo evento.
+    """
+    try:
+        if hop >= _MAX_DELEGATION_HOPS:
+            return
+        caller = _caller_of(getattr(chat, "origin", None), responder)
+        if not caller:
+            return
+        hard, soft = _tags(esito or "")
+        if caller in {_seed_name(x) for x in (hard + soft)}:
+            return                      # l'ha già chiamato lui: un evento, un turno
+        spec = registry.get_by_name(caller)
+        if spec is None or getattr(spec, "type", "") != "bot":
+            return
+        meta = (topics_client.open_topic(tier, name) or {}).get("meta", {})
+        if caller not in (meta.get("participants") or []):
+            return
+        tier_real = meta.get("tier", tier)
+        if not _provider_seal_ok(spec, tier_real):
+            return
+        testo = (f"[turno concluso] @{responder} ha terminato il compito che gli "
+                 f"avevi assegnato. Esito riportato:\n\n{(esito or '').strip()[:2000]}")
+        await _start_turn(tier, name, tier_real, spec, "channel", testo, "direct",
+                          hop=hop + 1, origin=list(getattr(chat, "origin", None) or []))
+    except Exception as e:  # noqa: BLE001 — il ritorno non deve rompere il turno
+        LOG.warning("ritorno al chiamante non riuscito su %s/%s da %s: %s",
+                    tier, name, responder, e)
 
 
 async def _announce_failure(tier: str, name: str, responder: str, err: Exception) -> None:
