@@ -216,10 +216,20 @@ class AsyncScopeHasOneAgentTests(unittest.TestCase):
     descrive un comportamento: **afferma che una condizione non può presentarsi**,
     e su quell'affermazione poggia il fatto che il router non gira mai su un job.
 
-    È il tipo di verità che smette di valere in silenzio: il giorno in cui
-    `agent` diventasse una lista non si romperebbe nulla, esisterebbe solo uno
-    scope con due agenti e nessuna regola su chi risponde. Il test serve a
-    rendere rumorosa quella modifica (decision record 34).
+    Era il tipo di verità che smetteva di valere in silenzio: fino al #213
+    `create_job(agent=["clodia","ophelia"])` accettava la lista e la
+    restituiva intatta, e il danno arrivava al fire — non come «agente non
+    trovato» (che `fire_job` degrada a clodia) ma come `TypeError: unhashable
+    type: 'list'` dentro `known_kind`, alle 9 del mattino, su un job accettato
+    senza una parola quando è stato creato. Sul percorso `topic_trigger` era
+    persino muto: la menzione finiva nel topic come `@['clodia', 'ophelia']`,
+    nessun agente attivato e nessun errore.
+
+    Ora la condizione è impedita dove si prende la decisione — in scrittura,
+    con un rifiuto — e i test qui sotto sono la guardia: coprono le TRE porte
+    per cui un job prende un agente (create, update, file YAML scritto a mano).
+    Se un giorno il campo va allargato deliberatamente, cadono e la decisione
+    torna sul tavolo invece di essere presa da un default (decision record 34).
     """
 
     def setUp(self) -> None:
@@ -237,20 +247,48 @@ class AsyncScopeHasOneAgentTests(unittest.TestCase):
         self.assertIsInstance(letto, str)
         self.assertEqual("clodia", letto)
 
-    @unittest.expectedFailure   # clodia-platform#213 — R11 non è imposta da nulla
-    def test_a_list_of_agents_does_not_survive_the_round_trip(self) -> None:
-        """Se un giorno qualcuno passasse due nomi, il campo non li conserva come
-        due: o è una stringa, o questo test cade e la decisione torna sul tavolo."""
-        job = db.create_job("due", "0 9 * * *", "x", agent=["clodia", "ophelia"])
-        letto = db.get_job(job["id"])["agent"]
-        self.assertIsInstance(
-            letto, str,
-            "R11: un job ha UN agente. Se il campo accetta una lista, lo scope "
-            "asincrono ha due responder e nessuno ha deciso chi risponde.")
+    def test_creating_a_job_with_two_agents_is_refused(self) -> None:
+        """R11 vive dove la decisione si prende: alla creazione, non al fire.
+
+        Rifiuto e non normalizzazione (issue #213, opzione 2): un job lo crea
+        una persona, che legge l'errore. Scegliere per lei il primo dei due
+        nomi sarebbe decidere in silenzio chi risponde — che è esattamente la
+        condizione che R11 dichiara impossibile.
+        """
+        with self.assertRaises(ValueError) as ctx:
+            db.create_job("due", "0 9 * * *", "x", agent=["clodia", "ophelia"])
+        self.assertIn("R11", str(ctx.exception))
+        self.assertIsNone(db.get_job_by_name("due"), "il job non deve esistere")
+
+    def test_updating_a_job_to_two_agents_is_refused(self) -> None:
+        """La seconda porta di scrittura: senza questa, `update_job` rimette
+        dentro la lista che `create_job` ha appena rifiutato."""
+        job = db.create_job("tre", "0 9 * * *", "x", agent="clodia")
+        with self.assertRaises(ValueError):
+            db.update_job(job["id"], agent=["clodia", "ophelia"])
+        self.assertEqual("clodia", db.get_job(job["id"])["agent"])
+
+    def test_a_handwritten_list_is_read_as_the_first_name(self) -> None:
+        """Terza porta: il file YAML si edita a mano (lo dichiara l'intestazione
+        di db.py), quindi una lista può entrare senza passare da create_job.
+
+        In lettura si COERCIZZA, non si rifiuta: far sparire da `list_jobs` un
+        job programmato è un guasto peggiore di quello curato qui. L'asimmetria
+        con la scrittura è voluta — in scrittura c'è qualcuno che legge
+        l'errore, in lettura no: resta un warning.
+        """
+        (db.JOBS_DIR / "9.yaml").write_text(yaml.safe_dump({
+            "id": 9, "name": "a mano", "cron_expr": "0 9 * * *",
+            "prompt": "x", "enabled": True, "agent": ["clodia", "ophelia"],
+        }), encoding="utf-8")
+        with self.assertLogs("scheduler.db", level="WARNING") as log:
+            letto = db.get_job(9)
+        self.assertEqual("clodia", letto["agent"])
+        self.assertIn("R11", "\n".join(log.output))
 
     def test_the_agentic_default_is_a_single_named_agent(self) -> None:
         """Nessun job resta senza responder: agentico senza `agent` → clodia."""
-        job = db.create_job("tre", "0 9 * * *", "x")
+        job = db.create_job("quattro", "0 9 * * *", "x")
         self.assertEqual("clodia", db.get_job(job["id"])["agent"])
 
 
