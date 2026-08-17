@@ -170,9 +170,35 @@ async def _lifespan(app: FastAPI):
     # il bot è interpellato. Gattato da `channels`. Non impedisce mai l'avvio.
     async def _channel_relay_loop():
         from .api import channel_relay
+        from .api import telegram_bindings_client as _tb
         timeout = int(os.environ.get("CLODIA_CHANNEL_POLL_TIMEOUT", "25"))
+        riposo = int(os.environ.get("CLODIA_CHANNEL_IDLE_SLEEP", "30"))
+        senza_binding = False
         while True:
             try:
+                # Nessuna chat LEGATA a un topic → niente da instradare, e quindi
+                # niente `getUpdates`. Non è un'ottimizzazione: due istanze che
+                # pollano lo stesso bot si terminano a vicenda con
+                # `409 Conflict: terminated by other getUpdates`, e il gateway
+                # risponde 502 al relay. Misurato il 17 ago 2026 fra terra e
+                # venere: 864 errori in due ore su una, 247 in trenta minuti
+                # sull'altra, con ZERO binding da entrambe le parti. Rumore che
+                # ha nascosto per un giorno la causa vera di un altro guasto,
+                # perché chi cercava un colpevole nei log trovava questi.
+                #
+                # Il binding si crea a runtime (`topic.telegram_bind`), quindi si
+                # ricontrolla invece di uscire: il relay riparte da sé entro
+                # mezzo minuto da quando una chat viene legata.
+                if not _tb.load():
+                    if not senza_binding:
+                        LOG.info("channel relay: nessuna chat legata a un topic — "
+                                 "polling sospeso (ricontrollo ogni %ds)", riposo)
+                        senza_binding = True
+                    await asyncio.sleep(riposo)
+                    continue
+                if senza_binding:
+                    LOG.info("channel relay: binding presenti — polling ripreso")
+                    senza_binding = False
                 await channel_relay.run_poll_cycle(timeout)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("channel relay poll: %s", e)
