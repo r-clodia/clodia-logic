@@ -1352,119 +1352,19 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         channels.registry.get_by_name = self._orig_get
         channels._track_routing_decision = self._orig_track_routing
 
-    async def test_two_hard_tags_post_a_routing_choice_instead_of_starting(self) -> None:
-
-        """router-notebook R3: due menzioni chiedono."""
-        start = AsyncMock(return_value=True)
-        posts = []
-
-        def post(_tier, _name, author, text, kind="human", **_kwargs):
-            row = {"id": str(len(posts) + 1), "author": author, "text": text, "kind": kind}
-            posts.append(row)
-            return row
-
-        with (
-            patch.object(channels, "_start_turn", start),
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels.topics_client, "open_topic", return_value={
-                "meta": {"tier": "P0",
-                         "participants": ["owner", "worker", "accountant"]},
-            }),
-            patch.object(channels.topics_client, "post_message", side_effect=post),
-            patch.object(channels.access_log, "touch", lambda *a, **k: None),
-            patch.object(channels.activity_log, "append", lambda *a, **k: None),
-            patch.object(channels, "_channel_message", AsyncMock()),
-        ):
-            result = await channels.post_channel_message(
-                "P0", "ops", "@worker @accountant guardate qui", "owner",
-            )
-
-        self.assertTrue(result["routing_dialog"])
-        self.assertEqual(result["choices"], ["worker", "accountant", "both"])
-        self.assertEqual(posts[-1]["author"], "router")
-        self.assertIn("<!-- choices=worker,accountant,both -->", posts[-1]["text"])
-        self.assertIn(
-            '<!-- routing-request={"owner":"owner","source":"1"} -->',
-            posts[-1]["text"],
-        )
-        start.assert_not_awaited()
-
-    async def test_three_hard_tags_refuse_routing_and_start_nobody(self) -> None:
-
-        """router-notebook R3: tre rifiutano."""
-        self.agents["reviewer"] = _a("reviewer", "normal", "P1")
-        start = AsyncMock(return_value=True)
-        posts = []
-
-        def post(_tier, _name, author, text, kind="human", **_kwargs):
-            row = {"id": str(len(posts) + 1), "author": author, "text": text, "kind": kind}
-            posts.append(row)
-            return row
-
-        with (
-            patch.object(channels, "_start_turn", start),
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels.topics_client, "open_topic", return_value={
-                "meta": {"tier": "P0",
-                         "participants": ["owner", "worker", "accountant", "reviewer"]},
-            }),
-            patch.object(channels.topics_client, "post_message", side_effect=post),
-            patch.object(channels.access_log, "touch", lambda *a, **k: None),
-            patch.object(channels.activity_log, "append", lambda *a, **k: None),
-            patch.object(channels, "_channel_message", AsyncMock()),
-        ):
-            result = await channels.post_channel_message(
-                "P0", "ops", "@worker @accountant @reviewer guardate qui", "owner",
-            )
-
-        self.assertTrue(result["routing_refused"])
-        self.assertIn("tre o più agenti", posts[-1]["text"])
-        start.assert_not_awaited()
-
-    async def test_routing_choice_both_starts_the_two_named_agents(self) -> None:
-        start = AsyncMock(return_value=True)
-        history = [
-            {"id": "source-1", "author": "owner", "kind": "human",
-             "text": "@worker @accountant guardate il contratto"},
-            {"id": "dialog-1", "author": "router", "kind": "system",
-             "text": "Routing: scegli @worker, @accountant o both.\n\n"
-                     '<!-- routing-request={"owner":"owner","source":"source-1"} -->'},
-        ]
-        with (
-            patch.object(channels, "_start_turn", start),
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels.topics_client, "open_topic", return_value={
-                "meta": {"tier": "P0",
-                         "participants": ["owner", "worker", "accountant"]},
-            }),
-            patch.object(channels.topics_client, "post_message",
-                         return_value={"id": "1"}),
-            patch.object(channels.topics_client, "list_messages",
-                         return_value=history),
-            patch.object(channels.access_log, "touch", lambda *a, **k: None),
-            patch.object(channels.activity_log, "append", lambda *a, **k: None),
-            patch.object(channels, "_channel_message", AsyncMock()),
-        ):
-            result = await channels.post_channel_message(
-                "P0", "ops",
-                "> router: Routing: scegli worker, accountant o both.\n\n@router both",
-                "owner",
-            )
-
-        self.assertTrue(result["routing_choice"])
-        self.assertEqual(result["responders"], ["worker", "accountant"])
-        self.assertEqual(start.await_count, 2)
-        self.assertEqual(
-            [call.args[5] for call in start.await_args_list],
-            ["@worker @accountant guardate il contratto"] * 2,
-        )
+    # Le tre prove che stavano qui — «due menzioni aprono un dialogo con
+    # a/b/both», «tre rifiutano», «both avvia i due nomi» — fissavano la R3
+    # precedente. La regola è cambiata il 17 ago 2026 (una menzione per messaggio;
+    # la seconda si chiede a chi ha scritto; `both` rimosso) e la copertura è in
+    # `test_r3_one_mention.py`, che copre anche il percorso degli agenti — quello
+    # che qui non c'era e dove nasceva la confusione.
 
     async def test_another_participant_cannot_answer_the_routing_dialog(self) -> None:
         history = [
             {"id": "source-1", "author": "owner", "kind": "human",
              "text": "@worker @accountant guardate qui"},
             {"id": "dialog-1", "author": "router", "kind": "system",
-             "text": "Routing: scegli @worker, @accountant o both.\n\n"
+             "text": "Routing: scegli @worker o @accountant.\n\n"
                      '<!-- routing-request={"owner":"owner","source":"source-1"} -->'},
         ]
         post = AsyncMock()
@@ -1480,7 +1380,7 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
             with self.assertRaises(channels.HTTPException) as raised:
                 await channels.post_channel_message(
                     "P0", "ops",
-                    "> router: Routing: scegli worker, accountant o both.\n\n"
+                    "> router: Routing: scegli worker o accountant.\n\n"
                     "@router worker",
                     "guest",
                 )
@@ -1607,6 +1507,14 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(start.await_args.args[6], "topic-bootstrap")
 
     async def test_delegation_involves_one_agent_per_hop(self) -> None:
+        """Un `@` diretto delega, e delega a uno.
+
+        Questo test verificava lo stesso invariante con DUE tag, dove il primo
+        vinceva. Da R3 (17 ago 2026) due menzioni non delegano affatto: tornano
+        come domanda all'autore — `test_r3_one_mention.py`. Il caso a un tag resta
+        quello che conta qui: la delega passa per `_start_turn` una volta sola, e
+        non è un dettaglio del conteggio dei tag.
+        """
         start = AsyncMock(return_value=True)
         with (
             patch.object(channels, "_start_turn", start),
@@ -1617,9 +1525,7 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
             }),
         ):
             await channels._maybe_delegate(
-                "P0", "ops", "clodia",
-                "Coinvolgo @worker e anche @accountant su questo",
-                "owner", 0,
+                "P0", "ops", "clodia", "Coinvolgo @worker su questo", "owner", 0,
             )
 
         self.assertEqual(start.await_count, 1)
