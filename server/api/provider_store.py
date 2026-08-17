@@ -22,6 +22,7 @@ from __future__ import annotations
 
 import logging
 import os
+import asyncio
 
 import requests
 
@@ -118,3 +119,19 @@ def list_ids() -> set[str]:
         return set(r.json().get("ids") or [])
     except ValueError as e:
         raise ProviderStoreError("gateway LIST: risposta non JSON") from e
+
+
+async def read_async(pid: str) -> dict | None:
+    return await asyncio.to_thread(read, pid)
+
+
+async def write_async(pid: str, data: dict) -> None:
+    return await asyncio.to_thread(write, pid, data)
+
+
+async def delete_async(pid: str) -> None:
+    return await asyncio.to_thread(delete, pid)
+
+
+async def list_ids_async() -> set[str]:
+    return await asyncio.to_thread(list_ids)
