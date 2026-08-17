@@ -19,6 +19,46 @@ LOG = logging.getLogger("agent-server.agents")
 AGENTS_DIR = data_path("agents")
 
 
+def _incoerenze(spec) -> list[str]:
+    """Dichiarazioni che si contraddicono, o che mancano dove servirebbero.
+
+    Non solleva e non corregge: SEGNALA. Un'incoerenza fra due campi di un seed
+    non è una ragione per fermare la colonia, ma tacerla è come il difetto è
+    arrivato in produzione (clodia-platform#227).
+
+    Il caso che ha prodotto questa funzione: l'allowlist dei tool nativi è andata
+    in enforcement mentre nessun seed dei pack la dichiarava, quindi tutti sono
+    caduti sul pavimento dell'arciseed — che non contiene `Bash`. `fullstack-dev`
+    aveva otto comandi in `allow_shell_cmds` e nessun modo di eseguirne uno: la
+    sandbox autorizzava una stanza e niente ne dava la porta. Nessuna eccezione,
+    nessun log, nessuno stato degradato — se n'è accorto un umano, notando che un
+    agente sviluppatore non poteva far girare `pytest`.
+    """
+    fuori: list[str] = []
+    nativi = getattr(spec, "native_tools", None)
+    sandbox = getattr(spec, "sandbox", None)
+    shell = list(getattr(sandbox, "allow_shell_cmds", None) or []) if sandbox else []
+    ha_bash = any(str(t).split("(", 1)[0] == "Bash" for t in (nativi or []))
+
+    if nativi is None:
+        # `[]` invece è una DICHIARAZIONE («solo il pavimento») e non si segnala:
+        # la differenza fra decisione e dimenticanza è tutto il punto.
+        fuori.append(
+            "`native_tools` non dichiarato: l'allowlist è in enforcement, quindi "
+            "questo seed riceve SOLO il pavimento dell'arciseed (niente `Bash`, "
+            "niente `Grep`). Dichiara `[]` se è ciò che vuoi")
+    if shell and not ha_bash:
+        fuori.append(
+            f"`allow_shell_cmds` autorizza {len(shell)} comandi ({', '.join(shell[:4])}"
+            f"{'…' if len(shell) > 4 else ''}) ma `native_tools` non concede `Bash`: "
+            "comandi che l'agente non ha modo di eseguire")
+    if ha_bash and not shell:
+        fuori.append(
+            "`native_tools` concede `Bash` ma `allow_shell_cmds` è vuoto: una "
+            "porta su una stanza senza niente dentro")
+    return fuori
+
+
 class AgentRegistry:
     """Cache in memoria degli agenti definiti. Ricaricabile a runtime
     (utile in dev: edit dell'agent.yaml + POST /api/agents/reload).
@@ -72,6 +112,8 @@ class AgentRegistry:
                         "agent '%s': campo `can_delegate_to` DEPRECATO "
                         "(AgentSpec v2) — la delega è il movimento di card",
                         spec.name)
+                for avviso in _incoerenze(spec):
+                    LOG.warning("agent '%s': %s", spec.name, avviso)
                 self._agents[spec.name] = spec
                 LOG.info("Caricato agent '%s' da %s", spec.name, spec_file)
             except (ValidationError, ValueError, yaml.YAMLError) as e:
