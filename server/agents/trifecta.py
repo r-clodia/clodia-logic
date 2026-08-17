@@ -532,7 +532,8 @@ def context_profile(participants: Iterable[str],
                     specs: Optional[Iterable] = None,
                     config: Optional[dict] = None,
                     tainted: Optional[bool] = None,
-                    remote_egress: Optional[bool] = None) -> dict:
+                    remote_egress: Optional[bool] = None,
+                    channel_private_data: Optional[bool] = None) -> dict:
     """Danger score 0–3 di un contesto = **numero di bit accesi del vettore**.
 
     Il vettore (clodia-platform#104 §4, formalizzato il 3 ago 2026):
@@ -596,7 +597,24 @@ def context_profile(participants: Iterable[str],
     # di nessuno — è il canale stesso ad avere un condotto verso l'esterno.
     arbitrary_egress = bool(remote_egress) or (legs["egress"] and any(
         p.get("egress_scope") == "arbitrary" for p in closure))
-    bits = (1 if tainted else 0, 1 if legs["private_data"] else 0,
+    # Secondo bit: un FATTO SUL CANALE, non una capacità dei presenti (definizione
+    # dell'owner, 17 ago 2026 — decision record 36):
+    #
+    #   «il secondo bit setta se al canale sono stati aggiunti dati di natura
+    #    riservata e non generati dagli agenti, ad esempio un file uploaded
+    #    oppure un attachment di email, oppure un collegamento ad un remote»
+    #
+    # Prima era l'OR delle capacità di lettura dei partecipanti, e per questo era
+    # quasi sempre acceso: qualunque agente che possa stare in un canale ha i
+    # verbi per leggerne i file. Un bit acceso su tutto non discrimina, ed era
+    # l'unico lavoro che gli si chiedeva.
+    #
+    # `None` = il chiamante non l'ha calcolato (o il gateway è muto): si ricade
+    # sulla capacità, che è la direzione prudente. Un `0` inventato sarebbe una
+    # rassicurazione su dati che potrebbero esserci.
+    private_data = (legs["private_data"] if channel_private_data is None
+                    else bool(channel_private_data))
+    bits = (1 if tainted else 0, 1 if private_data else 0,
             1 if arbitrary_egress else 0)
     score = sum(bits)
     vector = ("?" if tainted is None else str(bits[0])) + str(bits[1]) + str(bits[2])
@@ -651,6 +669,12 @@ def context_profile(participants: Iterable[str],
         "vector": vector,
         "bits": {"tainted": bits[0], "private_data": bits[1],
                  "arbitrary_egress": bits[2]},
+        # Perché il secondo bit è spento nonostante i verbi ci siano: un numero
+        # che scende senza dire perché è indistinguibile da un difetto di calcolo.
+        # `capability_legs` resta la CAPACITÀ, e non mente: quei verbi ci sono.
+        "channel_private_data": channel_private_data,
+        "private_data_suppressed": bool(channel_private_data is False
+                                        and legs["private_data"]),
         "tainted": tainted,
         # Capacità: i verbi presenti, indipendentemente da cosa è accaduto e da
         # come sono confinati.
