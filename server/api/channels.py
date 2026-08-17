@@ -28,7 +28,7 @@ from fastapi import APIRouter, HTTPException, Request
 
 from ..agents import activity_log, rank as rank_mod, registry
 from ..agents import feedback as agent_feedback
-from ..agents import trifecta
+from ..agents import trifecta, trifecta_reset
 from .. import debug_watch
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
@@ -2819,7 +2819,58 @@ def _active_responders(tier: str, name: str, participants: list[str]) -> list[st
             if any(r["state"] == "working" for r in righe)]
 
 
-def _channel_trifecta(meta: dict, tainted: bool | None = None) -> dict | None:
+#: Quante directory si esplorano cercando un file «portato dentro». Un albero di
+#: lavoro può avere centinaia di cartelle, e questo calcolo sta sul percorso di
+#: APERTURA di un canale: oltre il limite si risponde «non lo so» (None), che il
+#: punteggio tratta come prima. Meglio un allarme prudente di una rassicurazione
+#: comprata con mezzo secondo di latenza.
+_MAX_DIR_SCAN = 40
+
+
+def _channel_has_data(tier: str, name: str) -> bool | None:
+    """C'è, in questo canale, qualcosa che qualcuno ha PORTATO DENTRO?
+
+    Osservazione dell'owner (17 ago 2026): «il trifecta va 3/3 perché parte
+    sempre da 1/3, in quanto si assume che un canale abbia sempre un fs da
+    proteggere, non è questo il caso del canale software-house che ha soltanto
+    working files, scratch etc.».
+
+    La distinzione non va inventata: esiste già come `provenance`. `agent` è ciò
+    che gli agenti hanno prodotto lavorando; `trusted` e `untrusted` sono ciò che
+    una persona o un verbo ha portato dentro. Un file SENZA provenienza conta
+    come portato dentro — la stessa direzione prudente che il taint usa per le
+    etichette assenti.
+
+    `True` = c'è materiale da proteggere · `False` = solo working file, o niente ·
+    `None` = non si è potuto stabilire (gateway muto, albero troppo grande), e
+    allora il punteggio resta quello di prima.
+    """
+    da_visitare = [""]
+    visitate = 0
+    try:
+        while da_visitare and visitate < _MAX_DIR_SCAN:
+            sub = da_visitare.pop(0)
+            visitate += 1
+            for voce in topics_client.list_files(tier, name, sub) or []:
+                if voce.get("kind") == "dir":
+                    nome = voce.get("name") or ""
+                    da_visitare.append(f"{sub}/{nome}" if sub else nome)
+                    continue
+                if (voce.get("provenance") or "") != "agent":
+                    return True          # basta uno: si smette di cercare
+        if da_visitare:
+            LOG.info("trifecta: albero di %s/%s oltre %d directory — "
+                     "«ci sono dati» non stabilito", tier, name, _MAX_DIR_SCAN)
+            return None
+        return False
+    except Exception as e:  # noqa: BLE001 — un dubbio non è una rassicurazione
+        LOG.warning("trifecta: contenuto di %s/%s non leggibile (%s)",
+                    tier, name, type(e).__name__)
+        return None
+
+
+def _channel_trifecta(meta: dict, tainted: bool | None = None,
+                      tier: str | None = None, name: str | None = None) -> dict | None:
     """Danger score «lethal trifecta» del canale (issue clodia-platform#77).
 
     Calcolato dai grant effettivi dei partecipanti a ogni apertura/refresh: i
@@ -2834,9 +2885,27 @@ def _channel_trifecta(meta: dict, tainted: bool | None = None) -> dict | None:
         # condotto di cui non sappiamo se è approvato va mostrato, non nascosto.
         uri = trifecta.remote_uri(meta)
         remote_egress = (uri is not None) and (trifecta.uri_allowed(uri) is not True)
-        return trifecta.context_profile(meta.get("participants") or [],
+        ha_dati = (_channel_has_data(tier, name)
+                   if tier and name else None)
+        prof = trifecta.context_profile(meta.get("participants") or [],
                                         tainted=tainted,
-                                        remote_egress=remote_egress)
+                                        remote_egress=remote_egress,
+                                        channel_has_data=ha_dati)
+        # «Reset trifecta»: l'owner dichiara di rispondere lui di questo canale.
+        # Non si nasconde il punteggio — si affianca la firma, e la CAPACITÀ resta
+        # esposta: un azzeramento anonimo sarebbe indistinguibile da un difetto di
+        # calcolo. Decade da sé se la composizione cambia (`trifecta_reset`).
+        if prof and tier and name:
+            voce = trifecta_reset.active(tier, name, meta.get("participants") or [])
+            if voce:
+                prof["reset_by"] = voce.get("by")
+                prof["reset_at"] = voce.get("at")
+                prof["score_before_reset"] = prof.get("score")
+                prof["score"] = 0
+                prof["bits"] = {k: 0 for k in (prof.get("bits") or {})}
+                prof["vector"] = "0 0 0"
+                prof["symbol"] = trifecta.SYMBOLS.get(0, "✅")
+        return prof
     except Exception as e:  # pragma: no cover - difensivo
         LOG.warning("trifecta: profilo canale non calcolabile (%s)", e)
         return None
@@ -2862,7 +2931,8 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     # punteggio conterebbe solo i due bit statici — cioè quelli che non cambiano.
     _t = topic.get("taint") or {}
     topic["trifecta"] = _channel_trifecta(topic.get("meta", {}),
-                                          tainted=_t.get("tainted"))
+                                          tainted=_t.get("tainted"),
+                                          tier=tier, name=name)
     return topic
 
 
@@ -3231,6 +3301,50 @@ def _queue_join_introduction(
         directive="Sei appena entrato in questo topic: presentati in una sola riga.",
     ))
     return True
+
+
+@router.post("/clodia/channels/{tier}/{name}/trifecta/reset")
+async def channel_trifecta_reset(tier: str, name: str, request: Request) -> dict:
+    """Azzera il punteggio trifecta di questo canale, con la firma di chi lo fa.
+
+    «un bottoncino "reset trifecta" che riporta a 0/3 sotto la responsabilità
+    dell'owner» (17 ago 2026). Serve perché nessuna euristica indovina tutti i
+    casi, e un punteggio che non si può mai contraddire diventa un semaforo da
+    ignorare.
+
+    OWNER-ONLY: è un'assunzione di responsabilità, quindi la fa chi risponde del
+    canale — non un partecipante, e non un agente.
+
+    Tre cose che questo endpoint NON fa, e ognuna è una decisione:
+    · non nasconde la capacità (`capability` resta nel payload: quei verbi ci
+      sono davvero, e negarlo sarebbe l'unica bugia che questa misura non può
+      permettersi);
+    · non sopravvive a un cambio di composizione — decade da sé, come gli unlock
+      del gate di contesto;
+    · non tocca i CONTROLLI. Questo bottone cambia la misura, non i gate: se il
+      canale è contaminato, l'uscita continua a chiedere conferma. Sono due cose
+      diverse — il punteggio dice «quanto è rischioso questo contesto», il gate
+      decide «questa singola azione passa». Un bottone che spegnesse i gate
+      sarebbe un interruttore di sicurezza travestito da preferenza di
+      visualizzazione, e per quello esiste già l'approvazione del gate stesso.
+    """
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    principal = _require_owner(request, topic.get("meta", {}))
+    parts = (topic.get("meta", {}) or {}).get("participants") or []
+    voce = trifecta_reset.set_reset(tier, name, principal or "owner", parts)
+    return {"ok": True, "reset": voce}
+
+
+@router.delete("/clodia/channels/{tier}/{name}/trifecta/reset")
+async def channel_trifecta_reset_clear(tier: str, name: str, request: Request) -> dict:
+    """Revoca il reset: il punteggio torna a parlare da sé."""
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    _require_owner(request, topic.get("meta", {}))
+    return {"ok": True, "removed": trifecta_reset.clear_reset(tier, name)}
 
 
 @router.post("/clodia/channels/{tier}/{name}/participants")
