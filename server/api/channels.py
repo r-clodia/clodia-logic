@@ -2827,24 +2827,39 @@ def _active_responders(tier: str, name: str, participants: list[str]) -> list[st
 _MAX_DIR_SCAN = 40
 
 
-def _channel_has_data(tier: str, name: str) -> bool | None:
-    """C'è, in questo canale, qualcosa che qualcuno ha PORTATO DENTRO?
+def _channel_private_data(tier: str, name: str, meta: dict) -> bool | None:
+    """In questo canale sono stati **aggiunti dati riservati** non generati dagli
+    agenti?
 
-    Osservazione dell'owner (17 ago 2026): «il trifecta va 3/3 perché parte
-    sempre da 1/3, in quanto si assume che un canale abbia sempre un fs da
-    proteggere, non è questo il caso del canale software-house che ha soltanto
-    working files, scratch etc.».
+    Definizione dell'owner, 17 ago 2026 (decision record 36):
 
-    La distinzione non va inventata: esiste già come `provenance`. `agent` è ciò
-    che gli agenti hanno prodotto lavorando; `trusted` e `untrusted` sono ciò che
-    una persona o un verbo ha portato dentro. Un file SENZA provenienza conta
-    come portato dentro — la stessa direzione prudente che il taint usa per le
-    etichette assenti.
+        «il secondo bit setta se al canale sono stati aggiunti dati di natura
+         riservata e non generati dagli agenti, ad esempio un file uploaded
+         oppure un attachment di email, oppure un collegamento ad un remote»
 
-    `True` = c'è materiale da proteggere · `False` = solo working file, o niente ·
-    `None` = non si è potuto stabilire (gateway muto, albero troppo grande), e
-    allora il punteggio resta quello di prima.
+    È un FATTO sul canale, non una capacità dei presenti. Prima il bit era l'OR
+    dei verbi di lettura dei partecipanti, e per questo era acceso quasi sempre:
+    chiunque possa stare in un canale ha i verbi per leggerne i file. Un bit
+    acceso su tutto non discrimina.
+
+    Due sorgenti, entrambe già registrate — nessuna euristica:
+
+    · `provenance` di un file. `agent` è ciò che gli agenti hanno prodotto
+      lavorando; `trusted` (upload dell'owner) e `untrusted` (allegato di posta,
+      file da Drive, download di un verbo) sono ciò che è stato PORTATO DENTRO.
+      Un file senza provenienza conta come portato dentro: è la direzione che il
+      taint usa già per le etichette assenti.
+    · un **remote collegato**. Dal canale si raggiunge un albero di documenti che
+      nessun agente ha prodotto, quindi il bit è acceso a prescindere dai file
+      locali — e a prescindere dal fatto che il remote sia vagliato, perché il
+      vaglio riguarda l'USCITA (terzo bit), non la presenza dei dati.
+
+    `True` · `False` · `None` = non stabilito (gateway muto, albero troppo
+    grande), e allora il punteggio ricade sulla capacità: un `False` inventato
+    sarebbe una rassicurazione su dati che potrebbero esserci.
     """
+    if str((meta.get("remote") or {}).get("type") or "").strip():
+        return True
     da_visitare = [""]
     visitate = 0
     try:
@@ -2860,7 +2875,7 @@ def _channel_has_data(tier: str, name: str) -> bool | None:
                     return True          # basta uno: si smette di cercare
         if da_visitare:
             LOG.info("trifecta: albero di %s/%s oltre %d directory — "
-                     "«ci sono dati» non stabilito", tier, name, _MAX_DIR_SCAN)
+                     "«dati riservati» non stabilito", tier, name, _MAX_DIR_SCAN)
             return None
         return False
     except Exception as e:  # noqa: BLE001 — un dubbio non è una rassicurazione
@@ -2885,12 +2900,12 @@ def _channel_trifecta(meta: dict, tainted: bool | None = None,
         # condotto di cui non sappiamo se è approvato va mostrato, non nascosto.
         uri = trifecta.remote_uri(meta)
         remote_egress = (uri is not None) and (trifecta.uri_allowed(uri) is not True)
-        ha_dati = (_channel_has_data(tier, name)
-                   if tier and name else None)
+        riservati = (_channel_private_data(tier, name, meta)
+                     if tier and name else None)
         prof = trifecta.context_profile(meta.get("participants") or [],
                                         tainted=tainted,
                                         remote_egress=remote_egress,
-                                        channel_has_data=ha_dati)
+                                        channel_private_data=riservati)
         # «Reset trifecta»: l'owner dichiara di rispondere lui di questo canale.
         # Non si nasconde il punteggio — si affianca la firma, e la CAPACITÀ resta
         # esposta: un azzeramento anonimo sarebbe indistinguibile da un difetto di

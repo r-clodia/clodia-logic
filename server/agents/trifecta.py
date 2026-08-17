@@ -52,29 +52,6 @@ LOG = logging.getLogger("agent-server.agents.trifecta")
 #: I tre lati del triangolo, in ordine di presentazione.
 LEGS = ("private_data", "untrusted_input", "egress")
 
-#: Verbi `private_data` che leggono **il canale corrente** e nient'altro.
-#:
-#: La distinzione nasce da un'osservazione dell'owner (17 ago 2026): «il trifecta
-#: va 3/3 perché parte sempre da 1/3, in quanto si assume che un canale abbia
-#: sempre un fs da proteggere, non è questo il caso del canale software-house che
-#: ha soltanto working files, scratch etc.».
-#:
-#: È esatto, e la misura lo conferma: su quel canale tutti e sette i partecipanti
-#: accendevano `private_data`, e per tutti veniva da questi verbi. Se il canale
-#: non contiene dati che qualcuno ha portato dentro, questi verbi non possono
-#: leggere niente di riservato e il bit non ha ragione di accendersi.
-#:
-#: Gli ALTRI verbi `private_data` restano incondizionati, ed è la ragione per cui
-#: serve la distinzione invece della regola secca «fs vuoto → 0»: `memory.read`,
-#: `email.read`, `gdrive.*` e i verbi che aprono ALTRI topic (`topic.open`,
-#: `topic.list`, `topic.search`) leggono fuori da qui. Un canale vuoto con dentro
-#: un agente che legge la posta dell'owner non è innocuo, e un 0 lì sarebbe una
-#: rassicurazione falsa.
-_CHANNEL_SCOPED_PRIVATE = frozenset({
-    "topic.files", "topic.read_file", "topic.read_document", "topic.fetch",
-    "topic.remote_status", "topic.remote_pull",
-})
-
 #: Simboli richiesti dall'issue (#77, commento del 1 ago): 1/3 ✅ 2/3 ⚠️ 3/3 🚨.
 SYMBOLS = {0: "✅", 1: "✅", 2: "⚠️", 3: "🚨"}
 
@@ -544,29 +521,9 @@ def agent_profile(spec, config: Optional[dict] = None,
         # mente: quei verbi ce li ha), `residual` è il rischio che rimane dopo il
         # confinamento applicato — l'uscita conta solo se è arbitraria.
         "egress_scope": scope,
-        # DA DOVE viene `private_data`: `channel` se solo dai verbi che leggono
-        # questo canale, `external` se legge anche altrove, `none` se spento. Il
-        # contesto usa questa distinzione per non accendere il bit su un canale
-        # che non ha dati da proteggere.
-        "private_data_scope": _private_scope(grants, cfg, legs["private_data"]),
         "residual": (sum(1 for leg in LEGS if legs[leg])
                      - (1 if legs["egress"] and scope != "arbitrary" else 0)),
     }
-
-
-def _private_scope(grants, cfg, acceso: bool) -> str:
-    """`none` | `channel` | `external`.
-
-    `external` vince: se un agente legge sia il canale sia la posta dell'owner,
-    il bit resta acceso anche su un canale vuoto — è il caso che la regola secca
-    «fs vuoto → 0» avrebbe sbagliato.
-    """
-    if not acceso:
-        return "none"
-    concessi = set(_matching_grants(grants, cfg["private_data"]))
-    if not concessi:
-        return "external"          # acceso da un namespace ignoto: prudenza
-    return "channel" if concessi <= _CHANNEL_SCOPED_PRIVATE else "external"
 
 
 # ── profilo di un contesto (canale, DM) ───────────────────────────────────
@@ -576,7 +533,7 @@ def context_profile(participants: Iterable[str],
                     config: Optional[dict] = None,
                     tainted: Optional[bool] = None,
                     remote_egress: Optional[bool] = None,
-                    channel_has_data: Optional[bool] = None) -> dict:
+                    channel_private_data: Optional[bool] = None) -> dict:
     """Danger score 0–3 di un contesto = **numero di bit accesi del vettore**.
 
     Il vettore (clodia-platform#104 §4, formalizzato il 3 ago 2026):
@@ -640,20 +597,23 @@ def context_profile(participants: Iterable[str],
     # di nessuno — è il canale stesso ad avere un condotto verso l'esterno.
     arbitrary_egress = bool(remote_egress) or (legs["egress"] and any(
         p.get("egress_scope") == "arbitrary" for p in closure))
-    # Secondo bit. `channel_has_data=False` significa: in questo canale non c'è
-    # niente che qualcuno abbia portato dentro — solo working file prodotti dagli
-    # agenti, o nulla. Allora i verbi che leggono SOLO questo canale non possono
-    # leggere niente di riservato, e il bit si accende soltanto per chi legge
-    # ANCHE altrove (memoria, posta, Drive, altri topic).
+    # Secondo bit: un FATTO SUL CANALE, non una capacità dei presenti (definizione
+    # dell'owner, 17 ago 2026 — decision record 36):
     #
-    # `None` = non lo sappiamo (chiamante che non lo calcola, gateway muto): si
-    # tiene il comportamento di prima, perché una rassicurazione inventata è
-    # peggio di un allarme prudente.
-    private_data = legs["private_data"]
-    private_solo_dal_canale = private_data and all(
-        p.get("private_data_scope") in (None, "none", "channel") for p in closure)
-    if channel_has_data is False and private_solo_dal_canale:
-        private_data = False
+    #   «il secondo bit setta se al canale sono stati aggiunti dati di natura
+    #    riservata e non generati dagli agenti, ad esempio un file uploaded
+    #    oppure un attachment di email, oppure un collegamento ad un remote»
+    #
+    # Prima era l'OR delle capacità di lettura dei partecipanti, e per questo era
+    # quasi sempre acceso: qualunque agente che possa stare in un canale ha i
+    # verbi per leggerne i file. Un bit acceso su tutto non discrimina, ed era
+    # l'unico lavoro che gli si chiedeva.
+    #
+    # `None` = il chiamante non l'ha calcolato (o il gateway è muto): si ricade
+    # sulla capacità, che è la direzione prudente. Un `0` inventato sarebbe una
+    # rassicurazione su dati che potrebbero esserci.
+    private_data = (legs["private_data"] if channel_private_data is None
+                    else bool(channel_private_data))
     bits = (1 if tainted else 0, 1 if private_data else 0,
             1 if arbitrary_egress else 0)
     score = sum(bits)
@@ -711,10 +671,10 @@ def context_profile(participants: Iterable[str],
                  "arbitrary_egress": bits[2]},
         # Perché il secondo bit è spento nonostante i verbi ci siano: un numero
         # che scende senza dire perché è indistinguibile da un difetto di calcolo.
-        "channel_has_data": channel_has_data,
-        "private_data_suppressed": bool(channel_has_data is False
-                                        and legs["private_data"]
-                                        and not private_data),
+        # `capability_legs` resta la CAPACITÀ, e non mente: quei verbi ci sono.
+        "channel_private_data": channel_private_data,
+        "private_data_suppressed": bool(channel_private_data is False
+                                        and legs["private_data"]),
         "tainted": tainted,
         # Capacità: i verbi presenti, indipendentemente da cosa è accaduto e da
         # come sono confinati.
