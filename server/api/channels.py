@@ -277,7 +277,30 @@ def _spawn_bg(coro) -> None:
 # Catena di delega (modello capitano→incaricato): quando un responder tagga un
 # ALTRO agente AI partecipante, quel messaggio è un ORDINE che innesca il turno
 # dell'incaricato. Bounded per evitare loop di ping-pong tra agenti.
-_MAX_DELEGATION_HOPS = 2
+#
+# Il valore era 2, fisso. Con un coordinatore e un esecutore la catena si esaurisce
+# al primo scambio di ritorno (clodia → dev → clodia → **niente**), ed è la ragione
+# per cui una menzione «a volte parte e a volte no»: dipende da dove ti trovi nella
+# catena, che dal canale non si vede. 4 lascia spazio a due scambi completi; il
+# freno resta, perché un rimpallo infinito è ciò che questo limite esiste per
+# fermare. Configurabile perché il valore giusto dipende da quanti agenti
+# collaborano in un canale, e non lo sappiamo a priori.
+_DEFAULT_MAX_DELEGATION_HOPS = 4
+
+
+def _max_delegation_hops() -> int:
+    """Salti massimi della catena di delega (`CLODIA_MAX_DELEGATION_HOPS`).
+
+    Un valore illeggibile ricade sul default: né spegnere il freno (0/negativo,
+    che bloccherebbe ogni delega) né sollevare, perché questa funzione è nel
+    percorso di un turno e un turno non deve morire per una variabile scritta male.
+    """
+    raw = (os.environ.get("CLODIA_MAX_DELEGATION_HOPS") or "").strip()
+    try:
+        v = int(raw)
+    except ValueError:
+        return _DEFAULT_MAX_DELEGATION_HOPS
+    return v if v > 0 else _DEFAULT_MAX_DELEGATION_HOPS
 
 
 def _message_key(msg: dict) -> tuple:
@@ -328,7 +351,7 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
 
     Se la risposta TAGGA un altro agente AI partecipante (delega/ordine), si
     innesca il turno dell'incaricato (catena capitano→incaricato), fino a
-    `_MAX_DELEGATION_HOPS` salti per evitare loop.
+    `CLODIA_MAX_DELEGATION_HOPS` salti per evitare loop.
     """
     try:
         before_messages = topics_client.list_messages(tier, name, limit=500)
@@ -370,14 +393,16 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     if posted_during_turn:
         LOG.info("risposta finale di %s su %s/%s soppressa: %d messaggi gia' postati via tool",
                  responder, tier, name, len(posted_during_turn))
-        if hop < _MAX_DELEGATION_HOPS:
-            for msg in posted_during_turn:
-                try:
-                    await _maybe_delegate(tier, name, responder,
-                                          msg.get("text") or "", principal, hop,
-                                          origin_chain=getattr(chat, "origin", None))
-                except Exception as e:  # noqa: BLE001
-                    LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
+        # Si chiama SEMPRE: il limite lo applica `_maybe_delegate`, che è la sola
+        # a sapere se c'era un tag da servire e quindi la sola che possa dirlo.
+        # Saltare la chiamata qui era il silenzio.
+        for msg in posted_during_turn:
+            try:
+                await _maybe_delegate(tier, name, responder,
+                                      msg.get("text") or "", principal, hop,
+                                      origin_chain=getattr(chat, "origin", None))
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
         _ultimo = posted_during_turn[-1].get("text") or reply
         _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
         return _ultimo
@@ -403,12 +428,11 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     except Exception as e:  # noqa: BLE001
         LOG.warning("notifica SSE %s/%s da %s fallita (messaggio gia' pubblicato): %s",
                     tier, name, responder, e)
-    if hop < _MAX_DELEGATION_HOPS:
-        try:
-            await _maybe_delegate(tier, name, responder, reply, principal, hop,
-                                  origin_chain=getattr(chat, "origin", None))
-        except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
-            LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
+    try:
+        await _maybe_delegate(tier, name, responder, reply, principal, hop,
+                              origin_chain=getattr(chat, "origin", None))
+    except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
+        LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
     _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
     return reply
 
@@ -447,7 +471,7 @@ async def _report_back(tier: str, name: str, responder: str, chat,
     darebbero due turni per un solo evento.
     """
     try:
-        if hop >= _MAX_DELEGATION_HOPS:
+        if hop >= _max_delegation_hops():
             return
         caller = _caller_of(getattr(chat, "origin", None), responder)
         if not caller:
@@ -518,7 +542,7 @@ async def _announce_failure(tier: str, name: str, responder: str, err: Exception
                         "diagnosi richiesta", tier, name, debug_watch.WATCHER)
             return
         await _start_turn(tier, name, tier_real, watcher, "system",
-                          testo, "direct", hop=_MAX_DELEGATION_HOPS)
+                          testo, "direct", hop=_max_delegation_hops())
     except Exception as e:  # noqa: BLE001
         LOG.warning("annuncio del turno fallito non riuscito su %s/%s: %s",
                     tier, name, e)
@@ -555,7 +579,7 @@ async def _watch_report(tier: str, name: str, kind: str, subject: str,
                         debug_watch.WATCHER, tier_real)
             return
         await _start_turn(tier, name, tier_real, watcher, "debug-watch",
-                          a.brief(), "debug", hop=_MAX_DELEGATION_HOPS)
+                          a.brief(), "debug", hop=_max_delegation_hops())
     except Exception as e:  # noqa: BLE001 — la diagnostica non rompe il turno
         LOG.warning("debug-watch · escalation non riuscita: %r", e)
 
@@ -566,7 +590,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     """Gioco di squadra: se nel suo reply un agente tagga ALTRI agenti idonei, ne
     innesca il turno. N tag → N deleghe (in parallelo). @tag = incarico diretto,
     $tag = coinvolgimento soft. Salta i tag verso sé stesso o non-partecipanti; il
-    limite hop (_MAX_DELEGATION_HOPS) evita loop."""
+    limite hop (_max_delegation_hops) evita loop."""
     topic = topics_client.open_topic(tier, name)
     if not topic:
         return
@@ -612,6 +636,33 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             LOG.info("citazione $%s da %s su %s/%s: nessun turno (soft)",
                      t, from_agent, tier, name)
     if not plan:
+        return
+    # LIMITE DELLA CATENA, e lo si DICE. Il controllo stava nei due chiamanti, che
+    # saltavano questa funzione: nessun log, nessun messaggio, e per chi guardava
+    # il canale «l'ho chiamato e non risponde» — indistinguibile da un guasto, e
+    # imprevedibile perché la posizione nella catena non si vede. Qui invece si sa
+    # CHI era stato taggato, che è l'unica informazione che rende utile l'avviso.
+    #
+    # Il messaggio si posta solo se c'era davvero qualcosa da servire: un reply
+    # senza tag idonei non produce nessuna nota, altrimenti il canale si
+    # riempirebbe di avvisi su menzioni che non c'erano.
+    limite = _max_delegation_hops()
+    if hop >= limite:
+        negati = [_seed_name(t) for t, kind in plan if kind == "direct"]
+        if not negati:
+            return                       # solo citazioni: niente di negato da dire
+        testo = (
+            f"{_elenco_or(negati)} {'è' if len(negati) == 1 else 'sono'} stato "
+            f"taggato da {_seed_name(from_agent)}, ma la catena di delega ha "
+            f"raggiunto il limite di {limite} passaggi: nessun turno è partito. "
+            f"La catena riparte da un messaggio umano."
+        )
+        avviso = topics_client.post_message(
+            tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
+        await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
+                               message=avviso, topic_title=meta.get("title"))
+        LOG.info("delega da %s su %s/%s: limite catena (%d) raggiunto, non "
+                 "avviati: %s", from_agent, tier, name, limite, ", ".join(negati))
         return
     # R3 · una menzione per messaggio, e la seconda si chiede a CHI HA SCRITTO.
     #

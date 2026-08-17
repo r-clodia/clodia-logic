@@ -86,7 +86,7 @@ class ReportBackTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.turns, [])
 
     async def test_the_hop_limit_stops_the_ping_pong(self):
-        await self._run("fatto", hop=channels._MAX_DELEGATION_HOPS)
+        await self._run("fatto", hop=channels._max_delegation_hops())
         self.assertEqual(self.turns, [])
 
     async def test_a_caller_who_left_the_room_is_not_called_back(self):
