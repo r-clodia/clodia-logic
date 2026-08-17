@@ -87,6 +87,52 @@ def _routing_request_marker(owner: str, source_id: str) -> str:
     return f"<!-- routing-request={payload} -->"
 
 
+def _elenco_or(nomi: list[str]) -> str:
+    """`[a]` → `@a` · `[a, b]` → `@a o @b` · `[a, b, c]` → `@a, @b o @c`."""
+    tag = [f"@{n}" for n in nomi]
+    if len(tag) <= 1:
+        return "".join(tag)
+    return ", ".join(tag[:-1]) + " o " + tag[-1]
+
+
+_AMBIGUITY_ASK_RE = re.compile(r"<!-- routing-ask=(\{.*?\}) -->")
+
+
+def _ambiguity_ask_marker(to_agent: str) -> str:
+    """Marker della domanda di disambiguazione rivolta a un agente.
+
+    Serve a chiedere UNA volta per catena: la risposta dell'agente passa dal
+    routing ordinario, quindi può essere ambigua a sua volta, e due agenti che si
+    rimbalzano domande consumerebbero token senza che nessuno lo veda.
+    """
+    payload = json.dumps({"to": to_agent}, ensure_ascii=True, separators=(",", ":"))
+    return f"<!-- routing-ask={payload} -->"
+
+
+def _ambiguity_already_asked(messages: list[dict], to_agent: str) -> bool:
+    """La domanda è già stata posta a questo agente, e lui sta rispondendo ORA?
+
+    Si guarda indietro saltando i messaggi dell'agente stesso — il suo reply è già
+    nel canale quando la delega viene valutata — e si giudica il primo messaggio
+    di qualcun altro: se è la domanda rivolta a lui, questa è la seconda volta.
+    Un turno normale in mezzo chiude la catena e una nuova ambiguità è nuova.
+    """
+    for msg in reversed(messages or []):
+        autore = str((msg or {}).get("author") or "")
+        if _seed_name(autore) == _seed_name(to_agent):
+            continue
+        if autore != _ROUTING_DIALOG_AUTHOR:
+            return False
+        m = _AMBIGUITY_ASK_RE.search(str((msg or {}).get("text") or ""))
+        if not m:
+            return False
+        try:
+            return json.loads(m.group(1)).get("to") == _seed_name(to_agent)
+        except Exception:  # noqa: BLE001
+            return False
+    return False
+
+
 def _latest_routing_request(messages: list[dict]) -> dict | None:
     """Return the latest router dialog bound to its authoritative source.
 
@@ -567,10 +613,61 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                      t, from_agent, tier, name)
     if not plan:
         return
+    # R3 · una menzione per messaggio, e la seconda si chiede a CHI HA SCRITTO.
+    #
+    # Qui prima non si chiedeva niente: `plan[:1]`, il primo tag vinceva e gli
+    # altri finivano in una riga di log. Per chi guardava il canale erano due
+    # nomi chiamati e uno solo che rispondeva, senza che nulla dicesse perché —
+    # e il dialogo con le pillole, che pure esisteva, era rivolto agli umani:
+    # nessuno aspettava una domanda, e il turno sembrava piantato.
+    #
+    # L'autore è l'unico che sa cosa intendeva. Chiederlo a lui non lascia il
+    # canale in attesa di una persona, e non decide al suo posto.
+    diretti = [t for t, kind in plan if kind == "direct"]
+    if len(diretti) >= 2:
+        seed_autore = _seed_name(from_agent)
+        storia = topics_client.list_messages(tier, name, limit=10)
+        if _ambiguity_already_asked(storia, from_agent):
+            # Seconda volta di fila: non si richiede. Due agenti che si rimbalzano
+            # domande consumerebbero token senza che nessuno lo veda; un turno
+            # fermo che si dichiara è invece recuperabile.
+            testo = (
+                f"@{seed_autore} ha risposto con più di una menzione "
+                f"({_elenco_or([_seed_name(t) for t in diretti])}) a una domanda di "
+                "disambiguazione: nessun turno avviato. Serve un messaggio con una "
+                "sola menzione."
+            )
+            fermo = topics_client.post_message(
+                tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
+            await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
+                                   message=fermo, topic_title=meta.get("title"))
+            LOG.info("delega da %s su %s/%s: ambigua due volte, nessun turno",
+                     from_agent, tier, name)
+            return
+        nomi = [_seed_name(t) for t in diretti]
+        testo = (
+            f"@{seed_autore} hai menzionato {_elenco_or(nomi)}: chi intendevi "
+            "attivare? Rispondi con UNA sola menzione.\n\n"
+            f"{_ambiguity_ask_marker(seed_autore)}"
+        )
+        domanda = topics_client.post_message(
+            tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
+        await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
+                               message=domanda, topic_title=meta.get("title"))
+        autore_spec = _spec_of(from_agent)
+        if autore_spec is None:
+            LOG.warning("delega da %s su %s/%s: autore senza spec, nessuna domanda",
+                        from_agent, tier, name)
+            return
+        LOG.info("delega da %s su %s/%s: %d menzioni, chiedo all'autore",
+                 from_agent, tier, name, len(diretti))
+        await _start_turn(tier, name, tier_real, autore_spec,
+                          principal or "channel", testo, "disambigua", hop=hop + 1,
+                          origin=origin_chain)
+        return
     if not _multi_responder_enabled() and len(plan) > 1:
-        # risposta singola: un agente delega a UN solo collega per volta (i `@`
-        # diretti precedono i `$` soft). Gli altri restano raggiungibili dal hop
-        # successivo, in sequenza — non in parallelo.
+        # Resta per il caso misto: un `@` diretto più una citazione `$` campionata.
+        # Due `@` non arrivano più fino qui — vengono chiesti sopra.
         LOG.info("delega da %s su %s/%s: risposta singola, delego solo a @%s "
                  "(non avviati: %s)", from_agent, tier, name, plan[0][0],
                  ", ".join(t for t, _k in plan[1:]))
@@ -949,7 +1046,17 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "gli lascia la storia del canale da leggere al suo prossimo intervento. "
             "Usalo quando lo stai nominando, informando o ringraziando. In dubbio, `$`: "
             "chi serve davvero lo si tagga al passaggio dopo, mentre un `@` di troppo "
-            "non si ritira.\n\nMessaggio:\n" + text)
+            "non si ritira.\n\n"
+            # R3: dirlo QUI è ciò che rende la regola gratuita. Senza questa riga
+            # un agente scrive due `@` in buona fede, non parte nessuno dei due e
+            # si paga un turno di domanda per scoprirlo: il vincolo esisterebbe
+            # solo come correzione a posteriori.
+            "UNA SOLA MENZIONE PER MESSAGGIO. Un messaggio `@` attiva un agente. Se "
+            "ne metti due, non parte nessuno dei due: ti viene chiesto quale "
+            "intendevi, e il turno lo paghi. Se ti servono davvero in due, chiama il "
+            "primo adesso e il secondo quando ha finito — avrai anche il suo esito da "
+            "passargli. Le citazioni `$` non contano e puoi metterne quante "
+            "vuoi.\n\nMessaggio:\n" + text)
     if kind in ("soft", "soft-ack"):
         return (
             f"[CITAZIONE] {author} ti ha citato con $ in questo messaggio. Una "
@@ -959,6 +1066,19 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "cambierebbe le cose se ce l'hai. Nessun lavoro, nessun tool, nessun "
             "riepilogo: se serve davvero un intervento tuo, qualcuno ti taggherà "
             "con @.\n\nMessaggio:\n" + text)
+    if kind == "disambigua":
+        # R3: la domanda torna all'autore del messaggio ambiguo. La direttiva gli
+        # dice cosa fare — una sola menzione — perché interrogarlo senza istruirlo
+        # produrrebbe con buona probabilità un'altra risposta a due nomi, e la
+        # seconda ambiguità non viene richiesta: il turno si fermerebbe.
+        return (
+            "[DISAMBIGUAZIONE] Nel tuo ultimo messaggio hai menzionato più di un "
+            "agente, e un messaggio ne attiva UNO. Nessun turno è partito: decidi "
+            "tu chi serve adesso e scrivi un messaggio con UNA sola menzione "
+            "`@nome`. Se ti servono davvero entrambi, chiamane uno ora e l'altro "
+            "quando il primo ha finito — avrai anche il suo esito da passargli. "
+            "Per informare qualcuno senza aprirgli un turno usa `$nome`.\n\n"
+            + text)
     if kind == "debug":
         # Il brief è già completo (debug_watch.Anomaly.brief): non lo si
         # riavvolge in un'altra direttiva, che ne diluirebbe le istruzioni.
@@ -1869,10 +1989,11 @@ def _reused_turn_prompt(tier: str, name: str, responder: str, principal: str,
 
 
 _ROUTING_DIALOG_AUTHOR = "router"
-_ROUTING_DIALOG_RE = re.compile(
-    r"Routing:\s*scegli\s+@?([a-z0-9_-]+)\s*,\s*@?([a-z0-9_-]+)\s+o\s+both",
-    re.IGNORECASE,
-)
+# La frase del dialogo elenca N nomi: `scegli @a o @b`, `scegli @a, @b o @c`. I
+# nomi si estraggono dall'elenco e sono comunque filtrati contro i partecipanti
+# più sotto, quindi un residuo della frase non può diventare un destinatario.
+_ROUTING_DIALOG_RE = re.compile(r"Routing:\s*scegli\s+(?P<elenco>[^.\n]+)", re.IGNORECASE)
+_CONGIUNZIONI = {"o", "e", "oppure", "both", "entrambi"}
 
 
 def _routing_dialog_reply(content: str, participants: list[str], tier: str,
@@ -1897,13 +2018,16 @@ def _routing_dialog_reply(content: str, participants: list[str], tier: str,
         return [], ""
     if request is None:
         return [], ""
-    choices = [m.group(1).lower(), m.group(2).lower()]
+    choices = [w.lower() for w in re.findall(r"@?([a-z0-9_-]+)", m.group("elenco"))
+               if w.lower().lstrip("@") not in _CONGIUNZIONI]
     body_words = {
         w.lower().strip(".,;:!?")
         for w in re.findall(r"@?[a-z0-9_-]+", body)
         if w.lower().lstrip("@") != _ROUTING_DIALOG_AUTHOR
     }
-    selected = choices if "both" in body_words else [c for c in choices if c in body_words]
+    # Nessuna scorciatoia per «entrambi»: `both` non è più fra le opzioni, e non
+    # deve restare un accesso di servizio che riapre il fan-out con una parola.
+    selected = [c for c in choices if c in body_words]
     out = []
     for seed in selected:
         if seed not in participants:
@@ -2068,11 +2192,20 @@ async def post_channel_message(
             targets.append((s, "soft", req_ord))
 
     hard_targets = [(s, req_ord) for s, kind, req_ord in targets if kind == "direct"]
-    if len(hard_targets) == 2:
-        a, b = hard_targets[0][0].name, hard_targets[1][0].name
+    # R3: la norma è UNA menzione per messaggio. Due o più non si risolvono
+    # indovinando, e non c'è più una soglia speciale a tre: «quale fra B, C e D» è
+    # una domanda posta esattamente come «quale fra B e C», e la vecchia coppia di
+    # soglie (2 → dialogo, 3+ → rifiuto col turno lasciato per strada) era una
+    # regola in più da ricordare che non comprava nulla.
+    #
+    # `both` è stato rimosso: era l'ultima via per cui un solo messaggio avviava
+    # due turni. Terzo restringimento del fan-out (30 lug, 10 ago, oggi) — non
+    # ripristinarlo credendolo una regressione.
+    if len(hard_targets) >= 2:
+        nomi = [s.name for s, _req_ord in hard_targets]
         text = (
-            f"Routing: scegli @{a}, @{b} o both.\n\n"
-            f"<!-- choices={a},{b},both -->\n"
+            f"Routing: scegli {_elenco_or(nomi)}.\n\n"
+            f"<!-- choices={','.join(nomi)} -->\n"
             f"{_routing_request_marker(principal, str(msg.get('id') or ''))}"
         )
         routed_msg = topics_client.post_message(
@@ -2080,21 +2213,7 @@ async def post_channel_message(
         await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
                                message=routed_msg, topic_title=meta.get("title"))
         return {"posted": True, "queued": False, "responder": None,
-                "routing_dialog": True, "choices": [a, b, "both"]}
-
-    if len(hard_targets) >= 3:
-        names = ", ".join(f"@{s.name}" for s, _req_ord in hard_targets)
-        text = (
-            "Routing: hai menzionato tre o più agenti "
-            f"({names}). Il multi-routing diretto non è supportato: "
-            "decidete nel canale chi deve prendere il turno."
-        )
-        routed_msg = topics_client.post_message(
-            tier, name, _ROUTING_DIALOG_AUTHOR, text, kind="system")
-        await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
-                               message=routed_msg, topic_title=meta.get("title"))
-        return {"posted": True, "queued": False, "responder": None,
-                "routing_refused": True}
+                "routing_dialog": True, "choices": nomi}
 
     dropped_tags: list[str] = []
     if targets and not _multi_responder_enabled() and len(targets) > 1:
