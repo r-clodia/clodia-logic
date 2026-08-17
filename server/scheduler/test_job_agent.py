@@ -165,8 +165,13 @@ class ProviderEnforcementTests(unittest.TestCase):
     def setUp(self) -> None:
         from ..agents.models import AgentSpec
         self._saved = dict(registry._agents)
+        # Modello REALE e non `"m"`: `candidate_providers` filtra i provider per
+        # il modello che servirebbero (`provider_supports_model`), quindi un
+        # modello inventato azzera i candidati — e con zero candidati la funzione
+        # ricade nel fail-open e risponde «collegato» a prescindere. Il test
+        # misurava così il fallback invece della regola, ed era rosso da allora.
         registry._agents["claudette"] = AgentSpec.model_validate({
-            "name": "claudette", "description": "d", "model": "m",
+            "name": "claudette", "description": "d", "model": "claude-opus-4-8",
             "display_name": "C", "agent_sdk": "claude", "system_prompt": "s.md"})
         import server.api.providers as P
         self._P = P
@@ -177,7 +182,8 @@ class ProviderEnforcementTests(unittest.TestCase):
         self._P.connected_provider_ids = self._orig
 
     def test_agent_provider_resolved(self) -> None:
-        # claude→[anthropic-api, claude-pro-max]; nessuno collegato → preferito.
+        # claude → [anthropic-api, claude-team, aws-region-eu, claude-pro-max];
+        # nessuno collegato → il preferito, che resta il primo dell'ordine.
         self.assertEqual(s.agent_provider("claudette"), "anthropic-api")
 
     def test_connected_passes(self) -> None:

@@ -620,9 +620,15 @@ class ResponderTests(unittest.TestCase):
 
     def test_agents_md_capped_in_size(self) -> None:
         # un AGENTS.md gonfiato ad arte viene troncato (anti token-DoS).
-        with patch.object(channels.topics_client, "read_file",
-                          return_value=("y" * (channels._AGENTS_MD_MAX_CHARS + 500)).encode()):
-            out = channels._topic_agents_md("SEAL-1", "ops")
+        # La sorgente è `get_agents_md` (control-plane), non più `read_file`
+        # sul file del topic: patchare la vecchia lasciava passare una GET vera,
+        # e il test moriva sulla rete invece di misurare il troncamento.
+        with patch.object(channels.topics_client, "get_agents_md",
+                          return_value=("y" * (channels._AGENTS_MD_MAX_CHARS + 500),
+                                        1, False)):
+            # ritorna (testo, autorevole) da quando le istruzioni di scope
+            # possono venire dal control-plane invece che dal file
+            out, _autorevole = channels._topic_agents_md("SEAL-1", "ops")
         self.assertLessEqual(len(out), channels._AGENTS_MD_MAX_CHARS + len("\n[…troncato]"))
         self.assertTrue(out.endswith("[…troncato]"))
 
@@ -1041,6 +1047,11 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         )
         channels.topics_client.read_file = lambda *_args, **_kwargs: (_ for _ in ()).throw(
             channels.topics_client.TopicsClientError("missing"))
+        # Le istruzioni di scope arrivano dal control-plane (`get_agents_md`), non
+        # più dal file: senza questo stub il turno usciva in rete e il test moriva
+        # sulla connessione invece di misurare la coda.
+        self._orig_get_agents_md = channels.topics_client.get_agents_md
+        channels.topics_client.get_agents_md = lambda *_a, **_k: (None, 0, False)
         channels.access_log.touch = lambda *_args, **_kwargs: None
         channels.activity_log.append = lambda *_args, **_kwargs: None
         channels._pick_responder = lambda *_args, **_kwargs: self.agent
@@ -1060,6 +1071,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         channels.topics_client.list_messages = self._orig_list_messages
         channels.topics_client.post_message = self._orig_post_message
         channels.topics_client.read_file = self._orig_read_file
+        channels.topics_client.get_agents_md = self._orig_get_agents_md
         channels.access_log.touch = self._orig_touch
         channels.activity_log.append = self._orig_activity
         channels._pick_responder = self._orig_pick
