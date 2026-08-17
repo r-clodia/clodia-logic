@@ -2858,8 +2858,25 @@ def _channel_private_data(tier: str, name: str, meta: dict) -> bool | None:
     grande), e allora il punteggio ricade sulla capacità: un `False` inventato
     sarebbe una rassicurazione su dati che potrebbero esserci.
     """
-    if str((meta.get("remote") or {}).get("type") or "").strip():
-        return True
+    trovati = _private_data_paths(tier, name, meta)
+    return None if trovati is None else bool(trovati)
+
+
+def _private_data_paths(tier: str, name: str, meta: dict) -> list[str] | None:
+    """QUALI dati riservati ci sono, non solo se ce ne sono.
+
+    Serve alla baseline del reset: l'owner approva un insieme, e dopo il bit si
+    accende per ciò che non era in quell'insieme. Un booleano non basterebbe —
+    approvato «c'è roba» renderebbe invisibile ogni arrivo successivo, e il reset
+    diventerebbe il silenziamento che non deve essere.
+    """
+    fuori: list[str] = []
+    remoto = str((meta.get("remote") or {}).get("type") or "").strip()
+    if remoto:
+        # Il remote è UNA voce: se cambia (o viene ricollegato altrove) il path
+        # cambia con lui, e il bit si riaccende.
+        cfg = (meta.get("remote") or {}).get("config") or {}
+        fuori.append(f"remote:{remoto}:{cfg.get('folder') or cfg.get('id') or ''}")
     da_visitare = [""]
     visitate = 0
     try:
@@ -2867,21 +2884,69 @@ def _channel_private_data(tier: str, name: str, meta: dict) -> bool | None:
             sub = da_visitare.pop(0)
             visitate += 1
             for voce in topics_client.list_files(tier, name, sub) or []:
+                nome = voce.get("name") or ""
+                pieno = f"{sub}/{nome}" if sub else nome
                 if voce.get("kind") == "dir":
-                    nome = voce.get("name") or ""
-                    da_visitare.append(f"{sub}/{nome}" if sub else nome)
+                    da_visitare.append(pieno)
                     continue
                 if (voce.get("provenance") or "") != "agent":
-                    return True          # basta uno: si smette di cercare
+                    # path + dimensione: lo stesso path con contenuto nuovo è un
+                    # dato nuovo, e senza la dimensione passerebbe per il vecchio.
+                    fuori.append(f"{pieno}#{voce.get('size') or ''}")
         if da_visitare:
             LOG.info("trifecta: albero di %s/%s oltre %d directory — "
                      "«dati riservati» non stabilito", tier, name, _MAX_DIR_SCAN)
             return None
-        return False
+        return fuori
     except Exception as e:  # noqa: BLE001 — un dubbio non è una rassicurazione
         LOG.warning("trifecta: contenuto di %s/%s non leggibile (%s)",
                     tier, name, type(e).__name__)
         return None
+
+
+def _dopo_il_reset(prof: dict, voce: dict, tier: str, name: str,
+                   meta: dict) -> dict:
+    """Il punteggio DOPO una baseline approvata dall'owner.
+
+    «il reset approva lo stato corrente come sicuro e da lì si riparte a misurare
+    le contaminazioni ed i rischi» (Davide, 17 ago 2026). Quindi non si azzerano
+    i bit: si azzera il PASSATO, e ognuno dei tre rischi riparte per conto suo.
+
+    · **fonte non censita** — il taint è stato azzerato all'atto del reset e si
+      riaccende da sé al primo ingresso successivo: qui non si tocca, si legge.
+      Se è acceso, è per qualcosa arrivato DOPO;
+    · **dati riservati** — si accende solo per ciò che non era nella baseline, e
+      l'elenco di cosa è arrivato viaggia accanto al bit;
+    · **egress non censito** — è una capacità dei presenti: la baseline è la
+      composizione, e cambiarla fa decadere il reset (in `active`). Finché la
+      stanza è quella approvata, il bit resta spento.
+    """
+    nuovi: list[str] = []
+    trovati = _private_data_paths(tier, name, meta)
+    if trovati is None:
+        # Non stabilito: si tiene il valore misurato invece di ereditare
+        # l'approvazione. Un dubbio non è un'approvazione.
+        nuovi_bit = prof.get("bits", {}).get("private_data", 0)
+    else:
+        nuovi = trifecta_reset.new_private_data(voce, trovati)
+        nuovi_bit = 1 if nuovi else 0
+    bits = dict(prof.get("bits") or {})
+    bits["private_data"] = nuovi_bit
+    bits["arbitrary_egress"] = 0          # la composizione è quella approvata
+    # `tainted` resta quello misurato: dopo il reset può essere solo nuovo.
+    score = sum(1 for v in bits.values() if v)
+    return {
+        "reset_by": voce.get("by"),
+        "reset_at": voce.get("at"),
+        "score_before_reset": prof.get("score"),
+        "new_private_data": nuovi,
+        "bits": bits,
+        "score": score,
+        "vector": " ".join(str(bits.get(k, 0)) for k in
+                           ("tainted", "private_data", "arbitrary_egress")),
+        "symbol": trifecta.SYMBOLS.get(score, "⚠️"),
+        "label": f"{score}/3",
+    }
 
 
 def _channel_trifecta(meta: dict, tainted: bool | None = None,
@@ -2913,13 +2978,7 @@ def _channel_trifecta(meta: dict, tainted: bool | None = None,
         if prof and tier and name:
             voce = trifecta_reset.active(tier, name, meta.get("participants") or [])
             if voce:
-                prof["reset_by"] = voce.get("by")
-                prof["reset_at"] = voce.get("at")
-                prof["score_before_reset"] = prof.get("score")
-                prof["score"] = 0
-                prof["bits"] = {k: 0 for k in (prof.get("bits") or {})}
-                prof["vector"] = "0 0 0"
-                prof["symbol"] = trifecta.SYMBOLS.get(0, "✅")
+                prof.update(_dopo_il_reset(prof, voce, tier, name, meta))
         return prof
     except Exception as e:  # pragma: no cover - difensivo
         LOG.warning("trifecta: profilo canale non calcolabile (%s)", e)
@@ -3347,9 +3406,26 @@ async def channel_trifecta_reset(tier: str, name: str, request: Request) -> dict
     if not topic:
         raise HTTPException(404, "canale non trovato")
     principal = _require_owner(request, topic.get("meta", {}))
-    parts = (topic.get("meta", {}) or {}).get("participants") or []
-    voce = trifecta_reset.set_reset(tier, name, principal or "owner", parts)
-    return {"ok": True, "reset": voce}
+    meta = topic.get("meta", {}) or {}
+    parts = meta.get("participants") or []
+    # La baseline: ciò che c'è ADESSO è approvato, e da qui si riparte a misurare.
+    trovati = _private_data_paths(tier, name, meta)
+    voce = trifecta_reset.set_reset(tier, name, principal or "owner", parts,
+                                    data_paths=trovati or [])
+    # Il primo bit è un evento: si azzera ora e si riaccenderà al primo ingresso
+    # successivo. È la parte che rende il reset una RIBASATURA e non un
+    # silenziamento — senza, un canale contaminato resterebbe a 1 per sempre e
+    # l'owner non avrebbe modo di dire «questo l'ho visto».
+    try:
+        topics_client.clear_taint(tier, name, by=principal or "owner")
+    except Exception as e:  # noqa: BLE001 — la baseline resta valida
+        LOG.warning("reset trifecta: taint di %s/%s non azzerato (%s) — il primo "
+                    "bit resta quello misurato", tier, name, type(e).__name__)
+    if trovati is None:
+        LOG.info("reset trifecta su %s/%s: contenuto non stabilito, la baseline "
+                 "dei dati è vuota e il secondo bit resterà quello misurato",
+                 tier, name)
+    return {"ok": True, "reset": voce, "approved_data": len(trovati or [])}
 
 
 @router.delete("/clodia/channels/{tier}/{name}/trifecta/reset")
