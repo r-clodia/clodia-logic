@@ -81,12 +81,46 @@ def scope_key(tier: str, name: str) -> str:
     return f"{tier}/{name}"
 
 
-def set_reset(tier: str, name: str, by: str, participants: Iterable[str]) -> dict:
-    """Registra il reset. Ritorna la voce salvata."""
+def data_signature(paths: Iterable[str]) -> str:
+    """Firma dei dati riservati presenti in un canale.
+
+    Serve a distinguere «i dati che l'owner ha approvato» da «dati arrivati dopo».
+    Si firmano i path (con la dimensione, quando la si conosce): un file
+    sostituito con contenuto nuovo allo stesso path è un dato nuovo, e senza la
+    dimensione passerebbe per lo stesso.
+    """
+    voci = sorted(str(x) for x in (paths or []))
+    return hashlib.sha256("|".join(voci).encode()).hexdigest()[:12]
+
+
+def set_reset(tier: str, name: str, by: str, participants: Iterable[str],
+              data_paths: Iterable[str] | None = None) -> dict:
+    """Registra la BASELINE: «questo stato lo approvo io».
+
+    Non è un silenziamento — è il punto da cui l'analisi RIPARTE:
+
+        «il reset approva lo stato corrente come sicuro e da lì si riparte a
+         misurare le contaminazioni ed i rischi» (Davide, 17 ago 2026)
+
+    Tre rischi, tre modi di ripartire:
+
+    1. **fonte non censita** — il taint viene azzerato al momento del reset e si
+       riaccende da sé al primo ingresso successivo. Il meccanismo esiste già
+       (`taint.clear` + `taint.mark`), qui si usa;
+    2. **dati riservati nel canale** — si firma ciò che c'è ORA: dopo, il bit si
+       accende solo per ciò che non era nella firma;
+    3. **esfiltrazione su egress non censiti** — è una capacità dei presenti,
+       quindi la baseline è la composizione: cambiarla fa decadere il reset.
+    """
     voce = {
         "by": by,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "epoch": composition_epoch(participants),
+        # I dati riservati APPROVATI: sia la firma (per il confronto veloce) sia
+        # l'elenco, perché «cosa è arrivato dopo» è la domanda che si porrà chi
+        # vede il bit riaccendersi, e una firma da sola non la risponde.
+        "data_sig": data_signature(data_paths or []),
+        "data_paths": sorted(str(x) for x in (data_paths or [])),
     }
     d = _load()
     d[scope_key(tier, name)] = voce
@@ -103,6 +137,17 @@ def clear_reset(tier: str, name: str) -> bool:
     _save(d)
     LOG.info("trifecta reset revocato su %s/%s", tier, name)
     return True
+
+
+def new_private_data(voce: dict, paths: Iterable[str]) -> list[str]:
+    """Dati riservati presenti ORA che NON erano nella baseline approvata.
+
+    Vuoto = niente di nuovo dal reset, e il secondo bit resta spento. Non vuoto =
+    il bit si riaccende, e questo elenco dice per cosa — «il canale è tornato a
+    rischio» non è azionabile, «è arrivato contratto.pdf» sì.
+    """
+    approvati = set(voce.get("data_paths") or [])
+    return sorted(p for p in (str(x) for x in (paths or [])) if p not in approvati)
 
 
 def active(tier: str, name: str, participants: Iterable[str]) -> Optional[dict]:

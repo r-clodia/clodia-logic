@@ -364,6 +364,24 @@ def list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
     return r.json().get("files", [])
 
 
+def clear_taint(tier: str, name: str, by: str = "") -> dict:
+    """Azzera il primo bit del canale: l'owner approva lo stato corrente.
+
+    Chi verifica che il richiedente sia l'owner è QUI (l'agent-server conosce i
+    ruoli dello scope); il gateway esegue. Le sorgenti non si perdono: `clear`
+    le archivia, così l'audit può ancora dire cosa era entrato prima.
+    """
+    url = f"{_base()}/{tier}/{name}/taint/clear"
+    try:
+        r = requests.post(url, headers=_headers(), json={"by": by},
+                          timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway taint irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise TopicsClientError(f"gateway taint → HTTP {r.status_code}: {r.text[:160]}")
+    return r.json()
+
+
 def read_file(tier: str, name: str, path: str) -> bytes:
     """Byte grezzi di un file del topic (binario incluso). Usato dal proxy
     file-per-l'agente per scaricare un deliverable in scratch senza farlo
