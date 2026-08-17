@@ -31,6 +31,7 @@ import base64
 import json
 import logging
 import os
+import threading
 import time
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
@@ -303,6 +304,48 @@ def _verify_cert(agent: str) -> Ed25519PublicKey:
 _MINT_CACHE: dict[tuple, tuple[str, int]] = {}
 _MINT_CACHE_SKEW = 120  # ri-conia 2 min prima della scadenza
 
+# Il ciclo «leggi scadenza → conia → scrivi in cache» era atomico PER COSTRUZIONE
+# finché i client (topics_client/provider_store/gateway_admin) giravano tutti sul
+# thread dell'event loop: nessun await in mezzo, nessun interleaving. Con
+# l'offload su `asyncio.to_thread` (#106) quel ciclo può girare in PARALLELO su
+# più thread: due richieste che trovano la cache scaduta coniano entrambe e la
+# seconda scrittura sovrascrive la prima. Non è una gara che c'era prima: la
+# introduce l'offload, quindi il lock nasce nello stesso commit.
+#
+# Un lock PER-CHIAVE, non globale: la sezione critica contiene una POST HTTP
+# (timeout 8s) e un lock unico farebbe convoglio fra identità diverse,
+# serializzando mint che non condividono nulla. Il lock del dict copre solo
+# l'accesso alle strutture, mai la rete.
+_MINT_STATE_LOCK = threading.Lock()
+_MINT_KEY_LOCKS: dict[tuple, threading.Lock] = {}
+_MINT_LOCKS_MAX = 512  # oltre questa soglia si potano le voci scadute
+
+
+def _mint_key_lock(key: tuple) -> threading.Lock:
+    """Lock dedicato alla chiave di cache (creato una volta sola)."""
+    with _MINT_STATE_LOCK:
+        lock = _MINT_KEY_LOCKS.get(key)
+        if lock is None:
+            if len(_MINT_KEY_LOCKS) >= _MINT_LOCKS_MAX:
+                _prune_mint_locks_locked()
+            lock = _MINT_KEY_LOCKS[key] = threading.Lock()
+        return lock
+
+
+def _prune_mint_locks_locked() -> None:
+    """Scarta i lock delle chiavi il cui token è scaduto/assente (già dentro
+    `_MINT_STATE_LOCK`). Le chiavi contengono l'execution_id: senza potatura il
+    dizionario crescerebbe per tutta la vita del processo."""
+    now = int(time.time())
+    for k, lk in list(_MINT_KEY_LOCKS.items()):
+        hit = _MINT_CACHE.get(k)
+        if hit is not None and hit[1] > now:
+            continue  # token ancora valido: il lock serve
+        if lk.locked():
+            continue  # mint in corso su quella chiave: non si tocca
+        _MINT_KEY_LOCKS.pop(k, None)
+        _MINT_CACHE.pop(k, None)
+
 
 def _gateway_mint_url() -> str:
     mcp = os.environ.get("CLODIA_TOOLS_MCP_URL", "http://clodia-tools:7849/mcp/")
@@ -326,10 +369,43 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
     key = (agent, execution_id, int(ttl_seconds), principal, clearance, on_behalf,
            scope_tier,
            human_role, chat, scoped_key, bool(unattended))
-    now = int(time.time())
-    hit = _MINT_CACHE.get(key)
-    if hit and hit[1] - _MINT_CACHE_SKEW > now:
+    hit = _cached_mint(key)
+    if hit is not None:
+        return hit
+    # SEZIONE UNICA: rilettura della scadenza, mint e scrittura in cache stanno
+    # dentro lo stesso lock. Proteggere la sola scrittura lascerebbe in piedi il
+    # doppio mint, che è esattamente il difetto da chiudere.
+    with _mint_key_lock(key):
+        # Doppio controllo: chi ha atteso il lock trova il token coniato da chi
+        # l'ha preceduto e non ne conia un secondo.
+        hit = _cached_mint(key)
+        if hit is not None:
+            return hit
+        now = int(time.time())
+        token = _mint_request(agent, execution_id, ttl_seconds, principal,
+                              clearance, on_behalf, human_role, chat,
+                              scoped_key, unattended)
+        with _MINT_STATE_LOCK:
+            _MINT_CACHE[key] = (token, now + int(ttl_seconds))
+        return token
+
+
+def _cached_mint(key: tuple) -> str | None:
+    """Token in cache ancora valido (con skew), o None."""
+    with _MINT_STATE_LOCK:
+        hit = _MINT_CACHE.get(key)
+    if hit and hit[1] - _MINT_CACHE_SKEW > int(time.time()):
         return hit[0]
+    return None
+
+
+def _mint_request(agent: str, execution_id: str, ttl_seconds: int,
+                  principal: Optional[str], clearance: Optional[str],
+                  on_behalf: bool, human_role: Optional[str],
+                  chat: Optional[str], scoped_key: tuple,
+                  unattended: bool) -> str:
+    """La sola chiamata al gateway (nessuna cache): la tiene fuori dal lock del
+    dizionario, dentro il lock della chiave."""
     import httpx
     secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
     body = {"kind": "session", "agent": agent, "execution_id": execution_id,
@@ -366,9 +442,7 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
         r = httpx.post(_gateway_mint_url(), json=body,
                        headers={"X-Orchestrator-Secret": secret}, timeout=8.0)
     r.raise_for_status()
-    token = r.json()["token"]
-    _MINT_CACHE[key] = (token, now + int(ttl_seconds))
-    return token
+    return r.json()["token"]
 
 
 def _is_human_principal(agent: str) -> bool:
