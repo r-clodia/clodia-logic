@@ -66,20 +66,60 @@ class ResolveOrdinalTests(unittest.TestCase):
         with _with_sessions(sessions):
             self.assertEqual(ch._resolve_ordinal("SEAL-1", "ch", _spec(), None), 3)
 
-    def test_cap_reached_queues_on_lowest(self) -> None:
+    def test_cap_reached_does_not_pick_an_instance(self) -> None:
+        """REGOLA CAMBIATA (Davide, 18 ago): al cap si aspetta il PRIMO che
+        finisce, e chi sia non si sa ancora.
+
+        Prima questo test pretendeva l'ordinale minimo — cioè decidere l'attesa
+        in anticipo. Con `#1` dentro un turno da dieci minuti e `#3` che si
+        libera in cinque secondi, la menzione aspettava dieci minuti. `None`
+        significa «non scegliere»: decide `_await_free_session`.
+        """
         sessions = [_chat(self.PREFIX + "1", busy=True),
                     _chat(self.PREFIX + "2", busy=True)]
         with _with_sessions(sessions):
-            self.assertEqual(ch._resolve_ordinal("SEAL-1", "ch", _spec(cap=2), None), 1)
+            self.assertIsNone(ch._resolve_ordinal("SEAL-1", "ch", _spec(cap=2), None))
 
-    def test_explicit_ordinal_respected_even_if_others_free(self) -> None:
+    def test_an_explicit_ordinal_no_longer_steers(self) -> None:
+        """REGOLA CAMBIATA: `#N` non indirizza più.
+
+        Era un indirizzo relativo al canale, capped e riusabile, e veniva
+        clampato in SILENZIO: chi leggeva `clodia-124` in chat e scriveva
+        `@clodia#124` risvegliava l'istanza 4. Ora un'istanza precisa si
+        indirizza col suo nome (`@clodia-124`, vedi `_split_target`) e la
+        menzione generica segue l'allocazione.
+        """
         sessions = [_chat(self.PREFIX + "1", busy=False)]
         with _with_sessions(sessions):
-            self.assertEqual(ch._resolve_ordinal("SEAL-1", "ch", _spec(), 2), 2)
+            self.assertEqual(ch._resolve_ordinal("SEAL-1", "ch", _spec(), 2), 1)
 
-    def test_explicit_ordinal_clamped_to_cap(self) -> None:
+    def test_an_out_of_range_ordinal_is_not_clamped_but_ignored(self) -> None:
+        """Il clamp non c'è più perché non c'è più niente da clampare: il numero
+        è ignorato, e l'allocazione parte da 1 come per un tag nudo."""
         with _with_sessions([]):
-            self.assertEqual(ch._resolve_ordinal("SEAL-1", "ch", _spec(cap=2), 7), 2)
+            self.assertEqual(ch._resolve_ordinal("SEAL-1", "ch", _spec(cap=2), 7), 1)
+
+    def test_a_spawn_name_addresses_that_spawn_a_channel_ordinal_does_not(self) -> None:
+        """Le due forme numeriche hanno smesso di essere equivalenti."""
+        with patch.object(ch, "_is_known_seed", lambda n: n == "fullstack-dev"):
+            self.assertEqual(ch._split_target("fullstack-dev-124"),
+                             ("fullstack-dev", "fullstack-dev-124"))
+            self.assertEqual(ch._split_target("fullstack-dev#2"),
+                             ("fullstack-dev", None))
+            self.assertEqual(ch._split_target("fullstack-dev"),
+                             ("fullstack-dev", None))
+
+    def test_a_seed_without_multi_spawn_is_cap_one(self) -> None:
+        """«Per seed non-multispawn il limite=1». Prima la regola non era scritta
+        da nessuna parte: `_resolve_ordinal` non veniva nemmeno chiamata e la
+        sessione unica accodava per conto suo. Stesso effetto, due posti — che è
+        come due comportamenti che dovrebbero coincidere divergono."""
+        class _Solo:
+            name = "segretario"
+            multi_spawn = False
+            max_spawns = 4
+        self.assertEqual(1, ch._spawn_cap(_Solo()))
+        self.assertEqual(4, ch._spawn_cap(_spec()))
 
     def test_other_channels_do_not_interfere(self) -> None:
         sessions = [_chat("chan:SEAL-1:altro:fullstack-dev#1", busy=True)]
