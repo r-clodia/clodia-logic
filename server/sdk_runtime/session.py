@@ -2249,6 +2249,12 @@ OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
 # fretta (fail-fast) con errore chiaro, e al timeout abortiamo il turno lato
 # opencode così la generazione runaway si ferma. Configurabile via env.
 _OPENCODE_TURN_TIMEOUT = float(os.environ.get("OPENCODE_TURN_TIMEOUT", "180"))
+# Prefisso degli eventi che `opencode serve` emette da sé (`server.connected`,
+# `server.heartbeat` ogni ~10s anche a sessione ferma): non sono progresso
+# dell'agente e non devono datare `last_activity` (vedi `_note_event_line`).
+_OC_IDLE_EVENT_PREFIX = "server."
+# Pausa fra due tentativi di riapertura dello stream eventi.
+_OC_EVENT_RETRY_S = 2.0
 
 
 def _opencode_reasoning_effort(kind: str, model: str | None) -> str | None:
@@ -2310,6 +2316,9 @@ class OpenCodeChatSession:
         # leggeva.
         self._stderr_tail: deque = deque(maxlen=_OC_STDERR_TAIL)
         self._stderr_task: Optional[asyncio.Task] = None
+        # Lettore dello stream eventi (`GET /event`): è ciò che rende visibile il
+        # progresso MENTRE il turno gira, e non solo quando finisce (#216).
+        self._events_task: Optional[asyncio.Task] = None
 
     @property
     def cwd(self) -> Path:
@@ -2454,6 +2463,60 @@ class OpenCodeChatSession:
         except Exception as e:  # noqa: BLE001 — leggere i log non rompe la sessione
             LOG.debug("opencode[%s]: stderr non più leggibile: %r", self.kind, e)
 
+    def _note_event_line(self, riga: str) -> bool:
+        """Aggiorna `last_activity` se la riga SSE porta PROGRESSO. True se l'ha
+        toccata.
+
+        `server.heartbeat` arriva ogni ~10s **a sessione ferma**: contarlo
+        renderebbe il timestamp un orologio, cioè un segnale che dice «vivo» per
+        sempre — il difetto opposto a quello di #216, e altrettanto silenzioso.
+        Tutto ciò che non è `server.*` è invece qualcosa che l'agente ha fatto.
+        """
+        riga = (riga or "").strip()
+        if not riga.startswith("data:"):
+            return False
+        try:
+            ev = json.loads(riga[len("data:"):].strip() or "{}")
+        except json.JSONDecodeError:
+            return False
+        tipo = (ev or {}).get("type") or ""
+        if not tipo or tipo.startswith(_OC_IDLE_EVENT_PREFIX):
+            return False
+        self.last_activity = datetime.now(timezone.utc)
+        return True
+
+    async def _consume_events(self, resp) -> None:
+        async for riga in resp.aiter_lines():
+            self._note_event_line(riga)
+
+    async def _drain_events(self) -> None:
+        """Legge `GET /event` di `opencode serve` finché il processo vive.
+
+        Il turno opencode è **una sola POST bloccante**: `_handle_parts` vede il
+        risultato quando il turno è già finito, quindi da solo lascia
+        `last_activity` ferma per tutta la durata del lavoro — che è esattamente
+        l'intervallo in cui `api/agents.py:_live_status` dichiara `blocked` una
+        sessione `thinking` silenziosa da oltre 180s (#216). Lo stream degli
+        eventi è il progresso già prodotto dal runtime, lo stesso che alimenta la
+        TUI di opencode: qui serve solo a datarlo.
+
+        Se lo stream cade si riapre: senza, il segnale tornerebbe a mancare al
+        primo singhiozzo e la sessione tornerebbe a sembrare piantata. Nessun
+        errore di lettura rompe il turno.
+        """
+        import httpx
+        while self._proc is not None and self._proc.returncode is None:
+            try:
+                async with httpx.AsyncClient(base_url=self._base_url,
+                                             timeout=httpx.Timeout(10.0, read=None)) as c:
+                    async with c.stream("GET", "/event") as r:
+                        await self._consume_events(r)
+            except asyncio.CancelledError:
+                raise
+            except Exception as e:  # noqa: BLE001 — leggere gli eventi non rompe la sessione
+                LOG.debug("opencode[%s]: stream eventi non leggibile: %r", self.kind, e)
+            await asyncio.sleep(_OC_EVENT_RETRY_S)
+
     @staticmethod
     def _session_unusable(r) -> bool:
         """Vero se QUESTA sessione non può servire un turno, e conviene rifarla.
@@ -2521,6 +2584,9 @@ class OpenCodeChatSession:
             stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, limit=_STREAM_LIMIT)
         self._stderr_task = asyncio.create_task(self._drain_stderr())
         await self._wait_ready()
+        # Da qui il server risponde: apro lo stream eventi. È il solo punto in cui
+        # questo runtime vede il progresso di un turno lungo mentre accade (#216).
+        self._events_task = asyncio.create_task(self._drain_events())
         # resume sessione OpenCode se la chat è ripresa da disco, altrimenti creane una
         if self._ocsession_file.is_file():
             self._oc_session = self._ocsession_file.read_text().strip() or None
@@ -2547,6 +2613,10 @@ class OpenCodeChatSession:
         self._stderr_task = None
         if task is not None:
             task.cancel()
+        eventi = self._events_task
+        self._events_task = None
+        if eventi is not None:
+            eventi.cancel()
         proc = self._proc
         if proc is not None and proc.returncode is None:
             try:
