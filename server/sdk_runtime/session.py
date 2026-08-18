@@ -466,6 +466,42 @@ def _spawn_identity(spawn) -> dict:
     return {"spawn_id": name, "spawn_instance": instance if sep else None}
 
 
+def spawn_dirs_of(chat) -> list:
+    """Le dir di spawn di una sessione, in ordine di attendibilità.
+
+    Le tre classi di sessione conservano la stessa cosa in DUE posti diversi:
+    `ChatSession` (runtime Claude) tiene solo `self._spawn` e passa la dir come
+    variabile locale, mentre `CodexChatSession` e `OpenCodeChatSession` tengono
+    anche `self._spawn_dir`. Chi voleva il nome dello spawn leggeva un attributo
+    solo, e quale dei due decideva se la cosa funzionava:
+
+    - `live_spawn_dirs` leggeva entrambi → il reaper ha sempre protetto tutti;
+    - `channels._spawn_label` leggeva solo `_spawn_dir` → sul runtime Claude non
+      trovava nulla e ripiegava sul nome del SEED. Cioè il requisito «in chat
+      parla lo spawn, non il seed» era **inerte proprio per gli agenti che ci
+      girano** (clodia, ophelia, fullstack-dev), e nessun test lo diceva perché
+      i test di `_spawn_label` usano una Chat finta che l'attributo lo ha.
+
+    Un solo lettore, quindi: due letture della stessa verità sono due posti in
+    cui una può restare indietro, ed è esattamente com'è andata.
+    """
+    out = []
+    try:
+        sp = getattr(chat, "_spawn", None)
+        d = getattr(sp, "dir", None) if sp is not None else None
+        if d:
+            out.append(d)
+    except Exception:  # noqa: BLE001 — non deve poter rompere un turno
+        pass
+    try:
+        sd = getattr(chat, "_spawn_dir", None)
+        if sd:
+            out.append(sd)
+    except Exception:  # noqa: BLE001
+        pass
+    return out
+
+
 # ── Risoluzione dinamica dei kind (job-agent dinamico, 19 giu 2026) ──────────
 # Oltre ai kind statici (clodia/ada/looper/ophelia, sopra) un kind può essere
 # QUALUNQUE agent del registry (clodia-data/agents/<name>/agent.yaml). I helper
@@ -2776,13 +2812,8 @@ class ChatManager:
         sweep degli spawn orfani."""
         out: set = set()
         for c in self._chats.values():
-            sp = getattr(c, "_spawn", None)
-            d = getattr(sp, "dir", None) if sp is not None else None
-            if d:
+            for d in spawn_dirs_of(c):
                 out.add(str(d))
-            sd = getattr(c, "_spawn_dir", None)
-            if sd:
-                out.add(str(sd))
         return out
 
     async def create(self, chat_id: Optional[str] = None, kind: str = DEFAULT_KIND,
