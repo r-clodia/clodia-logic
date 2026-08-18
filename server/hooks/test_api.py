@@ -99,15 +99,9 @@ class LocalHookTests(unittest.IsolatedAsyncioTestCase):
                 "SEAL-1", "acme", _Request({"caller": "clodia", "payload": "x"}))
         self.assertEqual(ctx.exception.status_code, 403)
 
-    async def test_remote_ingress_without_secret_is_rejected(self) -> None:
-        # Path REMOTO (F1): id=slug noto ma segreto assente/errato → 401,
-        # stessa risposta per id ignoto (non conferma l'esistenza).
-        db.ensure("SEAL-1", "acme", "acme", created_by="owner")
-        for hdr in ({}, {"X-Hook-Secret": "sbagliato"}):
-            with self.assertRaises(HTTPException) as ctx:
-                await api.ingress("acme", _Request({"payload": "x"}, headers=hdr))
-            self.assertEqual(ctx.exception.status_code, 401)
-        self.assertEqual(self.queued, [])  # nessun turno innescato
+    # Il path REMOTO (`POST /hooks/{id}`, autorizzato dal solo segreto) non c'è
+    # più: issue #300. Che sia chiuso lo verifica `test_public_ingress_is_closed`,
+    # che guarda la superficie delle rotte invece della singola funzione.
 
 
 if __name__ == "__main__":
