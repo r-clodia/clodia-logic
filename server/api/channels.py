@@ -794,7 +794,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         plan = plan[:1]
     started: list[str] = []
     for tag, kind in plan:
-        seed, req_ord = _split_ord(tag)
+        seed, want_spawn = _split_target(tag)
         # idoneità: _pick_responder col tag ritorna il delegato SOLO se idoneo al tier
         delegate = _pick_responder(participants, tier_real, seed)
         if delegate is None or delegate.name != seed or delegate.name in started:
@@ -825,7 +825,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         # messaggio è il reply dell'agente delegante
         if await _start_turn(tier, name, tier_real, delegate,
                              principal or "channel", reply_text or "", kind, hop=hop + 1,
-                             ordinal=req_ord,
+                             spawn=want_spawn,
                              # eredita la catena del delegante: è il punto esatto
                              # in cui l'autorità verrebbe amplificata
                              origin=list(origin_chain or [])):
@@ -884,6 +884,28 @@ def _split_ord(tag: str | None) -> tuple[str | None, int | None]:
     if m and _is_known_seed(m.group(1)):
         return m.group(1), int(m.group(2))
     return tag, None
+
+
+def _split_target(tag: str | None) -> tuple[str | None, str | None]:
+    """`(seed, spawn indirizzato o None)` — a chi va questa menzione.
+
+    Le due forme numeriche NON sono più equivalenti (regola di Davide, 18 ago):
+
+        `@clodia-124`  → indirizza QUEL spawn: è il nome che si legge in chat,
+                         quindi è il nome con cui si scrive;
+        `@clodia#2`    → forma STORICA. Si capisce ancora (sta scritta nei
+                         messaggi già inviati e nella memoria degli agenti) ma
+                         non indirizza più nulla: l'istanza la scegle
+                         l'allocazione. Prima steerava, e veniva clampata in
+                         silenzio — `@clodia#124` risvegliava l'istanza 4;
+        `@clodia`      → allocazione secondo la regola delle menzioni.
+    """
+    if not tag:
+        return tag, None
+    m = _SPAWN_SUFFIX_RE.match(tag)
+    if m and _is_known_seed(m.group(1)):
+        return m.group(1), tag
+    return _split_ord(tag)[0], None
 
 
 def _is_known_seed(nome: str) -> bool:
@@ -1240,21 +1262,60 @@ def _provider_below_tier_warning(spec, tier_real: str) -> dict:
     }
 
 
+def _spawn_cap(spec) -> int:
+    """Spawn CONCORRENTI ammessi per questo seed.
+
+    Un seed senza `multi_spawn` non è un caso a parte: è **cap = 1** (regola di
+    Davide, 18 ago). Prima la regola viveva in due posti — il ramo multi-spawn di
+    `_start_turn` e la sessione unica implicita di tutti gli altri — che è il modo
+    in cui due comportamenti che dovrebbero coincidere divergono.
+    """
+    if not getattr(spec, "multi_spawn", False):
+        return 1
+    return max(1, int(getattr(spec, "max_spawns", 4) or 4))
+
+
+def _sessions_of(tier: str, name: str, seed: str) -> list[tuple[str, bool]]:
+    """Sessioni VIVE del seed in questo canale: `(chat_id, occupata)`.
+
+    Riconosce entrambe le forme di chiave: `chan:t:n:seed` (cap 1) e
+    `chan:t:n:seed#N` (multi-spawn). La chiave NON è stata unificata di
+    proposito: aggiungere `#1` a quella senza suffisso orfanerebbe la sessione e
+    il suo file di storia su ogni istanza già in esercizio. La chiave resta un
+    dettaglio interno — quello che si mostra è il nome dello spawn.
+    """
+    base = f"chan:{tier}:{name}:{seed}"
+    out: list[tuple[str, bool]] = []
+    for chat in manager.list():
+        cid = getattr(chat, "chat_id", "")
+        if cid != base and not cid.startswith(base + "#"):
+            continue
+        lock = getattr(chat, "_lock", None)
+        out.append((cid, bool(lock is not None and lock.locked())))
+    return sorted(out)
+
+
 def _resolve_ordinal(tier: str, name: str, spec, requested: int | None) -> int:
     """Ordinale dell'istanza multi-spawn per questo turno (issue#94).
 
-    - richiesto esplicito (@nome#N) → quello, clampato a max_spawns;
     - generico → il MINIMO ordinale senza un turno in corso fra le istanze
       esistenti; se tutte occupate → fork del successivo (entro il cap);
       al cap raggiunto ci si accoda sul minimo (FIFO del lock di sessione).
     Le istanze evinte dal reaper non esistono più nel manager → gli ordinali
     si riassegnano dal basso alla menzione successiva.
+
+    `requested` NON steera più l'allocazione (regola di Davide, 18 ago): `@nome#N`
+    era un indirizzo relativo, capped e riusabile, e veniva clampato in silenzio
+    — chi leggeva `clodia-124` e scriveva `@clodia#124` risvegliava l'istanza 4.
+    Per raggiungere uno spawn preciso si usa il suo nome, `@clodia-124`, che è
+    anche quello che si legge a schermo. Il parametro resta per i chiamanti
+    storici e viene ignorato.
     """
-    cap = max(1, int(getattr(spec, "max_spawns", 4) or 4))
+    cap = _spawn_cap(spec)
     if requested:
-        if requested > cap:
-            LOG.info("ordinale %s#%d oltre il cap %d: clampato", spec.name, requested, cap)
-        return min(requested, cap)
+        LOG.info("ordinale relativo %s#%d ignorato: l'allocazione segue la regola "
+                 "delle menzioni, e uno spawn preciso si indirizza col suo nome",
+                 spec.name, requested)
     prefix = f"chan:{tier}:{name}:{spec.name}#"
     busy_by_ord: dict[int, bool] = {}
     for chat in manager.list():
@@ -1273,7 +1334,68 @@ def _resolve_ordinal(tier: str, name: str, spec, requested: int | None) -> int:
     if free:
         return free[0]
     nxt = max(busy_by_ord) + 1
-    return nxt if nxt <= cap else min(busy_by_ord)
+    # Al cap NON si sceglie più l'ordinale minimo. Sceglierlo qui significava
+    # decidere l'attesa in anticipo: con `#1` dentro un turno da dieci minuti e
+    # `#3` che si libera in cinque secondi, la menzione aspettava dieci minuti.
+    # `None` = «aspetta il primo che finisce», e chi decide è `_await_free_session`.
+    return nxt if nxt <= cap else None
+
+
+# Attese in coda per (canale, seed): una menzione arrivata quando tutti gli spawn
+# sono occupati aspetta qui. Il lock serve all'EQUITÀ, non alla mutua esclusione:
+# `asyncio.Lock` sveglia i waiter in ordine di arrivo, quindi due menzioni fatte
+# a un agente pieno restano servite nell'ordine in cui sono state scritte. Senza,
+# ogni waiter farebbe la sua gara e l'ordine dipenderebbe dallo scheduler — cioè
+# la seconda domanda potrebbe ricevere risposta prima della prima.
+_wait_locks: dict[tuple, "asyncio.Lock"] = {}
+# Sessioni assegnate a un turno che non ha ancora preso il lock: senza questo,
+# due waiter svegliati vicini vedrebbero libera la stessa sessione.
+_claimed: set[str] = set()
+#: Cadenza del controllo «qualcuno si è liberato». Si sonda invece di ascoltare
+#: gli eventi di stato perché il bus SCARTA a coda piena (`QueueFull`, maxsize
+#: 200): un evento perso qui è una menzione che non parte mai. Il costo c'è solo
+#: mentre si è al cap, che è la condizione rara.
+_FREE_POLL_SEC = 0.25
+
+
+def _chat_of_spawn(tier: str, name: str, seed: str, spawn: str | None) -> str | None:
+    """`chat_id` della sessione viva il cui SPAWN si chiama `spawn`, o None.
+
+    È il modo di indirizzare un'istanza precisa dopo che `#N` ha smesso di farlo:
+    il nome che si legge in chat (`clodia-124`) è il nome con cui si scrive. Non
+    si materializza niente — uno spawn morto non è indirizzabile, e l'allocazione
+    normale serve comunque la menzione.
+    """
+    if not spawn:
+        return None
+    for cid, _busy in _sessions_of(tier, name, seed):
+        try:
+            if _spawn_label(manager.get(cid), seed) == spawn:
+                return cid
+        except KeyError:                 # evinta fra la lista e la get
+            continue
+    return None
+
+
+async def _await_free_session(tier: str, name: str, spec, timeout: float = 900.0):
+    """`chat_id` del primo spawn del seed che finisce il suo turno, o None.
+
+    Regola di Davide (18 ago): «quando il limite è raggiunto la menzione arriva
+    al primo spawn che finisce il suo turno». Non a uno scelto prima.
+    """
+    key = (tier, name, spec.name)
+    lock = _wait_locks.setdefault(key, asyncio.Lock())
+    scaduto = asyncio.get_event_loop().time() + timeout
+    async with lock:                     # ordine di arrivo fra le menzioni in attesa
+        while asyncio.get_event_loop().time() < scaduto:
+            for cid, occupata in _sessions_of(tier, name, spec.name):
+                if not occupata and cid not in _claimed:
+                    _claimed.add(cid)
+                    return cid
+            await asyncio.sleep(_FREE_POLL_SEC)
+    LOG.warning("nessuno spawn di %s libero su %s/%s entro %.0fs: la menzione "
+                "resta non servita", spec.name, tier, name, timeout)
+    return None
 
 
 def _origin_for(principal: str, inherited: list | None, executor: str) -> list:
@@ -1333,18 +1455,52 @@ def _spawn_label(chat, seed: str) -> str:
 async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str,
                       user_text: str, kind: str, hop: int = 0,
                       ordinal: int | None = None,
+                      spawn: str | None = None,
                       origin: list | None = None) -> bool:
-    """Avvia (fire-and-forget) un turno del responder `spec` con la direttiva del
-    tipo di tag (direct/soft/plain). Sessione persistente per (canale, agente);
-    per i seed multi-spawn (issue#94) la sessione è per (canale, agente, ordinale)
-    e l'autore è etichettato `nome#N`. Ritorna False se il provider non è connesso."""
+    """Avvia (fire-and-forget) un turno del responder `spec`.
+
+    ALLOCAZIONE DELLA MENZIONE (regola di Davide, 18 ago 2026):
+
+    - nessuno spawn del seed in esecuzione → il turno va a uno spawn (quello
+      inattivo se c'è, altrimenti nuovo);
+    - uno in esecuzione e sotto il limite → si spawna uno NUOVO;
+    - limite raggiunto → la menzione va al PRIMO che finisce il suo turno, e le
+      menzioni in attesa sono servite in ordine di arrivo;
+    - un seed senza `multi_spawn` è lo stesso meccanismo con **limite 1**.
+
+    `spawn` indirizza uno spawn PRECISO per nome (`@clodia-124`): se è vivo il
+    turno va a lui, accodandosi se sta lavorando. Se non è più vivo si ricade
+    sull'allocazione normale — la menzione va servita — e lo si scrive nel log.
+
+    Ritorna False se il provider non è connesso.
+    """
     label = spec.name
-    chat_id = f"chan:{tier}:{name}:{spec.name}"
+    base_id = f"chan:{tier}:{name}:{spec.name}"
+    chat_id = base_id
     inst_ord: int | None = None
-    if getattr(spec, "multi_spawn", False):
+    atteso = False
+    mirato = _chat_of_spawn(tier, name, spec.name, spawn) if spawn else None
+    if spawn and mirato is None:
+        LOG.info("spawn %s non è più vivo su %s/%s: la menzione passa "
+                 "dall'allocazione normale", spawn, tier, name)
+    if mirato is not None:
+        chat_id = mirato
+    elif getattr(spec, "multi_spawn", False):
         inst_ord = _resolve_ordinal(tier, name, spec, ordinal)
-        label = f"{spec.name}#{inst_ord}"
-        chat_id = f"{chat_id}#{inst_ord}"
+        if inst_ord is None:
+            # Tutti al lavoro: si aspetta qui, non si scommette su un ordinale.
+            chat_id = await _await_free_session(tier, name, spec)
+            if chat_id is None:
+                return False
+            atteso = True
+        else:
+            chat_id = f"{base_id}#{inst_ord}"
+    else:
+        # cap = 1. La sessione unica esiste ed è occupata → è il limite
+        # raggiunto, e il primo che finisce è lei. Accodarsi sul suo lock è
+        # proprio questo, con l'ordine di arrivo garantito dal lock stesso:
+        # nessuna attesa esplicita da introdurre, e nessuna equità da perdere.
+        pass
     created = False
     try:
         chat = manager.get(chat_id)
@@ -1375,6 +1531,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                 "reason": "topic_min_cost_eligible",
             })
         except ProviderNotConnected:
+            _claimed.discard(chat_id)
             LOG.warning("nessun provider idoneo per %s su topic %s/%s tier=%s",
                         spec.name, tier, name, tier_real)
             # Anche questo si legge come «non risponde», e la causa è a monte del
@@ -1400,6 +1557,14 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     # messaggio è il nome dello spawn. Le si insegnava a firmarsi con un numero
     # che nessun altro le attribuiva.
     spawn_nome = _spawn_label(chat, spec.name)
+    # Il responder si identifica col nome dello spawn anche verso il resto della
+    # pipeline (typing, watch report, ritorno al chiamante): prima qui viaggiava
+    # `nome#N`, cioè l'ordinale di canale.
+    label = spawn_nome
+    if atteso:
+        LOG.info("menzione a %s su %s/%s servita da %s: era al limite di %d spawn "
+                 "ed è il primo che ha finito", spec.name, tier, name, spawn_nome,
+                 _spawn_cap(spec))
     # Chi guarda il canale deve vedere il numero di spawn ANCHE mentre l'agente
     # lavora, non solo sul messaggio finito. Gli eventi live (`message_chunk`,
     # `thinking_chunk`, `tool_use`) portano il `chat_id`, e la webui ne ricavava
@@ -1440,9 +1605,21 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         fallback = (f"[Canale #{name} · {tier_real}] @{principal}: {user_text}\n"
                     f"({_channel_files_hint(tier_real, name)})")
         prompt = _reused_turn_prompt(tier, name, label, principal, directive or fallback)
-    _spawn_bg(_run_and_post_response(tier, name, label, chat, prompt,
-                                     principal=principal, hop=hop))
+    # La prenotazione si scioglie a turno FINITO, non appena il task è schedulato:
+    # fra `_spawn_bg` e il momento in cui il turno prende il lock della sessione
+    # c'è una finestra in cui la sessione risulterebbe di nuovo libera, e un
+    # secondo waiter la assegnerebbe a sé. Mentre il turno gira la sessione è
+    # occupata comunque, quindi tenerla prenotata fino alla fine non toglie nulla.
+    _spawn_bg(_run_then_unclaim(chat_id, _run_and_post_response(
+        tier, name, label, chat, prompt, principal=principal, hop=hop)))
     return True
+
+
+async def _run_then_unclaim(chat_id: str, coro):
+    try:
+        return await coro
+    finally:
+        _claimed.discard(chat_id)
 
 
 def _channel_meta(body: dict, principal: str, name: str) -> dict:
@@ -2213,15 +2390,27 @@ def _context_messages(messages: list[dict]) -> list[dict]:
 
 
 async def _drop_channel_sessions(tier: str, name: str, participants: list[str]) -> list[str]:
-    """Dimentica le sessioni runtime dei responder di questo canale."""
+    """Dimentica le sessioni runtime dei responder di questo canale.
+
+    TUTTE le sessioni di ogni partecipante, non solo quella con la chiave nuda.
+    Qui si costruiva `chan:<tier>:<name>:<agent>` e si cancellava quella: per un
+    seed multi-spawn le istanze vivono su `…:<agent>#1…#N`, che non venivano
+    toccate. Un «Reset contesto» lasciava quindi in piedi proprio gli agenti che
+    girano come più istanze, con la loro memoria conversazionale intatta — e il
+    pulsante diceva di aver resettato.
+
+    Si passa da `_sessions_of`, che è il lettore che conosce entrambe le forme di
+    chiave: la stessa lista usata per allocare una menzione, così non ci sono due
+    idee diverse di «quali sessioni ha questo seed in questo canale».
+    """
     deleted: list[str] = []
     for agent in participants:
-        chat_id = f"chan:{tier}:{name}:{agent}"
-        try:
-            await manager.delete(chat_id)
-            deleted.append(chat_id)
-        except KeyError:
-            continue
+        for chat_id, _busy in _sessions_of(tier, name, agent):
+            try:
+                await manager.delete(chat_id)
+                deleted.append(chat_id)
+            except KeyError:
+                continue
     return deleted
 
 
@@ -2342,20 +2531,20 @@ async def post_channel_message(
     targets: list[tuple[object, str, int | None]] = []
     hard_unserved: dict | None = None
     for nm in hard:
-        seed, req_ord = _split_ord(nm)     # @nome#N → istanza esplicita (issue#94)
+        seed, want_spawn = _split_target(nm)   # @nome-N → QUEL spawn; @nome#N storico
         tag_trace: dict = {}
         s = _pick_responder(participants, tier_real, seed, trace=tag_trace)   # ritorna il seed solo se idoneo
         if s is not None and s.name == seed:
-            targets.append((s, "direct", req_ord))
+            targets.append((s, "direct", want_spawn))
         elif hard_unserved is None:
             hard_unserved = tag_trace
     for nm in soft:
-        seed, req_ord = _split_ord(nm)
+        seed, want_spawn = _split_target(nm)
         s = _pick_responder(participants, tier_real, seed)
         if s is not None and s.name == seed and not any(t[0].name == s.name for t in targets):
-            targets.append((s, "soft", req_ord))
+            targets.append((s, "soft", want_spawn))
 
-    hard_targets = [(s, req_ord) for s, kind, req_ord in targets if kind == "direct"]
+    hard_targets = [(s, want_spawn) for s, kind, want_spawn in targets if kind == "direct"]
     # R3: la norma è UNA menzione per messaggio. Due o più non si risolvono
     # indovinando, e non c'è più una soglia speciale a tre: «quale fra B, C e D» è
     # una domanda posta esattamente come «quale fra B e C», e la vecchia coppia di
@@ -2366,7 +2555,7 @@ async def post_channel_message(
     # due turni. Terzo restringimento del fan-out (30 lug, 10 ago, oggi) — non
     # ripristinarlo credendolo una regressione.
     if len(hard_targets) >= 2:
-        nomi = [s.name for s, _req_ord in hard_targets]
+        nomi = [s.name for s, _want in hard_targets]
         text = (
             f"Routing: scegli {_elenco_or(nomi)}.\n\n"
             f"<!-- choices={','.join(nomi)} -->\n"
@@ -2409,12 +2598,12 @@ async def post_channel_message(
         warning = None
         started: list[str] = []
         skipped: list[str] = []
-        for s, kind, req_ord in targets:
+        for s, kind, want_spawn in targets:
             if skip_if_busy and _responder_busy(tier, name, s.name):
                 skipped.append(s.name)
                 continue
             if await _start_turn(tier, name, tier_real, s, principal, content, kind,
-                                 ordinal=req_ord):
+                                 spawn=want_spawn):
                 started.append(s.name)
         return {"posted": True, "queued": True, "responders": started,
                 "skipped": skipped, "warning": warning}
