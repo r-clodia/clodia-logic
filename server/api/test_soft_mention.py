@@ -10,6 +10,7 @@ messaggio vuoto, e la distinzione che chiedevamo di usare non esisteva.
 from __future__ import annotations
 
 import contextlib
+import inspect
 import os
 import unittest
 from unittest.mock import AsyncMock, patch
@@ -18,62 +19,28 @@ from . import channels
 from .test_channels import _a
 
 
-class SoftAckSamplingTests(unittest.TestCase):
-    """Campionamento deterministico, non un dado."""
+class NoSamplingSurvivesTests(unittest.TestCase):
+    """La manopola non c'è più, e questo è il controllo che lo tiene fermo.
 
-    def test_the_same_message_always_decides_the_same_way(self):
-        """Un retry non deve raddoppiare il cenno, e un replay del canale deve
-        ricostruire la stessa storia."""
-        args = ("commercialista", "avvocato", "riprendo il punto sul bilancio")
-        first = channels._soft_ack_selected(*args)
-        for _ in range(20):
-            self.assertIs(channels._soft_ack_selected(*args), first)
+    Un default a 0 avrebbe lasciato in casa un interruttore che, alzato, viola
+    R12: fra un anno lo si rialza senza sapere che cosa vietava. «Mai» non è una
+    frazione configurabile — se il canale muto tornerà a essere un problema, è
+    un problema diverso, con la sua issue e la sua misura.
+    """
 
-    def test_a_rate_of_zero_never_acks(self):
-        with patch.dict("os.environ", {"CHANNEL_SOFT_ACK_RATE": "0"}):
-            self.assertFalse(channels._soft_ack_selected("a", "b", "x"))
-
-    def test_a_rate_of_one_always_acks(self):
-        with patch.dict("os.environ", {"CHANNEL_SOFT_ACK_RATE": "1"}):
-            self.assertTrue(channels._soft_ack_selected("a", "b", "x"))
-
-    def test_an_explicit_rate_still_samples_a_minority(self):
-        """La manopola riaccesa deve ancora campionare, non aprire tutto. Non si
-        asserisce 1/5 esatto: un test sull'esattezza di un hash misurerebbe
-        l'hash, non il comportamento."""
-        with patch.dict("os.environ", {"CHANNEL_SOFT_ACK_RATE": "0.2"}):
-            hits = sum(channels._soft_ack_selected("agente", "collega", f"msg {i}")
-                       for i in range(400))
-        self.assertGreater(hits, 20)
-        self.assertLess(hits, 160)
-
-    def test_by_default_nothing_is_sampled(self):
-        """R12 · `$nome` non avvia MAI un turno: la manopola resta, ma spenta.
-
-        Con un default a 0.2 una citazione su cinque apriva un turno — poco, ma
-        «mai» non ammette una frazione. La manopola non si rimuove: riaccenderla
-        (il «segno di vita» del 17 ago) non deve costare un deploy.
-        """
-        with patch.dict("os.environ", {}, clear=True):
-            self.assertEqual(channels._soft_ack_rate(), 0.0)
-            hits = sum(channels._soft_ack_selected("agente", "collega", f"msg {i}")
-                       for i in range(200))
-        self.assertEqual(hits, 0)
-
-    def test_an_unparseable_rate_falls_back_instead_of_raising(self):
-        with patch.dict("os.environ", {"CHANNEL_SOFT_ACK_RATE": "molto"}):
-            self.assertEqual(channels._soft_ack_rate(), 0.0)
+    def test_the_sampling_knob_is_gone(self):
+        self.assertFalse(hasattr(channels, "_soft_ack_selected"))
+        self.assertFalse(hasattr(channels, "_soft_ack_rate"))
+        self.assertNotIn("CHANNEL_SOFT_ACK_RATE",
+                         inspect.getsource(channels))
 
 
 class SoftDirectiveTests(unittest.TestCase):
-    def test_the_citation_directive_no_longer_mandates_a_nod(self):
-        """Ordinare un cenno «anche se non hai nulla da aggiungere» fabbricava
-        rumore per istruzione: era la riga che riempiva il canale."""
-        d = channels._tag_directive("soft", "commercialista", "testo")
-        self.assertIsNotNone(d)
-        self.assertIn("UNA RIGA", d)
-        self.assertIn("Nessun lavoro", d)
-        self.assertNotIn("altrimenti posta", d)
+    def test_there_is_no_citation_directive_left(self):
+        """Non c'è più un turno da istruire: la direttiva della citazione diceva
+        «di norma non ti fa nemmeno aprire un turno: questo è un campione», cioè
+        si contraddiceva da sola."""
+        self.assertIsNone(channels._tag_directive("soft", "commercialista", "t"))
 
     def test_the_direct_directive_states_the_cost_of_a_hard_mention(self):
         """La direttiva presentava `@` e `$` come un menu, senza criterio né
@@ -84,9 +51,8 @@ class SoftDirectiveTests(unittest.TestCase):
         self.assertIn("non apre un turno", d)
         self.assertIn("In dubbio", d)
 
-    def test_soft_ack_shares_the_citation_directive(self):
-        self.assertEqual(channels._tag_directive("soft-ack", "x", "t"),
-                         channels._tag_directive("soft", "x", "t"))
+    def test_the_sampled_ack_kind_is_gone_too(self):
+        self.assertIsNone(channels._tag_directive("soft-ack", "x", "t"))
 
 
 class TheHopSaysWhyTests(unittest.TestCase):
@@ -205,6 +171,16 @@ class AHumanCitationDoesNotActivateTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_the_citation_is_not_reported_as_a_responder(self) -> None:
         _result, start = await self._post("$accountant e $worker, per conoscenza")
+        start.assert_not_awaited()
+
+    async def test_citations_do_not_trip_the_r3_thresholds(self) -> None:
+        """L'altra metà del requisito: `$` non conta per la soglia «due menzioni
+        → dialogo». Due `@` fanno chiedere «chi fra…»; due `$` no, perché quella
+        soglia conta le convocazioni e una citazione non lo è."""
+        result, start = await self._post("$accountant e $worker, per conoscenza")
+        self.assertNotIn("routing_dialog", result)
+        self.assertNotIn("routing_refused", result)
+        self.assertIsNone(result.get("choices"))
         start.assert_not_awaited()
 
 

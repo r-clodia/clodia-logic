@@ -17,7 +17,6 @@ un agente, vedi `_maybe_delegate`).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -822,30 +821,25 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             f"una decisione. Leggi gli ultimi messaggi del canale per il sintomo.",
             requested_by=from_agent))
 
-    eligible_soft = [t for t in soft
-                     if _seed_name(t) in participants
-                     and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
-    plan: list[tuple[str, str]] = (
-        [(t, "direct") for t in hard
-         if _seed_name(t) in participants
-         and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
-        # `$tag` NON avvia un turno. Prima lo avviava, con l'aggravante che la
-        # direttiva soft ORDINAVA un cenno anche a chi non aveva nulla da dire:
-        # costava come un `@` e produceva in più un messaggio vuoto. La citazione
-        # resta nel campo `mentions` (badge, notifica) e l'agente citato la vede
-        # nella storia del canale al suo prossimo turno naturale, quando può
-        # reagire sapendo già com'è finita.
-        #
-        # Il cenno campionato che resta qui è SPENTO per default
-        # (`CHANNEL_SOFT_ACK_RATE=0`): «mai» non ammette una frazione, e con la
-        # manopola a zero questo ramo non produce turni. Si riaccende senza un
-        # deploy se il «segno di vita» del canale dovesse servire di nuovo — e
-        # allora, sì, `$` torna a costare: è una deroga esplicita a R12, non il
-        # comportamento normale.
-        + [(t, "soft-ack") for t in eligible_soft if _soft_ack_selected(from_agent, t, reply_text)])
-    for t in eligible_soft:
-        if not any(t == tag for tag, _k in plan):
-            LOG.info("citazione $%s da %s su %s/%s: nessun turno (soft)",
+    # `$tag` NON avvia un turno. Prima lo avviava, con l'aggravante che la
+    # direttiva soft ORDINAVA un cenno anche a chi non aveva nulla da dire:
+    # costava come un `@` e produceva in più un messaggio vuoto. La citazione
+    # resta nel campo `mentions` (badge, notifica) e l'agente citato la vede
+    # nella storia del canale al suo prossimo turno naturale, quando può
+    # reagire sapendo già com'è finita.
+    #
+    # Il cenno campionato che stava qui è RIMOSSO, non spento: una manopola che,
+    # riaccesa, viola R12 è debito che nessuno sa di avere — fra un anno la si
+    # rialza senza sapere che cosa vietava, e la regressione non ha un nome. Se
+    # il silenzio dopo una citazione tornerà a essere un problema, è un problema
+    # diverso da «$ non attiva mai» e va aperto e misurato per conto suo.
+    plan: list[tuple[str, str]] = [
+        (t, "direct") for t in hard
+        if _seed_name(t) in participants
+        and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
+    for t in soft:
+        if _seed_name(t) in participants:
+            LOG.info("citazione $%s da %s su %s/%s: nessun turno (R12)",
                      t, from_agent, tier, name)
     if not plan:
         return
@@ -1317,48 +1311,6 @@ def _declares_all_tier(spec) -> bool:
     return bool(getattr(spec, "all_tier", False))
 
 
-#: Default della frazione di citazioni `$` che producono un cenno: ZERO.
-#: R12 non ammette frazioni — «`$nome` non avvia mai un turno» non è compatibile
-#: con una citazione su cinque che ne apre uno. La manopola resta però al suo
-#: posto: il «segno di vita» del 17 ago si riaccende con `CHANNEL_SOFT_ACK_RATE`,
-#: senza rimettere mano al codice.
-_SOFT_ACK_RATE_DEFAULT = 0.0
-
-
-def _soft_ack_rate() -> float:
-    """Frazione di citazioni `$` che producono un cenno. 0 = mai (default)."""
-    raw = (os.environ.get("CHANNEL_SOFT_ACK_RATE") or "").strip()
-    if not raw:
-        return _SOFT_ACK_RATE_DEFAULT
-    try:
-        return max(0.0, min(1.0, float(raw)))
-    except ValueError:
-        # Un valore illeggibile non è un permesso: si ricade sul default inerte,
-        # non sulla vecchia frazione.
-        return _SOFT_ACK_RATE_DEFAULT
-
-
-def _soft_ack_selected(from_agent: str, tag: str, text: str) -> bool:
-    """Questa citazione produce un cenno? Deciso in modo DETERMINISTICO.
-
-    Campionamento, non caso: l'hash di (chi cita, chi è citato, testo) invece di
-    un dado. Stessa frequenza, ma lo stesso messaggio decide sempre allo stesso
-    modo — un retry non raddoppia il cenno, un replay del canale ricostruisce la
-    stessa storia, e il comportamento si può fissare in un test.
-
-    Nota su cosa questo cenno NON è: un ack campionato non è interpretabile — dal
-    silenzio non si distingue «non avevo nulla da aggiungere» da «non sono stato
-    campionato». Serve come segno di vita del canale, non come risposta.
-    """
-    rate = _soft_ack_rate()
-    if rate <= 0:
-        return False
-    if rate >= 1:
-        return True
-    h = hashlib.sha256(f"{from_agent}\x00{tag}\x00{text}".encode("utf-8")).digest()
-    return (int.from_bytes(h[:4], "big") / 0xFFFFFFFF) < rate
-
-
 def _tag_directive(kind: str, author: str, text: str) -> str | None:
     """Direttiva del turno in base al tipo di tag (goal-oriented + gioco di squadra)."""
     if kind == "direct":
@@ -1387,15 +1339,9 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "primo adesso e il secondo quando ha finito — avrai anche il suo esito da "
             "passargli. Le citazioni `$` non contano e puoi metterne quante "
             "vuoi.\n\nMessaggio:\n" + text)
-    if kind in ("soft", "soft-ack"):
-        return (
-            f"[CITAZIONE] {author} ti ha citato con $ in questo messaggio. Una "
-            "citazione NON è una richiesta d'azione, e di norma non ti fa nemmeno "
-            "aprire un turno: questo è un campione. Rispondi con UNA RIGA e nient'altro "
-            "— un cenno se non hai niente da aggiungere, o l'unica informazione che "
-            "cambierebbe le cose se ce l'hai. Nessun lavoro, nessun tool, nessun "
-            "riepilogo: se serve davvero un intervento tuo, qualcuno ti taggherà "
-            "con @.\n\nMessaggio:\n" + text)
+    # Nessuna direttiva di CITAZIONE: `$` non apre un turno, quindi non c'è un
+    # turno da istruire (R12). Quella che stava qui si contraddiceva da sola —
+    # «di norma non ti fa nemmeno aprire un turno: questo è un campione».
     if kind == "disambigua":
         # R3: la domanda torna all'autore del messaggio ambiguo. La direttiva gli
         # dice cosa fare — una sola menzione — perché interrogarlo senza istruirlo

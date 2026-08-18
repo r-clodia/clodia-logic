@@ -223,9 +223,8 @@ class AnAgentIsAskedBackTests(_Base):
         self.assertIn("@clodia", posts[-1]["text"])
 
     async def test_a_soft_tag_does_not_make_the_delegation_ambiguous(self) -> None:
-        with patch.dict(os.environ, {"CHANNEL_SOFT_ACK_RATE": "0"}):
-            posts, start = await self._delegate(
-                "clodia", "Ci pensa @worker, $accountant per conoscenza")
+        posts, start = await self._delegate(
+            "clodia", "Ci pensa @worker, $accountant per conoscenza")
         self.assertEqual("worker", start.await_args.args[3].name)
         self.assertEqual([], [p for p in posts if p["author"] == "router"])
 
