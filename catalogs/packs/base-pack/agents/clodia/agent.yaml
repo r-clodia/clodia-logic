@@ -31,7 +31,14 @@ sandbox:
   deny_shell_patterns: ["rm -rf *", "sudo *", "git push * main *--force*"]
 
 # bot di coordinamento: primitive di piattaforma + pack first-party di ruolo.
-capabilities: ["base-pack/*", "editorial-pack/*", "comms-pack/*", "anthropic-pack/*"]
+# SENZA `comms-pack` (agents-notebook A7, clodia-platform#198): la posta è il
+# mestiere del CORRIERE. Le quattro skill del pack — `check-email`,
+# `mention-relay`, `telegram-1to1`, `helpdesk` — restano dichiarate una per una
+# su `messaggero` e `sysadmin`, che le hanno per ruolo; qui arrivavano solo dal
+# wildcard, e nessuna riga del system-prompt di clodia le nomina. Non è una
+# perdita di capacità: `email.send` è un VERBO (vedi `tool_permissions`), non
+# viene dal pack, quindi la relazione quotidiana continua a partire.
+capabilities: ["base-pack/*", "editorial-pack/*", "anthropic-pack/*"]
 # NON `["*"]`. Il catalogo contiene UNA rule, `topic-state-boundary`, ed è del
 # segretario: circoscrive chi mantiene lo stato scritto di un topic e dichiara
 # fuori dominio «usare strumenti diversi dai tool di stato del topic»,

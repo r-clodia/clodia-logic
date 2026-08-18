@@ -9,6 +9,35 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.11.0] — 2026-08-17
+- **`comms-pack/*` removed from `clodia`'s capabilities** (agents-notebook A7,
+  clodia-platform#198): the post is the **courier's** trade. Profile measured in
+  repo: base 5 + editorial 3 + comms 4 = **12 skills → 8**.
+- Nothing is orphaned. The four skills — `check-email`, `mention-relay`,
+  `telegram-1to1`, `helpdesk` — stay declared **one by one** on `messaggero` and
+  `sysadmin`, which hold them by role; `clodia`'s system prompt never names any
+  of them. And `email.send` is a **verb**, not a pack skill, so the daily report
+  still goes out (7.9.0 put it back deliberately).
+- The test that guarded this requirement — in
+  `server/agents/test_base_pack_seeds.py` — was born **red**, with
+  `@unittest.expectedFailure` and the issue number beside it (decision record
+  34). The marker is gone and the test now
+  guards the requirement instead of documenting its absence: the wildcard would
+  come back on the first hand edit of the seed, and without that line it would
+  come back in silence, exactly as it stayed for nine days.
+- **`ophelia` deliberately untouched.** Its `capabilities` carry the identical
+  `comms-pack/*` wildcard, but A7 names only `clodia`; aligning a seed the issue
+  does not name is a scope decision of its own, tracked separately.
+  `anthropic-pack/*` likewise stays a wildcard: it resolves from `datadir/skills-catalog`,
+  so its skills are not in this repo and cannot be weighed from here.
+- **Operational step required after merge**, not a detail: `seed_sync.sync_seeds()`
+  skips directories that already exist (`if target.exists(): continue`) and
+  `backfill_new_fields()` only fills **absent** fields from a closed list
+  (`native_tools`, `denied_tools`, `all_tier`) — `capabilities` is not on it. So
+  the live `/datadir/agents/clodia/agent.yaml` keeps the four skills until
+  someone edits it by hand. Same class of gap as clodia-platform#220: a fix to
+  the pack does not reach the running instance on its own.
+
 ## [7.10.0] — 2026-08-15
 - **`rules: ["*"]` removed from `clodia` and `ophelia`.** The catalogue holds
   exactly one rule — `topic-state-boundary` — and it belongs to the secretary:

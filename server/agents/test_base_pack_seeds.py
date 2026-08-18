@@ -185,17 +185,23 @@ class ClodiaMandateTests(unittest.TestCase):
         self.assertNotIn("*", verbi)
         self.assertTrue(verbi, "clodia senza verbi: il seed non dichiara più il mestiere")
 
-    @unittest.expectedFailure   # clodia-platform#198 — A7 non ancora consegnata
     def test_comms_pack_is_gone_and_the_other_three_stay(self) -> None:
-        """ROSSO ATTESO. Il seed dichiara ancora `comms-pack`: A7 è registrata nel
-        notebook ma non implementata, e la issue #198 è aperta.
+        """A7 consegnata (clodia-platform#198, 17 ago 2026): `comms-pack` non è
+        più fra le capabilities di clodia — la posta è del corriere.
 
-        Il test resta qui invece di aspettare la consegna, perché è la forma in
-        cui un requisito non implementato si vede: quando #198 sarà chiusa questo
-        diventerà un `unexpected success`, che è rumoroso quanto un rosso e cade
-        esattamente sulla riga da aggiornare. Un requisito che nessun test nomina
-        è indistinguibile da uno consegnato — ed è così che A7 è rimasta aperta
-        senza che la sua assenza si notasse (decision record 34).
+        Questo test è nato ROSSO, con `@unittest.expectedFailure` e il numero
+        della issue accanto: era la forma in cui un requisito non implementato si
+        vedeva, invece di restare indistinguibile da uno consegnato (decision
+        record 34). Ora che il seed è stato corretto l'`expectedFailure` è
+        sparito e il test è diventato la GUARDIA del requisito: il wildcard
+        `comms-pack/*` tornerebbe da sé alla prima modifica a mano del seed, e
+        senza questa riga rientrerebbe in silenzio, esattamente come ci era
+        rimasto per nove giorni.
+
+        Le due asserzioni guardano lati opposti: la prima che comms sia andato,
+        la seconda che gli altri tre pack ci siano ancora — perché «tolgo il
+        wildcard di troppo» e «svuoto le capabilities» hanno lo stesso aspetto
+        sulla prima asserzione da sola.
         """
         pack = {c.split("/", 1)[0] for c in (self.clodia.get("capabilities") or [])}
         self.assertNotIn("comms-pack", pack, "A7: comms se ne va — la posta è del corriere")
