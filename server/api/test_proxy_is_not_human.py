@@ -378,5 +378,43 @@ class RunTopicTurnContextTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(row["kind"], "human")
 
 
+class ExternalReachesThePromptTests(unittest.IsolatedAsyncioTestCase):
+    """Il `kind` giusto nella riga non serve a niente se poi il prompt non lo dice.
+
+    Tutti gli altri test di #221 mockano `compose_routing_context`: verificano
+    che la riga ESCA `external`, non che il lettore del turno la VEDA `external`.
+    Il rendering è oggi un fallthrough (`role = "agent" if ai else "human" if
+    human else kind`), non un allow-list: `external` passa perché non è
+    riconosciuto, non perché sia previsto. Basta che qualcuno «ordini» quel
+    ramo in una mappa dei ruoli noti perché il segnale diventi muto senza che
+    nessun test se ne accorga — questo lo accorge.
+    """
+
+    async def _prompt(self, trigger_author: str, trigger_kind: str | None) -> str:
+        meta = {"owner": "davide", "participants": ["clodia"], "tier": "SEAL-1"}
+
+        with patch.object(ch.registry, "get_by_name", side_effect=AGENTS.get), \
+             patch.object(ch.topics_client, "list_messages", return_value=[]), \
+             patch.object(ch, "_pick_responder", return_value=None) as picker:
+            # `compose_routing_context` NON è mockata: è il punto del test.
+            await ch.run_topic_turn("SEAL-1", "ch", meta,
+                                    trigger_text="fai una cosa",
+                                    principal_hint="channel",
+                                    trigger_author=trigger_author,
+                                    trigger_kind=trigger_kind)
+        return picker.call_args.kwargs.get("routing_message") or ""
+
+    async def test_the_composed_context_says_external(self) -> None:
+        ctx = await self._prompt("clodia-primal", "external")
+        self.assertIn("[external @clodia-primal]", ctx)
+        self.assertNotIn("[human @clodia-primal]", ctx)
+
+    async def test_a_real_person_still_reads_as_human(self) -> None:
+        """Il contrario dello stesso controllo: se `external` comparisse per
+        tutti, il segnale sarebbe rumore e questo test lo direbbe."""
+        ctx = await self._prompt("davide", "human")
+        self.assertIn("[human @davide]", ctx)
+
+
 if __name__ == "__main__":
     unittest.main()
