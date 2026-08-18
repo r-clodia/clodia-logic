@@ -4,6 +4,7 @@ Le chat libere (`/clodia/chats/*`) sono state rimosse: la conversazione 1-1
 con un agent è ora un **DM = canale a 2** (vedi `channels.py`). Qui restano
 l'helper di identità del principal (riusato da channels/topics) e l'SSE globale
 degli eventi (consumato da jobs/colony nel FE)."""
+import asyncio
 import json
 import logging
 from datetime import datetime, timezone
@@ -16,7 +17,7 @@ from starlette.responses import JSONResponse
 
 from ..agents import registry
 from ..core.events import bus
-from . import topics_client
+from . import presence, topics_client
 from ..sdk_runtime.session import manager
 from ..agents.workspace import SPAWNS_ROOT
 from ..sdk_runtime.process_reaper import runtime_process_metrics
@@ -185,8 +186,57 @@ def _room_meta(tier: str, name: str) -> dict | None:
     return meta
 
 
-def _stream_principal(request: Request) -> tuple[str | None, bool]:
-    """Chi sta ascoltando, e se è un proxy. `(principal, is_proxy)`.
+#: Cadenza del battito di presenza di un proxy collegato allo stream. Deve stare
+#: sotto `presence.TTL_S` (150s) con margine: se ribattesse più tardi della
+#: scadenza, un proxy connesso risulterebbe assente a intermittenza — che è
+#: peggio di non mostrarlo affatto, perché sembra un guasto del ponte.
+_PROXY_BEAT_EVERY_S = 50.0
+
+
+def _stanza_dal_token(payload: dict) -> tuple[str, str] | None:
+    """`(tier, topic)` dal claim `chat` del token, o None.
+
+    Il token di un proxy è coniato per UNA stanza e la porta dentro `chat`
+    (`chan:<tier>:<topic>:<principal>`, vedi `proxy_auth.token_for` nel gateway).
+    Si legge da lì e non da un parametro di query, perché la stanza è parte di
+    ciò che è stato firmato: un proxy non deve poter dichiarare presenza in una
+    stanza a cui non è stato ammesso.
+    """
+    chat = str((payload or {}).get("chat") or "")
+    parti = chat.split(":")
+    if len(parti) < 4 or parti[0] != "chan":
+        return None
+    tier, topic = parti[1].strip(), parti[2].strip()
+    return (tier, topic) if tier and topic else None
+
+
+async def _batti_finche_ascolta(chi: str, tier: str, name: str) -> None:
+    """Tiene la presenza di un proxy per tutta la durata della connessione.
+
+    È la forma che clodia-platform#218 chiede: presenza legata alla CONNESSIONE,
+    non a un battito che il sistema terzo deve ricordarsi di mandare. Un processo
+    che muore smette di tenere la socket, e il pallino cade da sé — mentre un ping
+    periodico può mentire, perché continua ad arrivare da un ponte che non
+    ascolta più nessuno.
+    """
+    try:
+        while True:
+            presence.touch(chi, tier, name)
+            await asyncio.sleep(_PROXY_BEAT_EVERY_S)
+    except asyncio.CancelledError:
+        raise
+    except Exception as e:  # noqa: BLE001 — la presenza non deve rompere lo stream
+        LOG.warning("battito di presenza per %s su %s/%s interrotto: %s",
+                    chi, tier, name, e)
+
+
+def _stream_principal(request: Request):
+    """Chi sta ascoltando, se è un proxy, e per quale stanza.
+
+    Ritorna `(principal, is_proxy, stanza)` con `stanza` = `(tier, topic)` o None.
+    La stanza esce dallo STESSO payload già verificato qui: ricavarla altrove
+    vorrebbe dire verificare il token due volte per due domande, e due verifiche
+    sono due posti in cui una può divergere dall'altra.
 
     Il token arriva dall'header quando il client è un programma, e dalla query
     quando è un browser: `EventSource` non sa mandare header, e senza questa
@@ -199,20 +249,21 @@ def _stream_principal(request: Request) -> tuple[str | None, bool]:
     if not token:
         token = (request.query_params.get("token") or "").strip()
     if not token:
-        return None, False
+        return None, False, None
     try:
         payload = pki.verify_session_token(token)
     except Exception as e:  # noqa: BLE001
         LOG.warning("events: token rifiutato: %s", e)
-        return None, False
+        return None, False, None
     # `principal` è chi agisce (una persona, un proxy); `agent` è il carrier che
     # ha firmato. Filtrare sul carrier darebbe a un proxy la visibilità di
     # clodia, che partecipa quasi ovunque.
     chi = str(payload.get("principal") or payload.get("agent") or "").strip()
     if not chi:
-        return None, False
+        return None, False, None
     spec = registry.get_by_name(chi)
-    return chi, bool(spec is not None and getattr(spec, "type", "") == "proxy")
+    is_proxy = bool(spec is not None and getattr(spec, "type", "") == "proxy")
+    return chi, is_proxy, _stanza_dal_token(payload)
 
 
 def _event_visible(chi: str, is_proxy: bool, ev) -> bool:
@@ -250,7 +301,7 @@ async def events(request: Request):
     `EventSource` non manda header, e rimasto tale mentre gli eventi si
     arricchivano del testo dei messaggi.
     """
-    chi, is_proxy = _stream_principal(request)
+    chi, is_proxy, stanza = _stream_principal(request)
     if not chi:
         return JSONResponse(
             {"error": "questo stream richiede un token: header Authorization "
@@ -258,11 +309,28 @@ async def events(request: Request):
             status_code=401)
 
     async def event_stream():
-        async for ev in bus.subscribe():
-            try:
-                if not _event_visible(chi, is_proxy, ev):
+        # PRESENZA DI UN PROXY (clodia-platform#218): tenere questo stream È
+        # essere presente. Il battito parte con la connessione e muore con lei,
+        # quindi un ponte che termina fa cadere il pallino senza che nessuno
+        # debba ricordarsi di dirlo.
+        #
+        # Solo per i PROXY, e non è una scorciatoia: uno stream resta aperto
+        # anche con la scheda in secondo piano, quindi battere da qui per un
+        # umano renderebbe irraggiungibile lo stato `background` — cioè
+        # cancellerebbe una delle quattro risposte che la presenza distingue.
+        # Per una persona il battito esplicito della webui resta l'unica fonte.
+        battito = None
+        if is_proxy and stanza:
+            battito = asyncio.create_task(_batti_finche_ascolta(chi, *stanza))
+        try:
+            async for ev in bus.subscribe():
+                try:
+                    if not _event_visible(chi, is_proxy, ev):
+                        continue
+                except Exception:  # noqa: BLE001 — in dubbio non si consegna
                     continue
-            except Exception:  # noqa: BLE001 — in dubbio non si consegna
-                continue
-            yield {"data": json.dumps(ev.model_dump(), default=str)}
+                yield {"data": json.dumps(ev.model_dump(), default=str)}
+        finally:
+            if battito is not None:
+                battito.cancel()
     return EventSourceResponse(event_stream())

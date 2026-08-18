@@ -58,14 +58,15 @@ class StreamPrincipalTests(unittest.TestCase):
             self.query_params = query or {}
 
     def test_no_token_no_stream(self):
-        chi, _ = agents._stream_principal(self._Req())
+        chi, _, _stanza = agents._stream_principal(self._Req())
         self.assertIsNone(chi)
 
     def test_the_token_may_come_from_the_query_because_eventsource_cannot_send_headers(self):
         with patch("server.colony.pki.verify_session_token",
                    lambda _t: {"principal": "davide", "agent": "clodia"}), \
              patch.object(agents.registry, "get_by_name", lambda _n: None):
-            chi, is_proxy = agents._stream_principal(self._Req(query={"token": "ckt1.x"}))
+            chi, is_proxy, _stanza = agents._stream_principal(
+                self._Req(query={"token": "ckt1.x"}))
         self.assertEqual(chi, "davide")
         self.assertFalse(is_proxy)
 
@@ -78,7 +79,7 @@ class StreamPrincipalTests(unittest.TestCase):
         with patch("server.colony.pki.verify_session_token",
                    lambda _t: {"principal": "clodia-primal", "agent": "clodia"}), \
              patch.object(agents.registry, "get_by_name", lambda _n: _Spec()):
-            chi, is_proxy = agents._stream_principal(
+            chi, is_proxy, _stanza = agents._stream_principal(
                 self._Req(headers={"authorization": "Bearer ckt1.x"}))
         self.assertEqual(chi, "clodia-primal")
         self.assertTrue(is_proxy)
