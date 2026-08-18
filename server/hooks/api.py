@@ -123,12 +123,19 @@ def _payload(raw: bytes) -> str:
 def _queue_turn(tier: str, name: str, text: str, principal: str,
                 responder: str | None = None) -> bool:
     try:
-        from ..api.channels import run_topic_turn, _spawn_bg
+        from ..api.channels import run_topic_turn, _spawn_bg, _safe_name
         topic = topics_client.open_topic(tier, name)
         meta = (topic or {}).get("meta", {})
+        # PROVENIENZA (issue #221). Un webhook è un sistema terzo PER
+        # COSTRUZIONE: il testo è il payload che è arrivato da fuori, non la
+        # richiesta di una persona. Quindi `external` è scritto qui, costante, e
+        # non dedotto dal `principal` — che è un nome di configurazione: se un
+        # hook venisse creato col nome di un umano registrato, dedurlo
+        # rifarebbe entrare il payload come `human`.
         _spawn_bg(run_topic_turn(
             tier, name, meta, trigger_text=text, principal_hint=principal,
-            responder_hint=responder))
+            responder_hint=responder, trigger_author=_safe_name(principal),
+            trigger_kind="external"))
         return True
     except Exception:  # noqa: BLE001 — il messaggio resta comunque iniettato
         return False
