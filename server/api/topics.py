@@ -634,7 +634,12 @@ def _principal_clearance(nome: str) -> str:
 @router.get("/api/topics/{tier}/{name}/mcp-clients")
 def list_mcp_clients(tier: str, name: str, request: Request):
     """I client MCP collegati a questo topic. Senza token: il valore si consegna
-    una volta, poi si revoca soltanto."""
+    una volta, poi si revoca soltanto.
+
+    L'elenco resta completo anche dei grant coniati per PERSONE quando questa
+    superficie li emetteva ancora (fino a #242): sono quelli che oggi si possono
+    solo chiudere, e per chiuderli bisogna prima vederli.
+    """
     _require_topic_owner(request, tier, name)
     try:
         return topics_client.mcp_clients(tier, name)
@@ -644,8 +649,15 @@ def list_mcp_clients(tier: str, name: str, request: Request):
 
 @router.post("/api/topics/{tier}/{name}/mcp-clients")
 async def issue_mcp_client(tier: str, name: str, request: Request):
-    """Conia (o revoca) il token con cui una PERSONA collega il proprio client
-    MCP a questo topic.
+    """Conia (o revoca) il grant con cui un **proxy** entra in questo topic.
+
+    Fino a #242 conjava anche il config MCP di una PERSONA — il frammento da
+    incollare in Claude Desktop. Non più: quel pannello è sparito dalla sidebar
+    perché il posto di un sistema terzo in una stanza è il proxy, un partecipante
+    con un nome, un certificato e un owner che l'ha ammesso. La **revoca** resta
+    aperta a tutti i grant, anche a quelli già coniati per persone: togliere
+    l'emissione e lasciare in vita i token esistenti senza modo di spegnerli
+    sarebbe chiudere la porta buttando la chiave dentro.
 
     Chi può chiederlo: l'**owner** per chiunque partecipi — è lui che invita — e
     ciascuno **per sé**, perché quella è la sua identità e non ha senso che debba
@@ -685,6 +697,20 @@ async def issue_mcp_client(tier: str, name: str, request: Request):
     from ..agents import registry as _reg
     _spec = _reg.get_by_name(chi)
     _kind = getattr(_spec, "type", None) or "human"
+    # Si conia solo per un proxy (#242). La natura del principal decideva i
+    # VERBI del token — dieci per una persona, quattro per un proxy; ora decide
+    # anche SE il token esiste. Il caso umano non è stato solo nascosto nella
+    # sidebar: un endpoint che continuasse a emettere quelle credenziali sarebbe
+    # un ingresso senza pannello di controllo. La registry che non risponde
+    # ricade sul caso umano, quindi qui rifiuta: senza una natura dichiarata non
+    # si emette niente.
+    if _kind != "proxy":
+        raise HTTPException(
+            403,
+            f"'{chi}' non è un proxy: da qui non si coniano più credenziali per "
+            "il client MCP di una persona. Un sistema terzo entra come proxy — "
+            "un partecipante con la propria chiave, che chiede il token "
+            "firmando invece di riceverne uno da incollare.")
     payload = {
         "action": "issue", "principal": chi,
         # Persona o proxy. Il gateway ne ricava i verbi: una persona porta i suoi
