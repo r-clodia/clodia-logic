@@ -11,6 +11,17 @@ Schema job (jobs/<id>.yaml):
     id, name, cron_expr, prompt, agent, enabled, tier, last_run_at, last_status,
     last_chat_id, topic_tier, topic_name, created_at, updated_at
 
+Periodicità — due forme, mai entrambe attive:
+    - `cron_expr`: espressione a 5 campi (job globali, e trigger di topic creati
+      prima di clodia-platform#239).
+    - `interval_minutes` + `repeat_count`: «ogni N minuti, per M volte» (trigger
+      di topic dal #239). `repeat_count = 0` = senza fine; `fired_count` conta i
+      fire effettivamente dispatchati, e quando raggiunge `repeat_count` il job
+      si disabilita da sé.
+    Un record con `interval_minutes` valorizzato ignora `cron_expr`: la
+    conversione dei trigger legacy NON è automatica, la fa l'owner salvando dal
+    pannello (cambiare un orario di fire in silenzio è peggio del campo vecchio).
+
 `agent` = nome dell'agent (kind) che lo scheduler spawna al fire del job;
 risolto dinamicamente (statico clodia/ada/looper/ophelia o seed del registry).
 Job creati prima dell'introduzione del campo (19 giu 2026) → default "looper"
@@ -39,6 +50,7 @@ JOBS_DIR = data_path("jobs")
 _FIELDS = (
     "id", "name", "cron_expr", "prompt", "agent", "enabled", "owner",
     "mode", "plan", "tier", "topic_tier", "topic_name", "runs", "run_seq",
+    "interval_minutes", "repeat_count", "fired_count",
     "last_run_at", "last_status", "last_chat_id", "created_at", "updated_at",
 )
 
@@ -108,7 +120,30 @@ def _read(p: Path) -> Optional[dict]:
         d["agent"] = d.get("agent") or _LEGACY_DEFAULT_AGENT
     # Job legacy (pre-owner) → owner vuoto = di sistema: solo un admin può agirvi.
     d["owner"] = d.get("owner") or ""
+    # Periodicità a intervallo (#239). Assente = job a cron: `None`, non 0, così
+    # `register_job` distingue «non usa l'intervallo» da «intervallo nullo».
+    d["interval_minutes"] = _pos_int_or_none(d.get("interval_minutes"))
+    d["repeat_count"] = _non_neg_int(d.get("repeat_count"))
+    d["fired_count"] = _non_neg_int(d.get("fired_count"))
     return d
+
+
+def _pos_int_or_none(v) -> Optional[int]:
+    """Intero > 0, oppure None. Lettura tollerante come il resto di `_read`: un
+    file scritto a mano con `interval_minutes: ""` non deve far sparire il job."""
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return None
+    return n if n > 0 else None
+
+
+def _non_neg_int(v) -> int:
+    try:
+        n = int(v)
+    except (TypeError, ValueError):
+        return 0
+    return n if n > 0 else 0
 
 
 def _write(d: dict) -> None:
@@ -138,7 +173,9 @@ def create_job(name: str, cron_expr: str, prompt: str,
                agent: str = "clodia", enabled: bool = True,
                owner: str = "", mode: str = "agentic",
                plan: list | None = None, tier: str = "",
-               topic_tier: str = "", topic_name: str = "") -> dict:
+               topic_tier: str = "", topic_name: str = "",
+               interval_minutes: Optional[int] = None,
+               repeat_count: int = 0) -> dict:
     """Crea un nuovo job. Solleva sqlite3.IntegrityError se 'name' è duplicato
     (contratto invariato con api.py → HTTP 409). `owner` = principal umano che ne
     è proprietario (solo lui, o un admin, può agirvi).
@@ -165,6 +202,9 @@ def create_job(name: str, cron_expr: str, prompt: str,
         # che oggi girano.
         "tier": tier or "",
         "topic_tier": topic_tier or "", "topic_name": topic_name or "",
+        # Periodicità a intervallo (#239): alternativa a `cron_expr`, non aggiunta.
+        "interval_minutes": _pos_int_or_none(interval_minutes),
+        "repeat_count": _non_neg_int(repeat_count), "fired_count": 0,
         "enabled": bool(enabled), "last_run_at": None, "last_status": None,
         "last_chat_id": None, "created_at": now, "updated_at": now,
     }
@@ -201,23 +241,32 @@ def get_topic_trigger(tier: str, name: str) -> Optional[dict]:
 def create_topic_trigger(
     tier: str,
     name: str,
-    cron_expr: str,
     prompt: str,
     *,
+    interval_minutes: int,
+    repeat_count: int = 0,
     agent: str = "",
     owner: str = "",
 ) -> dict:
+    """Crea il trigger di un topic: «ogni `interval_minutes`, per `repeat_count`
+    volte» (`repeat_count = 0` = senza fine, #239).
+
+    Non prende più un `cron_expr`: i trigger nuovi nascono a intervallo. I
+    record legacy che ce l'hanno continuano a girare (vedi `scheduler.
+    register_job`), ma la porta di creazione non ne produce di nuovi."""
     if get_topic_trigger(tier, name) is not None:
         raise sqlite3.IntegrityError(f"topic trigger '{tier}/{name}' already exists")
     return create_job(
         name=f"topic-trigger:{tier}/{name}"[:200],
-        cron_expr=cron_expr,
+        cron_expr="",
         prompt=prompt,
         agent=agent,
         owner=owner,
         mode="topic_trigger",
         topic_tier=tier,
         topic_name=name,
+        interval_minutes=interval_minutes,
+        repeat_count=repeat_count,
     )
 
 
@@ -230,8 +279,15 @@ def update_job(
     agent: Optional[str] = None,
     enabled: Optional[bool] = None,
     tier: Optional[str] = None,
+    interval_minutes: Optional[int] = None,
+    repeat_count: Optional[int] = None,
+    fired_count: Optional[int] = None,
 ) -> Optional[dict]:
-    """Aggiorna i campi non None. Ritorna il job aggiornato o None se non esiste."""
+    """Aggiorna i campi non None. Ritorna il job aggiornato o None se non esiste.
+
+    Passare `interval_minutes` sposta il job dalla periodicità cron a quella a
+    intervallo e AZZERA `cron_expr`: le due forme non convivono, un record con
+    entrambe lascerebbe a `register_job` una scelta che non gli compete."""
     agent = _one_agent_name(agent)   # R11: prima di toccare il file (#213)
     d = get_job(job_id)
     if d is None:
@@ -243,6 +299,23 @@ def update_job(
         d["name"] = name
     if cron_expr is not None:
         d["cron_expr"] = cron_expr
+        if cron_expr:
+            d["interval_minutes"] = None
+    if interval_minutes is not None:
+        nuovo = _pos_int_or_none(interval_minutes)
+        # Cambiare la cadenza ri-arma il conteggio: «ogni 30' per 4 volte» dopo
+        # una modifica sono 4 volte NUOVE, non le 4 meno quelle già spese.
+        if nuovo != d.get("interval_minutes"):
+            d["fired_count"] = 0
+        d["interval_minutes"] = nuovo
+        d["cron_expr"] = ""
+    if repeat_count is not None:
+        nuovo_rc = _non_neg_int(repeat_count)
+        if nuovo_rc != d.get("repeat_count"):
+            d["fired_count"] = 0
+        d["repeat_count"] = nuovo_rc
+    if fired_count is not None:
+        d["fired_count"] = _non_neg_int(fired_count)
     if prompt is not None:
         d["prompt"] = prompt
     if agent is not None:
@@ -343,6 +416,26 @@ def complete_run(job_id: int, run_id: str, *, success: bool,
     d["updated_at"] = finished_at
     _write(d)
     return True
+
+
+def count_fire(job_id: int) -> Optional[dict]:
+    """Registra UNA ripetizione consumata e, se erano le ultime, disabilita il
+    job. Ritorna il record aggiornato (con `fired_count` e `enabled` correnti).
+
+    Chiamata solo dai fire effettivamente DISPATCHATI: uno skip-if-busy non ha
+    postato niente nel topic, quindi non ha speso una delle M ripetizioni
+    chieste dall'owner (#239). `repeat_count = 0` = senza fine: conta comunque,
+    così il pannello mostra quante volte è partito, ma non disabilita mai."""
+    d = get_job(job_id)
+    if d is None:
+        return None
+    d["fired_count"] = _non_neg_int(d.get("fired_count")) + 1
+    limite = _non_neg_int(d.get("repeat_count"))
+    if limite and d["fired_count"] >= limite:
+        d["enabled"] = False
+    d["updated_at"] = _now_iso()
+    _write(d)
+    return d
 
 
 def iter_enabled_jobs() -> Iterable[dict]:

@@ -18,6 +18,7 @@ from typing import Optional
 
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
+from apscheduler.triggers.interval import IntervalTrigger
 
 try:
     # zoneinfo è stdlib su Python ≥ 3.9
@@ -113,6 +114,71 @@ def validate_cron_expr(expr: str, *, min_interval_minutes: int = 0) -> Optional[
     return None
 
 
+def validate_interval_minutes(
+    minutes, *, min_interval_minutes: int = 0,
+) -> Optional[str]:
+    """Valida la periodicità a intervallo (#239). None se valida, motivo altrimenti.
+
+    Stesso contratto di `validate_cron_expr` — e stesso floor, riusato invece di
+    riscritto: un trigger di topic non può firare più fitto di
+    TOPIC_TRIGGER_MIN_INTERVAL_MIN qualunque sia la forma con cui è espresso."""
+    try:
+        n = int(minutes)
+    except (TypeError, ValueError):
+        return f"interval_minutes non è un intero ({minutes!r})"
+    if n <= 0:
+        return "interval_minutes deve essere > 0"
+    if min_interval_minutes > 0 and n < min_interval_minutes:
+        return (f"intervallo minimo {min_interval_minutes} min: "
+                f"richiesto ogni {n} min")
+    return None
+
+
+# Oltre una settimana un "ogni N minuti" non è più un suggerimento leggibile:
+# `0 9 1 1 *` è «ogni 525600 minuti», un numero che nessuno confermerebbe
+# guardandolo. Meglio nessuna proposta che una da ricontrollare a mano.
+_MAX_SUGGESTED_INTERVAL_MIN = 7 * 24 * 60
+
+
+def cron_to_interval_minutes(expr: str, samples: int = 30) -> Optional[int]:
+    """Conversione BEST-EFFORT di un cron legacy in minuti d'intervallo, per il
+    pre-fill del pannello (#239). `None` quando non c'è un equivalente onesto.
+
+    Non la applica nessuno automaticamente: `0 9 * * 1` diventerebbe «ogni 10080
+    minuti» spostando l'ora del fire, quindi la sostituzione la conferma l'owner
+    salvando. Qui produciamo solo il numero da mostrargli — e se quel numero
+    tradirebbe il cron, non lo produciamo affatto:
+
+    - cadenza IRREGOLARE (`0 9 * * 1-5`: 24h, 24h, 24h, 24h, 72h) → nessun
+      intervallo singolo la rappresenta;
+    - cadenza oltre `_MAX_SUGGESTED_INTERVAL_MIN`.
+    """
+    try:
+        trig = CronTrigger.from_crontab(expr.strip(), timezone=_SCHED_TZ)
+    except (ValueError, TypeError, AttributeError):
+        return None
+    now = datetime.now(_SCHED_TZ)
+    times: list[datetime] = []
+    prev = None
+    for _ in range(samples):
+        nxt = trig.get_next_fire_time(
+            prev, now if prev is None else prev + timedelta(seconds=1))
+        if nxt is None:
+            break
+        times.append(nxt)
+        prev = nxt
+    if len(times) < 3:
+        return None
+    gaps = [(times[i + 1] - times[i]).total_seconds() / 60.0
+            for i in range(len(times) - 1)]
+    if max(gaps) - min(gaps) > 1:  # tolleranza: DST sposta un fire di 60 min/anno
+        return None
+    minuti = int(round(min(gaps)))
+    if minuti <= 0 or minuti > _MAX_SUGGESTED_INTERVAL_MIN:
+        return None
+    return minuti
+
+
 # ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
@@ -154,6 +220,19 @@ def shutdown_scheduler() -> None:
 # Register / unregister / reload
 # ---------------------------------------------------------------------------
 
+def _trigger_for(job: dict):
+    """Costruisce il trigger APScheduler dalla periodicità del record.
+
+    Due forme (db.py): `interval_minutes` (trigger di topic, #239) o `cron_expr`
+    (job globali e trigger legacy). L'intervallo NON passa da un cron derivato:
+    `*/45 * * * *` non vuol dire «ogni 45 minuti» ma «ai minuti 0 e 45», cioè un
+    gap di 15 — un fire su due arriverebbe in anticipo di mezz'ora."""
+    minuti = job.get("interval_minutes")
+    if minuti:
+        return IntervalTrigger(minutes=int(minuti), timezone=_SCHED_TZ)
+    return CronTrigger.from_crontab(job["cron_expr"], timezone=_SCHED_TZ)
+
+
 def register_job(job: dict) -> None:
     """Registra (o sostituisce) un job in APScheduler a partire dal record DB.
 
@@ -161,7 +240,7 @@ def register_job(job: dict) -> None:
     """
     if _scheduler is None:
         raise RuntimeError("scheduler not started")
-    trigger = CronTrigger.from_crontab(job["cron_expr"], timezone=_SCHED_TZ)
+    trigger = _trigger_for(job)
     # Topic trigger: max_instances=1 → APScheduler non avvia un fire se il
     # precedente è ancora in esecuzione (belt; lo skip-if-busy vero è sul turno
     # del responder in _fire_topic_trigger).
@@ -178,8 +257,10 @@ def register_job(job: dict) -> None:
         name=job["name"],
     )
     LOG.info(
-        "Registered job id=%s name=%s cron='%s'",
-        job["id"], job["name"], job["cron_expr"],
+        "Registered job id=%s name=%s schedule='%s'",
+        job["id"], job["name"],
+        f"ogni {job['interval_minutes']} min" if job.get("interval_minutes")
+        else job.get("cron_expr"),
     )
 
 
@@ -323,6 +404,17 @@ async def _fire_topic_trigger(job: dict) -> dict:
         status = "dispatched (messaggio postato nel topic)"
         outcome = "dispatched"
     db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")
+    esaurito = False
+    if outcome == "dispatched":
+        # Una ripetizione è spesa solo se il messaggio è davvero partito: uno
+        # skip-if-busy non ha postato niente e non conta (#239).
+        aggiornato = db.count_fire(job["id"])
+        if aggiornato is not None and not aggiornato.get("enabled"):
+            esaurito = True
+            unregister_job(job["id"])
+            LOG.info(
+                "Topic trigger %s/%s esaurito: %s ripetizioni completate, disattivato",
+                tier, name, aggiornato.get("fired_count"))
     return {
         "chat_id": f"topic:{tier}/{name}",
         "status": outcome,
@@ -330,6 +422,7 @@ async def _fire_topic_trigger(job: dict) -> dict:
         "responder": result.get("responder"),
         "responders": result.get("responders"),
         "skipped": result.get("skipped") or [],
+        "exhausted": esaurito,
     }
 
 
