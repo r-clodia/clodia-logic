@@ -166,7 +166,7 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
         return
     whitelist = _load_whitelist(instance)
     try:
-        meta = topics_client.open_topic(tier, topic).get("meta", {})
+        meta = (await topics_client.async_open_topic(tier, topic)).get("meta", {})
     except Exception as e:  # noqa: BLE001
         LOG.warning("open_topic %s/%s: %s", tier, topic, e)
         return
@@ -198,7 +198,7 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
             # SÌ → ACK immediato su Telegram + riporto nel topic (trigger)
             trigger = m
             try:
-                telegram_client.send(
+                await telegram_client.send_async(
                     str(chat_id),
                     f"✅ Ricevuto, {disp}. Prendo in carico e porto il messaggio nel topic.")
             except Exception as e:  # noqa: BLE001
@@ -206,7 +206,7 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
         else:
             # NO → deny immediato su Telegram (non tocca il topic)
             try:
-                telegram_client.send(str(chat_id), _DENY)
+                await telegram_client.send_async(str(chat_id), _DENY)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("deny send chat %s: %s", chat_id, e)
 
@@ -219,16 +219,16 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
             if not f or m.get("saved_file") is not None:
                 continue
             try:
-                dl = telegram_client.download(f["file_id"])
+                dl = await telegram_client.download_async(f["file_id"])
                 fname = _safe_filename(f.get("file_name") or f["file_id"])
-                topics_client.put_file(tier, topic, fname, dl["content_b64"])
+                await topics_client.async_put_file(tier, topic, fname, dl["content_b64"])
                 m["saved_file"] = f"files/{fname}"
             except Exception as e:  # noqa: BLE001
                 LOG.warning("download/save file %s/%s: %s", tier, topic, e)
                 m["saved_file"] = ""      # download non riuscito (marcato)
         block = _context_block(buffer, str(chat_id))
         try:
-            topics_client.post_message(tier, topic, instance, block, kind="telegram")
+            await topics_client.async_post_message(tier, topic, instance, block, kind="telegram")
             state["buffer"] = []               # contesto consumato → svuota
         except Exception as e:  # noqa: BLE001
             LOG.warning("post_message %s/%s: %s", tier, topic, e)

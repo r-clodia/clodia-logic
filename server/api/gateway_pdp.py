@@ -12,6 +12,7 @@ si fida di un header arbitrario.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -21,12 +22,19 @@ from fastapi import HTTPException, Request
 from ..colony import pki
 from . import admin
 from .agents import _principal_from_request
+from .gateway_http import GatewayHTTP
 
 LOG = logging.getLogger("agent-server.api.gateway_pdp")
 
 _TOKEN_TTL = 120
-_HTTP_TIMEOUT = 30
+# Una DECISIONE di autorizzazione è una lettura di policy dentro la rete docker:
+# 30s erano il budget di un'esecuzione. L'inoltro di un tool (`gw_tool`) esegue
+# davvero qualcosa e tiene il budget lungo.
+_HTTP_TIMEOUT = 5
+_HTTP_TIMEOUT_TOOL = 30
 _CARRIER = "clodia"  # agent-carrier che firma il token on-behalf (identità trusted)
+
+_gw_http = GatewayHTTP("pdp")
 
 
 def _gw_base() -> str:
@@ -72,7 +80,7 @@ def gw_authorize(tool: str, principal: str) -> bool:
     traveste da decisione è il modo più efficace di nascondere un guasto.
     """
     try:
-        r = requests.post(f"{_gw_base()}/internal/authorize",
+        r = _gw_http.post(f"{_gw_base()}/internal/authorize",
                           headers={"Authorization": f"Bearer {_token(principal)}"},
                           json={"tool": tool}, timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
@@ -94,9 +102,10 @@ def gw_authorize(tool: str, principal: str) -> bool:
 def gw_tool(tool: str, arguments: dict, principal: str) -> tuple[int, dict]:
     """Inoltra l'esecuzione del tool al gateway (PDP + esecuzione). Ritorna
     (status_http, json)."""
-    r = requests.post(f"{_gw_base()}/internal/tool",
+    r = _gw_http.post(f"{_gw_base()}/internal/tool",
                       headers={"Authorization": f"Bearer {_token(principal)}"},
-                      json={"tool": tool, "arguments": arguments}, timeout=_HTTP_TIMEOUT)
+                      json={"tool": tool, "arguments": arguments},
+                      timeout=_HTTP_TIMEOUT_TOOL)
     try:
         return r.status_code, r.json()
     except Exception:
@@ -123,6 +132,17 @@ def require_authz(request: Request, tool: str) -> str:
     if not consentito:
         raise HTTPException(403, f"azione '{tool}' riservata agli admin")
     return principal
+
+
+async def require_authz_async(request: Request, tool: str) -> str:
+    """`require_authz` per gli endpoint `async def`.
+
+    La decisione è una POST sincrona al gateway: chiamata dritta da un handler
+    async ferma l'event loop di tutto il processo finché il gateway non risponde
+    — health check e SSE compresi. Stesse eccezioni (401/403/503), stesso
+    ritorno: cambia solo che l'attesa avviene in un thread.
+    """
+    return await asyncio.to_thread(require_authz, request, tool)
 
 
 def forward(request: Request, tool: str, arguments: dict):

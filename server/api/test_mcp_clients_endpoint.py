@@ -58,6 +58,18 @@ class _Client:
         self.chiesto = payload
         return {"id": "mcp_x", "token": "ckt1.a.b"}
 
+    def __getattr__(self, nome):
+        """Il modulo vero espone `async_<f>` per ogni `<f>` sincrona: il finto fa
+        lo stesso, invece di raddoppiare ogni metodo a mano."""
+        if not nome.startswith("async_"):
+            raise AttributeError(nome)
+        sync = getattr(self, nome[len("async_"):])
+
+        async def chiamata(*a, **k):
+            return sync(*a, **k)
+
+        return chiamata
+
 
 def _chiama(chi, body, tipo="proxy"):
     """Esegue l'endpoint come se a chiamare fosse `chi`.

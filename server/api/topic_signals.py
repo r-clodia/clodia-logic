@@ -48,6 +48,7 @@ nessuno vede):
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -270,12 +271,12 @@ async def topic_signals(request: Request, topics: str = "") -> dict:
             keys.append(key)
     keys = keys[:_MAX_TOPICS]
     state = _load_state(principal)
-    gates = _pending_gates_for(principal)
+    gates = await asyncio.to_thread(_pending_gates_for, principal)
     signals: dict[str, dict] = {}
     for key in keys:
         tier, name = key.split("/", 1)
         try:
-            sig = _topic_signal(principal, tier, name,
+            sig = await asyncio.to_thread(_topic_signal, principal, tier, name,
                                 state.get(key) or {}, gates.get(key, 0))
         except Exception as e:  # noqa: BLE001 — un topic rotto non oscura gli altri
             LOG.warning("signals %s: %s", key, str(e)[:120])
@@ -292,7 +293,7 @@ async def topic_seen(tier: str, name: str, request: Request) -> dict:
     delle mention fino a quel timestamp (il client lo manda solo quando la
     coda dei messaggi è stata renderizzata). Non tocca MAI i gate."""
     principal = _principal(request)
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "topic non trovato")
     meta = topic.get("meta", {})
@@ -313,7 +314,7 @@ async def topic_seen(tier: str, name: str, request: Request) -> dict:
             entry["mentions_upto"] = upto.isoformat(timespec="seconds")
             # Il secondo di bordo va registrato per id: i ts sono al secondo e
             # ciò che arriva nello stesso secondo, dopo l'ack, non è stato letto.
-            entry["mentions_acked"] = _edge_ids(tier, name, upto)
+            entry["mentions_acked"] = await asyncio.to_thread(_edge_ids, tier, name, upto)
     state[key] = entry
     _save_state(principal, state)
     return {"ok": True, "topic": key, "read": entry}

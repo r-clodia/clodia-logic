@@ -19,7 +19,29 @@ class AsyncGatewayClientTests(unittest.TestCase):
 
         self.assertEqual(result, [])
         self.assertEqual(calls[0][0], list_messages)
-        self.assertEqual(calls[0][1], ("SEAL-1", "software-house", 7))
+        # Il wrapper inoltra la chiamata NELLA FORMA in cui è stata scritta: gli
+        # argomenti non vengono riordinati né i default espansi in posizionali.
+        # Espanderli faceva arrivare alla funzione sincrona una chiamata diversa
+        # da quella del chiamante — e chi la sostituisce (un fake, un adattatore)
+        # la vedeva con più argomenti di quanti ne fossero stati passati.
+        self.assertEqual(calls[0][1], ("SEAL-1", "software-house"))
+        self.assertEqual(calls[0][2], {"limit": 7})
+
+    def test_topics_client_async_wrapper_non_espande_i_default(self):
+        """Il difetto concreto: `post_message(t, n, a, testo, kind=...)` arrivava
+        alla funzione sincrona come `(t, n, a, testo, kind, attachments)`."""
+        visto = {}
+
+        def post_message(*args, **kwargs):
+            visto["args"], visto["kwargs"] = args, kwargs
+            return {}
+
+        with patch.object(topics_client, "post_message", post_message):
+            asyncio.run(topics_client.async_post_message(
+                "SEAL-1", "software-house", "davide", "ciao", kind="human"))
+
+        self.assertEqual(visto["args"], ("SEAL-1", "software-house", "davide", "ciao"))
+        self.assertEqual(visto["kwargs"], {"kind": "human"})
 
     def test_provider_store_async_wrapper_offloads_sync_call(self):
         with patch.object(provider_store.asyncio, "to_thread") as to_thread:

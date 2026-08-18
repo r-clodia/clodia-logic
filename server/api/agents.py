@@ -325,7 +325,7 @@ async def events(request: Request):
         try:
             async for ev in bus.subscribe():
                 try:
-                    if not _event_visible(chi, is_proxy, ev):
+                    if not await asyncio.to_thread(_event_visible, chi, is_proxy, ev):
                         continue
                 except Exception:  # noqa: BLE001 — in dubbio non si consegna
                     continue

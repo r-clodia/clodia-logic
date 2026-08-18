@@ -17,6 +17,7 @@ Resta il vincolo di sempre: non puoi delegare ciò che non hai.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -282,7 +283,8 @@ async def pending(request: Request):
         return JSONResponse({"requests": []})
     corpo = r.json() or {}
     cache: dict = {}
-    corpo["requests"] = [_decorate(q, cache) for q in (corpo.get("requests") or [])]
+    corpo["requests"] = [await asyncio.to_thread(_decorate, q, cache)
+                         for q in (corpo.get("requests") or [])]
     return JSONResponse(corpo, status_code=r.status_code)
 
 
@@ -307,7 +309,7 @@ async def approve(request: Request):
     if ricorda not in ("once", "topic", "global"):
         return JSONResponse({"error": f"remember sconosciuto: {ricorda}"},
                             status_code=400)
-    rifiuto = _standing_error(principal, agent, instance, verb)
+    rifiuto = await asyncio.to_thread(_standing_error, principal, agent, instance, verb)
     if rifiuto is not None:
         return rifiuto
     # SECONDO titolo, e più stretto del primo: chi possiede la stanza decide per
@@ -378,7 +380,7 @@ async def approve(request: Request):
             # Dirlo: un'approvazione che si crede permanente e non lo è
             # ricompare domani, e chi la rivede pensa che il gate sia rotto.
             quanto = f"per stavolta (non ricordato: {memoria.get('error', '?')})"
-        _post_outcome(body.get("chat"), principal,
+        await asyncio.to_thread(_post_outcome, body.get("chat"), principal,
                       f"🔓 @{agent}: approvato l'uso di {verb} — {quanto}")
     corpo = r.json() if r.status_code == 200 else {"error": r.text[:200]}
     if memoria is not None:
@@ -402,11 +404,12 @@ async def deny(request: Request):
     # aveva alcun controllo: chiunque autenticato poteva negare il gate di
     # chiunque — non una fuga di dati, ma il modo più economico per fermare il
     # lavoro altrui. Stesso titolo dell'approvazione.
-    rifiuto = _standing_error(principal, agent, instance, verb)
+    rifiuto = await asyncio.to_thread(_standing_error, principal, agent, instance, verb)
     if rifiuto is not None:
         return rifiuto
     r = _gw("POST", "/deny", principal,
             {"agent": agent, "instance": instance, "verb": verb})
     if r.status_code == 200:
-        _post_outcome(body.get("chat"), principal, f"⛔ @{agent}: negato l'uso di {verb}")
+        await asyncio.to_thread(_post_outcome, body.get("chat"), principal,
+                                f"⛔ @{agent}: negato l'uso di {verb}")
     return JSONResponse(r.json(), status_code=r.status_code)

@@ -35,7 +35,7 @@ from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
                                    topic_runtime_override)
 from . import (access_log, presence, responder_routing, router_config,
                routing_feedback, topics_client)
-from .gateway_pdp import require_authz
+from .gateway_pdp import require_authz, require_authz_async
 from .agents import _principal_from_request
 
 router = APIRouter()
@@ -502,7 +502,7 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     `CLODIA_MAX_DELEGATION_HOPS` salti per evitare loop.
     """
     try:
-        before_messages = topics_client.list_messages(tier, name, limit=500)
+        before_messages = await topics_client.async_list_messages(tier, name, limit=500)
     except Exception:  # noqa: BLE001
         before_messages = []
 
@@ -527,7 +527,7 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         if not testo:
             return
         try:
-            topics_client.post_message(tier, name, autore, testo, kind="ai")
+            await topics_client.async_post_message(tier, name, autore, testo, kind="ai")
         except Exception as e:  # noqa: BLE001
             LOG.warning("post della bolla su %s/%s da %s fallito: %s",
                         tier, name, responder, e)
@@ -569,7 +569,7 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     try:
         posted_during_turn = _new_ai_messages(
             before_messages,
-            topics_client.list_messages(tier, name, limit=500),
+            await topics_client.async_list_messages(tier, name, limit=500),
             responder,
         )
     except Exception as e:  # noqa: BLE001
@@ -607,7 +607,7 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
 
     # `autore` è calcolato prima del turno (serve alle bolle per blocco).
     try:
-        msg = topics_client.post_message(tier, name, autore, reply, kind="ai")
+        msg = await topics_client.async_post_message(tier, name, autore, reply, kind="ai")
     except Exception as e:  # noqa: BLE001
         LOG.warning("post risposta canale %s/%s da %s fallito: %s", tier, name, responder, e)
         return None
@@ -621,8 +621,9 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     # delega. Separarli tiene la catena in piedi anche quando la notifica cade,
     # ed è il motivo per cui la delega non sta più dentro lo stesso try.
     try:
+        titolo = await asyncio.to_thread(_topic_title, tier, name)
         await _channel_message(tier, name, autore, "ai",
-                               message=msg, topic_title=_topic_title(tier, name))
+                               message=msg, topic_title=titolo)
     except Exception as e:  # noqa: BLE001
         LOG.warning("notifica SSE %s/%s da %s fallita (messaggio gia' pubblicato): %s",
                     tier, name, responder, e)
@@ -686,7 +687,7 @@ async def _report_back(tier: str, name: str, responder: str, chat,
         spec = registry.get_by_name(caller)
         if spec is None or getattr(spec, "type", "") != "bot":
             return
-        meta = (topics_client.open_topic(tier, name) or {}).get("meta", {})
+        meta = (await topics_client.async_open_topic(tier, name) or {}).get("meta", {})
         if caller not in (meta.get("participants") or []):
             return
         tier_real = meta.get("tier", tier)
@@ -731,12 +732,13 @@ async def _announce_failure(tier: str, name: str, responder: str, err: Exception
         else:
             testo += ("Nessuno a cui passare la diagnosi: il guasto riguarda il "
                       "guardiano stesso.")
-        msg = topics_client.post_message(tier, name, "system", testo, kind="system")
+        msg = await topics_client.async_post_message(tier, name, "system", testo, kind="system")
+        titolo = await asyncio.to_thread(_topic_title, tier, name)
         await _channel_message(tier, name, "system", "system",
-                               message=msg, topic_title=_topic_title(tier, name))
+                               message=msg, topic_title=titolo)
         if not chiama:
             return
-        meta = (topics_client.open_topic(tier, name) or {}).get("meta", {})
+        meta = (await topics_client.async_open_topic(tier, name) or {}).get("meta", {})
         tier_real = meta.get("tier", tier)
         # Il guardiano entra solo dove la sua clearance lo porta, come in
         # `_watch_report`: un topic non si declassa per farci entrare la
@@ -768,7 +770,7 @@ async def _watch_report(tier: str, name: str, kind: str, subject: str,
         return
     LOG.warning("debug-watch · %s su %s/%s (%s): %s", kind, tier, name, subject, detail)
     try:
-        topic = topics_client.open_topic(tier, name)
+        topic = await topics_client.async_open_topic(tier, name)
         meta = (topic or {}).get("meta", {})
         tier_real = meta.get("tier", tier)
         watcher = registry.get_by_name(debug_watch.WATCHER)
@@ -795,7 +797,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     innesca il turno. @tag = incarico diretto e unica convocazione; $tag = una
     citazione, che non avvia nulla (R12). Salta i tag verso sé stesso o
     non-partecipanti; il limite hop (_max_delegation_hops) evita loop."""
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         return
     meta = topic.get("meta", {})
@@ -863,7 +865,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             f"raggiunto il limite di {limite} passaggi: nessun turno è partito. "
             f"La catena riparte da un messaggio umano."
         )
-        avviso = topics_client.post_message(
+        avviso = await topics_client.async_post_message(
             tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
         await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
                                message=avviso, topic_title=meta.get("title"))
@@ -883,7 +885,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     diretti = [t for t, kind in plan if kind == "direct"]
     if len(diretti) >= 2:
         seed_autore = _seed_name(from_agent)
-        storia = topics_client.list_messages(tier, name, limit=10)
+        storia = await topics_client.async_list_messages(tier, name, limit=10)
         if _ambiguity_already_asked(storia, from_agent):
             # Seconda volta di fila: non si richiede. Due agenti che si rimbalzano
             # domande consumerebbero token senza che nessuno lo veda; un turno
@@ -894,7 +896,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                 "disambiguazione: nessun turno avviato. Serve un messaggio con una "
                 "sola menzione."
             )
-            fermo = topics_client.post_message(
+            fermo = await topics_client.async_post_message(
                 tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
             await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
                                    message=fermo, topic_title=meta.get("title"))
@@ -907,7 +909,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             "attivare? Rispondi con UNA sola menzione.\n\n"
             f"{_ambiguity_ask_marker(seed_autore)}"
         )
-        domanda = topics_client.post_message(
+        domanda = await topics_client.async_post_message(
             tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
         await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
                                message=domanda, topic_title=meta.get("title"))
@@ -1760,15 +1762,18 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         directive = (f"[Sei lo spawn {spawn_nome} di {spec.name}: i tuoi messaggi "
                      f"appaiono come {spawn_nome}.]\n" + (directive or ""))
     if created:
-        _amd, _amd_auth = _topic_agents_md(tier, name)
-        base = _history_prompt(name, tier_real,
-                               _context_messages(topics_client.list_messages(tier, name, limit=200)),
-                               topic_agents_md=_amd, agents_md_authoritative=_amd_auth)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        storia = await topics_client.async_list_messages(tier, name, limit=200)
+        base = await asyncio.to_thread(
+            _history_prompt, name, tier_real, _context_messages(storia),
+            topic_agents_md=_amd, agents_md_authoritative=_amd_auth)
         prompt = base + (f"\n\n─────\n{directive}" if directive else "")
     else:
+        files_hint = await asyncio.to_thread(_channel_files_hint, tier_real, name)
         fallback = (f"[Canale #{name} · {tier_real}] @{principal}: {user_text}\n"
-                    f"({_channel_files_hint(tier_real, name)})")
-        prompt = _reused_turn_prompt(tier, name, label, principal, directive or fallback)
+                    f"({files_hint})")
+        prompt = await asyncio.to_thread(_reused_turn_prompt, tier, name, label,
+                                         principal, directive or fallback)
     # La prenotazione si scioglie a turno FINITO, non appena il task è schedulato:
     # fra `_spawn_bg` e il momento in cui il turno prende il lock della sessione
     # c'è una finestra in cui la sessione risulterebbe di nuovo libera, e un
@@ -2622,7 +2627,7 @@ async def _announce_refusal(tier: str, name: str, label: str) -> None:
                  "suo profilo dichiara `activation: refuse`: il messaggio non è "
                  "stato accodato e nessun secondo turno è partito. Riprova quando "
                  "ha finito, oppure coinvolgi un altro agente.")
-        msg = topics_client.post_message(tier, name, "system", testo, kind="system")
+        msg = await topics_client.async_post_message(tier, name, "system", testo, kind="system")
         await _channel_message(tier, name, "system", "system", message=msg)
     except Exception as e:  # noqa: BLE001 — dire «non parto» non deve rompere altro
         LOG.warning("nota di rifiuto non pubblicata su %s/%s: %s", tier, name, e)
@@ -2657,7 +2662,7 @@ async def post_channel_message(
     topic scheduler may bypass that check, but still run with an unprivileged
     synthetic principal and through the same responder selection and queue.
     """
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
@@ -2669,7 +2674,7 @@ async def post_channel_message(
 
     pending_routing_request = None
     if kind == "human" and f"@{_ROUTING_DIALOG_AUTHOR}" in (content or "").lower():
-        history = topics_client.list_messages(tier, name, limit=50)
+        history = await topics_client.async_list_messages(tier, name, limit=50)
         pending_routing_request = _latest_routing_request(history)
         if (pending_routing_request
                 and pending_routing_request["owner"] != principal):
@@ -2683,12 +2688,12 @@ async def post_channel_message(
     bootstrap_responder = None
     if (meta.get("team_bootstrap_agent") and kind == "human"
             and principal == meta.get("owner") and not trusted_internal):
-        prior_messages = topics_client.list_messages(tier, name, limit=50)
+        prior_messages = await topics_client.async_list_messages(tier, name, limit=50)
         bootstrap_responder = _pending_team_bootstrap(
             prior_messages, participants, tier_real)
 
     # 1. registra il messaggio nel canale
-    msg = topics_client.post_message(tier, name, principal, content, kind=kind)
+    msg = await topics_client.async_post_message(tier, name, principal, content, kind=kind)
     await _channel_message(tier, name, principal, kind,
                            message=msg, topic_title=meta.get("title"))
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
@@ -2775,7 +2780,7 @@ async def post_channel_message(
             f"<!-- choices={','.join(nomi)} -->\n"
             f"{_routing_request_marker(principal, str(msg.get('id') or ''))}"
         )
-        routed_msg = topics_client.post_message(
+        routed_msg = await topics_client.async_post_message(
             tier, name, _ROUTING_DIALOG_AUTHOR, text, kind="system")
         await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
                                message=routed_msg, topic_title=meta.get("title"))
@@ -2858,7 +2863,7 @@ async def post_channel_message(
     # chiede, invece di ripiegare su un rango.
     route_cfg = router_config.load()
     try:
-        routing_messages = topics_client.list_messages(
+        routing_messages = await topics_client.async_list_messages(
             tier, name, limit=route_cfg.recent_messages
         )
     except Exception:  # noqa: BLE001
@@ -2881,7 +2886,7 @@ async def post_channel_message(
                 f"{_routing_choices_marker(candidates)}\n"
                 f"{_routing_request_marker(principal, str(msg.get('id') or ''))}"
             )
-            dialog = topics_client.post_message(tier, name, "router", text, kind="ai")
+            dialog = await topics_client.async_post_message(tier, name, "router", text, kind="ai")
             await _channel_message(tier, name, "router", "ai",
                                    message=dialog, topic_title=meta.get("title"))
             try:
@@ -2961,7 +2966,7 @@ async def channel_routing_choice(tier: str, name: str, request: Request) -> dict
     principal = _principal_from_request(request)
     if not principal:
         raise HTTPException(401, "login richiesto")
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
@@ -2972,7 +2977,7 @@ async def channel_routing_choice(tier: str, name: str, request: Request) -> dict
         raise HTTPException(400, "agent richiesto")
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
-    messages = topics_client.list_messages(tier, name, limit=50)
+    messages = await topics_client.async_list_messages(tier, name, limit=50)
     routing_request = _latest_routing_request(messages)
     if not routing_request:
         raise HTTPException(400, "nessun dialogo di routing recente da risolvere")
@@ -3020,7 +3025,7 @@ async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
     """Interrompe il turno in corso del/i responder di questo canale — lo user
     riprende il controllo dell'input. Cancella il task del turno (SDK); il
     messaggio umano già registrato resta. Solo partecipanti/owner."""
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_contributor(request, topic.get("meta", {}))
@@ -3040,7 +3045,7 @@ async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
 async def channel_remote(tier: str, name: str, request: Request) -> dict:
     """Verbi Remote (git/drive) del topic dalla webui: status/enable/disable/
     add/commit/push/pull. Solo partecipanti/owner. Proxy al gateway."""
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_scope_owner(request, topic.get("meta", {}))
@@ -3060,9 +3065,9 @@ async def channel_remote(tier: str, name: str, request: Request) -> dict:
     # `status` e `pull` restano ai partecipanti: leggere lo stato e tirare dentro
     # i contenuti non spostano il confine.
     if action in ("add", "enable", "disable"):
-        require_authz(request, f"topic.remote_{action}")
+        await require_authz_async(request, f"topic.remote_{action}")
     try:
-        return topics_client.remote_action(
+        return await topics_client.async_remote_action(
             tier, name, action, **{k: v for k, v in body.items() if k != "action"})
     except topics_client.TopicsClientError as e:
         # Un rifiuto del gateway (4xx) è una VALIDAZIONE con un messaggio
@@ -3132,7 +3137,7 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         routing: dict = {}
         route_cfg = router_config.load()
         try:
-            recent = topics_client.list_messages(
+            recent = await topics_client.async_list_messages(
                 tier, name, limit=route_cfg.recent_messages
             )
         except Exception:  # noqa: BLE001
@@ -3197,14 +3202,17 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
             return None, None
     chat.principal = principal_hint or "channel"  # proxy: nessuna autorità
     if created:
-        _amd, _amd_auth = _topic_agents_md(tier, name)
-        prompt = _history_prompt(name, tier_real,
-                                 _context_messages(topics_client.list_messages(tier, name, limit=200)),
-                                 topic_agents_md=_amd, agents_md_authoritative=_amd_auth)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        storia = await topics_client.async_list_messages(tier, name, limit=200)
+        prompt = await asyncio.to_thread(
+            _history_prompt, name, tier_real, _context_messages(storia),
+            topic_agents_md=_amd, agents_md_authoritative=_amd_auth)
     else:
+        files_hint = await asyncio.to_thread(_channel_files_hint, tier_real, name)
         fallback = (f"[Canale #{name} · {tier_real}] nuovo messaggio nel gruppo. "
-                    f"{_channel_files_hint(tier_real, name)}")
-        prompt = _reused_turn_prompt(tier, name, responder.name, chat.principal, fallback)
+                    f"{files_hint}")
+        prompt = await asyncio.to_thread(_reused_turn_prompt, tier, name, responder.name,
+                                         chat.principal, fallback)
     if directive:
         prompt = prompt + "\n\n─────\n[Istruzione operativa di questo turno]\n" + directive
     reply = await _run_and_post_response(tier, name, responder.name, chat, prompt)
@@ -3228,7 +3236,7 @@ async def channel_create(request: Request) -> dict:
     intro_agent = _select_topic_intro_agent(meta, tier)
     hook_enabled = bool(body.get("hook_enabled", True))
     try:
-        created = topics_client.create_topic(
+        created = await topics_client.async_create_topic(
             tier, name, meta, hook_enabled=hook_enabled)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"creazione canale fallita: {str(e)[:160]}")
@@ -3246,7 +3254,7 @@ async def channel_create(request: Request) -> dict:
             created.get("participants") or [],
             contact_agent=composition_agent)
         if text:
-            topics_client.post_message(
+            await topics_client.async_post_message(
                 tier, name, intro_agent, text, kind="ai")
     except Exception as e:  # noqa: BLE001
         LOG.warning("welcome playbook non postato su %s/%s: %s", tier, name, str(e)[:120])
@@ -3289,7 +3297,7 @@ async def dm_create(request: Request) -> dict:
         "contact_agent": other,
     }
     try:
-        created = topics_client.create_topic(_DM_TIER, name, meta)
+        created = await topics_client.async_create_topic(_DM_TIER, name, meta)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"creazione DM fallita: {str(e)[:160]}")
     return {"tier": _DM_TIER, "name": name, "meta": created}
@@ -3369,12 +3377,12 @@ async def channel_agents_md_get(tier: str, name: str, request: Request) -> dict:
     """Regole dello scope. Leggerle è da partecipanti: sono le regole della
     stanza in cui stai, e non poterle vedere mentre ti vincolano sarebbe il
     difetto peggiore di tutti."""
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "topic non trovato")
     _require_member(request, topic.get("meta", {}))
     try:
-        text, version, authoritative = topics_client.get_agents_md(tier, name)
+        text, version, authoritative = await topics_client.async_get_agents_md(tier, name)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"gateway: {str(e)[:160]}")
     return {"text": text, "version": version, "authoritative": authoritative}
@@ -3391,13 +3399,13 @@ async def channel_agents_md_put(tier: str, name: str, request: Request) -> dict:
     scope non esiste ancora: concederlo ora ai partecipanti significherebbe
     riaprire esattamente la falla che questa modifica chiude.
     """
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "topic non trovato")
-    require_authz(request, "topic.save_agents_md")
+    await require_authz_async(request, "topic.save_agents_md")
     body = await request.json()
     try:
-        return topics_client.save_agents_md(
+        return await topics_client.async_save_agents_md(
             tier, name, body.get("text") or "", body.get("base_version"))
     except topics_client.TopicsConflictError as e:
         # 409 e non 500: qualcun altro ha scritto nel frattempo, e la risposta
@@ -3409,7 +3417,7 @@ async def channel_agents_md_put(tier: str, name: str, request: Request) -> dict:
 
 @router.get("/clodia/channels/{tier}/{name}/messages")
 async def channel_messages(tier: str, name: str, request: Request, limit: int = 200) -> dict:
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     # `_require_member` restituisce già chi è: ricavarlo una seconda volta
@@ -3433,7 +3441,7 @@ async def channel_messages(tier: str, name: str, request: Request, limit: int = 
     # risponderebbe a un'altra domanda (è vivo? sta lavorando?), e per quella ci
     # sono `active_responders` e il box live.
     presenti = _partecipanti_con_presenza(topic.get("meta", {}))
-    return {"messages": topics_client.list_messages(tier, name, limit=limit),
+    return {"messages": await topics_client.async_list_messages(tier, name, limit=limit),
             "presence": presence.stati(presenti, tier, name)}
 
 
@@ -3482,12 +3490,13 @@ async def channel_reset_context(tier: str, name: str, request: Request) -> dict:
     principal = _principal_from_request(request)
     if not principal:
         raise HTTPException(401, "login richiesto")
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
     _require_scope_owner(request, meta)
-    topics_client.post_message(tier, name, principal, "__CLODIA_CONTEXT_RESET__", kind="system")
+    await topics_client.async_post_message(tier, name, principal,
+                                           "__CLODIA_CONTEXT_RESET__", kind="system")
     deleted = await _drop_channel_sessions(tier, name, meta.get("participants", []))
     access_log.touch(tier, name)
     activity_log.append(principal, "channel_context_reset", {"channel": f"{tier}/{name}"})
@@ -3791,7 +3800,7 @@ async def routing_correct(request: Request) -> dict:
     correct_agent = (b.get("correct_agent") or "").strip()
     if not name or not correct_agent:
         raise HTTPException(400, "name e correct_agent richiesti")
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_contributor(request, topic.get("meta", {}))
@@ -3799,7 +3808,7 @@ async def routing_correct(request: Request) -> dict:
         raise HTTPException(404, f"agente '{correct_agent}' non registrato")
     # Ricostruisce la stessa finestra che terminava col messaggio umano che ha
     # innescato il routing; eventuali risposte AI successive restano fuori.
-    msgs = topics_client.list_messages(tier, name, limit=50)
+    msgs = await topics_client.async_list_messages(tier, name, limit=50)
     semantic_message = _latest_human_routing_context(msgs, router_config.load())
     if not semantic_message:
         raise HTTPException(400, "nessun messaggio umano recente da cui imparare")
@@ -3828,14 +3837,14 @@ async def routing_feedback_record(request: Request) -> dict:
         raise HTTPException(400, "name, chosen e kind (confirm|correction) richiesti")
     if kind == "correction" and not correct_agent:
         raise HTTPException(400, "correct_agent richiesto per una correzione")
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_contributor(request, topic.get("meta", {}))
     for agent in {chosen, correct_agent} - {None}:
         if registry.get_by_name(agent) is None:
             raise HTTPException(404, f"agente '{agent}' non registrato")
-    messages = topics_client.list_messages(tier, name, limit=50)
+    messages = await topics_client.async_list_messages(tier, name, limit=50)
     semantic_message = _latest_human_routing_context(
         messages, router_config.load()
     )
@@ -3952,7 +3961,7 @@ async def channel_message_feedback(tier: str, name: str, message_id: str,
     principal = _principal_from_request(request)
     if not principal:
         raise HTTPException(401, "login richiesto")
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
@@ -3964,7 +3973,7 @@ async def channel_message_feedback(tier: str, name: str, message_id: str,
     comment = str(body.get("comment") or "").strip()
     if not comment:
         raise HTTPException(400, "comment obbligatorio per il feedback")
-    message = next((m for m in topics_client.list_messages(tier, name, limit=500)
+    message = next((m for m in await topics_client.async_list_messages(tier, name, limit=500)
                     if str(m.get("id")) == message_id), None)
     if not message or message.get("kind") != "ai":
         raise HTTPException(404, "messaggio agente non trovato")
@@ -3990,7 +3999,7 @@ async def channel_message_feedback(tier: str, name: str, message_id: str,
 async def channel_feedback_lessons(tier: str, name: str, request: Request) -> dict:
     """Lesson dei partecipanti AI, consultabili dall'owner del topic."""
     principal = _principal_from_request(request)
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
@@ -4010,7 +4019,7 @@ async def channel_feedback_lesson_delete(tier: str, name: str, lesson_id: str,
                                          request: Request) -> dict:
     """Cancella una lesson del topic; solo l'owner può farlo."""
     principal = _principal_from_request(request)
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
@@ -4134,14 +4143,14 @@ async def channel_trifecta_reset(tier: str, name: str, request: Request) -> dict
       sarebbe un interruttore di sicurezza travestito da preferenza di
       visualizzazione, e per quello esiste già l'approvazione del gate stesso.
     """
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     principal = _require_owner(request, topic.get("meta", {}))
     meta = topic.get("meta", {}) or {}
     parts = meta.get("participants") or []
     # La baseline: ciò che c'è ADESSO è approvato, e da qui si riparte a misurare.
-    trovati = _private_data_paths(tier, name, meta)
+    trovati = await asyncio.to_thread(_private_data_paths, tier, name, meta)
     voce = trifecta_reset.set_reset(tier, name, principal or "owner", parts,
                                     data_paths=trovati or [])
     # Il primo bit è un evento: si azzera ora e si riaccenderà al primo ingresso
@@ -4149,7 +4158,7 @@ async def channel_trifecta_reset(tier: str, name: str, request: Request) -> dict
     # silenziamento — senza, un canale contaminato resterebbe a 1 per sempre e
     # l'owner non avrebbe modo di dire «questo l'ho visto».
     try:
-        topics_client.clear_taint(tier, name, by=principal or "owner")
+        await topics_client.async_clear_taint(tier, name, by=principal or "owner")
     except Exception as e:  # noqa: BLE001 — la baseline resta valida
         LOG.warning("reset trifecta: taint di %s/%s non azzerato (%s) — il primo "
                     "bit resta quello misurato", tier, name, type(e).__name__)
@@ -4163,7 +4172,7 @@ async def channel_trifecta_reset(tier: str, name: str, request: Request) -> dict
 @router.delete("/clodia/channels/{tier}/{name}/trifecta/reset")
 async def channel_trifecta_reset_clear(tier: str, name: str, request: Request) -> dict:
     """Revoca il reset: il punteggio torna a parlare da sé."""
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_owner(request, topic.get("meta", {}))
@@ -4172,7 +4181,7 @@ async def channel_trifecta_reset_clear(tier: str, name: str, request: Request) -
 
 @router.post("/clodia/channels/{tier}/{name}/participants")
 async def channel_add_participant(tier: str, name: str, request: Request) -> dict:
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_owner(request, topic.get("meta", {}))
@@ -4189,7 +4198,7 @@ async def channel_add_participant(tier: str, name: str, request: Request) -> dic
             400, f"ruolo non valido: {ruolo}. Ammessi: contributor, reader. "
                  "La proprietà dello scope non si assegna invitando: si cambia "
                  "l'owner del topic.")
-    result = topics_client.set_participant(tier, name, agent, add=True, role=ruolo)
+    result = await topics_client.async_set_participant(tier, name, agent, add=True, role=ruolo)
     result["introduction_queued"] = _queue_join_introduction(
         tier, name, topic.get("meta", {}), agent, result
     )
@@ -4198,7 +4207,7 @@ async def channel_add_participant(tier: str, name: str, request: Request) -> dic
 
 @router.delete("/clodia/channels/{tier}/{name}/participants")
 async def channel_remove_participant(tier: str, name: str, request: Request) -> dict:
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_owner(request, topic.get("meta", {}))
@@ -4206,7 +4215,7 @@ async def channel_remove_participant(tier: str, name: str, request: Request) -> 
     agent = (body.get("agent") or "").strip()
     if not agent:
         raise HTTPException(400, "agent richiesto")
-    return topics_client.set_participant(tier, name, agent, add=False)
+    return await topics_client.async_set_participant(tier, name, agent, add=False)
 
 
 @router.post("/clodia/channels/{tier}/{name}/participants/internal")
@@ -4217,7 +4226,7 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     può gestire la squadra (come invitare in un canale Slack). L'idoneità SEAL
     dell'agente aggiunto resta enforced al momento della risposta (un agente
     sotto-tier può entrare ma non risponde). Nessun principal: endpoint interno."""
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
@@ -4233,7 +4242,7 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     # l'agente aggiunto dev'essere registrato
     if registry.get_by_name(agent) is None:
         raise HTTPException(404, f"'{agent}' non esiste: aggiungi un agent/utente registrato")
-    result = topics_client.set_participant(tier, name, agent, add=add)
+    result = await topics_client.async_set_participant(tier, name, agent, add=add)
     result["introduction_queued"] = (
         _queue_join_introduction(tier, name, meta, agent, result) if add else False
     )
@@ -4258,7 +4267,7 @@ async def channel_trigger_internal(tier: str, name: str, request: Request) -> di
     all'identità firmata è un cambio di autorizzazione, non di provenienza, e
     va fatto quando il gateway propaga sempre il token — non dentro questo diff.
     """
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
@@ -4313,14 +4322,14 @@ async def runtime_inspect_topic(body: dict) -> dict:
     if not _can_access(_effective_clearance(by_spec), tier):
         # invisibile per costruzione: non confermare nemmeno l'esistenza/il titolo
         raise HTTPException(403, "topic oltre la tua clearance: non accessibile")
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "topic non trovato")
     meta = topic.get("meta", {})
     parts = meta.get("participants") or []
     agents = [p for p in parts if registry.get_by_name(p) is not None]
     try:
-        raw = topics_client.list_messages(tier, name, limit=40)
+        raw = await topics_client.async_list_messages(tier, name, limit=40)
     except Exception:  # noqa: BLE001
         raw = []
     msgs = [{"author": m.get("author"), "kind": m.get("kind"),
@@ -4336,12 +4345,12 @@ async def runtime_inspect_topic(body: dict) -> dict:
 
 @router.get("/clodia/channels/{tier}/{name}/files")
 async def channel_files(tier: str, name: str, request: Request, path: str = "") -> dict:
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_member(request, topic.get("meta", {}))
     try:
-        return {"files": topics_client.list_files(tier, name, path)}
+        return {"files": await topics_client.async_list_files(tier, name, path)}
     except Exception as e:  # noqa: BLE001
         # Storage remoto giù (token Drive scaduto, rete): NON è un errore del
         # canale, ed era il caso in cui la UI mostrava una cartella vuota senza
@@ -4366,7 +4375,7 @@ async def channel_upload(tier: str, name: str, request: Request) -> dict:
     il caso d'uso principale e spingerebbe l'utente a dichiarare «trusted» per
     andare avanti, che è il modo di rendere l'etichetta inutile.
     """
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
@@ -4384,11 +4393,11 @@ async def channel_upload(tier: str, name: str, request: Request) -> dict:
     prov = (body.get("provenance") or "untrusted").strip().lower()
     if prov not in ("trusted", "untrusted"):
         prov = "untrusted"
-    result = topics_client.put_file(tier, name, fn, body["content_b64"], prov)
+    result = await topics_client.async_put_file(tier, name, fn, body["content_b64"], prov)
     # 1. rendi l'allegato visibile nello stream del canale (bolla con allegato)
     try:
-        topics_client.post_message(tier, name, principal, "", kind="human",
-                                   attachments=[fn])
+        await topics_client.async_post_message(tier, name, principal, "", kind="human",
+                                               attachments=[fn])
     except topics_client.TopicsClientError as e:
         LOG.warning("post messaggio-allegato fallito su %s/%s: %s", tier, name, e)
     # 2. log dell'azione nella tab Logs dell'uploader
