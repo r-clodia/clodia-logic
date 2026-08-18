@@ -71,9 +71,19 @@ class JobUpdate(BaseModel):
 
 
 class TopicCronTriggerUpsert(BaseModel):
-    cron_expr: str = Field(..., min_length=1, max_length=200)
+    """Periodicità del trigger di un topic: «ogni N minuti, per M volte» (#239).
+
+    Ha sostituito il `cron_expr` a testo libero. `repeat_count = 0` = ricorrente
+    senza fine (il caso che il cron copriva e che resta necessario ai trigger di
+    sorveglianza)."""
+    interval_minutes: int = Field(..., ge=1)
+    repeat_count: int = Field(0, ge=0)
     prompt: str = Field(..., min_length=1)
     agent: Optional[str] = Field(None, max_length=100)
+    # Un vecchio client che manda ancora il cron non deve vederselo IGNORARE in
+    # silenzio (creerebbe un trigger con una cadenza che nessuno ha chiesto):
+    # il campo è dichiarato apposta per poterlo rifiutare con un motivo.
+    cron_expr: Optional[str] = Field(None, max_length=200)
 
 
 # ---------------------------------------------------------------------------
@@ -176,7 +186,15 @@ def _require_topic_owner(request: Request, tier: str, name: str) -> tuple[str, d
 @router.get("/clodia/channels/{tier}/{name}/cron-trigger")
 async def api_get_topic_cron_trigger(tier: str, name: str, request: Request):
     _require_topic_owner(request, tier, name)
-    return {"trigger": db.get_topic_trigger(tier, name)}
+    trigger = db.get_topic_trigger(tier, name)
+    if trigger and not trigger.get("interval_minutes") and trigger.get("cron_expr"):
+        # Trigger LEGACY, ancora a cron: continua a girare com'è. Qui allego solo
+        # la cadenza equivalente da proporre nel form — la sostituzione la decide
+        # l'owner salvando, non questa GET (#239).
+        trigger = dict(trigger)
+        trigger["suggested_interval_minutes"] = scheduler.cron_to_interval_minutes(
+            trigger["cron_expr"])
+    return {"trigger": trigger}
 
 
 @router.put("/clodia/channels/{tier}/{name}/cron-trigger")
@@ -184,13 +202,17 @@ async def api_put_topic_cron_trigger(
     tier: str, name: str, req: TopicCronTriggerUpsert, request: Request,
 ):
     owner, meta = _require_topic_owner(request, tier, name)
-    cron = _resolve_cron(req.cron_expr, None)
+    if req.cron_expr and req.cron_expr.strip():
+        raise HTTPException(
+            422, "il trigger di un topic non accetta più un'espressione cron: "
+                 "usa interval_minutes + repeat_count (clodia-platform#239)")
     # Floor di frequenza per i topic trigger: ogni fire è un turno agentico, una
     # cadenza troppo alta creerebbe un backlog illimitato (issue #46/#25).
-    floor_err = scheduler.validate_cron_expr(
-        cron, min_interval_minutes=scheduler.TOPIC_TRIGGER_MIN_INTERVAL_MIN)
+    floor_err = scheduler.validate_interval_minutes(
+        req.interval_minutes,
+        min_interval_minutes=scheduler.TOPIC_TRIGGER_MIN_INTERVAL_MIN)
     if floor_err:
-        raise HTTPException(422, f"invalid cron_expr: {floor_err}")
+        raise HTTPException(422, f"invalid interval_minutes: {floor_err}")
     prompt = req.prompt.strip()
     if not prompt:
         raise HTTPException(422, "prompt richiesto")
@@ -201,13 +223,23 @@ async def api_put_topic_cron_trigger(
             raise HTTPException(422, f"agent '{agent}' non partecipa al topic")
     existing = db.get_topic_trigger(tier, name)
     if existing:
+        # Riabilitare un trigger esaurito è un RIARMO: senza azzerare il
+        # contatore ripartirebbe già oltre il limite e si spegnerebbe al primo
+        # fire. `update_job` azzera da sé se la cadenza cambia; qui copriamo il
+        # caso «stessi numeri, ricomincia».
+        riarmo = (not existing.get("enabled")
+                  and existing.get("repeat_count")
+                  and existing.get("fired_count", 0) >= existing["repeat_count"])
         trigger = db.update_job(
-            existing["id"], cron_expr=cron, prompt=prompt, agent=agent, enabled=True,
+            existing["id"], prompt=prompt, agent=agent, enabled=True,
+            interval_minutes=req.interval_minutes, repeat_count=req.repeat_count,
+            fired_count=0 if riarmo else None,
         )
     else:
         try:
             trigger = db.create_topic_trigger(
-                tier, name, cron, prompt, agent=agent, owner=owner,
+                tier, name, prompt, interval_minutes=req.interval_minutes,
+                repeat_count=req.repeat_count, agent=agent, owner=owner,
             )
         except sqlite3.IntegrityError:
             raise HTTPException(409, "questo topic ha già un trigger cron")
