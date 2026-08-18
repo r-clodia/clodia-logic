@@ -106,6 +106,13 @@ class RegistryFailureTests(unittest.TestCase):
                  "text": "chi? <!-- routing-choices=clodia -->"}]
         self.assertIsNone(ch._latest_routing_request(msgs))   # nessuna eccezione
 
+    def test_the_degrade_log_cannot_be_forged_by_the_name(self) -> None:
+        """Il ramo di degrado è l'unico posto in cui un nome finiva in un log
+        senza `_safe_name`: una newline lì è una riga di log fabbricata."""
+        with self.assertLogs(ch.LOG, level="WARNING") as log:
+            ch._principal_type("davide\nWARNING:root:tutto a posto")
+        self.assertNotIn("\n", "".join(log.output))
+
 
 class TypeTaxonomyTests(unittest.TestCase):
     """Finding 5: la classificazione dei tipi vive in due posti.

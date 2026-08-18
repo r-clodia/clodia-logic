@@ -170,8 +170,11 @@ def _principal_type(name: str | None) -> str | None:
     try:
         spec = registry.get_by_name(str(name))
     except Exception as e:  # noqa: BLE001 — una lookup non deve rompere un turno
+        # `_safe_name` anche qui: `name` arriva da `author`, che scrive il
+        # gateway — superficie indiretta, ma è l'unico nome che entrerebbe in un
+        # log senza passare di lì, e la regola vale o non vale.
         LOG.warning("registry non interrogabile per '%s': %s — trattato come ignoto",
-                    name, e)
+                    _safe_name(name), e)
         return None
     return getattr(spec, "type", None) if spec is not None else None
 
