@@ -435,6 +435,21 @@ def _archive_root() -> Path:
     return PLUGINS_META_DIR.parent / "plugins-archive"
 
 
+def move_aside(src: Path, archive_root: Path) -> Path:
+    """Sposta `src` in `archive_root/<nome>-<timestamp>` invece di cancellarla.
+
+    L'unica primitiva di «rimozione» ammessa su una directory che può contenere
+    dati: plugin (datastore e db creati a runtime) e seed agente (memory/ con le
+    lesson learned). Solleva `OSError` se lo spostamento non riesce — e in quel
+    caso `src` è ancora al suo posto: il chiamante NON deve cancellarla, o
+    reintroduce esattamente la perdita che questa funzione evita.
+    """
+    dest = archive_root / f"{src.name}-{time.strftime('%Y%m%d-%H%M%S')}"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dest))
+    return dest
+
+
 def _reinstallable(rel: Path) -> bool:
     """Vero per ciò che un reinstall del pack rimetterebbe identico.
 
@@ -494,11 +509,8 @@ def archive_plugin_dir(name: str) -> tuple[list[dict[str, Any]], list[dict[str, 
     undeclared = sorted(str(rel) for rel in contents
                         if not _is_declared(rel) and not _reinstallable(rel))
 
-    stamp = time.strftime("%Y%m%d-%H%M%S")
-    dest_root = _archive_root() / f"{name}-{stamp}"
     try:
-        dest_root.parent.mkdir(parents=True, exist_ok=True)
-        shutil.move(str(meta_dir), str(dest_root))
+        dest_root = move_aside(meta_dir, _archive_root())
     except OSError as e:
         LOG.error("directory del plugin '%s' non archiviabile (%s): resta al suo "
                   "posto, la rimozione non cancella nulla", name, str(e)[:120])

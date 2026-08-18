@@ -312,6 +312,72 @@ class PackLifecycleTest(unittest.TestCase):
         self.assertEqual(res["deprovision"]["rag_collections_kept"], ["prassi-fiscale"])
         self.assertEqual([t for t, _a, _p in self.gw_calls if t.startswith("rag.")], [])
 
+    def _seed_agent_memory(self) -> Path:
+        """Ciò che l'agente ha imparato dopo l'installazione.
+
+        `memory/` arriva col seed, ma il suo contenuto cresce a runtime: lesson
+        learned dal feedback umano (`feedback.py` scrive qui) e documenti messi
+        via `memory.put_document`. Nessuna sorgente lo rimette."""
+        mem = self.agents_dir / "commercialista" / "memory"
+        mem.mkdir(parents=True, exist_ok=True)
+        (mem / "MEMORY.md").write_text("# lesson: il cliente X fattura a 60gg\n",
+                                       encoding="utf-8")
+        (mem / "perizia-2026.md").write_text("nove mesi di istruttoria",
+                                             encoding="utf-8")
+        return mem
+
+    def test_agent_memory_survives_pack_removal(self) -> None:
+        """La memoria dell'agente è un dato, e la rimozione del pack la cancellava.
+
+        Il datastore del plugin è salvo, ma l'agente del pack finiva in un
+        `rmtree` della sua directory — e lì dentro sta `memory/`: lesson learned
+        dal feedback umano e documenti accumulati a runtime, che nessun reinstall
+        rimette. Stesso difetto dei datastore, un piano più in alto."""
+        self._install_pack()
+        mem = self._seed_agent_memory()
+
+        res = asyncio.run(packs.delete_pack("studio", self._admin_request()))
+
+        self.assertEqual(res["agents"], ["commercialista"])
+        self.assertFalse((self.agents_dir / "commercialista").exists())
+        archived = res["agents_archived"]
+        self.assertEqual([a["agent"] for a in archived], ["commercialista"])
+        dest = Path(archived[0]["archived"])
+        self.assertEqual((dest / "memory" / "MEMORY.md").read_text(encoding="utf-8"),
+                         "# lesson: il cliente X fattura a 60gg\n")
+        self.assertEqual(
+            (dest / "memory" / "perizia-2026.md").read_text(encoding="utf-8"),
+            "nove mesi di istruttoria")
+        self.assertFalse(mem.exists())  # spostata, non copiata
+
+    def test_agent_archive_failure_keeps_the_agent(self) -> None:
+        """Se lo spostamento fallisce l'agente resta dov'è: cancellarlo comunque
+        sarebbe la perdita che l'archiviazione esiste per evitare."""
+        self._install_pack()
+        mem = self._seed_agent_memory()
+
+        with mock.patch.object(plugin_import.shutil, "move",
+                               side_effect=OSError("disco pieno")):
+            res = pack_import.remove_pack("studio")
+
+        self.assertEqual(res["agents"], [])
+        self.assertEqual(res["agents_archived"], [])
+        self.assertEqual([r["agent"] for r in res["agents_retained"]],
+                         ["commercialista"])
+        self.assertEqual((mem / "MEMORY.md").read_text(encoding="utf-8"),
+                         "# lesson: il cliente X fattura a 60gg\n")
+
+    def test_pack_manifest_is_archived_not_deleted(self) -> None:
+        """Anche `packs/<nome>/` si sposta: dentro pack.yaml ci sono i flow
+        approvati dall'admin, che sono decisioni sue, non roba del pack."""
+        self._install_pack()
+
+        res = asyncio.run(packs.delete_pack("studio", self._admin_request()))
+
+        self.assertFalse((self.packs_meta / "studio").exists())
+        dest = Path(res["manifest_archived"])
+        self.assertIn("name: studio", (dest / "pack.yaml").read_text(encoding="utf-8"))
+
     def test_removal_without_declarations_says_nothing(self) -> None:
         """Un pack di sole skill non deve produrre né chiamate al gateway né
         una sezione `deprovision` vuota da leggere."""
