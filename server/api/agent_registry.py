@@ -207,9 +207,11 @@ def _success_stats(name: str) -> dict | None:
 async def list_agents() -> dict:
     paused = set(pause_mod.list_paused())
     connected = _connected_safe()
+    avvisi = registry.warnings()
     agents = []
     for a in registry.list():
         d = a.model_dump()
+        d["warnings"] = avvisi.get(a.name, [])
         d["paused"] = a.name in paused
         d["identity"] = _identity_info(a.name)
         d["success_stats"] = _success_stats(a.name)
@@ -220,6 +222,9 @@ async def list_agents() -> dict:
     return {
         "agents": agents,
         "errors": registry.errors(),
+        # Accanto a `errors`, non dentro: uno spec che non carica e uno che
+        # carica contraddicendosi sono due esiti diversi (clodia-platform#227).
+        "warnings": registry.warnings(),
         "base_dir": str(registry.base_dir),
     }
 
@@ -238,6 +243,10 @@ async def get_agent(name: str, request: Request) -> dict:
     d["rank_label"] = rank_mod.rank_label(spec)
     d["contact_channels"] = contacts.channels(spec)
     d["native_tools_info"] = _native_tools_info(spec)
+    # Le incoerenze del seed viaggiano con la scheda: una capacità che un agente
+    # DICHIARA e non HA era esattamente ciò che nessuno poteva vedere finché
+    # l'avviso restava nel log del server (clodia-platform#227).
+    d["warnings"] = registry.warnings().get(name, [])
     d.update(_provider_fields(spec, _connected_safe()))
     return d
 
@@ -354,6 +363,7 @@ async def reload_agents(request: Request) -> dict:
     return {
         "loaded": len(registry.list()),
         "errors": registry.errors(),
+        "warnings": registry.warnings(),
     }
 
 
