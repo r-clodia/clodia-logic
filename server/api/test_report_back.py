@@ -85,6 +85,20 @@ class ReportBackTests(unittest.IsolatedAsyncioTestCase):
         await self._run("fatto, @clodia a te la prossima")
         self.assertEqual(self.turns, [])
 
+    async def test_a_citation_of_the_caller_does_not_swallow_the_return(self):
+        """R12: `$nome` non sveglia nessuno, quindi non c'è nulla da deduplicare.
+
+        La soppressione esiste per non dare due turni allo stesso evento — e vale
+        per `@`, che un turno lo apre davvero. Contare anche `$` significava che
+        un delegato educato («$clodia per conoscenza, ho finito») perdeva il
+        ritorno: il chiamante non veniva svegliato né da `_maybe_delegate` né da
+        qui, e restava in attesa di un messaggio che non arrivava — lo stesso
+        difetto che questo meccanismo esiste per chiudere.
+        """
+        await self._run("fatto, $clodia per conoscenza")
+        self.assertEqual(len(self.turns), 1)
+        self.assertEqual(self.turns[0][0], "clodia")
+
     async def test_the_hop_limit_stops_the_ping_pong(self):
         await self._run("fatto", hop=channels._max_delegation_hops())
         self.assertEqual(self.turns, [])
