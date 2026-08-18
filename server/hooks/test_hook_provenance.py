@@ -170,5 +170,30 @@ class ProvenanceIsMandatoryTests(unittest.TestCase):
             api._queue_turn("SEAL-1", "acme", "testo", "hook")  # type: ignore[call-arg]
 
 
+class SignedKindDegradeTests(unittest.TestCase):
+    """Il degrado di `_signed_kind` è fail-closed, ma non deve essere muto.
+
+    Un import rotto in modo permanente farebbe entrare `external` anche il
+    caller FIRMATO: nessuna vulnerabilità, ma un fail-closed che nessuno vede è
+    indistinguibile dal funzionamento normale, e l'avviso di provenienza si
+    accenderebbe su ogni turno finché qualcuno non si insospettisce.
+    """
+
+    def test_a_broken_import_degrades_loudly(self) -> None:
+        with patch.object(ch, "_inbound_kind", side_effect=RuntimeError("boom")), \
+             self.assertLogs(api.LOG, level="WARNING") as log:
+            self.assertEqual(api._signed_kind("davide"), "external")
+        self.assertIn("external", "".join(log.output))
+
+    def test_the_degrade_log_carries_no_name(self) -> None:
+        """`_safe_name` vive nel modulo che non si è importato: il nome non entra
+        nel log, così non serve sanificarlo con lo strumento che manca."""
+        cattivo = "davide\nWARNING:root:tutto a posto"
+        with patch.object(ch, "_inbound_kind", side_effect=RuntimeError("boom")), \
+             self.assertLogs(api.LOG, level="WARNING") as log:
+            api._signed_kind(cattivo)
+        self.assertNotIn("tutto a posto", "".join(log.output))
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -10,6 +10,7 @@ segreti ed è autorizzata solo per participant (più l'eccezione messaggero).
 from __future__ import annotations
 
 import json
+import logging
 import time
 
 from fastapi import APIRouter, HTTPException, Request
@@ -17,6 +18,8 @@ from fastapi import APIRouter, HTTPException, Request
 from . import db
 from ..api import admin, topics_client
 from ..api.agents import _principal_from_request
+
+LOG = logging.getLogger("agent-server.hooks.api")
 
 router = APIRouter()
 
@@ -127,11 +130,21 @@ def _signed_kind(principal: str | None) -> str:
     DICHIARATO è esattamente il finding 1 della review di #221 — chi arriva
     senza firma dicendosi `davide` non deve poter spegnere il segnale. Se il
     modulo non si importa, `external`: nel dubbio non si concede niente.
+
+    Il degrado è fail-closed ma NON silenzioso: un import rotto in modo
+    permanente farebbe entrare `external` anche il caller firmato, e un
+    fail-closed che nessuno vede è indistinguibile dal funzionamento normale
+    finché qualcuno non si chiede perché ogni turno sembra venire da fuori.
     """
     try:
         from ..api.channels import _inbound_kind
         return _inbound_kind(principal)
-    except Exception:  # noqa: BLE001
+    except Exception as e:  # noqa: BLE001
+        # Senza il nome: `_safe_name` vive nel modulo che non si è importato,
+        # e un nome non sanitizzato in un log è la riga fabbricata di sempre.
+        # Qui interessa che il degrado si veda, non chi l'ha innescato.
+        LOG.warning("provenienza non calcolabile (%s): l'innesco entra "
+                    "come external", e)
         return "external"
 
 
