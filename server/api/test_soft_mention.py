@@ -35,6 +35,24 @@ class NoSamplingSurvivesTests(unittest.TestCase):
                          inspect.getsource(channels))
 
 
+class WhatWeTellTheAgentsTests(unittest.TestCase):
+    """Il testo che l'agente legge deve dire ciò che il runtime fa.
+
+    Il framing di canale prometteva che il citato «decide lui se rispondere o
+    dare un cenno breve». Non decide niente: la citazione non gli apre nessun
+    turno in cui decidere. È la riga su cui un agente sceglie il sigillo — e
+    lasciarla falsa significa farlo citare credendo di aver chiamato qualcuno,
+    poi aspettare. Il difetto originale della issue nasce proprio da qui: due
+    sigilli descritti come un menu, senza dire che cosa costano e che cosa fanno.
+    """
+
+    def test_the_channel_framing_does_not_promise_an_answer_to_a_citation(self):
+        self.assertNotIn("decide lui se rispondere", channels._CHANNEL_CAPS)
+
+    def test_it_says_that_only_a_hard_mention_summons(self):
+        self.assertIn("NON gli apre un turno", channels._CHANNEL_CAPS)
+
+
 class SoftDirectiveTests(unittest.TestCase):
     def test_there_is_no_citation_directive_left(self):
         """Non c'è più un turno da istruire: la direttiva della citazione diceva

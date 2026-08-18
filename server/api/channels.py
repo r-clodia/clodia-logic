@@ -923,8 +923,10 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                           origin=origin_chain)
         return
     if not _multi_responder_enabled() and len(plan) > 1:
-        # Resta per il caso misto: un `@` diretto più una citazione `$` campionata.
-        # Due `@` non arrivano più fino qui — vengono chiesti sopra.
+        # Rete di sicurezza, non più un caso vivo: il misto che serviva a coprire
+        # — un `@` diretto più una `$` campionata — non esiste più (R12), e due
+        # `@` non arrivano fin qui, vengono chiesti sopra (R3). Resta perché il
+        # tetto «una risposta sola» va tenuto dove i turni partono davvero.
         LOG.info("delega da %s su %s/%s: risposta singola, delego solo a @%s "
                  "(non avviati: %s)", from_agent, tier, name, plan[0][0],
                  ", ".join(t for t, _k in plan[1:]))
@@ -2359,8 +2361,14 @@ _CHANNEL_CAPS = (
     "può aiutarti e coinvolgilo. Due tipi di menzione:\n"
     "- `@agente` = RICHIESTA DIRETTA: gli chiedi di fare/rispondere (lo attiva). Puoi "
     "  taggare PIÙ agenti nello stesso messaggio chiedendo cose diverse a ciascuno.\n"
-    "- `$agente` = MENZIONE SOFT: lo citi/informi senza pretendere un intervento; "
-    "  decide lui se rispondere o dare un cenno breve.\n"
+    # R12 · questa riga prometteva un potere che il runtime non concede: «decide
+    # lui se rispondere» — non decide niente, perché la citazione non gli apre
+    # nessun turno in cui decidere. È il testo su cui l'agente sceglie il
+    # sigillo: lasciarlo falso significa farlo citare credendo di aver chiamato,
+    # e poi aspettare una risposta che non arriverà.
+    "- `$agente` = CITAZIONE: lo nomini o lo informi. NON gli apre un turno e non "
+    "  gli chiede nulla: legge il canale al suo prossimo intervento. Se ti serve "
+    "  una sua azione ADESSO, l'unica strada è `@`.\n"
     "Non accentrare: se un altro agente è più competente per una parte, passagliela "
     "con @; usa $ per tenere qualcuno nel giro senza obbligarlo.\n"
     "\n"
