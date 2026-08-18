@@ -32,7 +32,8 @@ from ..agents import trifecta, trifecta_reset
 from .. import debug_watch
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
-from ..sdk_runtime.session import manager, ProviderNotConnected, topic_runtime_override
+from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
+                                   topic_runtime_override)
 from . import (access_log, presence, responder_routing, router_config,
                routing_feedback, topics_client)
 from .gateway_pdp import require_authz
@@ -1313,11 +1314,17 @@ def _spawn_label(chat, seed: str) -> str:
 
     Ripiega sul nome del seed se lo spawn non è ancora materializzato: meglio un
     nome meno preciso che nessun autore.
+
+    La dir la chiede a `spawn_dirs_of`, che è lo STESSO lettore usato dal reaper.
+    Prima qui si leggeva solo `chat._spawn_dir`, che il runtime Claude non tiene:
+    ogni agente su quel runtime ripiegava sul nome del seed, quindi il numero di
+    spawn non compariva affatto in chat. Il requisito c'era, il test c'era (su
+    una Chat finta che l'attributo lo aveva), e in produzione girava il fallback.
     """
     try:
-        d = getattr(chat, "_spawn_dir", None)
-        if d is not None and getattr(d, "name", None):
-            return str(d.name)
+        for d in spawn_dirs_of(chat):
+            if getattr(d, "name", None):
+                return str(d.name)
     except Exception:  # noqa: BLE001 — un'etichetta non deve rompere un turno
         pass
     return seed
@@ -1348,19 +1355,25 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                 # Solo l'ordinale minimo scrive la memory del seed: le altre
                 # istanze la ricevono in sola lettura (issue#94).
                 override["spawn_memory_readonly"] = True
-            activity_log.append(spec.name, "provider_selected", {
-                "channel": f"{tier}/{name}",
-                "tier": tier_real,
-                "provider": override.get("provider"),
-                "instance": label if inst_ord is not None else None,
-                "reason": "topic_min_cost_eligible",
-            })
             chat = await manager.create(
                 chat_id=chat_id,
                 kind=spec.name,
                 runtime_override=override,
             )
             created = True
+            # DOPO la create, non prima: `instance` deve portare il numero di
+            # spawn (progressivo per seed, mai riusato), e lo spawn esiste solo
+            # una volta materializzato da `start()`. Prima qui finiva l'ordinale
+            # di canale (`nome#N`) — relativo, con un cap e riusabile — quindi
+            # l'audit trail identificava l'istanza con un numero che non la
+            # identifica. Una riga di log che dice `#2` non dice quale processo.
+            activity_log.append(spec.name, "provider_selected", {
+                "channel": f"{tier}/{name}",
+                "tier": tier_real,
+                "provider": override.get("provider"),
+                "instance": _spawn_label(chat, spec.name),
+                "reason": "topic_min_cost_eligible",
+            })
         except ProviderNotConnected:
             LOG.warning("nessun provider idoneo per %s su topic %s/%s tier=%s",
                         spec.name, tier, name, tier_real)
@@ -1381,10 +1394,42 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     # autorizzazione.
     chat.origin = _origin_for(principal, origin, spec.name)
     directive = _tag_directive(kind, principal, user_text)
+    # Il nome che l'istanza sente dire di sé è quello con cui compare in chat:
+    # il numero di SPAWN. Prima le si diceva «sei nome#2» e «i tuoi messaggi
+    # appaiono come nome#2» — e la seconda frase era falsa, perché l'autore del
+    # messaggio è il nome dello spawn. Le si insegnava a firmarsi con un numero
+    # che nessun altro le attribuiva.
+    spawn_nome = _spawn_label(chat, spec.name)
+    # Chi guarda il canale deve vedere il numero di spawn ANCHE mentre l'agente
+    # lavora, non solo sul messaggio finito. Gli eventi live (`message_chunk`,
+    # `thinking_chunk`, `tool_use`) portano il `chat_id`, e la webui ne ricavava
+    # l'etichetta tagliando l'ultimo segmento: `seed#N` per un multi-spawn,
+    # `seed` nudo per gli altri. Quindi durante il turno si leggeva un nome e a
+    # turno finito un altro, per la stessa istanza.
+    #
+    # Si pubblica la corrispondenza una volta per turno, da QUI: è l'unico punto
+    # che conosce insieme il `chat_id` e l'etichetta, e vale per tutti e tre i
+    # runtime — l'alternativa era aggiungere un campo a dodici payload, cioè
+    # dodici posti in cui il tredicesimo nascerà senza.
+    try:
+        await bus.publish(Event(
+            type="spawn_label",
+            payload={"chat_id": chat_id, "spawn": spawn_nome, "seed": spec.name},
+            timestamp=datetime.now(timezone.utc),
+        ))
+    except Exception as e:  # noqa: BLE001 — un'etichetta non ferma un turno
+        LOG.debug("spawn_label non pubblicata per %s: %s", chat_id, e)
     if inst_ord is not None:
-        directive = (f"[Sei l'istanza {label}: una delle istanze concorrenti di "
-                     f"{spec.name} in questo canale. Firma implicita: i tuoi messaggi "
-                     f"appaiono come {label}.]\n" + (directive or ""))
+        directive = (f"[Sei lo spawn {spawn_nome}: una delle istanze concorrenti "
+                     f"di {spec.name} in questo canale. I tuoi messaggi appaiono "
+                     f"come {spawn_nome} — il numero è il tuo progressivo di spawn, "
+                     f"unico e mai riusato.]\n" + (directive or ""))
+    elif spawn_nome != spec.name:
+        # Anche un seed a istanza singola gira come spawn numerato: se non glielo
+        # si dice, si firma col nome del seed mentre il canale la mostra come
+        # `nome-N`, e chi legge vede due nomi per lo stesso interlocutore.
+        directive = (f"[Sei lo spawn {spawn_nome} di {spec.name}: i tuoi messaggi "
+                     f"appaiono come {spawn_nome}.]\n" + (directive or ""))
     if created:
         _amd, _amd_auth = _topic_agents_md(tier, name)
         base = _history_prompt(name, tier_real,
