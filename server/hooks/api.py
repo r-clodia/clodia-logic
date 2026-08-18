@@ -120,20 +120,40 @@ def _payload(raw: bytes) -> str:
     return payload.replace("\r", " ")
 
 
-def _queue_turn(tier: str, name: str, text: str, principal: str,
-                responder: str | None = None) -> bool:
+def _signed_kind(principal: str) -> str:
+    """Provenienza di un principal la cui identità è GIÀ STATA VERIFICATA.
+
+    Import locale come in `_queue_turn`: `channels` è pesante e questo modulo
+    non deve dipenderne al load. Se non è importabile si degrada a `external`,
+    che è il default fail-closed del resto di #221 — nel dubbio, non è una
+    persona.
+    """
     try:
-        from ..api.channels import run_topic_turn, _spawn_bg, _principal_kind
+        from ..api.channels import _inbound_kind
+        return _inbound_kind(principal)
+    except Exception:  # noqa: BLE001
+        return "external"
+
+
+def _queue_turn(tier: str, name: str, text: str, principal: str,
+                kind: str, responder: str | None = None) -> bool:
+    """Accoda il turno di un hook, DICHIARANDO la provenienza (issue #221).
+
+    `kind` è un parametro obbligatorio e non ha default: lo decide il chiamante,
+    che è l'unico a sapere se ha verificato un'identità. Non si ricostruisce qui
+    dal nome, perché `principal` sull'ingress pubblico è la costante `"hook"` —
+    un nome, non una prova — e un giorno qualcuno potrebbe registrare un agente
+    che si chiama così. La provenienza per costruzione, non per fortuna del
+    naming (finding 5 della review di #221).
+    """
+    try:
+        from ..api.channels import run_topic_turn, _spawn_bg
         topic = topics_client.open_topic(tier, name)
         meta = (topic or {}).get("meta", {})
-        # Un webhook è, per definizione, un sistema terzo: il payload che apre
-        # questo turno non è una richiesta di una persona. Stessa porta del
-        # proxy (#221), stesso trattamento — `_principal_kind` è fail-closed,
-        # quindi un principal non registrato entra come `external`.
         _spawn_bg(run_topic_turn(
             tier, name, meta, trigger_text=text, principal_hint=principal,
             responder_hint=responder, trigger_author=principal,
-            trigger_kind=_principal_kind(principal)))
+            trigger_kind=kind))
         return True
     except Exception:  # noqa: BLE001 — il messaggio resta comunque iniettato
         return False
@@ -196,7 +216,10 @@ async def invoke_local(tier: str, name: str, request: Request) -> dict:
         topics_client.post_message(tier, name, author=caller, text=text, kind="ai")
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"post_message fallita: {e}") from e
-    triggered = _queue_turn(tier, name, text, caller, responder=caller)
+    # `caller` qui è l'identità FIRMATA (verificata sopra dalla CA): la
+    # provenienza si può ricostruire dal nome perché il nome è provato.
+    triggered = _queue_turn(tier, name, text, caller, _signed_kind(caller),
+                            responder=caller)
     db.record_event(name, "ok", source="local", authority="participant", principal=caller)
     return {"ok": True, "injected": True, "triggered": triggered,
             "authority": "participant", "principal": caller}
@@ -224,7 +247,10 @@ async def ingress(hid: str, request: Request) -> dict:
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"post_message fallita: {e}") from e
 
-    triggered = _queue_turn(tier, name, text, "hook")
+    # Ingress PUBBLICO: autorizzato da un segreto, non da un'identità. Non c'è
+    # nessuno da classificare — `external` è una COSTANTE qui, come già lo è il
+    # `kind` del messaggio postato sopra.
+    triggered = _queue_turn(tier, name, text, "hook", "external")
     db.record_event(hid, "ok", source=src, authority="untrusted")
     return {"ok": True, "injected": True, "triggered": triggered,
             "authority": "untrusted", "principal": None}
