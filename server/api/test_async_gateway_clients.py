@@ -2,7 +2,9 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from server.api import gateway_admin, provider_store, topics_client
+from fastapi import HTTPException
+
+from server.api import gateway_admin, gateway_pdp, provider_store, topics_client
 
 
 class AsyncGatewayClientTests(unittest.TestCase):
@@ -38,6 +40,27 @@ class AsyncGatewayClientTests(unittest.TestCase):
 
         self.assertEqual(result, {"verbs": []})
         to_thread.assert_called_once_with(agent_verbs, "clodia")
+
+    def test_authz_guard_async_wrapper_offloads_sync_call(self):
+        request = object()
+        with patch.object(gateway_pdp.asyncio, "to_thread") as to_thread:
+            to_thread.side_effect = lambda func, *args, **kwargs: func(*args, **kwargs)
+            with patch.object(gateway_pdp, "require_authz", return_value="davide") as guard:
+                result = asyncio.run(
+                    gateway_pdp.require_authz_async(request, "packs.remove"))
+
+        self.assertEqual(result, "davide")
+        to_thread.assert_called_once_with(guard, request, "packs.remove")
+
+    def test_authz_refusal_survives_the_offload(self):
+        """L'offload sposta il lavoro, non deve ingoiare la decisione: un 403 che
+        si perdesse in un thread aprirebbe un endpoint admin-only a chiunque."""
+        with patch.object(gateway_pdp, "require_authz",
+                          side_effect=HTTPException(403, "riservata agli admin")):
+            with self.assertRaises(HTTPException) as caught:
+                asyncio.run(gateway_pdp.require_authz_async(object(), "packs.remove"))
+
+        self.assertEqual(caught.exception.status_code, 403)
 
 
 if __name__ == "__main__":

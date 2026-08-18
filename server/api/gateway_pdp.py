@@ -12,6 +12,7 @@ si fida di un header arbitrario.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -123,6 +124,22 @@ def require_authz(request: Request, tool: str) -> str:
     if not consentito:
         raise HTTPException(403, f"azione '{tool}' riservata agli admin")
     return principal
+
+
+async def require_authz_async(request: Request, tool: str) -> str:
+    """Versione per handler `async def`: stessa guardia, fuori dall'event loop.
+
+    `require_authz` fa una POST al gateway con `requests` (bloccante, timeout
+    30s). Chiamata dentro un `async def` ferma l'INTERO event loop
+    dell'agent-server per tutta la durata della richiesta: con un gateway lento
+    si accodano health check, SSE e ogni altra API, e il sistema sembra morto
+    pur essendo vivo (incidente 17 lug, #106). Qui la parte bloccante va su un
+    thread e il loop resta libero.
+
+    Le eccezioni (`HTTPException` 401/403/503) attraversano `to_thread`
+    invariate: il comportamento visto dal chiamante non cambia.
+    """
+    return await asyncio.to_thread(require_authz, request, tool)
 
 
 def forward(request: Request, tool: str, arguments: dict):

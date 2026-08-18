@@ -14,6 +14,7 @@ dal middleware.
 """
 from __future__ import annotations
 
+import re
 import unittest
 from unittest.mock import patch
 
@@ -29,7 +30,11 @@ class PreClaimTests(unittest.TestCase):
         # la chiamata a require_authz deve essere DENTRO un ramo condizionale
         self.assertIn("is_initialized()", src)
         i_cond = src.index("is_initialized()")
-        i_authz = src.index('require_authz(request, "agents.create")')
+        # la guardia esiste in due forme (sync e offload su thread, #106): qui
+        # conta la POSIZIONE, non quale delle due sia in uso.
+        m = re.search(r'require_authz(?:_async)?\(request, "agents\.create"\)', src)
+        self.assertIsNotNone(m, "la guardia agents.create non è più riconoscibile")
+        i_authz = m.start()
         self.assertLess(i_cond, i_authz,
                         "require_authz deve venire DOPO il controllo sullo stato "
                         "del claim, altrimenti il primo admin non è creabile")

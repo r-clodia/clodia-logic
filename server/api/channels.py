@@ -36,7 +36,7 @@ from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
                                    topic_runtime_override)
 from . import (access_log, presence, responder_routing, router_config,
                routing_feedback, topics_client)
-from .gateway_pdp import require_authz
+from .gateway_pdp import require_authz_async
 from .agents import _principal_from_request
 
 router = APIRouter()
@@ -3049,7 +3049,7 @@ async def channel_remote(tier: str, name: str, request: Request) -> dict:
     # `status` e `pull` restano ai partecipanti: leggere lo stato e tirare dentro
     # i contenuti non spostano il confine.
     if action in ("add", "enable", "disable"):
-        require_authz(request, f"topic.remote_{action}")
+        await require_authz_async(request, f"topic.remote_{action}")
     try:
         return topics_client.remote_action(
             tier, name, action, **{k: v for k, v in body.items() if k != "action"})
@@ -3383,7 +3383,7 @@ async def channel_agents_md_put(tier: str, name: str, request: Request) -> dict:
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "topic non trovato")
-    require_authz(request, "topic.save_agents_md")
+    await require_authz_async(request, "topic.save_agents_md")
     body = await request.json()
     try:
         return topics_client.save_agents_md(

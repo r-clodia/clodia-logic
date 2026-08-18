@@ -419,7 +419,7 @@ def _maybe_trigger_pack_ops(result: dict) -> None:
 @router.post("/clodia/packs/import")
 async def import_pack_zip(request: Request, file: UploadFile = File(...)):
     """Import unificato da .zip: pack (agents+plugins) o plugin sciolto."""
-    principal = gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
+    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only (PDP gateway)
     from .skill_import import SkillImportError
     data = await file.read()
     try:
@@ -437,7 +437,7 @@ async def import_pack_zip(request: Request, file: UploadFile = File(...)):
 @router.post("/clodia/packs/import-url")
 async def import_pack_url(payload: PackImportUrl, request: Request):
     """Import unificato da URL (git repo o .zip remoto)."""
-    principal = gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
+    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only (PDP gateway)
     from .skill_import import SkillImportError
     try:
         result = pack_import.import_pack_url(payload.url)
@@ -455,7 +455,7 @@ async def import_pack_url(payload: PackImportUrl, request: Request):
 async def check_pack_update(name: str, request: Request):
     """Controlla su GitHub (repo upstream del pack) se esiste una versione più
     recente di quella installata. Ritorna {installed, remote, update_available}."""
-    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     up = _pack_upstream(name)
@@ -504,7 +504,7 @@ async def update_pack(name: str, request: Request):
     """Aggiorna un pack first-party dal suo repo GitHub (upstream): scarica,
     SOSTITUISCE seed/skill/mcp (force), aggiorna il manifest e RIAVVIA tutti gli
     agenti (drop_all: le sessioni ripartono coi seed nuovi al prossimo messaggio)."""
-    principal = gateway_pdp.require_authz(request, "packs.import_url")  # admin-only (PDP gateway)
+    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only (PDP gateway)
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     up = _pack_upstream(name)
@@ -556,7 +556,7 @@ async def mark_pack_setup_done(name: str, request: Request):
     """Marca il setup del pack come COMPLETATO (smarca il marker `setup_pending`).
     Lo chiama il sysadmin/steward alla fine del task di setup (tool gateway
     `packs.setup_done`), o l'admin manualmente. Admin-only (PDP gateway)."""
-    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     set_setup_pending(name, False)
@@ -571,7 +571,7 @@ async def get_pack_flows(name: str, request: Request):
     in sospeso dopo un'installazione, e per farle rivedere dopo — un pack
     aggiornato può dichiararne di nuove, e quelle nuove non sono approvate.
     """
-    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     meta = _pack_meta(name)
@@ -600,7 +600,7 @@ async def approve_pack_flows(name: str, request: Request):
     separata — sarebbe un secondo posto in cui guardare, e chi controlla ne
     guarderebbe uno solo.
     """
-    gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     meta = _pack_meta(name)
@@ -668,7 +668,7 @@ def _set_pack_flows_approved(name: str, granted: list) -> None:
 @router.delete("/clodia/packs/{name}")
 async def delete_pack(name: str, request: Request):
     """Rimuove un pack: i suoi plugin, i suoi agenti (non nativi) e il manifest."""
-    gateway_pdp.require_authz(request, "packs.remove")  # admin-only (PDP gateway)
+    await gateway_pdp.require_authz_async(request, "packs.remove")  # admin-only (PDP gateway)
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     # base-pack (e gli altri riservati) è first-party e NON è rimovibile — guardia
