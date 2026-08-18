@@ -1598,11 +1598,19 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
       menzioni in attesa sono servite in ordine di arrivo;
     - un seed senza `multi_spawn` è lo stesso meccanismo con **limite 1**.
 
+    Su questo si innesta l'ATTIVAZIONE dichiarata dal seed (R15, #191), che è la
+    stessa cosa detta dal lato di chi la dichiara: `parallel` = `multi_spawn`,
+    cioè il limite > 1 qui sopra; `queue` = limite 1, ci si accoda; `refuse` =
+    limite 1 e NON ci si accoda — il secondo turno non parte e lo si dice nel
+    canale. Le prime due non hanno bisogno di codice proprio: sono già
+    l'allocazione. La terza è la guardia più sotto.
+
     `spawn` indirizza uno spawn PRECISO per nome (`@clodia-124`): se è vivo il
     turno va a lui, accodandosi se sta lavorando. Se non è più vivo si ricade
     sull'allocazione normale — la menzione va servita — e lo si scrive nel log.
 
-    Ritorna False se il provider non è connesso.
+    Ritorna False se il provider non è connesso, o se il seed dichiara
+    `activation: refuse` ed è già occupato.
     """
     label = spec.name
     base_id = f"chan:{tier}:{name}:{spec.name}"
@@ -1631,6 +1639,26 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         # proprio questo, con l'ordine di arrivo garantito dal lock stesso:
         # nessuna attesa esplicita da introdurre, e nessuna equità da perdere.
         pass
+    # ATTIVAZIONE DICHIARATA DAL SEED (R15, issue clodia-platform#191). Il
+    # rifiuto esisteva già, ma come decisione di chi POSTA (`skip_if_busy`, usato
+    # dal solo topic trigger): un seed non poteva sceglierlo, e infatti su una
+    # menzione umana non valeva. Qui la guardia sta nel punto unico da cui
+    # passano tutti i rami di dispatch — una sola volta, non una per chiamante.
+    #
+    # Sta DOPO l'allocazione, sul `chat_id` risolto, e non prima: è l'ordine
+    # giusto perché `refuse` implica `multi_spawn: false` (i due campi si
+    # derivano l'uno dall'altro), quindi il ramo sopra è il cap=1 e la sessione
+    # da guardare è quella. Per un seed `parallel` la guardia non scatta mai —
+    # il parallelo È l'alternativa al rifiuto.
+    #
+    # `label` è ancora il nome del SEED qui: il nome dello spawn si conosce solo
+    # a sessione esistente, e un rifiuto riguarda l'agente, non l'istanza che non
+    # è nata.
+    if getattr(spec, "activation", "queue") == "refuse" and _chat_busy(chat_id):
+        LOG.info("turno rifiutato per %s su %s/%s: activation=refuse e sessione occupata",
+                 label, tier, name)
+        await _announce_refusal(tier, name, label)
+        return False
     created = False
     try:
         chat = manager.get(chat_id)
@@ -2552,6 +2580,42 @@ async def _drop_channel_sessions(tier: str, name: str, participants: list[str]) 
     return deleted
 
 
+def _chat_busy(chat_id: str) -> bool:
+    """True se QUESTA sessione ha un turno in corso (lock tenuto).
+
+    Una sola misura per due domande che sono la stessa: lo `skip_if_busy` di chi
+    posta (topic trigger) e l'`activation: refuse` del seed (R15, #191). La
+    sessione è per (scope, seed[, ordinale]) — `chan:<tier>:<name>:<seed>[#N]` —
+    quindi «occupato» è sempre per stanza, non per agente: due topic non si
+    accodano l'uno sull'altro.
+    """
+    try:
+        chat = manager.get(chat_id)
+    except KeyError:
+        return False
+    lock = getattr(chat, "_lock", None)
+    return bool(lock is not None and lock.locked())
+
+
+async def _announce_refusal(tier: str, name: str, label: str) -> None:
+    """Dice nel topic che il turno non parte, e perché.
+
+    Best-effort, e volutamente NON `_watch_report`: con `debug_watch` spento
+    quello non lascia impronta, e un turno che non parte in silenzio è
+    indistinguibile da un agente rotto — la differenza è già costata mezza
+    giornata su @fullstack-dev il 16 ago 2026.
+    """
+    try:
+        testo = (f"⏳ **@{label}** ha già un turno in corso in questo canale e il "
+                 "suo profilo dichiara `activation: refuse`: il messaggio non è "
+                 "stato accodato e nessun secondo turno è partito. Riprova quando "
+                 "ha finito, oppure coinvolgi un altro agente.")
+        msg = topics_client.post_message(tier, name, "system", testo, kind="system")
+        await _channel_message(tier, name, "system", "system", message=msg)
+    except Exception as e:  # noqa: BLE001 — dire «non parto» non deve rompere altro
+        LOG.warning("nota di rifiuto non pubblicata su %s/%s: %s", tier, name, e)
+
+
 def _responder_busy(tier: str, name: str, agent: str) -> bool:
     """True se il responder ha già un turno IN CORSO su questo canale (lock della
     ChatSession tenuto). Usato dai topic trigger per NON accodare un nuovo turno
@@ -2561,12 +2625,7 @@ def _responder_busy(tier: str, name: str, agent: str) -> bool:
         # Multi-spawn (issue#94): la menzione può forkare una nuova istanza →
         # il responder non è mai "occupato" ai fini dello skip.
         return False
-    try:
-        chat = manager.get(f"chan:{tier}:{name}:{agent}")
-    except KeyError:
-        return False
-    lock = getattr(chat, "_lock", None)
-    return bool(lock is not None and lock.locked())
+    return _chat_busy(f"chan:{tier}:{name}:{agent}")
 
 
 async def post_channel_message(

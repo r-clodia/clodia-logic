@@ -8,18 +8,22 @@ from pydantic import ValidationError
 from .models import AgentSpec
 
 
+def _minimal_spec(**extra) -> AgentSpec:
+    payload = {
+        "name": "demo",
+        "description": "agente CAP minimale",
+        "model": "claude-haiku-4-5",
+        "display_name": "Demo",
+        "capabilities": ["kanban-operations"],
+        "system_prompt": "system-prompt.md",
+    }
+    payload.update(extra)
+    return AgentSpec.model_validate(payload)
+
+
 class AgentSpecV2Tests(unittest.TestCase):
     def _minimal(self, **extra) -> AgentSpec:
-        payload = {
-            "name": "demo",
-            "description": "agente CAP minimale",
-            "model": "claude-haiku-4-5",
-            "display_name": "Demo",
-            "capabilities": ["kanban-operations"],
-            "system_prompt": "system-prompt.md",
-        }
-        payload.update(extra)
-        return AgentSpec.model_validate(payload)
+        return _minimal_spec(**extra)
 
     def test_agent_sdk_defaults_to_claude(self):
         self.assertEqual(self._minimal().agent_sdk, "claude")
@@ -111,25 +115,55 @@ class ActivationMechanicsTests(unittest.TestCase):
     router-notebook R15: «coda, parallelo e rifiuto sono tutte valide, il profilo
     del seed dovrebbe riportare la sua meccanica di attivazione fra queste tre».
 
-    Oggi il seed dichiara `routing_mode` (se può essere scelto senza essere
+    Il seed dichiarava `routing_mode` (se può essere scelto senza essere
     nominato) e `multi_spawn` (che copre il «parallelo», e solo in parte): «coda»
-    e «rifiuto» esistono come COMPORTAMENTO — il lock FIFO della sessione, il
-    cap di `max_spawns` — ma nessuno dei due è dichiarato, quindi non si può né
-    leggere né scegliere per seed. Issue clodia-platform#191.
+    e «rifiuto» esistevano come COMPORTAMENTO — il lock FIFO della sessione, il
+    cap di `max_spawns`, lo `skip_if_busy` del topic trigger — ma nessuno dei due
+    era dichiarato, quindi non si poteva né leggere né scegliere per seed.
+    Issue clodia-platform#191.
     """
 
-    @unittest.expectedFailure   # clodia-platform#191 — R15 non ancora consegnata
-    def test_the_seed_declares_its_activation_mechanics(self) -> None:
-        """ROSSO ATTESO finché #191 è aperta.
+    def _minimal(self, **extra) -> AgentSpec:
+        return _minimal_spec(**extra)
 
-        Diventerà `unexpected success` il giorno in cui il campo arriva, il che
-        è il segnale giusto: cade su questa riga, che è dove il requisito è
-        scritto (decision record 34). Senza il test, R15 sarebbe indistinguibile
-        da una voce consegnata — che è come A7 è rimasta aperta senza che la sua
-        assenza si notasse.
-        """
+    def test_the_seed_declares_its_activation_mechanics(self) -> None:
+        """Il campo esiste: è la riga dove R15 è scritta (decision record 34)."""
         from .models import AgentSpec
         self.assertIn("activation", AgentSpec.model_fields)
+
+    def test_a_seed_that_declares_nothing_queues(self) -> None:
+        """Default = il comportamento di oggi, quindi zero cambiamenti in
+        produzione: un campo dichiarativo si aggiunge senza migrazione solo se
+        il silenzio continua a valere ciò che valeva prima."""
+        self.assertEqual(self._minimal().activation, "queue")
+
+    def test_multi_spawn_derives_parallel(self) -> None:
+        """`multi_spawn: true` È il «parallelo» di R15: il campo lo legge, non
+        chiede di ripeterlo. Due posti da tenere allineati a mano sono un posto
+        di troppo."""
+        self.assertEqual(self._minimal(multi_spawn=True).activation, "parallel")
+
+    def test_parallel_declared_turns_multi_spawn_on(self) -> None:
+        """L'altro verso della stessa derivazione: chi dichiara `parallel`
+        ottiene il comportamento, non solo l'etichetta — è la metà-fix che #204
+        ha insegnato a non consegnare."""
+        spec = self._minimal(activation="parallel")
+        self.assertTrue(spec.multi_spawn)
+
+    def test_a_profile_that_contradicts_itself_is_refused(self) -> None:
+        """`multi_spawn: true` + `activation: queue` sono due frasi opposte sullo
+        stesso seed. Un profilo muto si legge; uno che si contraddice no — e
+        l'errore esce in validazione, dove c'è una persona che lo legge."""
+        for mech in ("queue", "refuse"):
+            with self.subTest(mech), self.assertRaises(ValidationError):
+                self._minimal(multi_spawn=True, activation=mech)
+        with self.assertRaises(ValidationError):
+            self._minimal(multi_spawn=False, activation="parallel")
+
+    def test_refuse_is_declarable(self) -> None:
+        spec = self._minimal(activation="refuse")
+        self.assertEqual(spec.activation, "refuse")
+        self.assertFalse(spec.multi_spawn)
 
     def test_what_exists_today_covers_only_parallel(self) -> None:
         """La metà che c'è, dichiarata: `multi_spawn` è il «parallelo» di R15.
