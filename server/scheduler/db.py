@@ -15,7 +15,15 @@ Schema job (jobs/<id>.yaml):
 risolto dinamicamente (statico clodia/ada/looper/ophelia o seed del registry).
 Job creati prima dell'introduzione del campo (19 giu 2026) → default "looper"
 in lettura, per preservarne il comportamento storico.
+
+**UN** nome, mai una lista (R11 del router notebook, clodia-platform#213): uno
+scope asincrono ha un solo responder, ed è su quella certezza che il router si
+permette di non girare mai su un job. In scrittura una lista è RIFIUTATA
+(`create_job`/`update_job` → ValueError); in lettura è coercizzata al primo nome
+con un warning, perché questi file si editano a mano e far sparire da
+`list_jobs()` un job programmato sarebbe un guasto peggiore di quello curato.
 """
+import logging
 import sqlite3  # solo per IntegrityError: contratto con api.py sul nome duplicato
 from datetime import datetime, timezone
 from pathlib import Path
@@ -36,6 +44,26 @@ _FIELDS = (
 
 # Agent di fallback per job senza il campo `agent` (creati prima del 19 giu 2026).
 _LEGACY_DEFAULT_AGENT = "looper"
+
+LOG = logging.getLogger("scheduler.db")
+
+
+def _one_agent_name(agent):
+    """Guardia di scrittura per R11: `agent` è UN nome, o niente.
+
+    `None` passa (= «non mi pronuncio»: default in `create_job`, campo non
+    toccato in `update_job`) e `""` resta lecito (job `logic`/`topic_trigger`,
+    che non hanno responder). Tutto il resto — lista, tupla, dict — è rifiutato
+    qui, un solo punto per entrambe le porte di scrittura, invece di una guardia
+    per chiamante: `create_topic_trigger` e `proposals.approve` la ereditano.
+    """
+    if agent is None or isinstance(agent, str):
+        return agent
+    raise ValueError(
+        f"R11: un job ha UN agente, non {type(agent).__name__} ({agent!r}). "
+        "Uno scope asincrono con due responder non ha una regola su chi "
+        "risponde: se il campo va allargato, va deciso — non subito "
+        "(clodia-platform#213).")
 
 
 def _now_iso() -> str:
@@ -60,6 +88,18 @@ def _read(p: Path) -> Optional[dict]:
         return None
     d["enabled"] = bool(d.get("enabled", True))
     d["mode"] = d.get("mode") or "agentic"
+    # Lettura tollerante, scrittura severa: il file può essere stato scritto a
+    # mano (vedi intestazione), quindi qui la lista non la rifiuto — il job
+    # sparirebbe da list_jobs() e non partirebbe più, che è peggio. Prendo il
+    # primo nome e lo dico nel log: in scrittura c'è una persona che legge
+    # l'errore, qui no.
+    if isinstance(d.get("agent"), (list, tuple)):
+        _lista = list(d["agent"])
+        d["agent"] = str(_lista[0]) if _lista else ""
+        LOG.warning(
+            "job %s (%s): campo `agent` con %d nomi %r → uso il primo (%r). "
+            "R11: un job ha UN agente (clodia-platform#213).",
+            d.get("id"), d.get("name"), len(_lista), _lista, d["agent"])
     # Default legacy agent SOLO per i job agentici: un job LOGICO non ha agent
     # (nessun turno LLM) → resta vuoto, non coercizzato a 'looper'.
     if d["mode"] in ("logic", "topic_trigger"):
@@ -104,7 +144,10 @@ def create_job(name: str, cron_expr: str, prompt: str,
     è proprietario (solo lui, o un admin, può agirvi).
 
     `mode`: 'agentic' (default, turno LLM sul `prompt`) o 'logic' (esegue `plan`,
-    lista di {verb, args}, senza LLM né gate — pre-autorizzato dalla creazione)."""
+    lista di {verb, args}, senza LLM né gate — pre-autorizzato dalla creazione).
+
+    Solleva ValueError se `agent` non è un nome solo (R11, clodia-platform#213)."""
+    agent = _one_agent_name(agent)   # R11: un job ha UN agente (#213)
     if get_job_by_name(name) is not None:
         raise sqlite3.IntegrityError(f"job name '{name}' already exists")
     now = _now_iso()
@@ -189,6 +232,7 @@ def update_job(
     tier: Optional[str] = None,
 ) -> Optional[dict]:
     """Aggiorna i campi non None. Ritorna il job aggiornato o None se non esiste."""
+    agent = _one_agent_name(agent)   # R11: prima di toccare il file (#213)
     d = get_job(job_id)
     if d is None:
         return None
