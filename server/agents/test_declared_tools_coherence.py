@@ -77,5 +77,31 @@ class UndeclaredNativeToolsTests(unittest.TestCase):
             native_tools=[], sandbox={"allow_shell_cmds": []})))
 
 
+class WhoHasNoRuntimeIsNotAskedTests(unittest.TestCase):
+    """Chi non esegue non ha strumenti nativi da dichiarare.
+
+    Un avviso si legge solo se chi lo riceve può agirlo. A un `proxy` questo
+    consigliava di scrivere un campo che il suo stesso validatore rifiuta
+    (`models.py`: «proxy: nessun native_tool ammesso»), e a un `human` di
+    dichiarare gli strumenti di un runtime che non gira mai. In una colonia con
+    più persone e proxy che seed di sviluppo, quel consiglio impossibile si
+    ripete a ogni load e affoga l'unico avviso che va letto.
+    """
+
+    def test_a_human_is_not_asked_to_declare(self) -> None:
+        h = AgentSpec.model_validate({"name": "davide", "description": "d",
+                                      "display_name": "D", "type": "human"})
+        self.assertEqual([], _incoerenze(h))
+
+    def test_a_proxy_is_not_asked_for_what_it_may_not_have(self) -> None:
+        p = AgentSpec.model_validate({"name": "px", "description": "d",
+                                      "display_name": "PX", "type": "proxy"})
+        self.assertEqual([], _incoerenze(p))
+
+    def test_a_bot_is_still_asked(self) -> None:
+        """Il taglio è per chi non ha runtime, non un'amnistia generale."""
+        self.assertTrue(_incoerenze(_seed(type="bot")))
+
+
 if __name__ == "__main__":
     unittest.main()

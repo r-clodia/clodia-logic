@@ -33,7 +33,15 @@ def _incoerenze(spec) -> list[str]:
     sandbox autorizzava una stanza e niente ne dava la porta. Nessuna eccezione,
     nessun log, nessuno stato degradato — se n'è accorto un umano, notando che un
     agente sviluppatore non poteva far girare `pytest`.
+
+    Chi non ha runtime non viene interrogato: un `human` non è eseguito, e un
+    `proxy` NON PUÒ dichiarare strumenti nativi (`models.py` rifiuta lo spec).
+    Consigliare a un proxy di dichiarare `[]` sarebbe consigliargli un file che
+    non carica — e un avviso impossibile da agire, ripetuto a ogni load per ogni
+    persona e ogni proxy della colonia, affoga l'unico che va letto.
     """
+    if getattr(spec, "type", None) in ("human", "proxy"):
+        return []
     fuori: list[str] = []
     nativi = getattr(spec, "native_tools", None)
     sandbox = getattr(spec, "sandbox", None)
@@ -68,6 +76,11 @@ class AgentRegistry:
         self.base_dir = base_dir
         self._agents: dict[str, AgentSpec] = {}
         self._errors: dict[str, str] = {}
+        #: Seed che CARICANO ma si contraddicono: nome → avvisi. Canale distinto
+        #: da `_errors` (dove lo spec non carica affatto) perché sono due esiti
+        #: diversi dello stesso load, e fonderli farebbe sparire dalla lista un
+        #: agente funzionante — o leggere un errore come una nota a margine.
+        self._warnings: dict[str, list[str]] = {}
 
     def discover(self) -> Iterator[Path]:
         """Yields i path agent.yaml trovati sotto base_dir."""
@@ -84,6 +97,7 @@ class AgentRegistry:
         """Ricarica tutta la registry dal filesystem."""
         self._agents.clear()
         self._errors.clear()
+        self._warnings.clear()
         for spec_file in self.discover():
             agent_dir = spec_file.parent
             try:
@@ -112,8 +126,11 @@ class AgentRegistry:
                         "agent '%s': campo `can_delegate_to` DEPRECATO "
                         "(AgentSpec v2) — la delega è il movimento di card",
                         spec.name)
-                for avviso in _incoerenze(spec):
+                avvisi = _incoerenze(spec)
+                for avviso in avvisi:
                     LOG.warning("agent '%s': %s", spec.name, avviso)
+                if avvisi:
+                    self._warnings[spec.name] = avvisi
                 self._agents[spec.name] = spec
                 LOG.info("Caricato agent '%s' da %s", spec.name, spec_file)
             except (ValidationError, ValueError, yaml.YAMLError) as e:
@@ -128,6 +145,14 @@ class AgentRegistry:
 
     def errors(self) -> dict[str, str]:
         return dict(self._errors)
+
+    def warnings(self) -> dict[str, list[str]]:
+        """Nome → incoerenze del seed caricato. Assente = niente da dire.
+
+        L'agente resta caricato e usabile: questo canale serve a farlo VEDERE
+        (clodia-platform#227), non a impedirlo.
+        """
+        return {n: list(v) for n, v in self._warnings.items()}
 
     def get_by_name(self, name: str) -> Optional[AgentSpec]:
         return self._agents.get(name)
