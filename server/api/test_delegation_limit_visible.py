@@ -124,9 +124,8 @@ class BeyondTheLimitItSaysSoTests(_Base):
     async def test_a_citation_alone_does_not_produce_a_warning(self) -> None:
         """`$nome` non apre un turno nemmeno dentro il limite (R12): oltre il
         limite non c'è niente di negato da dichiarare."""
-        with patch.dict(os.environ, {"CHANNEL_SOFT_ACK_RATE": "0"}):
-            posts, start = await self._delegate(
-                "Per conoscenza $fullstack-dev", hop=channels._max_delegation_hops())
+        posts, start = await self._delegate(
+            "Per conoscenza $fullstack-dev", hop=channels._max_delegation_hops())
         start.assert_not_awaited()
         self.assertEqual([], posts)
 

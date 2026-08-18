@@ -17,7 +17,6 @@ un agente, vedi `_maybe_delegate`).
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import os
@@ -675,8 +674,14 @@ async def _report_back(tier: str, name: str, responder: str, chat,
         caller = _caller_of(getattr(chat, "origin", None), responder)
         if not caller:
             return
-        hard, soft = _tags(esito or "")
-        if caller in {_seed_name(x) for x in (hard + soft)}:
+        hard, _soft = _tags(esito or "")
+        # Solo i `@`: la deduplica esiste per non dare DUE turni allo stesso
+        # evento, e un turno lo apre soltanto una convocazione. Contare anche le
+        # `$` faceva perdere il ritorno al delegato educato («$clodia per
+        # conoscenza, ho finito»): nessuno lo aveva svegliato — `$` è inerte
+        # (R12) — e il chiamante restava in attesa di un messaggio che non
+        # arrivava, cioè il difetto che questo meccanismo esiste per chiudere.
+        if caller in {_seed_name(x) for x in hard}:
             return                      # l'ha già chiamato lui: un evento, un turno
         spec = registry.get_by_name(caller)
         if spec is None or getattr(spec, "type", "") != "bot":
@@ -787,9 +792,9 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                           principal: str | None, hop: int,
                           origin_chain: list | None = None) -> None:
     """Gioco di squadra: se nel suo reply un agente tagga ALTRI agenti idonei, ne
-    innesca il turno. N tag → N deleghe (in parallelo). @tag = incarico diretto,
-    $tag = coinvolgimento soft. Salta i tag verso sé stesso o non-partecipanti; il
-    limite hop (_max_delegation_hops) evita loop."""
+    innesca il turno. @tag = incarico diretto e unica convocazione; $tag = una
+    citazione, che non avvia nulla (R12). Salta i tag verso sé stesso o
+    non-partecipanti; il limite hop (_max_delegation_hops) evita loop."""
     topic = topics_client.open_topic(tier, name)
     if not topic:
         return
@@ -816,23 +821,25 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             f"una decisione. Leggi gli ultimi messaggi del canale per il sintomo.",
             requested_by=from_agent))
 
-    eligible_soft = [t for t in soft
-                     if _seed_name(t) in participants
-                     and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
-    plan: list[tuple[str, str]] = (
-        [(t, "direct") for t in hard
-         if _seed_name(t) in participants
-         and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
-        # `$tag` NON avvia un turno. Prima lo avviava, con l'aggravante che la
-        # direttiva soft ORDINAVA un cenno anche a chi non aveva nulla da dire:
-        # costava come un `@` e produceva in più un messaggio vuoto. La citazione
-        # resta nel campo `mentions` (badge, notifica) e l'agente citato la vede
-        # nella storia del canale al suo prossimo turno naturale, quando può
-        # reagire sapendo già com'è finita.
-        + [(t, "soft-ack") for t in eligible_soft if _soft_ack_selected(from_agent, t, reply_text)])
-    for t in eligible_soft:
-        if not any(t == tag for tag, _k in plan):
-            LOG.info("citazione $%s da %s su %s/%s: nessun turno (soft)",
+    # `$tag` NON avvia un turno. Prima lo avviava, con l'aggravante che la
+    # direttiva soft ORDINAVA un cenno anche a chi non aveva nulla da dire:
+    # costava come un `@` e produceva in più un messaggio vuoto. La citazione
+    # resta nel campo `mentions` (badge, notifica) e l'agente citato la vede
+    # nella storia del canale al suo prossimo turno naturale, quando può
+    # reagire sapendo già com'è finita.
+    #
+    # Il cenno campionato che stava qui è RIMOSSO, non spento: una manopola che,
+    # riaccesa, viola R12 è debito che nessuno sa di avere — fra un anno la si
+    # rialza senza sapere che cosa vietava, e la regressione non ha un nome. Se
+    # il silenzio dopo una citazione tornerà a essere un problema, è un problema
+    # diverso da «$ non attiva mai» e va aperto e misurato per conto suo.
+    plan: list[tuple[str, str]] = [
+        (t, "direct") for t in hard
+        if _seed_name(t) in participants
+        and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
+    for t in soft:
+        if _seed_name(t) in participants:
+            LOG.info("citazione $%s da %s su %s/%s: nessun turno (R12)",
                      t, from_agent, tier, name)
     if not plan:
         return
@@ -916,8 +923,10 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                           origin=origin_chain)
         return
     if not _multi_responder_enabled() and len(plan) > 1:
-        # Resta per il caso misto: un `@` diretto più una citazione `$` campionata.
-        # Due `@` non arrivano più fino qui — vengono chiesti sopra.
+        # Rete di sicurezza, non più un caso vivo: il misto che serviva a coprire
+        # — un `@` diretto più una `$` campionata — non esiste più (R12), e due
+        # `@` non arrivano fin qui, vengono chiesti sopra (R3). Resta perché il
+        # tetto «una risposta sola» va tenuto dove i turni partono davvero.
         LOG.info("delega da %s su %s/%s: risposta singola, delego solo a @%s "
                  "(non avviati: %s)", from_agent, tier, name, plan[0][0],
                  ", ".join(t for t, _k in plan[1:]))
@@ -942,9 +951,14 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         LOG.info("delega %s: %s → @%s (hop %d) su %s/%s",
                  kind, from_agent, delegate.name, hop + 1, tier, name)
         try:
+            # La frase con il `@` viaggia col `reason`: chi ripercorre la catena
+            # legge PERCHÉ l'hop è stato fatto, senza un campo obbligatorio in più
+            # da riempire (e senza turni fermi quando manca).
+            motivo = _mention_context(reply_text or "", tag)
             payload = {
                 "tier": tier, "name": name, "mode": "delega",
-                "reason": f"{from_agent} ha coinvolto {delegate.name} ({kind})",
+                "reason": (f"{from_agent} ha coinvolto {delegate.name} ({kind})"
+                           + (f": «{motivo}»" if motivo else "")),
                 "chosen": delegate.name, "candidates": [], "eligible": []}
             _track_routing_decision(payload)
             await bus.publish(Event(type="routing_decision", payload=payload,
@@ -1137,9 +1151,13 @@ def _tagged(text: str) -> str | None:
     return m[0] if m else None
 
 
-# Tag SOFT ($agente): menzione senza richiesta d'azione — l'agente giudica se
-# intervenire. `@agente` resta la richiesta DIRETTA (hard).
+# Tag SOFT ($agente): CITAZIONE, non una richiesta d'azione. Non avvia mai un
+# turno (R12): informa, resta nel campo `mentions` del messaggio e la si legge
+# nella storia del canale. `@agente` è la sola convocazione.
 _SOFT_TAG_RE = re.compile(r"\$([a-z0-9][a-z0-9_-]{0,30}(?:#[1-9][0-9]{0,2})?)")
+
+# Confine di frase, per ritagliare il contesto di una convocazione.
+_SENTENCE_END_RE = re.compile(r"(?<=[.!?;:\n])\s+")
 
 
 def _tags(text: str) -> tuple[list[str], list[str]]:
@@ -1156,6 +1174,30 @@ def _tags(text: str) -> tuple[list[str], list[str]]:
         if m not in seen:
             seen.add(m); soft.append(m)
     return hard, soft
+
+
+def _mention_context(text: str, tag: str, limit: int = 160) -> str:
+    """La frase in cui `@tag` è stato scritto: il PERCHÉ della convocazione.
+
+    R12 chiedeva se un `@` da un agente debba portare una giustificazione
+    registrata con l'hop. Un campo obbligatorio in più sarebbe un cambio di
+    protocollo, con turni che si fermano per un metadato mancante; la frase che
+    l'agente ha scritto di suo è già la giustificazione, e finisce nel `reason`
+    della decisione di routing — dove chi indaga una catena la trova.
+
+    Righe citate escluse, come in `_tags`: il `@` in un blockquote non è la
+    convocazione di questo messaggio. Stringa vuota se non si trova nulla.
+    """
+    own = [ln for ln in (text or "").splitlines() if not ln.lstrip().startswith(">")]
+    ago = f"@{tag}".lower()
+    for riga in own:
+        if ago not in riga.lower():
+            continue
+        for frase in _SENTENCE_END_RE.split(riga):
+            if ago in frase.lower():
+                pulita = " ".join(frase.split())
+                return pulita[: limit - 1] + "…" if len(pulita) > limit else pulita
+    return ""
 
 
 def _humans_tagged(content: str, participants: list[str]) -> list[str]:
@@ -1271,36 +1313,6 @@ def _declares_all_tier(spec) -> bool:
     return bool(getattr(spec, "all_tier", False))
 
 
-def _soft_ack_rate() -> float:
-    """Frazione di citazioni `$` che producono un cenno. 0 = mai."""
-    raw = (os.environ.get("CHANNEL_SOFT_ACK_RATE") or "0.2").strip()
-    try:
-        return max(0.0, min(1.0, float(raw)))
-    except ValueError:
-        return 0.2
-
-
-def _soft_ack_selected(from_agent: str, tag: str, text: str) -> bool:
-    """Questa citazione produce un cenno? Deciso in modo DETERMINISTICO.
-
-    Campionamento, non caso: l'hash di (chi cita, chi è citato, testo) invece di
-    un dado. Stessa frequenza, ma lo stesso messaggio decide sempre allo stesso
-    modo — un retry non raddoppia il cenno, un replay del canale ricostruisce la
-    stessa storia, e il comportamento si può fissare in un test.
-
-    Nota su cosa questo cenno NON è: un ack campionato non è interpretabile — dal
-    silenzio non si distingue «non avevo nulla da aggiungere» da «non sono stato
-    campionato». Serve come segno di vita del canale, non come risposta.
-    """
-    rate = _soft_ack_rate()
-    if rate <= 0:
-        return False
-    if rate >= 1:
-        return True
-    h = hashlib.sha256(f"{from_agent}\x00{tag}\x00{text}".encode("utf-8")).digest()
-    return (int.from_bytes(h[:4], "big") / 0xFFFFFFFF) < rate
-
-
 def _tag_directive(kind: str, author: str, text: str) -> str | None:
     """Direttiva del turno in base al tipo di tag (goal-oriented + gioco di squadra)."""
     if kind == "direct":
@@ -1329,15 +1341,9 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "primo adesso e il secondo quando ha finito — avrai anche il suo esito da "
             "passargli. Le citazioni `$` non contano e puoi metterne quante "
             "vuoi.\n\nMessaggio:\n" + text)
-    if kind in ("soft", "soft-ack"):
-        return (
-            f"[CITAZIONE] {author} ti ha citato con $ in questo messaggio. Una "
-            "citazione NON è una richiesta d'azione, e di norma non ti fa nemmeno "
-            "aprire un turno: questo è un campione. Rispondi con UNA RIGA e nient'altro "
-            "— un cenno se non hai niente da aggiungere, o l'unica informazione che "
-            "cambierebbe le cose se ce l'hai. Nessun lavoro, nessun tool, nessun "
-            "riepilogo: se serve davvero un intervento tuo, qualcuno ti taggherà "
-            "con @.\n\nMessaggio:\n" + text)
+    # Nessuna direttiva di CITAZIONE: `$` non apre un turno, quindi non c'è un
+    # turno da istruire (R12). Quella che stava qui si contraddiceva da sola —
+    # «di norma non ti fa nemmeno aprire un turno: questo è un campione».
     if kind == "disambigua":
         # R3: la domanda torna all'autore del messaggio ambiguo. La direttiva gli
         # dice cosa fare — una sola menzione — perché interrogarlo senza istruirlo
@@ -2355,8 +2361,14 @@ _CHANNEL_CAPS = (
     "può aiutarti e coinvolgilo. Due tipi di menzione:\n"
     "- `@agente` = RICHIESTA DIRETTA: gli chiedi di fare/rispondere (lo attiva). Puoi "
     "  taggare PIÙ agenti nello stesso messaggio chiedendo cose diverse a ciascuno.\n"
-    "- `$agente` = MENZIONE SOFT: lo citi/informi senza pretendere un intervento; "
-    "  decide lui se rispondere o dare un cenno breve.\n"
+    # R12 · questa riga prometteva un potere che il runtime non concede: «decide
+    # lui se rispondere» — non decide niente, perché la citazione non gli apre
+    # nessun turno in cui decidere. È il testo su cui l'agente sceglie il
+    # sigillo: lasciarlo falso significa farlo citare credendo di aver chiamato,
+    # e poi aspettare una risposta che non arriverà.
+    "- `$agente` = CITAZIONE: lo nomini o lo informi. NON gli apre un turno e non "
+    "  gli chiede nulla: legge il canale al suo prossimo intervento. Se ti serve "
+    "  una sua azione ADESSO, l'unica strada è `@`.\n"
     "Non accentrare: se un altro agente è più competente per una parte, passagliela "
     "con @; usa $ per tenere qualcuno nel giro senza obbligarlo.\n"
     "\n"
@@ -2687,13 +2699,13 @@ async def post_channel_message(
     if not respond:
         return {"posted": True, "responder": None}
 
-    # 2. DESTINATARI. @tag = richiesta diretta; $tag = menzione soft (l'agente
-    #    giudica se intervenire). Nessun tag → routing per rilevanza.
-    #    Due @ diretti chiedono all'umano chi deve rispondere; tre o più sono
-    #    rifiutati (R3). Le $ soft non contano per quella soglia: contano le
-    #    convocazioni, e `$` non lo è (R12).
-    #    Con un solo @ resta la risposta singola; con CHANNEL_MULTI_RESPONDER=1
-    #    la richiesta «entrambi» del dialogo fa partire i due in parallelo.
+    # 2. DESTINATARI. @tag = richiesta diretta e unica convocazione; $tag = una
+    #    CITAZIONE, che non avvia nessun turno (R12) — resta nel campo strutturato
+    #    `mentions` del messaggio (badge, notifica) e l'agente citato la legge
+    #    nella storia del canale al suo prossimo intervento. Un messaggio di sole
+    #    citazioni è, per il routing, un messaggio senza tag: va per rilevanza.
+    #    Due @ diretti chiedono all'umano chi deve rispondere; le $ non contano
+    #    per quella soglia, perché contano le convocazioni e `$` non lo è (R12).
     # ── Una menzione rivolta solo a umani NON instrada un bot ────────────────
     #
     # Una domanda rivolta a una persona non diventa una
@@ -2735,11 +2747,16 @@ async def post_channel_message(
             targets.append((s, "direct", want_spawn))
         elif hard_unserved is None:
             hard_unserved = tag_trace
+    # R12 · `$nome` NON diventa un target. Prima ci finiva con kind "soft" e da
+    # lì in `_start_turn`: una citazione scritta da una persona apriva un turno
+    # come un `@`. Il difetto sopravviveva perché con `CHANNEL_MULTI_RESPONDER`
+    # a OFF il taglio a `targets[:1]` nascondeva il caso misto (`@a $b` → parte
+    # solo `a`), mentre la citazione da sola attivava sempre — e col flag ON
+    # attivava comunque. Non si tocca il conteggio delle soglie: quelle già
+    # contavano i soli `@`.
     for nm in soft:
-        seed, want_spawn = _split_target(nm)
-        s = _pick_responder(participants, tier_real, seed)
-        if s is not None and s.name == seed and not any(t[0].name == s.name for t in targets):
-            targets.append((s, "soft", want_spawn))
+        LOG.info("citazione $%s di %s su %s/%s: nessun turno (soft)",
+                 nm, principal, tier, name)
 
     hard_targets = [(s, want_spawn) for s, kind, want_spawn in targets if kind == "direct"]
     # R3: la norma è UNA menzione per messaggio. Due o più non si risolvono
@@ -2765,23 +2782,17 @@ async def post_channel_message(
         return {"posted": True, "queued": False, "responder": None,
                 "routing_dialog": True, "choices": nomi}
 
-    dropped_tags: list[str] = []
-    if targets and not _multi_responder_enabled() and len(targets) > 1:
-        dropped_tags = [s.name for s, _kind, _o in targets[1:]]
-        targets = targets[:1]
-        LOG.info("canale %s/%s: risposta singola, risponde %s; altri taggati "
-                 "non avviati: %s", tier, name, targets[0][0].name,
-                 ", ".join(dropped_tags))
-
+    # Da qui `targets` ha 0 o 1 elemento: sono solo `@` (le `$` non entrano più) e
+    # due o più `@` sono già tornati sopra col dialogo. Il taglio a `targets[:1]`
+    # che stava qui non serve più — e tenerlo avrebbe raccontato un fan-out di tag
+    # che non esiste in nessuna configurazione.
     if targets:
-        # barra 🧭: instradamento multi-tag
+        # barra 🧭: instradamento per tag esplicito
         try:
             payload = {
                 "tier": tier, "name": name, "mode": "tag",
-                "reason": ("tag esplicito (@ diretto · $ soft)"
-                           + (f" — risposta singola, non avviati: "
-                              f"{', '.join(dropped_tags)}" if dropped_tags else "")),
-                "chosen": ", ".join(f"{s.name}{' ·soft' if k == 'soft' else ''}" for s, k, _o in targets),
+                "reason": "tag esplicito (@ diretto)",
+                "chosen": ", ".join(s.name for s, _k, _o in targets),
                 "chosen_agents": [s.name for s, _kind, _o in targets],
                 "candidates": [], "eligible": [s.name for s, _k, _o in targets],
             }

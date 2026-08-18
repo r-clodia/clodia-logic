@@ -1531,11 +1531,9 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(start.await_count, 1)
         self.assertEqual(start.await_args_list[0].args[3].name, "worker")
 
-    async def _delegate(self, text, rate="0"):
-        """Esegue la delega con l'ack campionato spento, salvo diversa indicazione."""
+    async def _delegate(self, text):
         start = AsyncMock(return_value=True)
         with (
-            patch.dict("os.environ", {"CHANNEL_SOFT_ACK_RATE": rate}),
             patch.object(channels, "_start_turn", start),
             patch.object(channels, "_provider_seal_ok", return_value=True),
             patch.object(channels.topics_client, "open_topic", return_value={
@@ -1563,14 +1561,6 @@ class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
         """Il rimedio non deve rendere il canale muto: `@` invoca ancora."""
         start = await self._delegate("@worker puoi verificare?")
         self.assertEqual(start.await_count, 1)
-
-    async def test_a_sampled_citation_starts_an_ack_turn(self) -> None:
-        """Campionato, il turno parte con la direttiva della citazione: una riga,
-        nessun lavoro. Con rate=1 il campionamento è forzato."""
-        start = await self._delegate("Come diceva $worker", rate="1")
-        self.assertEqual(start.await_count, 1)
-        self.assertEqual(start.await_args_list[0].args[3].name, "worker")
-        self.assertIn("soft-ack", start.await_args_list[0].args)
 
     async def test_a_hard_mention_wins_over_a_citation_of_the_same_agent(self) -> None:
         """Un nome sia `@` che `$` conta come hard: chi è taggato davvero non
