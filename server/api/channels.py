@@ -303,6 +303,24 @@ def _max_delegation_hops() -> int:
     return v if v > 0 else _DEFAULT_MAX_DELEGATION_HOPS
 
 
+def _bubble_per_block() -> bool:
+    """Una bolla per BLOCCO di testo, invece di una per turno
+    (`CLODIA_BUBBLE_PER_BLOCK`, default acceso — clodia-platform#243).
+
+    «Un turno una bolla» non è mai stata una regola: era il risultato di dove
+    cadeva il post. Un agente può rispondere subito e continuare a lavorare, e
+    fino a qui quel primo pezzo di risposta veniva mostrato in streaming e poi
+    **buttato** — se nel frattempo l'agente postava qualcosa via tool, la
+    risposta finale veniva soppressa e con essa il testo già letto da chi
+    guardava. Ora ogni blocco chiuso è un messaggio, nel momento in cui compare.
+
+    Spegnibile perché cambia ciò che si vede in chat, e un rollback non deve
+    richiedere una ricompilazione.
+    """
+    raw = (os.environ.get("CLODIA_BUBBLE_PER_BLOCK") or "").strip().lower()
+    return raw not in ("0", "false", "no", "off")
+
+
 def _message_key(msg: dict) -> tuple:
     mid = msg.get("id")
     if mid:
@@ -359,6 +377,36 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         before_messages = []
 
     await _typing(tier, name, responder, "start")
+
+    # Una bolla per blocco (#243): il post non aspetta la fine del turno. Il
+    # label si calcola PRIMA, perché serve a ogni bolla e non solo all'ultima.
+    autore = _spawn_label(chat, responder)
+
+    async def _post_block(testo: str) -> None:
+        """Un blocco di testo chiuso → un messaggio, subito.
+
+        Non solleva verso la raccolta: se il post di una bolla fallisce, il
+        turno continua e il testo resta comunque in `reply` — cioè nel percorso
+        che pubblica la risposta finale quando nulla è stato postato.
+
+        Il vuoto è scartato ANCHE qui, non solo in `_collect_response`: la
+        guardia sta dove si scrive, perché è la scrittura a essere permanente e
+        perché questa callback la chiama chiunque la registri.
+        """
+        testo = (testo or "").strip()
+        if not testo:
+            return
+        try:
+            topics_client.post_message(tier, name, autore, testo, kind="ai")
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("post della bolla su %s/%s da %s fallito: %s",
+                        tier, name, responder, e)
+
+    if _bubble_per_block():
+        try:
+            chat.on_visible_block = _post_block
+        except Exception:  # noqa: BLE001 — sessione che non accetta attributi
+            LOG.debug("sessione %s: on_visible_block non registrabile", responder)
     try:
         reply = await chat.send_user_message(prompt)
     except Exception as e:  # noqa: BLE001
@@ -378,6 +426,14 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         return None
     finally:
         await _typing(tier, name, responder, "stop")
+        # La callback vale per QUESTO turno. La sessione è di lunga vita: un
+        # riferimento lasciato attaccato posterebbe le bolle del turno
+        # successivo con il label di questo.
+        try:
+            if getattr(chat, "on_visible_block", None) is not None:
+                chat.on_visible_block = None
+        except Exception:  # noqa: BLE001
+            pass
 
     posted_during_turn: list[dict] = []
     try:
@@ -391,11 +447,23 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                   tier, name, responder, e)
 
     if posted_during_turn:
-        LOG.info("risposta finale di %s su %s/%s soppressa: %d messaggi gia' postati via tool",
+        # Due sorgenti finiscono qui, e la differenza conta per chi legge il log:
+        # le bolle per blocco (#243), che sono la risposta stessa già pubblicata
+        # pezzo per pezzo, e i post via tool dell'agente. In entrambi i casi
+        # ripubblicare `reply` duplicherebbe: la soppressione è corretta. Prima
+        # però era l'unica strada, e il testo streamato che NON era stato
+        # postato da nessuno veniva perso — è il difetto che #243 chiude.
+        LOG.info("risposta finale di %s su %s/%s soppressa: %d messaggi gia' nel "
+                 "canale (bolle per blocco e/o post via tool)",
                  responder, tier, name, len(posted_during_turn))
         # Si chiama SEMPRE: il limite lo applica `_maybe_delegate`, che è la sola
         # a sapere se c'era un tag da servire e quindi la sola che possa dirlo.
         # Saltare la chiamata qui era il silenzio.
+        #
+        # Una menzione PER BOLLA: se l'agente tagga @X nel primo blocco e di
+        # nuovo nell'ultimo, X riceve due turni. È la stessa regola dei
+        # messaggi umani (un messaggio, un turno) applicata a messaggi che ora
+        # sono più d'uno — non un caso nuovo, ma diventa comune con #243.
         for msg in posted_during_turn:
             try:
                 await _maybe_delegate(tier, name, responder,
@@ -407,7 +475,7 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
         return _ultimo
 
-    autore = _spawn_label(chat, responder)
+    # `autore` è calcolato prima del turno (serve alle bolle per blocco).
     try:
         msg = topics_client.post_message(tier, name, autore, reply, kind="ai")
     except Exception as e:  # noqa: BLE001

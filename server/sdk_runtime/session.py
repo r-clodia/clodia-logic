@@ -67,13 +67,38 @@ class _BlockFilter:
     """Classifica i text-block dello stream: trattiene i primi byte di ogni
     blocco finché non può decidere se è un'iniezione (drop) o testo vero
     (keep + flush). `feed(index, text)` ritorna il testo da mostrare ORA
-    (può essere vuoto mentre bufferizza); `end_block()` flusha il residuo."""
+    (può essere vuoto mentre bufferizza); `end_block()` flusha il residuo.
+
+    Tiene anche il conto dei blocchi CHIUSI (`pop_completed`), perché il confine
+    fra un blocco e il successivo lo conosce solo questa classe: `feed` inserisce
+    il separatore `\\n\\n` fra blocchi tenuti, e chi legge il valore di ritorno
+    non può più dire dove finiva l'uno e cominciava l'altro. Ricostruire la
+    cucitura nel chiamante significherebbe tenerne due copie, che è il modo in
+    cui divergono."""
 
     def __init__(self) -> None:
         self._index: int | None = None
         self._buf = ""
         self._mode = "undecided"   # undecided | keep | drop
         self._emitted_any = False  # per il separatore fra blocchi tenuti
+        # Testo del blocco IN CORSO e blocchi già chiusi, senza il separatore:
+        # una bolla non comincia con due righe vuote.
+        self._current: list[str] = []
+        self._done: list[str] = []
+
+    def pop_completed(self) -> list[str]:
+        """I blocchi chiusi da quando è stata chiamata l'ultima volta, in ordine.
+
+        Svuota: chi li prende se ne assume la responsabilità (li posta), e un
+        blocco consegnato due volte sarebbe una bolla duplicata.
+        """
+        out, self._done = self._done, []
+        return out
+
+    def _finalize(self) -> None:
+        if self._current:
+            self._done.append("".join(self._current))
+            self._current = []
 
     def _decide(self) -> None:
         if any(self._buf.startswith(x) for x in _INJECTION_SENTINELS):
@@ -89,6 +114,7 @@ class _BlockFilter:
         if self._mode == "drop":
             return out
         if self._mode == "keep":
+            self._current.append(text)
             return out + text
         self._buf += text
         if len(self._buf) >= _SENTINEL_MAXLEN or any(
@@ -98,6 +124,7 @@ class _BlockFilter:
             if self._mode == "keep":
                 flushed = self._buf
                 self._buf = ""
+                self._current.append(flushed)
                 if self._emitted_any:
                     flushed = "\n\n" + flushed
                 self._emitted_any = True
@@ -111,8 +138,10 @@ class _BlockFilter:
         if self._mode == "undecided" and self._buf:
             self._decide()
             if self._mode == "keep":
+                self._current.append(self._buf)
                 residue = ("\n\n" if self._emitted_any else "") + self._buf
                 self._emitted_any = True
+        self._finalize()
         self._buf = ""
         self._mode = "undecided"
         self._index = None
@@ -1381,6 +1410,29 @@ class ChatSession:
         parts: list[str] = []
         saw_text_delta = False
         blockfilter = _BlockFilter()
+        # Confine di bolla (clodia-platform#243): se qualcuno ha registrato
+        # `on_visible_block`, ogni blocco di testo CHIUSO gli viene consegnato
+        # mentre il turno prosegue, invece di essere accumulato fino alla fine.
+        # È un attributo e non un parametro perché le tre classi di sessione
+        # (Chat/Codex/OpenCode) espongono la stessa firma e i fake dei test la
+        # implementano: chi non conosce l'attributo non lo trova e si comporta
+        # come prima, cioè una bolla sola a fine turno.
+        on_block = getattr(self, "on_visible_block", None)
+
+        async def _emit_blocks() -> None:
+            """Consegna i blocchi chiusi. Un errore del destinatario NON ferma il
+            turno: la bolla è un effetto collaterale della raccolta, e perderne
+            una è meno grave che perdere la risposta."""
+            for blocco in blockfilter.pop_completed():
+                testo = (blocco or "").strip()
+                if not testo or on_block is None:
+                    continue
+                try:
+                    await on_block(testo)
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("consegna del blocco visibile fallita su %s: %s",
+                                self.chat_id, e)
+
         start = asyncio.get_event_loop().time()
         iterator = self._client.receive_response().__aiter__()
         while True:
@@ -1392,6 +1444,20 @@ class ChatSession:
                 async with asyncio.timeout(chunk_timeout):
                     message = await iterator.__anext__()
             except StopAsyncIteration:
+                # Coda del turno: un blocco può chiudersi con la fine dello
+                # stream invece che con un `content_block_stop`. Prima quel
+                # residuo si perdeva; con le bolle per blocco si perderebbe
+                # l'ULTIMA bolla, che è quella che porta l'esito.
+                residue = blockfilter.end_block()
+                if residue:
+                    parts.append(residue)
+                    await bus.publish(Event(
+                        type="message_chunk",
+                        payload={"chat_id": self.chat_id, "role": "assistant",
+                                 "delta": residue},
+                        timestamp=datetime.now(timezone.utc),
+                    ))
+                await _emit_blocks()
                 break
             except asyncio.TimeoutError:
                 raise
@@ -1425,6 +1491,11 @@ class ChatSession:
                                      "delta": residue},
                             timestamp=datetime.now(timezone.utc),
                         ))
+                    # Il blocco è chiuso: qui nasce la bolla. È il punto in cui
+                    # l'agente ha finito di dire una cosa e non ha ancora
+                    # cominciato la successiva — tipicamente perché sta per
+                    # chiamare un tool.
+                    await _emit_blocks()
                 if ev.get("type") == "content_block_delta":
                     delta = ev.get("delta") or {}
                     dtype = delta.get("type")
@@ -1432,6 +1503,10 @@ class ChatSession:
                         # Filtro iniezioni (SKILL.md espansa dal runtime) +
                         # separatore fra blocchi distinti: vedi _BlockFilter.
                         visible = blockfilter.feed(ev.get("index"), delta["text"])
+                        # `feed` chiude da sé il blocco precedente quando cambia
+                        # l'indice: se lo stream passa a un blocco nuovo senza
+                        # `content_block_stop`, la bolla si chiude comunque qui.
+                        await _emit_blocks()
                         if visible:
                             parts.append(visible)
                             saw_text_delta = True
