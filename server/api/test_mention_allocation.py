@@ -235,3 +235,52 @@ class FirstToFinishTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ResetForgetsEverySpawnTests(unittest.IsolatedAsyncioTestCase):
+    """«Reset contesto» deve azzerare TUTTE le istanze del partecipante.
+
+    Domanda di Davide, 18 ago: il reset cancella l'AGENTS.md del topic? No — il
+    reset posta un marker e chiude le sessioni, e non tocca alcun file (c'è un
+    test a parte nel gateway per la via che invece li rimuove).
+
+    Ma leggendolo è venuto fuori un difetto vicino: `_drop_channel_sessions`
+    costruiva la sola chiave nuda `chan:t:n:agent`, mentre le istanze multi-spawn
+    vivono su `…#1…#N`. Il reset le lasciava in piedi con la loro memoria, e il
+    pulsante diceva di aver resettato: per gli agenti che girano come più istanze
+    — cioè quelli su cui una conversazione si accumula davvero — non resettava
+    niente.
+    """
+
+    async def test_it_deletes_the_suffixed_sessions_too(self) -> None:
+        chats = [_Chat("chan:SEAL-1:ch:fullstack-dev#1"),
+                 _Chat("chan:SEAL-1:ch:fullstack-dev#2"),
+                 _Chat("chan:SEAL-1:ch:clodia")]
+        _fake_lock_state(chats)
+        cancellate: list[str] = []
+
+        class _M(_Manager):
+            async def delete(self, cid):
+                cancellate.append(cid)
+
+        with patch.object(ch, "manager", _M(chats)):
+            out = await ch._drop_channel_sessions(
+                "SEAL-1", "ch", ["fullstack-dev", "clodia"])
+        self.assertEqual(
+            {"chan:SEAL-1:ch:fullstack-dev#1", "chan:SEAL-1:ch:fullstack-dev#2",
+             "chan:SEAL-1:ch:clodia"},
+            set(cancellate),
+            "il reset ha lasciato in piedi delle istanze")
+        self.assertEqual(3, len(out))
+
+    async def test_a_participant_without_sessions_is_not_an_error(self) -> None:
+        chats = [_Chat("chan:SEAL-1:ch:clodia")]
+        _fake_lock_state(chats)
+
+        class _M(_Manager):
+            async def delete(self, cid):
+                pass
+
+        with patch.object(ch, "manager", _M(chats)):
+            out = await ch._drop_channel_sessions("SEAL-1", "ch", ["nessuno", "clodia"])
+        self.assertEqual(["chan:SEAL-1:ch:clodia"], out)

@@ -2390,15 +2390,27 @@ def _context_messages(messages: list[dict]) -> list[dict]:
 
 
 async def _drop_channel_sessions(tier: str, name: str, participants: list[str]) -> list[str]:
-    """Dimentica le sessioni runtime dei responder di questo canale."""
+    """Dimentica le sessioni runtime dei responder di questo canale.
+
+    TUTTE le sessioni di ogni partecipante, non solo quella con la chiave nuda.
+    Qui si costruiva `chan:<tier>:<name>:<agent>` e si cancellava quella: per un
+    seed multi-spawn le istanze vivono su `…:<agent>#1…#N`, che non venivano
+    toccate. Un «Reset contesto» lasciava quindi in piedi proprio gli agenti che
+    girano come più istanze, con la loro memoria conversazionale intatta — e il
+    pulsante diceva di aver resettato.
+
+    Si passa da `_sessions_of`, che è il lettore che conosce entrambe le forme di
+    chiave: la stessa lista usata per allocare una menzione, così non ci sono due
+    idee diverse di «quali sessioni ha questo seed in questo canale».
+    """
     deleted: list[str] = []
     for agent in participants:
-        chat_id = f"chan:{tier}:{name}:{agent}"
-        try:
-            await manager.delete(chat_id)
-            deleted.append(chat_id)
-        except KeyError:
-            continue
+        for chat_id, _busy in _sessions_of(tier, name, agent):
+            try:
+                await manager.delete(chat_id)
+                deleted.append(chat_id)
+            except KeyError:
+                continue
     return deleted
 
 
