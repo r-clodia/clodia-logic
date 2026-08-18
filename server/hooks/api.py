@@ -123,12 +123,17 @@ def _payload(raw: bytes) -> str:
 def _queue_turn(tier: str, name: str, text: str, principal: str,
                 responder: str | None = None) -> bool:
     try:
-        from ..api.channels import run_topic_turn, _spawn_bg
+        from ..api.channels import run_topic_turn, _spawn_bg, _principal_kind
         topic = topics_client.open_topic(tier, name)
         meta = (topic or {}).get("meta", {})
+        # Un webhook è, per definizione, un sistema terzo: il payload che apre
+        # questo turno non è una richiesta di una persona. Stessa porta del
+        # proxy (#221), stesso trattamento — `_principal_kind` è fail-closed,
+        # quindi un principal non registrato entra come `external`.
         _spawn_bg(run_topic_turn(
             tier, name, meta, trigger_text=text, principal_hint=principal,
-            responder_hint=responder))
+            responder_hint=responder, trigger_author=principal,
+            trigger_kind=_principal_kind(principal)))
         return True
     except Exception:  # noqa: BLE001 — il messaggio resta comunque iniettato
         return False
