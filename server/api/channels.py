@@ -2766,7 +2766,14 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         except Exception:  # noqa: BLE001
             recent = []
         if trigger_text and (not recent or recent[-1].get("text") != trigger_text):
-            autore = trigger_author or principal_hint or "channel"
+            # `_safe_name` QUI, non solo nei chiamanti: questa riga entra nel
+            # contesto di routing, e i due chiamanti che oggi puliscono a monte
+            # (`channel_trigger_internal`, `_queue_turn`) sono una convenzione,
+            # non una garanzia — il terzo chiamante che si dimentica
+            # reintrodurrebbe l'iniezione senza far cadere nulla. La
+            # sanitizzazione sta nel punto che tutti attraversano; è
+            # idempotente, quindi non disturba chi pulisce già (issue #221).
+            autore = _safe_name(trigger_author or principal_hint or "channel")
             recent.append({
                 "author": autore,
                 # Era `human` per QUALUNQUE innesco: un sistema terzo entrava
