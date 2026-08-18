@@ -3412,25 +3412,50 @@ async def channel_messages(tier: str, name: str, request: Request, limit: int = 
     # cosa. Serve a non mandare su Telegram una menzione a chi era davanti allo
     # schermo quando è arrivata.
     presence.touch(chi, tier, name)
-    # La presenza degli UMANI della stanza viaggia con i messaggi, sulla
-    # chiamata che la pagina fa già: un endpoint dedicato raddoppierebbe le
-    # richieste della vista aperta per un dato che cambia esattamente con la
-    # stessa cadenza. Solo gli umani — un agente non ha un browser, e un pallino
-    # su di lui risponderebbe a una domanda diversa (è vivo? sta lavorando?)
-    # usando lo stesso simbolo.
-    umani = _partecipanti_umani(topic.get("meta", {}))
+    # La presenza viaggia con i messaggi, sulla chiamata che la pagina fa già: un
+    # endpoint dedicato raddoppierebbe le richieste della vista aperta per un dato
+    # che cambia esattamente con la stessa cadenza.
+    #
+    # Umani E PROXY (18 ago 2026): per entrambi «presente» significa la stessa
+    # cosa — qualcuno dall'altra parte che sta leggendo. I bot restano fuori, che
+    # è la parte da non perdere di vista: su un agente lo stesso pallino
+    # risponderebbe a un'altra domanda (è vivo? sta lavorando?), e per quella ci
+    # sono `active_responders` e il box live.
+    presenti = _partecipanti_con_presenza(topic.get("meta", {}))
     return {"messages": topics_client.list_messages(tier, name, limit=limit),
-            "presence": presence.stati(umani, tier, name)}
+            "presence": presence.stati(presenti, tier, name)}
 
 
-def _partecipanti_umani(meta: dict) -> list[str]:
+#: Tipi di principal per cui «presente» vuol dire la stessa cosa: qualcuno
+#: dall'altra parte che sta leggendo la stanza, o che non c'è.
+#:
+#: `human` c'è dal principio. `proxy` si aggiunge il 18 ago 2026 su richiesta di
+#: Davide, e il meccanismo non ha avuto bisogno di nulla: `presence.touch` scrive
+#: per QUALUNQUE membro che legge i messaggi, quindi la presenza di un proxy era
+#: già registrata — solo non veniva mai mostrata, perché questo filtro chiedeva
+#: `type == "human"`.
+#:
+#: I `bot` restano fuori, e non per dimenticanza: un agente non ha nessuno
+#: dall'altra parte, e un pallino su di lui risponderebbe a un'altra domanda
+#: (è vivo? sta lavorando?) con lo stesso simbolo. Per quello ci sono
+#: `active_responders` e il box live.
+_TIPI_CON_PRESENZA = ("human", "proxy")
+
+
+def _partecipanti_con_presenza(meta: dict) -> list[str]:
+    """Partecipanti per cui il pallino di presenza ha un senso.
+
+    Un proxy è un sistema terzo con un posto nella stanza e un'identità propria:
+    quando legge, la domanda «c'era quando l'hanno chiamato?» è la stessa che si
+    fa per una persona, e la risposta si misura allo stesso modo.
+    """
     from ..agents import registry
     out = []
     for nome in list(meta.get("participants") or []) + [meta.get("owner")]:
         if not nome or nome in out:
             continue
         spec = registry.get_by_name(nome)
-        if spec is not None and getattr(spec, "type", "") == "human":
+        if spec is not None and getattr(spec, "type", "") in _TIPI_CON_PRESENZA:
             out.append(nome)
     return out
 
