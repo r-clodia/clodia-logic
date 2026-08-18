@@ -164,6 +164,38 @@ def _save_state(state: dict) -> None:
         LOG.warning("pack ops: state not saved (%s)", str(e)[:100])
 
 
+def drift(decls: dict | None = None, *, mounted: list[str] | None) -> dict:
+    """Dichiarato nei manifest vs montato nel gateway.
+
+    È la domanda che nessuno poteva fare: `pending_report` elencava ciò che i
+    pack dichiarano, mai ciò che nel gateway c'è per davvero, e i due insiemi
+    divergono in silenzio ogni volta che un mount viene negato o che una
+    rimozione lascia un backend orfano.
+
+    `mounted=None` (gateway muto) NON è «niente montato»: senza quella
+    distinzione ogni pack installato risulterebbe in drift.
+    """
+    d = decls if decls is not None else declarations()
+    declared = [(plugin, server)
+                for plugin, spec in sorted(d.items())
+                for server in sorted((spec or {}).get("mcp_servers") or {})]
+    if mounted is None:
+        return {"unavailable": True,
+                "declared": [{"plugin": p, "server": s} for p, s in declared],
+                "note": "gateway non raggiungibile: drift non calcolabile"}
+    have = set(mounted)
+    declared_names = {s for _p, s in declared}
+    return {
+        "declared": [{"plugin": p, "server": s} for p, s in declared],
+        "mounted": sorted(have),
+        # Dichiarato e non montato: il pack non funziona, e finora non si vedeva.
+        "missing": [{"plugin": p, "server": s} for p, s in declared if s not in have],
+        # Montato e non dichiarato da alcun plugin: backend aggiunti a mano o
+        # residui di una rimozione. Non è un errore, è una cosa da sapere.
+        "unmanaged": sorted(have - declared_names),
+    }
+
+
 def pending_report(decls: dict | None = None) -> dict:
     """DETERMINISTIC list of what is missing, delivering no agentic turn.
 
@@ -172,6 +204,9 @@ def pending_report(decls: dict | None = None) -> dict:
     attempted gated verbs (`mcp.add`, `packs.install_*`) and raised a consent
     request for each one, outside any channel. The UI already flags packs with a
     pending setup; this leaves the readable trace.
+
+    Resta SENZA I/O: il drift (`drift()`) è una funzione a parte perché
+    richiede una chiamata al gateway, e il path di avvio non deve farne.
     """
     d = decls if decls is not None else declarations()
     return {"plugins": sorted(d), "declarations": d, "digest": _decls_digest(d)}

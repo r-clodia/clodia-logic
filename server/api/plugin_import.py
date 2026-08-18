@@ -24,6 +24,11 @@ Gli MCP server dichiarati dal plugin vengono salvati nel manifest. Il layer API
 di import, già autorizzato dall'owner/admin, prova poi il mount automatico via
 gateway `mcp.add`; se fallisce, il risultato espone un warning strutturato.
 
+In rimozione i `datastores:` dichiarati NON seguono il plugin: stanno dentro
+`plugins/<plugin>/`, che qui viene cancellata, e sono dati dell'utente. Vengono
+spostati in `CLODIA_DATA/plugins-archive/<plugin>-<timestamp>/` e la risposta
+dell'API dice dove sono finiti (`archive_datastores`).
+
 Sicurezza: riusa le guardie di skill_import (zip-slip, limiti dimensione,
 clone shallow con timeout).
 """
@@ -34,6 +39,7 @@ import logging
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -418,15 +424,82 @@ def install_plugin_from_root(
     }
 
 
-def remove_plugin(name: str) -> list[str]:
-    """Rimuove skills/rules/manifest di un plugin. Ritorna i path rimossi.
+def _archive_root() -> Path:
+    """Dove finiscono i dati salvati dalla rimozione.
+
+    Fratello di `plugins/`, non figlio: la directory del plugin è esattamente
+    quella che viene cancellata."""
+    return PLUGINS_META_DIR.parent / "plugins-archive"
+
+
+def archive_datastores(name: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Sposta FUORI i datastore dichiarati, prima che la dir del plugin sparisca.
+
+    I datastore vivono per definizione in `plugins/<nome>/<path>` (lo impone
+    `_sanitize_datastores`: path relativi, niente traversal) — cioè dentro la
+    directory che `remove_plugin` cancella con un `rmtree`. Disinstallare un
+    plugin di contabilità portava via i libri contabili senza chiedere niente a
+    nessuno, e senza dirlo dopo.
+
+    Ritorna (archiviati, trattenuti). `trattenuti` non è vuoto quando uno
+    spostamento fallisce: in quel caso la directory NON va cancellata, perché
+    cancellarla sarebbe la perdita di dati che questa funzione esiste per
+    evitare.
+    """
+    meta_dir = PLUGINS_META_DIR / name
+    manifest = meta_dir / "plugin.yaml"
+    if not manifest.is_file():
+        return [], []
+    try:
+        meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+    except Exception as e:  # noqa: BLE001
+        # Manifest illeggibile: non si sa cosa è dato e cosa è codice. Si
+        # trattiene tutto — l'unico errore non recuperabile è cancellare.
+        LOG.error("manifest di '%s' illeggibile (%s): datastore non identificabili, "
+                  "directory conservata", name, str(e)[:120])
+        return [], [{"path": ".", "kept": str(meta_dir), "reason": "manifest illeggibile"}]
+
+    declared = _sanitize_datastores(meta.get("datastores") if isinstance(meta, dict) else None)
+    if not declared:
+        return [], []
+
+    stamp = time.strftime("%Y%m%d-%H%M%S")
+    dest_root = _archive_root() / f"{name}-{stamp}"
+    archived: list[dict[str, Any]] = []
+    retained: list[dict[str, Any]] = []
+    for ds in declared:
+        src = meta_dir / ds["path"]
+        if not src.exists():
+            continue  # dichiarato ma mai provisionato: niente da salvare
+        dest = dest_root / ds["path"]
+        try:
+            dest.parent.mkdir(parents=True, exist_ok=True)
+            shutil.move(str(src), str(dest))
+        except OSError as e:
+            LOG.error("datastore '%s' del plugin '%s' non archiviabile (%s): "
+                      "la directory resta al suo posto", ds["path"], name, str(e)[:120])
+            retained.append({"path": ds["path"], "kept": str(src), "reason": str(e)[:200]})
+            continue
+        archived.append({"path": ds["path"], "archived": str(dest), "pii": ds["pii"]})
+    return archived, retained
+
+
+def remove_plugin(name: str) -> dict[str, Any]:
+    """Rimuove skills/rules/manifest di un plugin, CONSERVANDO i suoi dati.
+
+    Ritorna `{"removed": [path...], "datastores_archived": [...],
+    "datastores_retained": [...]}`; `removed` vuoto = plugin inesistente.
 
     Nessun controllo sui nomi riservati: il chiamante (API) valida prima."""
+    archived, retained = archive_datastores(name)
     targets = [
         catalog.DATA_SKILLS_DIR / name,
         catalog.DATA_RULES_DIR / name,
-        PLUGINS_META_DIR / name,
     ]
+    if not retained:
+        # Con dati che non si sono potuti mettere in salvo, il manifest resta:
+        # è ciò che dice a chi ripasserà di lì che cosa sono quei file.
+        targets.append(PLUGINS_META_DIR / name)
     removed: list[str] = []
     for t in targets:
         if t.is_dir():
@@ -435,7 +508,8 @@ def remove_plugin(name: str) -> list[str]:
     if removed:
         catalog._invalidate("skill")
         catalog._invalidate("rule")
-    return removed
+    return {"removed": removed, "datastores_archived": archived,
+            "datastores_retained": retained}
 
 
 def import_plugin_zip(data: bytes, *, source: str = "zip-upload") -> dict[str, Any]:

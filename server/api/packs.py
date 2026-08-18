@@ -31,7 +31,8 @@ from pydantic import BaseModel
 
 from ..agents.loader import registry
 from ..config import workspace_path
-from . import catalog, gateway_pdp, pack_import, pack_mcp_mount, plugins as plugins_api
+from . import (catalog, gateway_pdp, pack_deprovision, pack_import,
+               pack_mcp_mount, plugins as plugins_api)
 
 LOG = logging.getLogger("agent-server.api.packs")
 router = APIRouter()
@@ -567,6 +568,28 @@ async def mark_pack_setup_done(name: str, request: Request):
     return {"name": name, "setup_pending": False}
 
 
+@router.get("/clodia/pack-ops/report")
+async def pack_ops_report(request: Request):
+    """Riconciliazione: cosa i pack dichiarano, cosa il gateway ha montato.
+
+    Fuori da `/clodia/packs/...` di proposito: `/clodia/packs/{name}` è
+    registrata prima e catturerebbe questo path come se fosse il nome di un pack.
+
+    Il confronto non si poteva fare da nessuna parte: il report di boot elenca le
+    dichiarazioni, la config del gateway sa i backend, e i due lati non si sono
+    mai guardati. Read-only — non monta e non smonta niente: quello resta un
+    atto esplicito.
+    """
+    principal = gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    from . import pack_ops
+    # Il client del gateway è `requests` sincrono: fuori dall'event loop.
+    import asyncio
+    mounted = await asyncio.to_thread(pack_mcp_mount.mounted_backends, principal)
+    report = pack_ops.pending_report()
+    report["drift"] = pack_ops.drift(report["declarations"], mounted=mounted)
+    return report
+
+
 @router.get("/clodia/packs/{name}/flows")
 async def get_pack_flows(name: str, request: Request):
     """Le dichiarazioni di flusso del pack: cosa chiede, cosa è già approvato.
@@ -671,8 +694,12 @@ def _set_pack_flows_approved(name: str, granted: list) -> None:
 
 @router.delete("/clodia/packs/{name}")
 async def delete_pack(name: str, request: Request):
-    """Rimuove un pack: i suoi plugin, i suoi agenti (non nativi) e il manifest."""
-    await gateway_pdp.require_authz_async(request, "packs.remove")  # admin-only (PDP gateway)
+    """Rimuove un pack: i suoi plugin, i suoi agenti (non nativi) e il manifest,
+    e smonta dal gateway i servizi che l'installazione aveva montato."""
+    # Le due modifiche si sommano: la forma `_async` (#106, non ferma l'event
+    # loop) E il principal, che il deprovision usa per agire come chi ha
+    # autorizzato. Il wrapper async ritorna lo stesso valore del sincrono.
+    principal = await gateway_pdp.require_authz_async(request, "packs.remove")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     # base-pack (e gli altri riservati) è first-party e NON è rimovibile — guardia
@@ -681,6 +708,9 @@ async def delete_pack(name: str, request: Request):
         return JSONResponse(
             status_code=403,
             content={"error": f"'{name}' è un pack first-party, non rimovibile"})
+    # I servizi dichiarati si leggono PRIMA: dopo la rimozione i manifest non ci
+    # sono più, e con loro l'unico posto che sapeva cosa andava smontato.
+    snap = pack_deprovision.snapshot_pack(name)
     try:
         result = pack_import.remove_pack(name)
     except KeyError:
@@ -690,8 +720,18 @@ async def delete_pack(name: str, request: Request):
             return JSONResponse(status_code=403,
                                 content={"error": f"'{name}' è nativo, non rimovibile"})
         removed = remove_plugin(name)
-        if not removed:
+        if not removed["removed"]:
             return JSONResponse(status_code=404, content={"error": "pack non trovato"})
-        result = {"deleted": name, "plugins": [name], "agents": []}
+        result = {"deleted": name, "plugins": [name], "agents": [],
+                  "datastores_archived": removed["datastores_archived"],
+                  "datastores_retained": removed["datastores_retained"]}
+    report = await pack_deprovision.deprovision_async(
+        snap, principal,
+        agents=result.get("agents") or [],
+        datastores_archived=result.pop("datastores_archived", []),
+        datastores_retained=result.pop("datastores_retained", []),
+    )
+    if report:
+        result["deprovision"] = report
     plugins_api.invalidate_plugins()
     return result

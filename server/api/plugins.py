@@ -38,7 +38,7 @@ from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
 from ..config import workspace_path
-from . import catalog, gateway_pdp, pack_mcp_mount, plugin_import
+from . import catalog, gateway_pdp, pack_deprovision, pack_mcp_mount, plugin_import
 from .plugin_import import RESERVED_PLUGIN_NAMES
 
 LOG = logging.getLogger("agent-server.api.plugins")
@@ -399,19 +399,32 @@ async def import_plugin_url(payload: PluginImportUrl, request: Request):
 
 @router.delete("/clodia/plugins/{name}")
 async def delete_plugin(name: str, request: Request):
-    """Rimuove un plugin non nativo: skills, rules e manifest.
+    """Rimuove un plugin non nativo: skills, rules e manifest, e smonta dal
+    gateway i backend MCP che aveva montato.
 
     Per i plugin external il marker `.external-packs/<pack>.installed` resta al
     suo posto, quindi la rimozione è durevole (nessuna reinstallazione al
     prossimo boot)."""
-    await gateway_pdp.require_authz_async(request, "mcp.remove")  # admin-only
+    # Forma `_async` (#106) E principal per il deprovision: si sommano.
+    principal = await gateway_pdp.require_authz_async(request, "mcp.remove")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     if name in RESERVED_PLUGIN_NAMES:
         return JSONResponse(
             status_code=403, content={"error": f"'{name}' è un plugin nativo, non rimovibile"})
+    # Snapshot prima della rimozione: i manifest sono la sola fonte di ciò che
+    # va smontato, e fra un attimo non ci saranno più.
+    snap = pack_deprovision.snapshot([name])
     removed = plugin_import.remove_plugin(name)
-    if not removed:
+    if not removed["removed"]:
         return JSONResponse(status_code=404, content={"error": "plugin non trovato"})
+    result: dict[str, Any] = {"deleted": name}
+    report = await pack_deprovision.deprovision_async(
+        snap, principal,
+        datastores_archived=removed["datastores_archived"],
+        datastores_retained=removed["datastores_retained"],
+    )
+    if report:
+        result["deprovision"] = report
     invalidate_plugins()
-    return {"deleted": name}
+    return result

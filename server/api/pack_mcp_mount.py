@@ -109,3 +109,25 @@ def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
                              "review (Prima Legge: un import non avvia processi).")
         result["mcp_mount"] = entry
     return result
+
+
+def mounted_backends(principal: str) -> list[str] | None:
+    """I backend MCP montati DAVVERO, secondo `runtime.mcp_servers`.
+
+    `None` (non `[]`) quando il gateway non risponde: la lista vuota direbbe
+    «non c'è montato niente» e farebbe apparire in drift ogni pack installato.
+    """
+    try:
+        status, data = gateway_pdp.gw_tool("runtime.mcp_servers", {}, principal)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("lettura backend montati non disponibile: %s", str(e)[:120])
+        return None
+    if status != 200:
+        return None
+    result = data.get("result") if isinstance(data.get("result"), dict) else data
+    backends = result.get("mcp_backends") or []
+    if not isinstance(backends, list):
+        return None
+    names = {str(b.get("name") or "").strip() if isinstance(b, dict) else str(b).strip()
+             for b in backends}
+    return sorted(n for n in names if n)

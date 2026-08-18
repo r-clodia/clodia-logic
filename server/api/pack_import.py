@@ -494,11 +494,16 @@ def remove_pack(name: str) -> dict[str, Any]:
         manifest = {}
 
     removed_plugins: list[str] = []
+    archived: list[dict[str, Any]] = []
+    retained: list[dict[str, Any]] = []
     for plugin in manifest.get("plugins") or []:
         plugin = str(plugin)
         if plugin in plugin_import.RESERVED_PLUGIN_NAMES:
             continue
-        if plugin_import.remove_plugin(plugin):
+        res = plugin_import.remove_plugin(plugin)
+        archived += res["datastores_archived"]
+        retained += res["datastores_retained"]
+        if res["removed"]:
             removed_plugins.append(plugin)
 
     removed_agents: list[str] = []
@@ -514,9 +519,10 @@ def remove_pack(name: str) -> dict[str, Any]:
         registry.load()
 
     shutil.rmtree(PACKS_META_DIR / name, ignore_errors=True)
-    LOG.info("pack '%s' rimosso: %d plugin, %d agenti", name,
-             len(removed_plugins), len(removed_agents))
-    return {"deleted": name, "plugins": removed_plugins, "agents": removed_agents}
+    LOG.info("pack '%s' rimosso: %d plugin, %d agenti, %d datastore archiviati",
+             name, len(removed_plugins), len(removed_agents), len(archived))
+    return {"deleted": name, "plugins": removed_plugins, "agents": removed_agents,
+            "datastores_archived": archived, "datastores_retained": retained}
 
 
 def import_pack_zip(data: bytes, *, source: str = "zip-upload") -> dict[str, Any]:
