@@ -263,6 +263,40 @@ class AgentSpec(BaseModel):
         if any((self.rag_read, self.rag_write, self.volumes, self.credentials, self.carries or [])):
             raise ValueError("proxy: nessun file/RAG/volume/credential ammesso")
         return self
+
+    @model_validator(mode="after")
+    def _activation_and_multi_spawn_agree(self):
+        """`activation` e `multi_spawn` sono due nomi dello stesso fatto: uno
+        solo va dichiarato, e i due non possono dire cose opposte (R15, #191).
+
+        - non dichiarato → derivato da `multi_spawn` (quindi `queue` per tutti i
+          seed esistenti: nessun cambiamento in produzione);
+        - `parallel` dichiarato → accende `multi_spawn`, che è il campo che il
+          canale legge davvero. Il seed dichiara la meccanica e la OTTIENE:
+          un'etichetta che non governa il comportamento sarebbe una metà-fix;
+        - contraddizione → errore in validazione, che è l'unico punto dove c'è
+          una persona a leggerlo. Un profilo muto si interpreta, uno che si
+          contraddice no.
+        """
+        dichiarato = "multi_spawn" in self.model_fields_set
+        if self.activation is None:
+            self.activation = "parallel" if self.multi_spawn else "queue"
+            return self
+        if self.activation == "parallel":
+            if dichiarato and not self.multi_spawn:
+                raise ValueError(
+                    f"agent {self.name}: `activation: parallel` e "
+                    "`multi_spawn: false` si contraddicono — il parallelo È il "
+                    "multi-spawn. Dichiarane uno solo.")
+            self.multi_spawn = True
+        elif self.multi_spawn:
+            raise ValueError(
+                f"agent {self.name}: `activation: {self.activation}` e "
+                "`multi_spawn: true` si contraddicono — con il multi-spawn un "
+                "secondo messaggio forka un'istanza, quindi non si accoda né "
+                "viene rifiutato. Dichiarane uno solo.")
+        return self
+
     # ── Multi-spawn (issue clodia-platform#94): N istanze concorrenti ──────
     # True = in un contesto (topic) il seed può materializzare più spawn
     # concorrenti, identificati da ordinale (#1, #2, …). La menzione generica
@@ -353,6 +387,23 @@ class AgentSpec(BaseModel):
     # eleggibili dal routing automatico solo per richieste esplicite di stato
     # del topic (summary, minute, verbali, prossimi passi).
     routing_mode: Literal["normal", "state_writer_only"] = "normal"
+    # Meccanica di attivazione quando arriva un messaggio per un agente che sta
+    # già rispondendo (router-notebook R15, issue clodia-platform#191). Fratello
+    # di `routing_mode`: quello dice SE può essere scelto, questo COSA succede
+    # quando è già occupato.
+    #   queue    — ci si accoda (FIFO del lock di ChatSession). È il default e il
+    #              comportamento storico di ogni seed: il campo arriva senza
+    #              cambiare nulla in produzione.
+    #   parallel — si forka un'altra istanza (#2, #3…): è `multi_spawn`, che
+    #              questo campo assorbe invece di duplicare (vedi il validator).
+    #   refuse   — nessun secondo turno finché il primo non finisce, con una nota
+    #              di sistema nel topic (`channels._start_turn`).
+    # La coda è per (SCOPE, seed), non per seed: la ChatSession è indicizzata
+    # `chan:<tier>:<name>:<seed>[#N]`, quindi due stanze non si accodano l'una
+    # sull'altra. Non è una scelta di policy aperta — è ciò che il codice fa.
+    # `None` = «non dichiarato»: il validator lo deriva e il campo non resta mai
+    # None dopo la validazione.
+    activation: Optional[Literal["queue", "parallel", "refuse"]] = None
     # Profilo di costo dichiarato: "economy" (haiku), "standard" (sonnet),
     # "premium" (opus). Usato dalla selection engine come tie-break.
     cost_profile: str = "standard"
