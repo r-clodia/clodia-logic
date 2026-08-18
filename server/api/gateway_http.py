@@ -42,6 +42,13 @@ class GatewayHTTP:
     sostituzione di nome e non una riscrittura dei chiamanti.
     """
 
+    # SHORTCUT: lo stato del breaker vive nel processo, non è condiviso fra
+    #           worker: con più worker ognuno impara per conto suo (al peggio
+    #           N sonde invece di una). Regge finché i worker sono pochi;
+    #           sopra, lo stato va in un posto comune (redis/gateway) — e a
+    #           quel punto va anche deciso chi ha l'autorità di dichiarare
+    #           «giù» per tutti.
+
     def __init__(self, name: str, threshold: int = _THRESHOLD,
                  cooldown: float = _COOLDOWN):
         self.name = name
