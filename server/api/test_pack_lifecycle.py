@@ -235,6 +235,73 @@ class PackLifecycleTest(unittest.TestCase):
         dest = Path(archived[0]["archived"])
         self.assertTrue((dest / "libri.sqlite").is_file())
 
+    def test_undeclared_data_survives_too(self) -> None:
+        """«Non dichiarato» non vuol dire «non è un dato».
+
+        Il server MCP di un plugin scrive dove gira: un db creato a runtime, o un
+        `datastores:` che il pack developer ha dimenticato, non compaiono nel
+        manifest — e la rimozione li portava via col rmtree della directory,
+        salvando solo ciò che era dichiarato.
+        """
+        self._install_pack()
+        self._seed_datastore()
+        meta = self.plugins_meta / "contabilita"
+        (meta / "prima-nota.sqlite3").write_text("saldi 2026", encoding="utf-8")
+        (meta / "export").mkdir()
+        (meta / "export" / "fatture.csv").write_text("dati cliente", encoding="utf-8")
+
+        res = asyncio.run(plugins.delete_plugin("contabilita", self._admin_request()))
+
+        archived = res["deprovision"]["datastores_archived"]
+        salvati = [a for a in archived if a.get("undeclared")]
+        self.assertEqual(len(salvati), 1, archived)
+        self.assertEqual(sorted(salvati[0]["undeclared"]),
+                         ["export/fatture.csv", "prima-nota.sqlite3"])
+        dest = Path(salvati[0]["archived"])
+        self.assertEqual((dest / "prima-nota.sqlite3").read_text(encoding="utf-8"),
+                         "saldi 2026")
+        self.assertEqual((dest / "export" / "fatture.csv").read_text(encoding="utf-8"),
+                         "dati cliente")
+
+    def test_plugin_without_declarations_keeps_its_files(self) -> None:
+        """Il caso peggiore: manifest senza `datastores:`.
+
+        Niente di dichiarato significava niente da archiviare, quindi la
+        directory intera nel rmtree — proprio il plugin che non dichiara nulla
+        era quello che perdeva tutto.
+        """
+        meta = self.plugins_meta / "muto"
+        meta.mkdir()
+        (meta / "plugin.yaml").write_text(
+            yaml.safe_dump({"name": "muto", "description": "x"}), encoding="utf-8")
+        (meta / "storico.db").write_text("dieci anni di lavoro", encoding="utf-8")
+
+        res = plugin_import.remove_plugin("muto")
+
+        self.assertFalse(meta.exists())          # il plugin è rimosso…
+        self.assertEqual(res["removed"], [str(meta)])
+        dest = Path([a for a in res["datastores_archived"]
+                     if a.get("undeclared")][0]["archived"])
+        # …e i dati sono altrove, non cancellati.
+        self.assertEqual((dest / "storico.db").read_text(encoding="utf-8"),
+                         "dieci anni di lavoro")
+
+    def test_archive_failure_deletes_nothing(self) -> None:
+        """Se lo spostamento non riesce, la rimozione non prosegue sui dati:
+        cancellare sarebbe la perdita che l'archiviazione esiste per evitare."""
+        self._install_pack()
+        db = self._seed_datastore()
+
+        with mock.patch.object(plugin_import.shutil, "move",
+                               side_effect=OSError("disco pieno")):
+            res = plugin_import.remove_plugin("contabilita")
+
+        self.assertEqual(res["datastores_archived"], [])
+        self.assertEqual([r["path"] for r in res["datastores_retained"]], ["."])
+        self.assertEqual((db / "libri.sqlite").read_text(encoding="utf-8"),
+                         "dati del cliente")
+        self.assertNotIn(str(self.plugins_meta / "contabilita"), res["removed"])
+
     def test_rag_collections_are_reported_not_dropped(self) -> None:
         """Le collection RAG non si cancellano da sole: nessun verbo rag.* parte
         dalla rimozione, e restano come gap dichiarato all'admin."""
