@@ -3037,8 +3037,25 @@ async def channel_routing_choice(tier: str, name: str, request: Request) -> dict
             "learned": bool(vec)}
 
 
+def _instances_of(tier: str, name: str, agent: str | None) -> set[str]:
+    """I chat_id di TUTTE le istanze vive di un seed in questo canale.
+
+    Un agente non è un chat_id: `worker` in esercizio può essere `worker`,
+    `worker#2` e `worker#3` insieme. Confrontare per uguaglianza esatta — o per
+    prefisso di stringa, che pesca anche `worker-legacy` — sono i due modi
+    sbagliati di rispondere a «questa sessione è di quell'agente?», e li
+    abbiamo fatti entrambi. `_sessions_of` conosce già le due forme della
+    chiave: qui si riusa, non si riscrive.
+    """
+    seed = _seed_name(agent) if agent else None
+    if not seed:
+        return set()
+    return {cid for cid, _busy in _sessions_of(tier, name, seed)}
+
+
 async def _interrupt_channel_turns(tier: str, name: str,
-                                   keep: str | None = None) -> list[str]:
+                                   keep: str | None = None,
+                                   only: str | None = None) -> list[str]:
     """Ferma i turni in corso dei responder di questo canale.
 
     Sta fuori dall'endpoint perché ha DUE chiamanti: l'interruzione chiesta a
@@ -3046,18 +3063,29 @@ async def _interrupt_channel_turns(tier: str, name: str,
     turno sbagliato prima di avviare quello giusto. Con la ricerca dei chat_id
     duplicata, la prossima correzione al meccanismo ne sistemerebbe uno solo.
 
+    `only` restringe a UN agente (tutte le sue istanze): è lo scavalcamento, che
+    ri-instrada **un messaggio** e non ha titolo a fermare il lavoro di chi in
+    quella conversazione non c'entra (#253). Senza `only` si ferma la stanza
+    intera, che è il significato del bottone «interrompi» ed è l'unico posto in
+    cui quel significato deve restare.
+
     `keep` esclude un responder: nello scavalcamento è quello a cui stiamo
     consegnando il turno, e ucciderlo per riavviarlo subito dopo sarebbe lavoro
     buttato — l'allocazione della menzione in `_start_turn` sa già accodarsi.
+    Vale per tutte le sue istanze: risparmiare `worker` e uccidere `worker#2`
+    poteva uccidere proprio quella a cui il turno stava andando.
     """
     prefix = f"chan:{tier}:{name}:"
-    spared = f"{prefix}{keep}" if keep else None
+    spared = _instances_of(tier, name, keep)
+    targets = _instances_of(tier, name, only) if only else None
     interrupted: list[str] = []
     for chat in manager.list():
         chat_id = getattr(chat, "chat_id", "")
         if not chat_id.startswith(prefix):
             continue
-        if spared and chat_id == spared:
+        if targets is not None and chat_id not in targets:
+            continue
+        if chat_id in spared:
             continue
         try:
             if await chat.interrupt_current_turn():
@@ -3077,6 +3105,35 @@ async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(404, "canale non trovato")
     _require_contributor(request, topic.get("meta", {}))
     return {"interrupted": await _interrupt_channel_turns(tier, name)}
+
+
+def _misrouted_responder(messages: list[dict], human: dict,
+                         declared: str | None) -> str | None:
+    """L'agente che il router aveva scelto per QUESTO messaggio.
+
+    Due sorgenti, in quest'ordine:
+
+    - quella che DICHIARA il client: la barra 🧭 conosce la decisione che sta
+      mostrando, ed è la stessa che il chip sta scavalcando;
+    - il canale, quando il client non la manda: il primo autore AI dopo il
+      messaggio instradato male è, per costruzione, il turno avviato per esso.
+
+    `None` quando nessuna delle due risponde — il turno sbagliato non ha ancora
+    scritto e il client non ha detto chi fosse. Allora non si ferma NIENTE:
+    fermare la stanza «per sicurezza» era il difetto, e l'agente sbagliato che
+    finisce di parlare costa meno del lavoro altrui buttato via.
+    """
+    if declared:
+        return _seed_name(declared) or declared
+    chiave = _message_key(human)
+    dopo = False
+    for m in messages:
+        if _message_key(m or {}) == chiave:
+            dopo = True
+            continue
+        if dopo and (m or {}).get("kind") == "ai":
+            return _seed_name((m or {}).get("author"))
+    return None
 
 
 def _may_overrule_routing(meta: dict, principal: str, author: str) -> bool:
@@ -3111,6 +3168,11 @@ async def channel_routing_overrule(tier: str, name: str, request: Request) -> di
     L'ordine è la sostanza del fix: prima si ferma il turno sbagliato, poi si
     avvia quello giusto. Invertito, l'interruzione ucciderebbe il turno appena
     avviato.
+
+    Si ferma UN agente, non la stanza (#253): ri-instradare un messaggio non è
+    un'autorizzazione a buttare via il turno di chi in quella conversazione non
+    c'entra. Fermare tutti ha già il suo endpoint (`/interrupt`) e il suo
+    bottone, ed è una cosa che si chiede, non un effetto collaterale.
     """
     principal = _principal_from_request(request)
     if not principal:
@@ -3141,7 +3203,15 @@ async def channel_routing_overrule(tier: str, name: str, request: Request) -> di
     if responder is None or responder.name != chosen:
         raise HTTPException(400, trace.get("reason")
                             or f"agente '{chosen}' non instradabile")
-    interrupted = await _interrupt_channel_turns(tier, name, keep=chosen)
+    misrouted = _misrouted_responder(messages, human,
+                                     (body.get("chosen") or "").strip() or None)
+    if misrouted:
+        interrupted = await _interrupt_channel_turns(tier, name, keep=chosen,
+                                                     only=misrouted)
+    else:
+        LOG.info("scavalcamento su %s/%s senza un agente instradato male "
+                 "identificabile: nessun turno fermato", tier, name)
+        interrupted = []
     started = await _start_turn(
         tier, name, tier_real, responder, principal, human["text"], "routed-choice"
     )

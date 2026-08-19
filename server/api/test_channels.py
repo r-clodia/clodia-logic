@@ -1811,28 +1811,40 @@ class RoutingOverruleTests(unittest.IsolatedAsyncioTestCase):
         ]
         self.order: list[str] = []
 
-    def _request(self, agent: str = "worker") -> SimpleNamespace:
-        return SimpleNamespace(headers={},
-                               json=AsyncMock(return_value={"agent": agent}))
+    def _request(self, agent: str = "worker",
+                 chosen: str | None = None) -> SimpleNamespace:
+        body: dict = {"agent": agent}
+        if chosen:
+            body["chosen"] = chosen
+        return SimpleNamespace(headers={}, json=AsyncMock(return_value=body))
 
     def _enter(self, stack: ExitStack, principal: str, *,
-               running: str = "accountant", embedding=(0.1, 0.2)):
+               running: str | tuple[str, ...] = "accountant",
+               embedding=(0.1, 0.2)):
         """Entra le patch comuni e restituisce il doppio di `record_correction`.
 
         L'ordine reale delle due azioni è ciò che il test guarda: interruzione e
         avvio scrivono in `self.order`, così la sequenza è osservabile e non
         dedotta dal fatto che entrambe siano state chiamate.
+
+        `running` accetta PIÙ label perché la stanza reale ne ha più d'uno: con
+        una sola sessione viva «ferma il turno sbagliato» e «ferma tutti» sono
+        indistinguibili, ed è la differenza che #253 misura.
         """
-        async def interrupt() -> bool:
-            self.order.append(f"interrupt:{running}")
-            return True
+        labels = (running,) if isinstance(running, str) else tuple(running)
+
+        def _chat(label: str) -> SimpleNamespace:
+            async def interrupt() -> bool:
+                self.order.append(f"interrupt:{label}")
+                return True
+            return SimpleNamespace(chat_id=f"chan:SEAL-1:demo:{label}",
+                                   interrupt_current_turn=interrupt)
 
         async def start_turn(*_a, **_k) -> bool:
             self.order.append("start:worker")
             return True
 
-        chat = SimpleNamespace(chat_id=f"chan:SEAL-1:demo:{running}",
-                               interrupt_current_turn=interrupt)
+        chats = [_chat(label) for label in labels]
         # `_from_human` chiede al registry se l'autore è una persona (#221):
         # senza queste identità l'ultimo messaggio umano non esisterebbe.
         people = {"guest": _a("guest", "human"), "owner": _a("owner", "human"),
@@ -1847,7 +1859,7 @@ class RoutingOverruleTests(unittest.IsolatedAsyncioTestCase):
             patch.object(channels.topics_client, "list_messages",
                          return_value=self.messages),
             patch.object(channels, "_pick_responder", return_value=self.worker),
-            patch.object(channels.manager, "list", return_value=[chat]),
+            patch.object(channels.manager, "list", return_value=chats),
             patch.object(channels, "_start_turn", side_effect=start_turn),
             patch.object(channels.responder_routing, "embed_text",
                          return_value=list(embedding)),
@@ -1918,6 +1930,77 @@ class RoutingOverruleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.order, ["interrupt:accountant", "start:worker"])
         self.assertFalse(result["learned"])
         record.assert_not_called()
+
+    async def test_unrelated_agents_keep_working(self) -> None:
+        """#253 · Ri-instradare UN messaggio fermava l'intera stanza.
+
+        `researcher` sta lavorando a una richiesta che non c'entra: lo
+        scavalcamento non l'ha chiesto e non deve buttarne via il turno.
+        """
+        with ExitStack() as stack:
+            self._enter(stack, "guest", running=("accountant", "researcher"))
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(self.order, ["interrupt:accountant", "start:worker"])
+        self.assertEqual(result["interrupted"], ["chan:SEAL-1:demo:accountant"])
+
+    async def test_every_instance_of_the_agent_taking_over_is_spared(self) -> None:
+        """`keep` risparmiava per uguaglianza esatta: `worker` non copriva
+        `worker#2`, cioè si poteva uccidere proprio l'istanza a cui si stava
+        consegnando il turno."""
+        with ExitStack() as stack:
+            self._enter(stack, "guest", running=("accountant", "worker#2"))
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(result["interrupted"], ["chan:SEAL-1:demo:accountant"])
+        self.assertNotIn("interrupt:worker#2", self.order)
+
+    async def test_every_instance_of_the_misrouted_agent_is_stopped(self) -> None:
+        """Speculare: lo scavalcamento vale per il seed instradato male, non per
+        una sua istanza — chi parla è `accountant#2` quanto `accountant`."""
+        with ExitStack() as stack:
+            self._enter(stack, "guest", running=("accountant#2", "researcher"))
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(result["interrupted"], ["chan:SEAL-1:demo:accountant#2"])
+        self.assertNotIn("interrupt:researcher", self.order)
+
+    async def test_the_router_pick_declared_by_the_client_wins(self) -> None:
+        """La barra 🧭 conosce la decisione che sta mostrando: quando la dichiara
+        è quella a fermarsi, anche se un altro agente ha parlato dopo."""
+        self.messages = self.messages + [
+            {"id": "reply-2", "kind": "ai", "author": "researcher", "text": "aggiungo"},
+        ]
+        with ExitStack() as stack:
+            self._enter(stack, "guest", running=("accountant", "researcher"))
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request(chosen="researcher"))
+
+        self.assertEqual(result["interrupted"], ["chan:SEAL-1:demo:researcher"])
+        self.assertNotIn("interrupt:accountant", self.order)
+
+    async def test_the_whole_room_button_still_stops_the_whole_room(self) -> None:
+        """La stanza intera ha già il suo endpoint e il suo bottone: restringere
+        lo scavalcamento non deve restringere anche quello."""
+        async def interrupt_a() -> bool:
+            self.order.append("interrupt:a")
+            return True
+
+        async def interrupt_b() -> bool:
+            self.order.append("interrupt:b")
+            return True
+
+        chats = [SimpleNamespace(chat_id="chan:SEAL-1:demo:a",
+                                 interrupt_current_turn=interrupt_a),
+                 SimpleNamespace(chat_id="chan:SEAL-1:demo:b#2",
+                                 interrupt_current_turn=interrupt_b)]
+        with patch.object(channels.manager, "list", return_value=chats):
+            fermati = await channels._interrupt_channel_turns("SEAL-1", "demo")
+
+        self.assertEqual(fermati, ["chan:SEAL-1:demo:a", "chan:SEAL-1:demo:b#2"])
 
     def test_the_author_of_the_misrouted_message_is_the_human_one(self) -> None:
         """#221: un sistema terzo entra marcato `human` e non deve poter passare
