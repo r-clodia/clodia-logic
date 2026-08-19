@@ -63,8 +63,56 @@ def declarations() -> dict[str, dict]:
     return found
 
 
+_MOUNT_HOW = ("Montali con mcp.add passando la voce del manifest "
+              "({\"mcpServers\": {<nome>: {command, args, env}}}), poi "
+              "runtime.restart_agent per gli agent che li usano. Se il mount va "
+              "negato o fallisce, riportalo come gap: non marcare setup_done.")
+
+
+def _mcp_section(drift_report: dict | None) -> list[str]:
+    """La parte del prompt sui server MCP, con il drift già calcolato quando c'è.
+
+    Il confronto dichiarato-vs-montato ora esiste come funzione (`drift()`) e
+    come endpoint: chiederlo di nuovo all'LLM, che lo rifà a occhio leggendo
+    `mcp.list`, è lavoro duplicato che può anche sbagliare. Se il drift è
+    disponibile lo passiamo come dato e il reconciler agisce sulla lista;
+    se il gateway è muto si torna al confronto a mano, che è meglio di niente.
+    """
+    if not isinstance(drift_report, dict) or drift_report.get("unavailable"):
+        return [
+            "",
+            "Per i mcp_servers: confronta i server dichiarati con `mcp.list` "
+            "(il drift calcolato dalla piattaforma non è disponibile per questo "
+            "turno: il gateway non ha risposto). Quelli assenti NON sono un "
+            "guasto — l'auto-mount all'import è riservato alle fonti fidate, per "
+            "le altre il mount è un atto esplicito. " + _MOUNT_HOW,
+        ]
+
+    missing = [f"{e.get('server')} (plugin {e.get('plugin')})"
+               for e in drift_report.get("missing") or []]
+    unmanaged = list(drift_report.get("unmanaged") or [])
+    return [
+        "",
+        "Per i mcp_servers il confronto è GIÀ FATTO dalla piattaforma leggendo "
+        "`runtime.mcp_servers`: usa questo elenco, non ricostruirlo con `mcp.list`.",
+        f"- DA MONTARE (dichiarati, non montati): {', '.join(missing) or 'nessuno'}",
+        f"- NON GESTITI (montati, non dichiarati da alcun manifest): "
+        f"{', '.join(unmanaged) or 'nessuno'}",
+        "",
+        "I 'da montare' NON sono un guasto — l'auto-mount all'import è riservato "
+        "alle fonti fidate, per le altre il mount è un atto esplicito. "
+        + _MOUNT_HOW,
+        "",
+        "I 'non gestiti' NON si smontano d'iniziativa: possono essere backend "
+        "aggiunti a mano dall'admin, oppure residui di una rimozione. `mcp.remove` "
+        "su un backend che non hai montato tu è distruttivo e la decisione è "
+        "dell'owner: riportali nel report e fermati lì.",
+    ]
+
+
 def _reconcile_prompt(reason: str, decls: dict[str, dict],
-                      *, rag_enabled: bool = True) -> str:
+                      *, rag_enabled: bool = True,
+                      drift_report: dict | None = None) -> str:
     lines = [
         f"[piattaforma · pack ops · trigger: {reason}] Riconciliazione richiesta.",
         "",
@@ -87,15 +135,8 @@ def _reconcile_prompt(reason: str, decls: dict[str, dict],
         "packs.check_command per `bin`/`system`, mcp.add + runtime.restart_agent "
         "per i server MCP dichiarati, rag.create_collection + rag.ingest per "
         "`rag_collections`.",
-        "",
-        "Per i mcp_servers: confronta i server dichiarati con `mcp.list`. Quelli "
-        "assenti NON sono un guasto — l'auto-mount all'import è riservato alle "
-        "fonti fidate, per le altre il mount è un atto esplicito. Montali con "
-        "mcp.add passando la voce del manifest ({\"mcpServers\": {<nome>: "
-        "{command, args, env}}}), poi runtime.restart_agent per gli agent che li "
-        "usano. Se il mount va negato o fallisce, riportalo come gap: non "
-        "marcare setup_done.",
     ]
+    lines += _mcp_section(drift_report)
     if rag_enabled:
         lines += [
             "",
@@ -164,6 +205,38 @@ def _save_state(state: dict) -> None:
         LOG.warning("pack ops: state not saved (%s)", str(e)[:100])
 
 
+def drift(decls: dict | None = None, *, mounted: list[str] | None) -> dict:
+    """Dichiarato nei manifest vs montato nel gateway.
+
+    È la domanda che nessuno poteva fare: `pending_report` elencava ciò che i
+    pack dichiarano, mai ciò che nel gateway c'è per davvero, e i due insiemi
+    divergono in silenzio ogni volta che un mount viene negato o che una
+    rimozione lascia un backend orfano.
+
+    `mounted=None` (gateway muto) NON è «niente montato»: senza quella
+    distinzione ogni pack installato risulterebbe in drift.
+    """
+    d = decls if decls is not None else declarations()
+    declared = [(plugin, server)
+                for plugin, spec in sorted(d.items())
+                for server in sorted((spec or {}).get("mcp_servers") or {})]
+    if mounted is None:
+        return {"unavailable": True,
+                "declared": [{"plugin": p, "server": s} for p, s in declared],
+                "note": "gateway non raggiungibile: drift non calcolabile"}
+    have = set(mounted)
+    declared_names = {s for _p, s in declared}
+    return {
+        "declared": [{"plugin": p, "server": s} for p, s in declared],
+        "mounted": sorted(have),
+        # Dichiarato e non montato: il pack non funziona, e finora non si vedeva.
+        "missing": [{"plugin": p, "server": s} for p, s in declared if s not in have],
+        # Montato e non dichiarato da alcun plugin: backend aggiunti a mano o
+        # residui di una rimozione. Non è un errore, è una cosa da sapere.
+        "unmanaged": sorted(have - declared_names),
+    }
+
+
 def pending_report(decls: dict | None = None) -> dict:
     """DETERMINISTIC list of what is missing, delivering no agentic turn.
 
@@ -172,9 +245,31 @@ def pending_report(decls: dict | None = None) -> dict:
     attempted gated verbs (`mcp.add`, `packs.install_*`) and raised a consent
     request for each one, outside any channel. The UI already flags packs with a
     pending setup; this leaves the readable trace.
+
+    Resta SENZA I/O: il drift (`drift()`) è una funzione a parte perché
+    richiede una chiamata al gateway, e il path di avvio non deve farne.
     """
     d = decls if decls is not None else declarations()
     return {"plugins": sorted(d), "declarations": d, "digest": _decls_digest(d)}
+
+
+async def _drift_snapshot(decls: dict) -> dict | None:
+    """Il drift, calcolato UNA volta qui, da mettere nel prompt.
+
+    Best-effort come tutto il resto del trigger: se la lettura del gateway
+    fallisce il turno parte comunque, col confronto a mano. `None` = non
+    disponibile, e il prompt lo dice invece di far finta di avere il dato.
+    """
+    import asyncio
+    try:
+        from . import pack_mcp_mount
+        # Il client del gateway è `requests` sincrono: fuori dall'event loop,
+        # come già fa l'endpoint del report.
+        mounted = await asyncio.to_thread(pack_mcp_mount.mounted_backends, "platform")
+        return drift(decls, mounted=mounted)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("pack ops: drift non calcolabile per il prompt (%s)", str(e)[:120])
+        return None
 
 
 async def trigger_reconcile(reason: str) -> dict:
@@ -239,7 +334,8 @@ async def trigger_reconcile(reason: str) -> dict:
     chat.principal = "platform"  # trigger di piattaforma, nessun principal umano
     rag_enabled = profile.features.rag != "off"
     await chat.send_user_message_async(
-        _reconcile_prompt(reason, decls, rag_enabled=rag_enabled))
+        _reconcile_prompt(reason, decls, rag_enabled=rag_enabled,
+                          drift_report=await _drift_snapshot(decls)))
     state["last_trigger_digest"] = digest
     _save_state(state)
     LOG.info("pack ops: riconciliazione consegnata a '%s' (%s: %s)",

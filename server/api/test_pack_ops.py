@@ -4,6 +4,7 @@ from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from ..instance_profile import InstanceProfile, PackOpsConfig
+from . import pack_mcp_mount
 from . import pack_ops
 from . import packs
 
@@ -161,6 +162,91 @@ class PackOpsTest(unittest.IsolatedAsyncioTestCase):
 
         self.assertIn("Verbi gated", prompt)
         self.assertIn("delega permanente", prompt)
+
+    def test_prompt_hands_over_the_drift_instead_of_having_it_recomputed(self):
+        """Il confronto esiste come funzione: rifarlo a occhio è lavoro doppio.
+
+        `drift()` sa già cosa è dichiarato e non montato; se il prompt chiede
+        all'LLM di ricostruirlo da `mcp.list` il turno riparte da zero, e può
+        anche sbagliare il confronto.
+        """
+        decls = {"bandi-pack": {"requires": {}, "datastores": [],
+                                "rag_collections": [],
+                                "mcp_servers": {"sedia": {"command": "python3"}}}}
+        d = pack_ops.drift(decls, mounted=["github"])
+
+        prompt = pack_ops._reconcile_prompt("post-import", decls, drift_report=d)
+
+        self.assertIn("GIÀ FATTO", prompt)
+        self.assertIn("sedia (plugin bandi-pack)", prompt)
+        self.assertNotIn("confronta i server dichiarati con `mcp.list`", prompt)
+
+    def test_prompt_forbids_unmounting_the_unmanaged_on_its_own(self):
+        """Un backend non dichiarato può essere dell'admin: non è roba da smontare."""
+        decls = {"bandi-pack": {"requires": {}, "datastores": [],
+                                "rag_collections": [],
+                                "mcp_servers": {"sedia": {"command": "python3"}}}}
+        d = pack_ops.drift(decls, mounted=["sedia", "aggiunto-a-mano"])
+
+        prompt = pack_ops._reconcile_prompt("post-import", decls, drift_report=d)
+
+        self.assertIn("aggiunto-a-mano", prompt)
+        self.assertIn("NON si smontano d'iniziativa", prompt)
+        self.assertIn("la decisione è dell'owner", prompt)
+
+    def test_prompt_falls_back_to_manual_comparison_when_drift_is_unavailable(self):
+        """Gateway muto: meglio il confronto a mano che un elenco inventato."""
+        decls = {"bandi-pack": {"requires": {}, "datastores": [],
+                                "rag_collections": [],
+                                "mcp_servers": {"sedia": {"command": "python3"}}}}
+        d = pack_ops.drift(decls, mounted=None)
+
+        prompt = pack_ops._reconcile_prompt("post-import", decls, drift_report=d)
+
+        self.assertIn("confronta i server dichiarati con `mcp.list`", prompt)
+        self.assertIn("il gateway non ha risposto", prompt)
+        self.assertNotIn("GIÀ FATTO", prompt)
+
+    async def test_trigger_computes_the_drift_and_puts_it_in_the_turn(self):
+        chat = AsyncMock()
+        decls = {"bandi-pack": {"requires": {}, "datastores": [],
+                                "rag_collections": [],
+                                "mcp_servers": {"sedia": {"command": "python3"}}}}
+        with (
+            patch.object(pack_ops, "declarations", return_value=decls),
+            patch("server.instance_profile.load", return_value=InstanceProfile()),
+            patch("server.sdk_runtime.session.known_kind", return_value=True),
+            patch("server.sdk_runtime.session.manager.get", side_effect=KeyError),
+            patch("server.sdk_runtime.session.manager.create",
+                  new_callable=AsyncMock, return_value=chat),
+            patch.object(pack_mcp_mount, "mounted_backends",
+                         return_value=["residuo"]) as mounted,
+        ):
+            result = await pack_ops.trigger_reconcile("post-import")
+
+        self.assertTrue(result["triggered"])
+        mounted.assert_called_once_with("platform")
+        sent = chat.send_user_message_async.await_args.args[0]
+        self.assertIn("sedia (plugin bandi-pack)", sent)   # da montare
+        self.assertIn("residuo", sent)                     # non gestito
+
+    async def test_trigger_survives_a_gateway_that_does_not_answer(self):
+        """Il drift è un extra: se la lettura salta, il turno parte comunque."""
+        chat = AsyncMock()
+        with (
+            patch.object(pack_ops, "declarations", return_value=_DECLS),
+            patch("server.instance_profile.load", return_value=InstanceProfile()),
+            patch("server.sdk_runtime.session.known_kind", return_value=True),
+            patch("server.sdk_runtime.session.manager.get", side_effect=KeyError),
+            patch("server.sdk_runtime.session.manager.create",
+                  new_callable=AsyncMock, return_value=chat),
+            patch.object(pack_mcp_mount, "mounted_backends",
+                         side_effect=RuntimeError("gateway giù")),
+        ):
+            result = await pack_ops.trigger_reconcile("post-import")
+
+        self.assertTrue(result["triggered"])
+        chat.send_user_message_async.assert_awaited_once()
 
     def test_mcp_only_declarations_count_as_pack_ops(self):
         result = {

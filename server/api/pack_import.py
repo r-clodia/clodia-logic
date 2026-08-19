@@ -478,10 +478,26 @@ def validate_flows(flows: dict, source: str = "") -> dict:
         return {"granted": [], "refused": [], "unavailable": str(e)[:200]}
 
 
+def _agents_archive_root() -> Path:
+    """Dove finiscono i seed degli agenti rimossi con il loro pack.
+
+    Fratello di `agents/`, non figlio: `agents/` è la directory che il registry
+    scandisce, e un archivio dentro sarebbe un agente fantasma."""
+    return registry.base_dir.parent / "agents-archive"
+
+
 def remove_pack(name: str) -> dict[str, Any]:
     """Rimuove un pack: i suoi plugin, i suoi agenti (non nativi) e il manifest.
 
-    Ritorna il riepilogo; solleva KeyError se il pack non esiste.
+    Niente qui cancella dati. Le directory che possono contenerne — il seed
+    dell'agente (`memory/`) e il meta del pack (i flow approvati dall'admin) —
+    vengono SPOSTATE in `agents-archive/` e `packs-archive/`, come già accade per
+    la directory del plugin. Il solo `rmtree` che resta vive in `remove_plugin`,
+    su skill e rule: copie di ciò che sta nel pack, che un reinstall rimette
+    identiche.
+
+    Ritorna il riepilogo (`agents_archived`/`agents_retained`/`manifest_archived`
+    dicono dove sono finiti i dati); solleva KeyError se il pack non esiste.
     Solleva PackImportError se il pack è first-party/riservato (non rimovibile)."""
     if name in RESERVED_PACK_NAMES:
         raise PackImportError(f"pack first-party non rimovibile: '{name}'")
@@ -494,29 +510,59 @@ def remove_pack(name: str) -> dict[str, Any]:
         manifest = {}
 
     removed_plugins: list[str] = []
+    archived: list[dict[str, Any]] = []
+    retained: list[dict[str, Any]] = []
     for plugin in manifest.get("plugins") or []:
         plugin = str(plugin)
         if plugin in plugin_import.RESERVED_PLUGIN_NAMES:
             continue
-        if plugin_import.remove_plugin(plugin):
+        res = plugin_import.remove_plugin(plugin)
+        archived += res["datastores_archived"]
+        retained += res["datastores_retained"]
+        if res["removed"]:
             removed_plugins.append(plugin)
 
     removed_agents: list[str] = []
+    agents_archived: list[dict[str, Any]] = []
+    agents_retained: list[dict[str, Any]] = []
     for agent in manifest.get("agents") or []:
         agent = str(agent)
         if agent in _NATIVE_AGENTS or not _AGENT_NAME_RE.fullmatch(agent):
             continue
         adir = registry.base_dir / agent
-        if adir.is_dir():
-            shutil.rmtree(adir, ignore_errors=True)
-            removed_agents.append(agent)
+        if not adir.is_dir():
+            continue
+        # `memory/` arriva col seed, ma cresce a runtime: lesson learned dal
+        # feedback umano e documenti dell'agente. Il seed è reinstallabile, ciò
+        # che l'agente ha imparato lavorando no — e stava nello stesso rmtree.
+        try:
+            dest = plugin_import.move_aside(adir, _agents_archive_root())
+        except OSError as e:
+            LOG.error("seed dell'agente '%s' non archiviabile (%s): resta al suo "
+                      "posto, la rimozione non cancella nulla", agent, str(e)[:120])
+            agents_retained.append({"agent": agent, "kept": str(adir),
+                                    "reason": str(e)[:200]})
+            continue
+        removed_agents.append(agent)
+        agents_archived.append({"agent": agent, "archived": str(dest)})
     if removed_agents:
         registry.load()
 
-    shutil.rmtree(PACKS_META_DIR / name, ignore_errors=True)
-    LOG.info("pack '%s' rimosso: %d plugin, %d agenti", name,
-             len(removed_plugins), len(removed_agents))
-    return {"deleted": name, "plugins": removed_plugins, "agents": removed_agents}
+    manifest_archived: str | None = None
+    try:
+        manifest_archived = str(plugin_import.move_aside(
+            PACKS_META_DIR / name, PACKS_META_DIR.parent / "packs-archive"))
+    except OSError as e:
+        LOG.error("meta del pack '%s' non archiviabile (%s): resta al suo posto",
+                  name, str(e)[:120])
+    LOG.info("pack '%s' rimosso: %d plugin, %d agenti, %d datastore archiviati",
+             name, len(removed_plugins), len(removed_agents), len(archived))
+    out = {"deleted": name, "plugins": removed_plugins, "agents": removed_agents,
+           "datastores_archived": archived, "datastores_retained": retained,
+           "agents_archived": agents_archived, "agents_retained": agents_retained}
+    if manifest_archived:
+        out["manifest_archived"] = manifest_archived
+    return out
 
 
 def import_pack_zip(data: bytes, *, source: str = "zip-upload") -> dict[str, Any]:

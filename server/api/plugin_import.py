@@ -24,6 +24,14 @@ Gli MCP server dichiarati dal plugin vengono salvati nel manifest. Il layer API
 di import, già autorizzato dall'owner/admin, prova poi il mount automatico via
 gateway `mcp.add`; se fallisce, il risultato espone un warning strutturato.
 
+In rimozione la directory `plugins/<plugin>/` NON viene cancellata: viene
+SPOSTATA in `CLODIA_DATA/plugins-archive/<plugin>-<timestamp>/`, e la risposta
+dell'API dice dove è finita (`archive_plugin_dir`). Vale per tutto il contenuto,
+non solo per i `datastores:` dichiarati: la dichiarazione è una promessa del pack
+developer, la cancellazione è definitiva, e un db creato a runtime non è
+dichiarato da nessuno. Si cancella solo ciò che un reinstall rimetterebbe
+identico — skill e rule, che stanno altrove.
+
 Sicurezza: riusa le guardie di skill_import (zip-slip, limiti dimensione,
 clone shallow con timeout).
 """
@@ -34,6 +42,7 @@ import logging
 import re
 import shutil
 import tempfile
+import time
 from pathlib import Path
 from typing import Any
 
@@ -418,24 +427,138 @@ def install_plugin_from_root(
     }
 
 
-def remove_plugin(name: str) -> list[str]:
-    """Rimuove skills/rules/manifest di un plugin. Ritorna i path rimossi.
+def _archive_root() -> Path:
+    """Dove finiscono i dati salvati dalla rimozione.
+
+    Fratello di `plugins/`, non figlio: la directory del plugin è esattamente
+    quella che viene cancellata."""
+    return PLUGINS_META_DIR.parent / "plugins-archive"
+
+
+def move_aside(src: Path, archive_root: Path) -> Path:
+    """Sposta `src` in `archive_root/<nome>-<timestamp>` invece di cancellarla.
+
+    L'unica primitiva di «rimozione» ammessa su una directory che può contenere
+    dati: plugin (datastore e db creati a runtime) e seed agente (memory/ con le
+    lesson learned). Solleva `OSError` se lo spostamento non riesce — e in quel
+    caso `src` è ancora al suo posto: il chiamante NON deve cancellarla, o
+    reintroduce esattamente la perdita che questa funzione evita.
+    """
+    dest = archive_root / f"{src.name}-{time.strftime('%Y%m%d-%H%M%S')}"
+    archive_root.mkdir(parents=True, exist_ok=True)
+    shutil.move(str(src), str(dest))
+    return dest
+
+
+def _reinstallable(rel: Path) -> bool:
+    """Vero per ciò che un reinstall del pack rimetterebbe identico.
+
+    Il manifest è rigenerato da `_write_plugin_manifest` e `mcp/` è copiato dal
+    pack: sono le sole due cose sotto `plugins/<nome>/` di cui esista una
+    sorgente. Tutto il resto è comparso a runtime e nessuno lo sa ricreare.
+    """
+    return rel.parts == ("plugin.yaml",) or rel.parts[:1] == ("mcp",)
+
+
+def archive_plugin_dir(name: str) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
+    """Sposta VIA l'intera `plugins/<nome>/`, invece di cancellarla.
+
+    Prima si salvava solo ciò che il manifest dichiarava in `datastores:` e il
+    resto della directory finiva in un `rmtree`. La dichiarazione però è una
+    promessa del pack developer, mentre la cancellazione è definitiva: un db che
+    il server MCP si è creato da solo — o un `datastores:` dimenticato — non era
+    dichiarato da nessuno e sparivano entrambi in silenzio. Il caso peggiore era
+    il manifest SENZA `datastores:`: niente da archiviare, quindi via tutto.
+
+    Ordine di rischio: un archivio con dentro anche due copie di codice
+    reinstallabile costa disco, un db cancellato costa il cliente. Quindi si
+    sposta tutto e si distingue DOPO, nel report: `archived` sono i datastore
+    dichiarati (contratto dell'API, invariato), `undeclared` è ciò che si è
+    salvato pur non essendo dichiarato — la riga che dice all'admin che quei
+    dati esistevano.
+
+    Ritorna (archiviati, trattenuti). `trattenuti` non vuoto = lo spostamento è
+    fallito e la directory NON va cancellata: cancellarla sarebbe esattamente la
+    perdita di dati che questa funzione esiste per evitare.
+    """
+    meta_dir = PLUGINS_META_DIR / name
+    if not meta_dir.is_dir():
+        return [], []
+
+    declared: list[dict[str, Any]] = []
+    manifest = meta_dir / "plugin.yaml"
+    if manifest.is_file():
+        try:
+            meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+            declared = _sanitize_datastores(
+                meta.get("datastores") if isinstance(meta, dict) else None)
+        except Exception as e:  # noqa: BLE001
+            # Manifest illeggibile: non si sa cosa è dato e cosa è codice — e si
+            # archivia comunque tutto, che è la ragione per cui ora si può.
+            LOG.warning("manifest di '%s' illeggibile (%s): datastore non "
+                        "identificabili, la directory si archivia intera",
+                        name, str(e)[:120])
+
+    # Inventario PRIMA dello spostamento: dopo, i path non esistono più.
+    contents = [f.relative_to(meta_dir) for f in meta_dir.rglob("*") if f.is_file()]
+    declared_paths = [Path(ds["path"]) for ds in declared]
+
+    def _is_declared(rel: Path) -> bool:
+        return any(rel == d or d in rel.parents for d in declared_paths)
+
+    undeclared = sorted(str(rel) for rel in contents
+                        if not _is_declared(rel) and not _reinstallable(rel))
+
+    try:
+        dest_root = move_aside(meta_dir, _archive_root())
+    except OSError as e:
+        LOG.error("directory del plugin '%s' non archiviabile (%s): resta al suo "
+                  "posto, la rimozione non cancella nulla", name, str(e)[:120])
+        return [], [{"path": ".", "kept": str(meta_dir), "reason": str(e)[:200]}]
+
+    archived = [{"path": ds["path"], "archived": str(dest_root / ds["path"]),
+                 "pii": ds["pii"]}
+                for ds in declared if (dest_root / ds["path"]).exists()]
+    if undeclared:
+        # Non è un errore: è la prova che la regola («rimuovere un pack non
+        # cancella dati») non dipende più dalla completezza del manifest.
+        LOG.info("plugin '%s': %d file non dichiarati archiviati in %s",
+                 name, len(undeclared), dest_root)
+        archived.append({"path": ".", "archived": str(dest_root), "pii": None,
+                         "undeclared": undeclared})
+    return archived, []
+
+
+def remove_plugin(name: str) -> dict[str, Any]:
+    """Rimuove skills/rules/manifest di un plugin, CONSERVANDO i suoi dati.
+
+    Ritorna `{"removed": [path...], "datastores_archived": [...],
+    "datastores_retained": [...]}`; `removed` vuoto = plugin inesistente.
+
+    L'unico `rmtree` che resta è su skill e rule: sono copie di ciò che sta nel
+    pack, un reinstall le rimette identiche. La directory del plugin non si
+    cancella, si sposta (`archive_plugin_dir`) — anche quando il manifest non
+    dichiara datastore, perché «non dichiarato» non vuol dire «non è un dato».
 
     Nessun controllo sui nomi riservati: il chiamante (API) valida prima."""
-    targets = [
-        catalog.DATA_SKILLS_DIR / name,
-        catalog.DATA_RULES_DIR / name,
-        PLUGINS_META_DIR / name,
-    ]
+    meta_dir = PLUGINS_META_DIR / name
+    existed = meta_dir.is_dir()
+    archived, retained = archive_plugin_dir(name)
     removed: list[str] = []
-    for t in targets:
+    if existed and not retained:
+        # Spostata, non cancellata: per il chiamante «non è più dov'era» è la
+        # stessa cosa, ed è la riga che tiene `removed` vuoto solo quando il
+        # plugin non c'era — il segnale con cui l'API risponde 404.
+        removed.append(str(meta_dir))
+    for t in (catalog.DATA_SKILLS_DIR / name, catalog.DATA_RULES_DIR / name):
         if t.is_dir():
             shutil.rmtree(t, ignore_errors=True)
             removed.append(str(t))
     if removed:
         catalog._invalidate("skill")
         catalog._invalidate("rule")
-    return removed
+    return {"removed": removed, "datastores_archived": archived,
+            "datastores_retained": retained}
 
 
 def import_plugin_zip(data: bytes, *, source: str = "zip-upload") -> dict[str, Any]:
