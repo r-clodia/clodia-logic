@@ -166,11 +166,20 @@ class _Unavailable(Exception):
     in cui il 403 su `packs.import_url` è costato tre diagnosi il 6 agosto."""
 
 
-def _pending_request(principal: str, agent: str, instance: str, verb: str) -> dict | None:
-    """La richiesta come la conosce il GATEWAY: `chat` e `class` vengono da lì.
+def _pending_requests(principal: str, agent: str, instance: str,
+                      verb: str) -> list[dict]:
+    """**Tutte** le richieste pendenti con quella tripla, come le conosce il GATEWAY.
 
-    Prenderle dal body sarebbe chiedere a chi approva in quale stanza si trovava
-    l'azione da approvare — la parola di chi chiede su dove si trova.
+    `chat` e `class` vengono da lì: prenderle dal body sarebbe chiedere a chi
+    approva in quale stanza si trovava l'azione da approvare — la parola di chi
+    chiede su dove si trova.
+
+    Sono più di una perché la tripla `agent|instance|verb` **non identifica una
+    richiesta**: l'argomento non ne fa parte. Sette tentativi di
+    `egress.allow` su destinazioni diverse sono sette richieste e una sola
+    tripla (clodia-platform#232). Restituirne solo la prima significa decidere
+    su una e crederne un'altra — e la prima non è nemmeno la più vecchia per
+    contratto, è solo quella che il gateway ha elencato per prima.
     """
     try:
         r = _gw("GET", "/pending", principal)
@@ -179,12 +188,20 @@ def _pending_request(principal: str, agent: str, instance: str, verb: str) -> di
     if r.status_code >= 500:
         raise _Unavailable(f"HTTP {r.status_code}")
     if r.status_code >= 400:
-        return None
-    for it in (r.json() or {}).get("requests", []):
-        if (it.get("agent") == agent and it.get("verb") == verb
-                and (it.get("instance") or "-") == instance):
-            return it
-    return None
+        return []
+    return [it for it in (r.json() or {}).get("requests", [])
+            if (it.get("agent") == agent and it.get("verb") == verb
+                and (it.get("instance") or "-") == instance)]
+
+
+def _pending_request(principal: str, agent: str, instance: str, verb: str) -> dict | None:
+    """La prima richiesta con quella tripla, o `None`.
+
+    Resta per i pochi usi che vogliono un solo campione; chi decide qualcosa
+    guarda invece `_pending_requests`, perché la tripla può coprirne più di una.
+    """
+    trovate = _pending_requests(principal, agent, instance, verb)
+    return trovate[0] if trovate else None
 
 
 def _standing_error(principal: str, agent: str, instance: str,
@@ -194,9 +211,18 @@ def _standing_error(principal: str, agent: str, instance: str,
     Distingue tre esiti, non due: autorizzato, rifiutato, e **non sappiamo**
     (503). Il terzo esiste perché un guasto che si presenta come rifiuto manda
     a chiedere alla persona sbagliata.
+
+    Il titolo si verifica su **ogni** richiesta pendente con quella tripla, non
+    sulla prima. Approvare concede il VERBO a `(agent, instance)`: la
+    capability sblocca insieme tutte le chiamate in attesa con quella tripla,
+    comprese quelle sollevate in una stanza diversa da quella che si sta
+    guardando. Controllare solo la prima farebbe decidere l'owner della stanza A
+    per una richiesta nata nella stanza B — l'autorità dell'owner di B
+    diventerebbe decorativa, che è precisamente ciò che la voce 24 impedisce.
+    Con una sola pendente il comportamento è identico a prima.
     """
     try:
-        req = _pending_request(principal, agent, instance, verb)
+        richieste = _pending_requests(principal, agent, instance, verb)
     except _Unavailable as e:
         LOG.warning("titolo a decidere non verificabile (%s@%s:%s): %s",
                     agent, instance, verb, e)
@@ -204,14 +230,20 @@ def _standing_error(principal: str, agent: str, instance: str,
             {"error": "unavailable",
              "detail": "gateway dei gate non raggiungibile: titolo a decidere "
                        "non verificabile, riprova"}, status_code=503)
-    if req is None:
+    if not richieste:
         # Richiesta scaduta o mai esistita: senza `chat` autorevole non sappiamo
         # quale confine si attraversa → resta la regola di prima, l'admin.
-        req = {"verb": verb, "class": None, "chat": None}
-    ok, motivo = _may_decide(principal, req)
-    if ok:
-        return None
-    return JSONResponse({"error": "forbidden", "detail": motivo}, status_code=403)
+        richieste = [{"verb": verb, "class": None, "chat": None}]
+    for req in richieste:
+        ok, motivo = _may_decide(principal, req)
+        if not ok:
+            if len(richieste) > 1:
+                motivo += (f" — in coda ci sono {len(richieste)} richieste per "
+                           f"'{verb}' e approvarlo le sblocca tutte, quindi "
+                           f"serve titolo su ognuna")
+            return JSONResponse({"error": "forbidden", "detail": motivo},
+                                status_code=403)
+    return None
 
 
 def _owner_of(scope_key: str, cache: dict) -> str:
@@ -347,16 +379,28 @@ async def approve(request: Request):
         # chi approva significherebbe fidarsi della sua parola su dove si trovava
         # l'azione da approvare — e qui quella parola diventa una voce in una
         # whitelist permanente.
+        #
+        # E la stanza deve essere UNA. Con più pendenti sulla stessa tripla
+        # (l'argomento non fa parte dell'identità, clodia-platform#232) la prima
+        # della lista può venire da un'altra stanza: ricordarci la destinazione
+        # lì scriverebbe una voce permanente in una whitelist che quella stanza
+        # non ha mai chiesto. Nel dubbio non si ricorda e si dice perché —
+        # l'approvazione di stavolta resta valida.
         try:
-            _req = _pending_request(principal, agent, instance, verb) or {}
+            _pendenti = _pending_requests(principal, agent, instance, verb)
         except _Unavailable:
-            _req = {}
-        scope = _scope_of(_req.get("chat"))
-        dove = f"{scope[0]}/{scope[1]}" if (ricorda == "topic" and scope) else ""
+            _pendenti = []
+        _stanze = {f"{s[0]}/{s[1]}" for s in
+                   (_scope_of(p.get("chat")) for p in _pendenti) if s}
+        dove = _stanze.pop() if (ricorda == "topic" and len(_stanze) == 1) else ""
         if ricorda == "topic" and not dove:
             memoria = {"remembered": False,
-                       "error": "non so in quale stanza ricordarlo: la richiesta "
-                                "non dichiara un canale"}
+                       "error": ("non so in quale stanza ricordarlo: in coda ci "
+                                 f"sono {len(_pendenti)} richieste per '{verb}' "
+                                 "da stanze diverse"
+                                 if len(_stanze) > 1 else
+                                 "non so in quale stanza ricordarlo: la richiesta "
+                                 "non dichiara un canale")}
         else:
             rr = _gw("POST", "/allow", principal,
                      {"verb": verb, "direction": "egress", "scope": dove})
