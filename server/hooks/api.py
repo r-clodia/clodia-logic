@@ -1,18 +1,20 @@
 """API dei Chat Hook.
 
 CRUD riservato all'owner della chat (o admin di piattaforma), verificato dal
-session token (principal firmato dalla CA). Ingress PUBBLICO `POST /hooks/{id}`
-autorizzato dal SOLO segreto dell'hook (bearer): niente sessione.
+session token (principal firmato dalla CA). **Nessuna rotta pubblica**: l'ingress
+`POST /hooks/{id}`, autorizzato dal solo segreto dell'hook, è stato chiuso con la
+issue #300 (step 2 di clodia-platform#222) — 8 hook registrati sull'istanza viva,
+`uses: 0` su tutti, e una porta da cui un terzo poteva iniettare un messaggio e
+far partire un turno con un segreto accettato anche in query string.
 
-Il percorso pubblico resta NON FIDATO. L'invocazione locale è separata, non usa
-segreti ed è autorizzata solo per participant (più l'eccezione messaggero).
+Resta l'invocazione locale, che è un'altra cosa: non usa segreti, l'identità
+arriva dal session token firmato ed è autorizzata solo per participant (più
+l'eccezione messaggero).
 """
 from __future__ import annotations
 
 import asyncio
-import json
 import logging
-import time
 
 from fastapi import APIRouter, HTTPException, Request
 
@@ -23,21 +25,6 @@ from ..api.agents import _principal_from_request
 LOG = logging.getLogger("agent-server.hooks.api")
 
 router = APIRouter()
-
-# Rate-limit in-memory: sliding window 60s, soglia PER-HOOK (rate_per_min).
-_RL_WINDOW_S = 60.0
-_rl: dict[str, list[float]] = {}
-
-
-def _rate_ok(hid: str, per_min: int) -> bool:
-    now = time.monotonic()
-    hits = [t for t in _rl.get(hid, []) if now - t < _RL_WINDOW_S]
-    if len(hits) >= max(1, int(per_min)):
-        _rl[hid] = hits
-        return False
-    hits.append(now)
-    _rl[hid] = hits
-    return True
 
 
 def _require_chat_owner(request: Request, tier: str, name: str) -> str:
@@ -84,12 +71,13 @@ async def create_hook(tier: str, name: str, request: Request) -> dict:
             tier, name, label, created_by=principal, author=author, rate_per_min=rpm)
     except db.HookConflictError as e:
         raise HTTPException(409, str(e)) from e
-    base = str(request.base_url).rstrip("/")
+    # Niente `path`/`url`: la rotta che quell'indirizzo nominava non esiste più
+    # (#300). Pubblicarlo lo stesso significherebbe consegnare a un integratore
+    # un endpoint che risponde 404 — un guasto che si scopre dopo, nel log di un
+    # sistema terzo, ed è peggio di un campo assente.
     return {
         "hook": pub,
         "secret": secret,               # mostrato UNA sola volta
-        "path": f"/hooks/{pub['id']}",
-        "url": f"{base}/hooks/{pub['id']}",
     }
 
 
@@ -111,17 +99,6 @@ async def delete_hook(hid: str, request: Request) -> dict:
     # Conserva la tombstone: un hook automatico disattivato non deve ricrearsi
     # alla successiva apertura del pannello o invocazione locale.
     return {"deleted": db.revoke(hid)}
-
-
-def _payload(raw: bytes) -> str:
-    payload = raw.decode("utf-8", "replace").strip()
-    if payload[:1] in ("{", "["):
-        try:
-            payload = json.dumps(
-                json.loads(payload), ensure_ascii=False, separators=(",", ":"))
-        except Exception:  # noqa: BLE001
-            pass
-    return payload.replace("\r", " ")
 
 
 def _signed_kind(principal: str | None) -> str:
@@ -244,38 +221,3 @@ async def invoke_local(tier: str, name: str, request: Request) -> dict:
     db.record_event(name, "ok", source="local", authority="participant", principal=caller)
     return {"ok": True, "injected": True, "triggered": triggered,
             "authority": "participant", "principal": caller}
-
-
-# ─── Ingress PUBBLICO (autorizzato dal segreto dell'hook) ────────────────────
-@router.post("/hooks/{hid}")
-async def ingress(hid: str, request: Request) -> dict:
-    provided = request.headers.get("X-Hook-Secret", "") or request.query_params.get("secret", "")
-    row = db.verify_secret(hid, provided)
-    if not row:
-        # non confermare l'esistenza: stessa risposta per id ignoto/segreto errato/disabilitato
-        raise HTTPException(401, "unauthorized")
-    src = request.client.host if request.client else None
-    if not _rate_ok(hid, row.get("rate_per_min", 30)):
-        db.record_event(hid, "rate_limited", source=src)
-        raise HTTPException(429, "too many requests")
-
-    text = _payload(await request.body())
-    tier, name = row["tier"], row["name"]
-
-    try:
-        await topics_client.async_post_message(
-            tier, name, author=row["author"], text=text, kind="external")
-    except Exception as e:  # noqa: BLE001
-        raise HTTPException(502, f"post_message fallita: {e}") from e
-
-    # PROVENIENZA (issue #221). Un webhook è per COSTRUZIONE un sistema terzo:
-    # questa porta è autorizzata dal solo segreto dell'hook, nessuna identità
-    # firmata entra da qui, quindi `external` è una costante e non il risultato
-    # di una lookup. Ricostruirlo dal nome renderebbe la classificazione
-    # dipendente da come l'owner ha chiamato l'hook: un `author` che coincide con
-    # una persona registrata farebbe entrare il payload come `human`.
-    triggered = await _queue_turn(tier, name, text, "hook", kind="external",
-                                  author=row["author"])
-    db.record_event(hid, "ok", source=src, authority="untrusted")
-    return {"ok": True, "injected": True, "triggered": triggered,
-            "authority": "untrusted", "principal": None}
