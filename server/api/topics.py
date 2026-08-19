@@ -8,6 +8,7 @@ Implementa la card "FUN: Topics in sidebar" (Clodia Agency).
 """
 from __future__ import annotations
 
+import asyncio
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -548,13 +549,13 @@ async def telegram_binding(tier: str, name: str, request: Request):
     dello scope — la stessa cosa che aggiungere un partecipante, vista
     dall'altro lato — quindi lo decide chi possiede la stanza.
     """
-    _require_topic_owner(request, tier, name)
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
     try:
-        return topics_client.telegram_binding(tier, name, body or {})
+        return await topics_client.async_telegram_binding(tier, name, body or {})
     except topics_client.TopicsClientError as e:
         raise HTTPException(400, str(e))
 
@@ -604,13 +605,13 @@ async def set_topic_logo(tier: str, name: str, request: Request):
     I byte arrivano in base64: un logo è piccolo per definizione. Cosa sia
     davvero un'immagine lo verifica il gateway, sui byte e non sull'estensione.
     """
-    _require_topic_owner(request, tier, name)
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
     try:
-        return topics_client.topic_logo(tier, name, {"data": body.get("data") or ""})
+        return await topics_client.async_topic_logo(tier, name, {"data": body.get("data") or ""})
     except topics_client.TopicsClientError as e:
         raise HTTPException(400, str(e))
 
@@ -678,16 +679,16 @@ async def issue_mcp_client(tier: str, name: str, request: Request):
         body = {}
     chi = (body.get("principal") or principal).strip()
     if body.get("action") == "revoke":
-        _require_topic_owner_or_self(request, tier, name, chi)
+        await asyncio.to_thread(_require_topic_owner_or_self, request, tier, name, chi)
         try:
-            return topics_client.mcp_clients(tier, name, body)
+            return await topics_client.async_mcp_clients(tier, name, body)
         except topics_client.TopicsClientError as e:
             raise HTTPException(400, str(e))
-    _require_topic_owner_or_self(request, tier, name, chi)
+    await asyncio.to_thread(_require_topic_owner_or_self, request, tier, name, chi)
     # Partecipare non è un dettaglio da verificare dopo: un token per una stanza
     # di cui non si fa parte sarebbe rifiutato a ogni chiamata, e la persona lo
     # scoprirebbe dopo aver configurato il client. Meglio dirlo qui.
-    t = topics_client.open_topic(tier, name) or {}
+    t = await topics_client.async_open_topic(tier, name) or {}
     meta = t.get("meta") or {}
     membri = set(meta.get("participants") or []) | {meta.get("owner")}
     if chi not in membri:
@@ -730,7 +731,7 @@ async def issue_mcp_client(tier: str, name: str, request: Request):
         "base_url": body.get("base_url") or "",
     }
     try:
-        return topics_client.mcp_clients(tier, name, payload)
+        return await topics_client.async_mcp_clients(tier, name, payload)
     except topics_client.TopicsClientError as e:
         raise HTTPException(400, str(e))
 
@@ -757,13 +758,14 @@ async def set_topic_portable(tier: str, name: str, request: Request):
     rende leggibili quei contenuti in OGNI altra stanza dove un partecipante si
     trovi — quindi è dell'owner, non di un partecipante qualunque.
     """
-    _require_topic_owner(request, tier, name)
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
     try:
-        return topics_client.set_portable(tier, name, bool((body or {}).get("portable")))
+        return await topics_client.async_set_portable(
+            tier, name, bool((body or {}).get("portable")))
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, str(e))
 
@@ -772,13 +774,13 @@ async def set_topic_portable(tier: str, name: str, request: Request):
 async def set_topic_status(tier: str, name: str, request: Request):
     """Imposta lo status del topic (active|on-hold|done|archived) via il gateway.
     Solo l'owner (o admin)."""
-    _require_topic_owner(request, tier, name)
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
     try:
-        return topics_client.set_status(tier, name, (body or {}).get("status", ""))
+        return await topics_client.async_set_status(tier, name, (body or {}).get("status", ""))
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, str(e))
 
@@ -787,13 +789,13 @@ async def set_topic_status(tier: str, name: str, request: Request):
 async def set_topic_deadline(tier: str, name: str, request: Request):
     """Imposta la deadline del topic (YYYY-MM-DD|null) via il gateway.
     Solo l'owner (o admin)."""
-    _require_topic_owner(request, tier, name)
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
     try:
-        return topics_client.set_deadline(tier, name, (body or {}).get("deadline"))
+        return await topics_client.async_set_deadline(tier, name, (body or {}).get("deadline"))
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, str(e))
 
@@ -805,7 +807,7 @@ async def topics_catalog(request: Request) -> list[dict]:
     if not admin.is_admin(_principal_from_request(request)):
         raise HTTPException(403, "solo un admin può vedere il catalogo completo")
     try:
-        rows = topics_client.list_topics()
+        rows = await topics_client.async_list_topics()
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"gateway topics non disponibile: {str(e)[:160]}")
     return [{"tier": r.get("tier"), "name": r.get("name"),
@@ -821,7 +823,7 @@ async def export_topics_bundle(request: Request, topics: str = ""):
         raise HTTPException(403, "solo un admin può esportare lo stato dei topic")
     sel = [s.strip() for s in topics.split(",") if s.strip()] or None
     try:
-        data = topics_client.export_bundle(sel)
+        data = await topics_client.async_export_bundle(sel)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"export fallito: {str(e)[:160]}")
     return Response(content=data, media_type="application/gzip",
@@ -837,7 +839,7 @@ async def import_topics_bundle(request: Request) -> dict:
     if not body:
         raise HTTPException(400, "bundle vuoto")
     try:
-        return topics_client.import_bundle(body)
+        return await topics_client.async_import_bundle(body)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"import fallito: {str(e)[:200]}")
 
@@ -857,7 +859,7 @@ async def list_topics(request: Request) -> list[dict]:
         # default lato client e li rivela col toggle «Archiviati» (filtro +
         # conteggio sono client-side). Senza include_archived il toggle non
         # avrebbe mai dati da mostrare.
-        rows = topics_client.list_topics(include_archived=True)
+        rows = await topics_client.async_list_topics(include_archived=True)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"gateway topics non disponibile: {str(e)[:160]}")
     me = _principal_from_request(request)
@@ -911,7 +913,7 @@ async def rebuild_all_topic_indexes_endpoint() -> dict:
 async def get_topic_summary(tier: str, name: str) -> str:
     """Contenuto raw del summary del topic v2 (via gateway). `tier` = P0..P3."""
     try:
-        info = topics_client.open_topic(tier, name)
+        info = await topics_client.async_open_topic(tier, name)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"gateway topics non disponibile: {str(e)[:160]}")
     if info is None:

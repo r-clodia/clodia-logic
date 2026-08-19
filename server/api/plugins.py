@@ -365,7 +365,8 @@ async def get_plugin(name: str):
 @router.post("/clodia/plugins/import")
 async def import_plugin_zip(request: Request, file: UploadFile = File(...)):
     """Importa un plugin da .zip (Claude plugin, plugin.yaml o bare skills)."""
-    principal = gateway_pdp.require_authz(request, "mcp.add")  # admin-only (un plugin porta MCP/skill)
+    # admin-only (un plugin porta MCP/skill)
+    principal = await gateway_pdp.require_authz_async(request, "mcp.add")
     from .skill_import import SkillImportError
     data = await file.read()
     try:
@@ -382,7 +383,8 @@ async def import_plugin_zip(request: Request, file: UploadFile = File(...)):
 @router.post("/clodia/plugins/import-url")
 async def import_plugin_url(payload: PluginImportUrl, request: Request):
     """Importa un plugin da URL (git repo o .zip remoto)."""
-    principal = gateway_pdp.require_authz(request, "mcp.add")  # admin-only (un plugin porta MCP/skill)
+    # admin-only (un plugin porta MCP/skill)
+    principal = await gateway_pdp.require_authz_async(request, "mcp.add")
     from .skill_import import SkillImportError
     try:
         result = plugin_import.import_plugin_url(payload.url)
@@ -402,7 +404,7 @@ async def delete_plugin(name: str, request: Request):
     Per i plugin external il marker `.external-packs/<pack>.installed` resta al
     suo posto, quindi la rimozione è durevole (nessuna reinstallazione al
     prossimo boot)."""
-    gateway_pdp.require_authz(request, "mcp.remove")  # admin-only
+    await gateway_pdp.require_authz_async(request, "mcp.remove")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     if name in RESERVED_PLUGIN_NAMES:

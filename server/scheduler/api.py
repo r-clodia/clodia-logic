@@ -10,6 +10,7 @@ Endpoint montati su `/clodia/jobs`:
 
 Validazione cron: rifiuta espressioni invalide con 422.
 """
+import asyncio
 import sqlite3
 from typing import Optional
 
@@ -185,7 +186,7 @@ def _require_topic_owner(request: Request, tier: str, name: str) -> tuple[str, d
 
 @router.get("/clodia/channels/{tier}/{name}/cron-trigger")
 async def api_get_topic_cron_trigger(tier: str, name: str, request: Request):
-    _require_topic_owner(request, tier, name)
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
     trigger = db.get_topic_trigger(tier, name)
     if trigger and not trigger.get("interval_minutes") and trigger.get("cron_expr"):
         # Trigger LEGACY, ancora a cron: continua a girare com'è. Qui allego solo
@@ -201,7 +202,7 @@ async def api_get_topic_cron_trigger(tier: str, name: str, request: Request):
 async def api_put_topic_cron_trigger(
     tier: str, name: str, req: TopicCronTriggerUpsert, request: Request,
 ):
-    owner, meta = _require_topic_owner(request, tier, name)
+    owner, meta = await asyncio.to_thread(_require_topic_owner, request, tier, name)
     if req.cron_expr and req.cron_expr.strip():
         raise HTTPException(
             422, "il trigger di un topic non accetta più un'espressione cron: "
@@ -251,7 +252,7 @@ async def api_put_topic_cron_trigger(
 
 @router.delete("/clodia/channels/{tier}/{name}/cron-trigger")
 async def api_delete_topic_cron_trigger(tier: str, name: str, request: Request):
-    _require_topic_owner(request, tier, name)
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
     trigger = db.get_topic_trigger(tier, name)
     if not trigger:
         raise HTTPException(404, "trigger cron non configurato")

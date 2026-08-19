@@ -23,7 +23,7 @@ async def list_connectors(request: Request, agent: str = "") -> dict:
     """Connettori (account email) con lo stato di grant per `agent`."""
     _require_admin(request)
     try:
-        return {"connectors": connectors_client.list_connectors(agent or None)}
+        return {"connectors": await connectors_client.list_connectors_async(agent or None)}
     except connectors_client.ConnectorsClientError as e:
         raise HTTPException(502, f"connettori non disponibili: {str(e)[:160]}")
 
@@ -38,6 +38,6 @@ async def grant_connector(request: Request) -> dict:
     if not agent or not account:
         raise HTTPException(400, "agent e account richiesti")
     try:
-        return connectors_client.grant(agent, account, bool(body.get("granted")))
+        return await connectors_client.grant_async(agent, account, bool(body.get("granted")))
     except connectors_client.ConnectorsClientError as e:
         raise HTTPException(502, f"grant fallito: {str(e)[:160]}")

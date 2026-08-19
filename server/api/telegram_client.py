@@ -6,6 +6,7 @@ del bot resta nel vault del gateway: qui passano solo chat_id e testo.
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import os
 
@@ -66,3 +67,18 @@ def download(file_id: str) -> dict:
                       json={"file_id": file_id}, timeout=90)
     r.raise_for_status()
     return r.json()
+
+
+# ── wrapper async ────────────────────────────────────────────────────────────
+# Il client è sincrono di proposito (lo usa anche il relay in un thread suo); da
+# un handler async si passa da qui, così l'attesa di rete non ferma l'event loop.
+async def send_async(chat_id: str, text: str) -> dict:
+    return await asyncio.to_thread(send, chat_id, text)
+
+
+async def download_async(file_id: str) -> dict:
+    return await asyncio.to_thread(download, file_id)
+
+
+async def updates_async(chat_id: str) -> dict:
+    return await asyncio.to_thread(updates, chat_id)

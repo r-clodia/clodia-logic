@@ -39,7 +39,13 @@ class LocalHookTests(unittest.IsolatedAsyncioTestCase):
             }
         }
         api.topics_client.post_message = lambda *args, **kwargs: self.posts.append(kwargs)
-        api._queue_turn = lambda *args, **kwargs: self.queued.append(kwargs) or True
+        async def _queue_turn(*args, **kwargs):
+            # `_queue_turn` è async da #106: accoda il turno DOPO aver letto il
+            # topic dal gateway, e quella lettura non deve fermare l'event loop.
+            self.queued.append(kwargs)
+            return True
+
+        api._queue_turn = _queue_turn
         # Identità autenticata dal session token (mai dal body): la controlliamo
         # patchando _principal_from_request.
         self.caller: str | None = None

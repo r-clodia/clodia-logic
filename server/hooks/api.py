@@ -9,6 +9,7 @@ segreti ed è autorizzata solo per participant (più l'eccezione messaggero).
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import time
@@ -56,8 +57,8 @@ def _require_chat_owner(request: Request, tier: str, name: str) -> str:
 # ─── CRUD (owner/admin) ────────────────────────────────────────────────────
 @router.get("/clodia/chats/{tier}/{name}/hooks")
 async def list_hooks(tier: str, name: str, request: Request) -> dict:
-    principal = _require_chat_owner(request, tier, name)
-    topic = topics_client.open_topic(tier, name) or {}
+    principal = await asyncio.to_thread(_require_chat_owner, request, tier, name)
+    topic = await topics_client.async_open_topic(tier, name) or {}
     if topic.get("meta", {}).get("hook_enabled", True):
         try:
             db.ensure(tier, name, name, created_by=principal)
@@ -68,7 +69,7 @@ async def list_hooks(tier: str, name: str, request: Request) -> dict:
 
 @router.post("/clodia/chats/{tier}/{name}/hooks")
 async def create_hook(tier: str, name: str, request: Request) -> dict:
-    principal = _require_chat_owner(request, tier, name)
+    principal = await asyncio.to_thread(_require_chat_owner, request, tier, name)
     body = await request.json()
     label = (body.get("label") or "hook").strip()
     if not label:
@@ -97,7 +98,7 @@ async def revoke_hook(hid: str, request: Request) -> dict:
     row = db.get(hid)
     if not row:
         raise HTTPException(404, "hook non trovato")
-    _require_chat_owner(request, row["tier"], row["name"])
+    await asyncio.to_thread(_require_chat_owner, request, row["tier"], row["name"])
     return {"revoked": db.revoke(hid)}
 
 
@@ -106,7 +107,7 @@ async def delete_hook(hid: str, request: Request) -> dict:
     row = db.get(hid)
     if not row:
         raise HTTPException(404, "hook non trovato")
-    _require_chat_owner(request, row["tier"], row["name"])
+    await asyncio.to_thread(_require_chat_owner, request, row["tier"], row["name"])
     # Conserva la tombstone: un hook automatico disattivato non deve ricrearsi
     # alla successiva apertura del pannello o invocazione locale.
     return {"deleted": db.revoke(hid)}
@@ -148,9 +149,9 @@ def _signed_kind(principal: str | None) -> str:
         return "external"
 
 
-def _queue_turn(tier: str, name: str, text: str, principal: str,
-                responder: str | None = None, *, kind: str,
-                author: str | None = None) -> bool:
+async def _queue_turn(tier: str, name: str, text: str, principal: str,
+                      responder: str | None = None, *, kind: str,
+                      author: str | None = None) -> bool:
     """Accoda il turno dichiarando DA DOVE arriva il testo (issue #221).
 
     `kind` è obbligatorio e keyword-only: la provenienza la stabilisce
@@ -165,7 +166,7 @@ def _queue_turn(tier: str, name: str, text: str, principal: str,
     try:
         from ..api.channels import (run_topic_turn, _spawn_bg, _safe_name,
                                     _untrusted_trigger_directive)
-        topic = topics_client.open_topic(tier, name)
+        topic = await topics_client.async_open_topic(tier, name)
         meta = (topic or {}).get("meta", {})
         chi = _safe_name(author or principal)
         _spawn_bg(run_topic_turn(
@@ -187,7 +188,7 @@ async def ensure_hook(request: Request) -> dict:
     by = (body.get("by") or "platform").strip()
     if not tier or not name:
         raise HTTPException(400, "tier e name richiesti")
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "topic non trovato")
     try:
@@ -210,7 +211,7 @@ async def invoke_local(tier: str, name: str, request: Request) -> dict:
     payload = str(body.get("payload") or "").strip()
     if not payload:
         raise HTTPException(400, "payload richiesto")
-    topic = topics_client.open_topic(tier, name)
+    topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "topic non trovato")
     meta = topic.get("meta", {})
@@ -232,14 +233,14 @@ async def invoke_local(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(409, "hook disabilitato")
     text = f"@{caller} {payload}"
     try:
-        topics_client.post_message(tier, name, author=caller, text=text, kind="ai")
+        await topics_client.async_post_message(tier, name, author=caller, text=text, kind="ai")
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"post_message fallita: {e}") from e
     # Il caller qui è FIRMATO (`_principal_from_request`, mai il body): la sua
     # provenienza si può classificare. Un partecipante `proxy` che invoca resta
     # `external`, ed è il caso della issue.
-    triggered = _queue_turn(tier, name, text, caller, responder=caller,
-                            kind=_signed_kind(caller))
+    triggered = await _queue_turn(tier, name, text, caller, responder=caller,
+                                  kind=_signed_kind(caller))
     db.record_event(name, "ok", source="local", authority="participant", principal=caller)
     return {"ok": True, "injected": True, "triggered": triggered,
             "authority": "participant", "principal": caller}
@@ -262,7 +263,7 @@ async def ingress(hid: str, request: Request) -> dict:
     tier, name = row["tier"], row["name"]
 
     try:
-        topics_client.post_message(
+        await topics_client.async_post_message(
             tier, name, author=row["author"], text=text, kind="external")
     except Exception as e:  # noqa: BLE001
         raise HTTPException(502, f"post_message fallita: {e}") from e
@@ -273,8 +274,8 @@ async def ingress(hid: str, request: Request) -> dict:
     # di una lookup. Ricostruirlo dal nome renderebbe la classificazione
     # dipendente da come l'owner ha chiamato l'hook: un `author` che coincide con
     # una persona registrata farebbe entrare il payload come `human`.
-    triggered = _queue_turn(tier, name, text, "hook", kind="external",
-                            author=row["author"])
+    triggered = await _queue_turn(tier, name, text, "hook", kind="external",
+                                  author=row["author"])
     db.record_event(hid, "ok", source=src, authority="untrusted")
     return {"ok": True, "injected": True, "triggered": triggered,
             "authority": "untrusted", "principal": None}

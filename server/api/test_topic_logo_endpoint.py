@@ -57,6 +57,18 @@ class _Client:
         # remote Drive lo cercherebbe su Drive, dove non è mai stato scritto.
         return b"\x89PNG\r\n\x1a\n", self.meta.get("logo_kind") or "image/png"
 
+    def __getattr__(self, nome):
+        """Il modulo vero espone `async_<f>` per ogni `<f>` sincrona: il finto fa
+        lo stesso, invece di raddoppiare ogni metodo a mano."""
+        if not nome.startswith("async_"):
+            raise AttributeError(nome)
+        sync = getattr(self, nome[len("async_"):])
+
+        async def chiamata(*a, **k):
+            return sync(*a, **k)
+
+        return chiamata
+
 
 class OnlyTheOwnerChangesItTests(unittest.TestCase):
     def test_the_owner_may_set_it(self):

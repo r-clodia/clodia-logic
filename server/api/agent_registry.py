@@ -358,7 +358,7 @@ async def agent_pfp_status(name: str) -> dict:
 
 @router.post("/reload")
 async def reload_agents(request: Request) -> dict:
-    gateway_pdp.require_authz(request, "agents.reload")  # admin-only (PDP gateway)
+    await gateway_pdp.require_authz_async(request, "agents.reload")  # admin-only (PDP gateway)
     registry.load()
     return {
         "loaded": len(registry.list()),
@@ -879,7 +879,7 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
     # presa dal middleware, non una deroga introdotta qui.
     from . import admin as _admin_state
     if _admin_state.is_initialized():
-        gateway_pdp.require_authz(request, "agents.create")  # admin-only (PDP gateway)
+        await gateway_pdp.require_authz_async(request, "agents.create")  # admin-only (PDP gateway)
     body_type = (body.type or "human").strip().lower()
     # Gli AGENT SEED (agenti AI) si installano SOLO via pack (import): un seed è
     # contenuto di pack, non un artefatto generato a runtime. Qui restano ammessi

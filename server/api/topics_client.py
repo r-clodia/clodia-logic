@@ -13,10 +13,20 @@ import asyncio
 import requests
 
 from ..colony import pki
+from .gateway_http import GatewayHTTP
 
 _PRINCIPAL = os.environ.get("CLODIA_PROVIDER_PRINCIPAL", "clodia")
 _TOKEN_TTL = 300
-_HTTP_TIMEOUT = 15
+# Due budget, perché dietro lo stesso gateway ci sono due mondi. Il control
+# plane (aprire un topic, leggere i messaggi, i permessi) è una chiamata dentro
+# la rete docker: 15s erano il tempo di un'API pubblica, e ogni attesa è un
+# thread fermo. Le operazioni che attraversano un sistema ESTERNO al gateway —
+# storage remoto tipo Drive, l'API di Telegram, i byte di un file — tengono il
+# budget lungo: lì la lentezza è del sistema a valle, non un guasto da troncare.
+_HTTP_TIMEOUT = 5
+_HTTP_TIMEOUT_ESTERNO = 30
+
+_gw_http = GatewayHTTP("topics")
 
 
 async def _to_thread(func, /, *args, **kwargs):
@@ -84,7 +94,7 @@ def list_topics(tier: str | None = None, include_archived: bool = False) -> list
     if include_archived:
         params["include_archived"] = "true"
     try:
-        r = requests.get(_base(), headers=_headers(), params=params, timeout=_HTTP_TIMEOUT)
+        r = _gw_http.get(_base(), headers=_headers(), params=params, timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway topics irraggiungibile: {e}") from e
     if r.status_code != 200:
@@ -95,7 +105,7 @@ def list_topics(tier: str | None = None, include_archived: bool = False) -> list
 def open_topic(tier: str, name: str) -> dict | None:
     url = f"{_base()}/{tier}/{name}"
     try:
-        r = requests.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+        r = _gw_http.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway topics irraggiungibile: {e}") from e
     if r.status_code == 404:
@@ -108,7 +118,7 @@ def open_topic(tier: str, name: str) -> dict | None:
 def create_topic(tier: str, name: str, meta: dict,
                  hook_enabled: bool = True) -> dict:
     try:
-        r = requests.post(_base(), headers=_headers(),
+        r = _gw_http.post(_base(), headers=_headers(),
                           json={"tier": tier, "name": name, "meta": meta,
                                 "hook_enabled": hook_enabled,
                                 # Evita il ciclo logic → gateway → logic: questo
@@ -135,7 +145,7 @@ def create_topic(tier: str, name: str, meta: dict,
 def telegram_binding(tier: str, name: str, payload: dict) -> dict:
     url = f"{_base()}/{tier}/{name}/telegram"
     try:
-        r = requests.post(url, headers=_headers(), json=payload, timeout=_HTTP_TIMEOUT)
+        r = _gw_http.post(url, headers=_headers(), json=payload, timeout=_HTTP_TIMEOUT_ESTERNO)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway telegram irraggiungibile: {e}") from e
     if r.status_code >= 400:
@@ -159,7 +169,7 @@ def read_topic_logo(tier: str, name: str) -> tuple[bytes, str]:
     """
     url = f"{_base()}/{tier}/{name}/logo"
     try:
-        r = requests.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+        r = _gw_http.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT_ESTERNO)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway file irraggiungibile: {e}") from e
     if r.status_code >= 400:
@@ -172,10 +182,10 @@ def topic_logo(tier: str, name: str, payload: dict | None) -> dict:
     """Imposta (payload con `data` base64) o toglie (payload None) il logo."""
     url = f"{_base()}/{tier}/{name}/logo"
     try:
-        r = (requests.delete(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+        r = (_gw_http.delete(url, headers=_headers(), timeout=_HTTP_TIMEOUT_ESTERNO)
              if payload is None else
-             requests.post(url, headers=_headers(), json=payload,
-                           timeout=_HTTP_TIMEOUT))
+             _gw_http.post(url, headers=_headers(), json=payload,
+                           timeout=_HTTP_TIMEOUT_ESTERNO))
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway logo irraggiungibile: {e}") from e
     if r.status_code >= 400:
@@ -192,9 +202,9 @@ def mcp_clients(tier: str, name: str, payload: dict | None = None) -> dict:
     url = f"{_base()}/{tier}/{name}/mcp-clients"
     try:
         if payload is None:
-            r = requests.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+            r = _gw_http.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
         else:
-            r = requests.post(url, headers=_headers(), json=payload,
+            r = _gw_http.post(url, headers=_headers(), json=payload,
                               timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway mcp-clients irraggiungibile: {e}") from e
@@ -213,7 +223,7 @@ def mcp_clients(tier: str, name: str, payload: dict | None = None) -> dict:
 def set_portable(tier: str, name: str, portable: bool) -> dict:
     url = f"{_base()}/{tier}/{name}/portable"
     try:
-        r = requests.post(url, headers=_headers(), json={"portable": bool(portable)},
+        r = _gw_http.post(url, headers=_headers(), json={"portable": bool(portable)},
                           timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway portable irraggiungibile: {e}") from e
@@ -225,7 +235,7 @@ def set_portable(tier: str, name: str, portable: bool) -> dict:
 def archive_topic(tier: str, name: str) -> dict:
     url = f"{_base()}/{tier}/{name}/archive"
     try:
-        r = requests.post(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+        r = _gw_http.post(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway archive irraggiungibile: {e}") from e
     if r.status_code >= 400:
@@ -236,7 +246,7 @@ def archive_topic(tier: str, name: str) -> dict:
 def set_status(tier: str, name: str, status: str) -> dict:
     url = f"{_base()}/{tier}/{name}/status"
     try:
-        r = requests.post(url, headers=_headers(), json={"status": status}, timeout=_HTTP_TIMEOUT)
+        r = _gw_http.post(url, headers=_headers(), json={"status": status}, timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway set-status irraggiungibile: {e}") from e
     if r.status_code >= 400:
@@ -247,7 +257,7 @@ def set_status(tier: str, name: str, status: str) -> dict:
 def set_deadline(tier: str, name: str, deadline: str | None) -> dict:
     url = f"{_base()}/{tier}/{name}/deadline"
     try:
-        r = requests.post(url, headers=_headers(), json={"deadline": deadline}, timeout=_HTTP_TIMEOUT)
+        r = _gw_http.post(url, headers=_headers(), json={"deadline": deadline}, timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway set-deadline irraggiungibile: {e}") from e
     if r.status_code >= 400:
@@ -264,7 +274,7 @@ def get_agents_md(tier: str, name: str) -> tuple[str | None, str | None, bool]:
     """
     url = f"{_base()}/{tier}/{name}/agents-md"
     try:
-        r = requests.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+        r = _gw_http.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT_ESTERNO)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway agents-md irraggiungibile: {e}") from e
     if r.status_code >= 400:
@@ -279,9 +289,9 @@ def save_agents_md(tier: str, name: str, text: str,
     frattempo: il chiamante rilegge e rifonde, non sovrascrive."""
     url = f"{_base()}/{tier}/{name}/agents-md"
     try:
-        r = requests.post(url, headers=_headers(),
+        r = _gw_http.post(url, headers=_headers(),
                           json={"text": text, "base_version": base_version},
-                          timeout=_HTTP_TIMEOUT)
+                          timeout=_HTTP_TIMEOUT_ESTERNO)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway agents-md irraggiungibile: {e}") from e
     if r.status_code == 409:
@@ -294,7 +304,7 @@ def save_agents_md(tier: str, name: str, text: str,
 def list_messages(tier: str, name: str, limit: int = 200) -> list[dict]:
     url = f"{_base()}/{tier}/{name}/messages"
     try:
-        r = requests.get(url, headers=_headers(), params={"limit": limit}, timeout=_HTTP_TIMEOUT)
+        r = _gw_http.get(url, headers=_headers(), params={"limit": limit}, timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway messages irraggiungibile: {e}") from e
     if r.status_code == 404:
@@ -309,7 +319,7 @@ def post_message(tier: str, name: str, author: str, text: str,
     url = f"{_base()}/{tier}/{name}/messages"
     body = {"author": author, "text": text, "kind": kind, "attachments": attachments or []}
     try:
-        r = requests.post(url, headers=_headers(), json=body, timeout=_HTTP_TIMEOUT)
+        r = _gw_http.post(url, headers=_headers(), json=body, timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway post_message irraggiungibile: {e}") from e
     if r.status_code != 200:
@@ -326,7 +336,7 @@ def set_participant(tier: str, name: str, agent: str, add: bool = True,
     le manderebbe un messaggio di uscita e uno di rientro per un cambio di grado.
     """
     url = f"{_base()}/{tier}/{name}/participants"
-    method = requests.post if add else requests.delete
+    method = _gw_http.post if add else _gw_http.delete
     payload = {"agent": agent}
     if add and role:
         payload["role"] = role
@@ -343,7 +353,7 @@ def remote_action(tier: str, name: str, action: str, **params) -> dict:
     """Verbi Remote del topic (status/enable/disable/add/commit/push/pull) → gateway."""
     url = f"{_base()}/{tier}/{name}/remote"
     try:
-        r = requests.post(url, headers=_headers(), json={"action": action, **params},
+        r = _gw_http.post(url, headers=_headers(), json={"action": action, **params},
                           timeout=60)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway remote irraggiungibile: {e}") from e
@@ -355,8 +365,8 @@ def remote_action(tier: str, name: str, action: str, **params) -> dict:
 def list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
     url = f"{_base()}/{tier}/{name}/files"
     try:
-        r = requests.get(url, headers=_headers(), params={"path": subpath},
-                         timeout=_HTTP_TIMEOUT)
+        r = _gw_http.get(url, headers=_headers(), params={"path": subpath},
+                         timeout=_HTTP_TIMEOUT_ESTERNO)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway files irraggiungibile: {e}") from e
     if r.status_code != 200:
@@ -373,7 +383,7 @@ def clear_taint(tier: str, name: str, by: str = "") -> dict:
     """
     url = f"{_base()}/{tier}/{name}/taint/clear"
     try:
-        r = requests.post(url, headers=_headers(), json={"by": by},
+        r = _gw_http.post(url, headers=_headers(), json={"by": by},
                           timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway taint irraggiungibile: {e}") from e
@@ -388,7 +398,7 @@ def read_file(tier: str, name: str, path: str) -> bytes:
     transitare in base64 dal modello."""
     url = f"{_base()}/{tier}/{name}/file"
     try:
-        r = requests.get(url, headers=_headers(), params={"path": path}, timeout=_HTTP_TIMEOUT)
+        r = _gw_http.get(url, headers=_headers(), params={"path": path}, timeout=_HTTP_TIMEOUT_ESTERNO)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway read_file irraggiungibile: {e}") from e
     if r.status_code == 404:
@@ -408,10 +418,10 @@ def put_file(tier: str, name: str, filename: str, content_b64: str,
     """
     url = f"{_base()}/{tier}/{name}/files"
     try:
-        r = requests.post(url, headers=_headers(),
+        r = _gw_http.post(url, headers=_headers(),
                           json={"filename": filename, "content_b64": content_b64,
                                 "provenance": provenance},
-                          timeout=_HTTP_TIMEOUT)
+                          timeout=_HTTP_TIMEOUT_ESTERNO)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway put_file irraggiungibile: {e}") from e
     if r.status_code != 200:
@@ -425,7 +435,7 @@ def export_bundle(topics: list[str] | None = None) -> bytes:
     url = f"{_base()}/export"
     params = {"topics": ",".join(topics)} if topics else None
     try:
-        r = requests.get(url, headers=_headers(), params=params, timeout=300)
+        r = _gw_http.get(url, headers=_headers(), params=params, timeout=300)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway export irraggiungibile: {e}") from e
     if r.status_code != 200:
@@ -438,7 +448,7 @@ def import_bundle(data: bytes) -> dict:
     url = f"{_base()}/import"
     headers = {**_headers(), "Content-Type": "application/gzip"}
     try:
-        r = requests.post(url, headers=headers, data=data, timeout=300)
+        r = _gw_http.post(url, headers=headers, data=data, timeout=300)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway import irraggiungibile: {e}") from e
     if r.status_code != 200:
@@ -450,7 +460,7 @@ def get_file(tier: str, name: str, path: str) -> bytes | None:
     """Byte di un file dentro il topic (es. files/foo.md), via gateway. None se 404."""
     url = f"{_base()}/{tier}/{name}/file"
     try:
-        r = requests.get(url, headers=_headers(), params={"path": path}, timeout=_HTTP_TIMEOUT)
+        r = _gw_http.get(url, headers=_headers(), params={"path": path}, timeout=_HTTP_TIMEOUT_ESTERNO)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway topic file irraggiungibile: {e}") from e
     if r.status_code == 404:
@@ -460,51 +470,53 @@ def get_file(tier: str, name: str, path: str) -> bytes | None:
     return r.content
 
 
-async def async_list_topics(tier: str | None = None,
-                            include_archived: bool = False) -> list[dict]:
-    return await _to_thread(list_topics, tier=tier, include_archived=include_archived)
+def _async_of(sync_name: str):
+    """Wrapper async TRASPARENTE della funzione sincrona `sync_name`.
+
+    Inoltra la chiamata a un thread **così com'è**: gli argomenti arrivano alla
+    funzione sincrona nella stessa forma in cui il chiamante li ha scritti. Un
+    wrapper che ricopia la firma ed espande i default cambia quella forma —
+    `post_message(t, n, a, testo, kind=...)` diventava
+    `post_message(t, n, a, testo, kind, attachments)` — e chi sostituisce la
+    funzione (un fake in un test, un adattatore) la vede diversa da come il
+    chiamante l'ha invocata.
+
+    La funzione bersaglio si risolve al momento della chiamata, per nome: così
+    `patch.object(topics_client, "post_message", ...)` continua a mordere anche
+    passando dal wrapper.
+    """
+    async def wrapper(*args, **kwargs):
+        return await _to_thread(globals()[sync_name], *args, **kwargs)
+
+    wrapper.__name__ = wrapper.__qualname__ = f"async_{sync_name}"
+    wrapper.__doc__ = f"Versione async di `{sync_name}`: stessa firma, attesa in un thread."
+    return wrapper
 
 
-async def async_open_topic(tier: str, name: str) -> dict | None:
-    return await _to_thread(open_topic, tier, name)
-
-
-async def async_create_topic(tier: str, name: str, meta: dict,
-                             hook_enabled: bool = True) -> dict:
-    return await _to_thread(create_topic, tier, name, meta, hook_enabled)
-
-
-async def async_get_agents_md(tier: str, name: str) -> tuple[str | None, str | None, bool]:
-    return await _to_thread(get_agents_md, tier, name)
-
-
-async def async_save_agents_md(tier: str, name: str, text: str,
-                               base_version: str | None) -> dict:
-    return await _to_thread(save_agents_md, tier, name, text, base_version)
-
-
-async def async_list_messages(tier: str, name: str, limit: int = 200) -> list[dict]:
-    return await _to_thread(list_messages, tier, name, limit)
-
-
-async def async_post_message(tier: str, name: str, author: str, text: str,
-                             kind: str = "human",
-                             attachments: list[str] | None = None) -> dict:
-    return await _to_thread(post_message, tier, name, author, text, kind, attachments)
-
-
-async def async_remote_action(tier: str, name: str, action: str, **params) -> dict:
-    return await _to_thread(remote_action, tier, name, action, **params)
-
-
-async def async_list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
-    return await _to_thread(list_files, tier, name, subpath)
-
-
-async def async_get_file(tier: str, name: str, path: str) -> bytes | None:
-    return await _to_thread(get_file, tier, name, path)
-
-
-async def async_put_file(tier: str, name: str, filename: str, content_b64: str,
-                         provenance: str = "untrusted") -> dict:
-    return await _to_thread(put_file, tier, name, filename, content_b64, provenance)
+# I wrapper async dei client: da un handler `async def` si chiama SEMPRE questo
+# lato, mai la funzione sincrona — il test `test_no_sync_http_in_async_handlers`
+# lo verifica sull'AST di tutto `server/`.
+async_list_topics = _async_of("list_topics")
+async_open_topic = _async_of("open_topic")
+async_create_topic = _async_of("create_topic")
+async_archive_topic = _async_of("archive_topic")
+async_get_agents_md = _async_of("get_agents_md")
+async_save_agents_md = _async_of("save_agents_md")
+async_list_messages = _async_of("list_messages")
+async_post_message = _async_of("post_message")
+async_remote_action = _async_of("remote_action")
+async_list_files = _async_of("list_files")
+async_get_file = _async_of("get_file")
+async_read_file = _async_of("read_file")
+async_put_file = _async_of("put_file")
+async_set_participant = _async_of("set_participant")
+async_mcp_clients = _async_of("mcp_clients")
+async_clear_taint = _async_of("clear_taint")
+async_telegram_binding = _async_of("telegram_binding")
+async_topic_logo = _async_of("topic_logo")
+async_read_topic_logo = _async_of("read_topic_logo")
+async_set_portable = _async_of("set_portable")
+async_set_status = _async_of("set_status")
+async_set_deadline = _async_of("set_deadline")
+async_export_bundle = _async_of("export_bundle")
+async_import_bundle = _async_of("import_bundle")

@@ -29,7 +29,7 @@ class PreClaimTests(unittest.TestCase):
         # la chiamata a require_authz deve essere DENTRO un ramo condizionale
         self.assertIn("is_initialized()", src)
         i_cond = src.index("is_initialized()")
-        i_authz = src.index('require_authz(request, "agents.create")')
+        i_authz = src.index('require_authz_async(request, "agents.create")')
         self.assertLess(i_cond, i_authz,
                         "require_authz deve venire DOPO il controllo sullo stato "
                         "del claim, altrimenti il primo admin non è creabile")
