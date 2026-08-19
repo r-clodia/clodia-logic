@@ -580,7 +580,11 @@ async def pack_ops_report(request: Request):
     mai guardati. Read-only — non monta e non smonta niente: quello resta un
     atto esplicito.
     """
-    principal = gateway_pdp.require_authz(request, "packs.import_url")  # admin-only
+    # Forma `_async` (#106): la decisione del PDP è una POST sincrona, e chiamata
+    # dritta da un handler async ferma l'event loop di tutto il processo. Questo
+    # sito è stato colto dal guard AST della #106 durante il rebase — la PR era
+    # scritta su un main che quel guard non aveva ancora.
+    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
     from . import pack_ops
     # Il client del gateway è `requests` sincrono: fuori dall'event loop.
     import asyncio
