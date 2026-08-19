@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import os
 import unittest
+from contextlib import ExitStack
 from types import SimpleNamespace
 from unittest.mock import AsyncMock, patch
 
@@ -1792,3 +1793,141 @@ class SelfTagTests(unittest.TestCase):
             "segretario", "fullstack-dev#1", self.multi))
         self.assertFalse(channels._is_self_tag(
             "segretario#2", "fullstack-dev#2", self.multi))
+
+
+class RoutingOverruleTests(unittest.IsolatedAsyncioTestCase):
+    """R9 (#187) · Scavalcare il router: la sequenza correggi → interrompi →
+    ri-instrada → registra, non tre pezzi scollegati."""
+
+    def setUp(self) -> None:
+        self.worker = _a("worker", "normal", "P1")
+        self.meta = {"tier": "SEAL-1", "owner": "owner",
+                     "participants": ["owner", "guest", "worker", "accountant"]}
+        self.messages = [
+            {"id": "source-1", "kind": "human", "author": "guest",
+             "text": "questa è una domanda di contabilità"},
+            {"id": "reply-1", "kind": "ai", "author": "accountant",
+             "text": "ci penso io"},
+        ]
+        self.order: list[str] = []
+
+    def _request(self, agent: str = "worker") -> SimpleNamespace:
+        return SimpleNamespace(headers={},
+                               json=AsyncMock(return_value={"agent": agent}))
+
+    def _enter(self, stack: ExitStack, principal: str, *,
+               running: str = "accountant", embedding=(0.1, 0.2)):
+        """Entra le patch comuni e restituisce il doppio di `record_correction`.
+
+        L'ordine reale delle due azioni è ciò che il test guarda: interruzione e
+        avvio scrivono in `self.order`, così la sequenza è osservabile e non
+        dedotta dal fatto che entrambe siano state chiamate.
+        """
+        async def interrupt() -> bool:
+            self.order.append(f"interrupt:{running}")
+            return True
+
+        async def start_turn(*_a, **_k) -> bool:
+            self.order.append("start:worker")
+            return True
+
+        chat = SimpleNamespace(chat_id=f"chan:SEAL-1:demo:{running}",
+                               interrupt_current_turn=interrupt)
+        # `_from_human` chiede al registry se l'autore è una persona (#221):
+        # senza queste identità l'ultimo messaggio umano non esisterebbe.
+        people = {"guest": _a("guest", "human"), "owner": _a("owner", "human"),
+                  "altro": _a("altro", "human")}
+        for p in (
+            patch.object(channels.registry, "get_by_name",
+                         side_effect=lambda n: people.get(n)),
+            patch.object(channels, "_principal_from_request", return_value=principal),
+            patch.object(channels.topics_client, "open_topic",
+                         return_value={"meta": self.meta}),
+            patch.object(channels, "_require_contributor"),
+            patch.object(channels.topics_client, "list_messages",
+                         return_value=self.messages),
+            patch.object(channels, "_pick_responder", return_value=self.worker),
+            patch.object(channels.manager, "list", return_value=[chat]),
+            patch.object(channels, "_start_turn", side_effect=start_turn),
+            patch.object(channels.responder_routing, "embed_text",
+                         return_value=list(embedding)),
+            patch.object(channels, "_latest_human_routing_context",
+                         return_value="finestra"),
+            patch.object(channels, "_track_routing_decision"),
+            patch.object(channels.bus, "publish", new_callable=AsyncMock),
+        ):
+            stack.enter_context(p)
+        return stack.enter_context(
+            patch.object(channels.routing_feedback, "record_correction"))
+
+    async def test_the_wrong_turn_is_stopped_before_the_right_one_starts(self) -> None:
+        """Il difetto misurato: la correzione insegnava per la volta dopo e
+        lasciava parlare l'agente sbagliato. Qui l'ordine è il fix."""
+        with ExitStack() as stack:
+            record = self._enter(stack, "guest")
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(self.order, ["interrupt:accountant", "start:worker"])
+        self.assertEqual(result["interrupted"], ["chan:SEAL-1:demo:accountant"])
+        self.assertEqual(result["responder"], "worker")
+        self.assertTrue(result["learned"])
+        record.assert_called_once()
+        self.assertEqual(record.call_args.args[1], "worker")
+
+    async def test_the_agent_taking_over_is_not_interrupted(self) -> None:
+        """`keep`: fermare e riavviare subito chi riceve il turno è lavoro buttato."""
+        with ExitStack() as stack:
+            self._enter(stack, "guest", running="worker")
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(self.order, ["start:worker"])
+        self.assertEqual(result["interrupted"], [])
+
+    async def test_topic_owner_may_overrule_as_fallback(self) -> None:
+        """L'autore non è collegato: senza ripiego nessuno fermerebbe l'agente
+        sbagliato, cioè il difetto che l'endpoint chiude."""
+        with ExitStack() as stack:
+            self._enter(stack, "owner")
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertTrue(result["ok"])
+        self.assertEqual(self.order, ["interrupt:accountant", "start:worker"])
+
+    async def test_a_third_party_cannot_reroute_someone_elses_message(self) -> None:
+        with ExitStack() as stack:
+            record = self._enter(stack, "altro")
+            with self.assertRaises(channels.HTTPException) as raised:
+                await channels.channel_routing_overrule(
+                    "SEAL-1", "demo", self._request())
+
+        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(self.order, [])
+        record.assert_not_called()
+
+    async def test_a_dead_embedder_does_not_cancel_the_overrule(self) -> None:
+        """Registrare è l'ultimo passo, non una condizione: un endpoint che
+        rinuncia a interrompere perché non riesce a prendere appunti è peggio."""
+        with ExitStack() as stack:
+            record = self._enter(stack, "guest", embedding=())
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(self.order, ["interrupt:accountant", "start:worker"])
+        self.assertFalse(result["learned"])
+        record.assert_not_called()
+
+    def test_the_author_of_the_misrouted_message_is_the_human_one(self) -> None:
+        """#221: un sistema terzo entra marcato `human` e non deve poter passare
+        per l'autore titolare della correzione."""
+        with patch.object(channels.registry, "get_by_name",
+                          side_effect=lambda n: _a(n, "proxy") if n == "hook"
+                          else _a(n, "human")):
+            latest = channels._latest_human_message([
+                {"id": "1", "kind": "human", "author": "guest", "text": "domanda"},
+                {"id": "2", "kind": "human", "author": "hook", "text": "payload"},
+            ])
+
+        self.assertEqual(latest["author"], "guest")

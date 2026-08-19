@@ -2290,6 +2290,23 @@ def _latest_human_routing_context(messages: list[dict],
     )
 
 
+def _latest_human_message(messages: list[dict]) -> dict | None:
+    """L'ultimo messaggio scritto da una PERSONA, quello che ha innescato il
+    routing di cui si sta discutendo.
+
+    Stesso indice che `_latest_human_routing_context` usa per comporre la
+    finestra dell'esemplare, ma restituisce il messaggio: allo scavalcamento
+    serve anche il suo `author`, perché è lui il titolare della correzione.
+    `_from_human` e non l'etichetta `kind`, per la ragione di #221: un sistema
+    terzo entra marcato `human` e non deve poter passare per l'autore.
+    """
+    return next(
+        (m for m in reversed(messages)
+         if _from_human(m) and str((m or {}).get("text") or "").strip()),
+        None,
+    )
+
+
 def _fmt_msg(m: dict) -> str:
     """Riga di storico; rende espliciti gli allegati così l'agente sa che
     esistono file da leggere (path relativo files/<nome>)."""
@@ -3020,6 +3037,36 @@ async def channel_routing_choice(tier: str, name: str, request: Request) -> dict
             "learned": bool(vec)}
 
 
+async def _interrupt_channel_turns(tier: str, name: str,
+                                   keep: str | None = None) -> list[str]:
+    """Ferma i turni in corso dei responder di questo canale.
+
+    Sta fuori dall'endpoint perché ha DUE chiamanti: l'interruzione chiesta a
+    mano dall'utente e lo scavalcamento del router (R9), che deve fermare il
+    turno sbagliato prima di avviare quello giusto. Con la ricerca dei chat_id
+    duplicata, la prossima correzione al meccanismo ne sistemerebbe uno solo.
+
+    `keep` esclude un responder: nello scavalcamento è quello a cui stiamo
+    consegnando il turno, e ucciderlo per riavviarlo subito dopo sarebbe lavoro
+    buttato — l'allocazione della menzione in `_start_turn` sa già accodarsi.
+    """
+    prefix = f"chan:{tier}:{name}:"
+    spared = f"{prefix}{keep}" if keep else None
+    interrupted: list[str] = []
+    for chat in manager.list():
+        chat_id = getattr(chat, "chat_id", "")
+        if not chat_id.startswith(prefix):
+            continue
+        if spared and chat_id == spared:
+            continue
+        try:
+            if await chat.interrupt_current_turn():
+                interrupted.append(chat_id)
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("interrupt %s: %s", chat_id, e)
+    return interrupted
+
+
 @router.post("/clodia/channels/{tier}/{name}/interrupt")
 async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
     """Interrompe il turno in corso del/i responder di questo canale — lo user
@@ -3029,16 +3076,100 @@ async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_contributor(request, topic.get("meta", {}))
-    prefix = f"chan:{tier}:{name}:"
-    interrupted = []
-    for chat in manager.list():
-        if getattr(chat, "chat_id", "").startswith(prefix):
-            try:
-                if await chat.interrupt_current_turn():
-                    interrupted.append(chat.chat_id)
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("interrupt %s: %s", chat.chat_id, e)
-    return {"interrupted": interrupted}
+    return {"interrupted": await _interrupt_channel_turns(tier, name)}
+
+
+def _may_overrule_routing(meta: dict, principal: str, author: str) -> bool:
+    """Chi ha titolo a scavalcare una scelta del router già eseguita.
+
+    L'AUTORE del messaggio instradato male, con l'OWNER del topic come ripiego.
+    È privilegio minimo: chi ha scritto il messaggio è l'unico che sa con
+    certezza a chi doveva andare, e non si apre la porta a un terzo che
+    reindirizza la conversazione di qualcun altro. Stessa politica scelta per
+    il dialogo di ambiguità (`routing-choice`, R8): un solo criterio per lo
+    stesso meccanismo.
+
+    Il ripiego all'owner non è simmetria di comodo, è il buco che resterebbe
+    altrimenti: se l'autore non è collegato, l'agente sbagliato finirebbe di
+    parlare senza che nessuno possa fermarlo — cioè esattamente il difetto che
+    questo endpoint esiste per chiudere.
+    """
+    return principal == author or _scope_role(meta, principal) == "owner"
+
+
+@router.post("/clodia/channels/{tier}/{name}/routing-overrule")
+async def channel_routing_overrule(tier: str, name: str, request: Request) -> dict:
+    """R9 · Scavalca una scelta del router GIÀ ESEGUITA: correggi → interrompi →
+    ri-instrada → registra.
+
+    I tre pezzi esistevano già separati — il correttore (`routing/correct`)
+    insegnava allo store per la volta successiva, `interrupt` fermava i turni,
+    la menzione diretta ne avviava uno — e mancava la sequenza: l'agente
+    sbagliato finiva di parlare mentre la correzione valeva per il futuro. Qui
+    la scelta dell'umano vale ADESSO, sullo stesso messaggio.
+
+    L'ordine è la sostanza del fix: prima si ferma il turno sbagliato, poi si
+    avvia quello giusto. Invertito, l'interruzione ucciderebbe il turno appena
+    avviato.
+    """
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "login richiesto")
+    topic = await topics_client.async_open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    meta = topic.get("meta", {})
+    _require_contributor(request, meta)
+    body = await request.json()
+    chosen = (body.get("agent") or "").strip()
+    if not chosen:
+        raise HTTPException(400, "agent richiesto")
+    tier_real = meta.get("tier", tier)
+    messages = await topics_client.async_list_messages(tier, name, limit=50)
+    human = _latest_human_message(messages)
+    if not human:
+        raise HTTPException(400, "nessun messaggio umano recente da ri-instradare")
+    if not _may_overrule_routing(meta, principal, str(human.get("author") or "")):
+        raise HTTPException(
+            403, "solo l'autore del messaggio instradato — o l'owner del topic — "
+                 "può scavalcare il router"
+        )
+    trace: dict = {}
+    responder = _pick_responder(
+        meta.get("participants", []), tier_real, chosen, human["text"], trace=trace
+    )
+    if responder is None or responder.name != chosen:
+        raise HTTPException(400, trace.get("reason")
+                            or f"agente '{chosen}' non instradabile")
+    interrupted = await _interrupt_channel_turns(tier, name, keep=chosen)
+    started = await _start_turn(
+        tier, name, tier_real, responder, principal, human["text"], "routed-choice"
+    )
+    # L'apprendimento è l'ultimo passo e non è una condizione: se l'embedder è
+    # giù, il turno sbagliato è stato fermato e quello giusto è partito comunque.
+    # Farlo fallire con 503 come in `routing/correct` sarebbe un endpoint che
+    # rinuncia a interrompere perché non riesce a prendere appunti.
+    vec = responder_routing.embed_text(
+        _latest_human_routing_context(messages, router_config.load())
+        or human["text"], role="query")
+    if vec:
+        routing_feedback.record_correction(
+            vec, chosen, router_chose=(body.get("chosen") or "").strip() or None,
+            tier=tier_real, by=principal, topic=f"{tier}/{name}")
+    payload = {
+        "tier": tier, "name": name, "mode": "correction",
+        "reason": "router overruled by human",
+        "chosen": chosen, "chosen_agents": [chosen],
+        "candidates": [], "eligible": [chosen],
+    }
+    try:
+        _track_routing_decision(payload)
+        await bus.publish(Event(type="routing_decision", payload=payload,
+                                timestamp=datetime.now(timezone.utc)))
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("routing_decision scavalcamento non pubblicato: %s", e)
+    return {"ok": True, "interrupted": interrupted, "queued": started,
+            "responder": chosen if started else None, "learned": bool(vec)}
 
 
 @router.post("/clodia/channels/{tier}/{name}/remote")
