@@ -147,26 +147,32 @@ class AuthoritativeSourceTests(unittest.TestCase):
 
 
 class UnavailableTests(unittest.TestCase):
-    """Il terzo esito: non sappiamo."""
+    """Il terzo esito: non sappiamo.
+
+    La cucitura è `_pending_requests` al PLURALE: la tripla
+    `agent|instance|verb` non contiene l'argomento, quindi può coprire più
+    richieste in coda, e il titolo si verifica su ognuna
+    (clodia-platform#232). Gli esiti sotto non cambiano.
+    """
 
     def test_an_unreachable_gateway_is_503_not_403(self):
         def giu(principal, agent, instance, verb):
             raise G._Unavailable("connection refused")
 
-        with patch.object(G, "_pending_request", giu):
+        with patch.object(G, "_pending_requests", giu):
             r = G._standing_error("davide", "clodia", "-", "topic.put")
         self.assertIsNotNone(r)
         self.assertEqual(r.status_code, 503)
 
     def test_a_refusal_is_403(self):
-        with patch.object(G, "_pending_request", lambda *a: _walls()), \
+        with patch.object(G, "_pending_requests", lambda *a: [_walls()]), \
              patch.object(G.topics_client, "open_topic", _topic_ok), \
              patch.object(G.admin, "is_admin", lambda p: True):
             r = G._standing_error("davide", "clodia", "-", "topic.add_participant")
         self.assertEqual(r.status_code, 403)
 
     def test_standing_returns_none(self):
-        with patch.object(G, "_pending_request", lambda *a: _walls()), \
+        with patch.object(G, "_pending_requests", lambda *a: [_walls()]), \
              patch.object(G.topics_client, "open_topic", _topic_ok):
             self.assertIsNone(
                 G._standing_error("giovanni", "clodia", "-", "topic.add_participant"))
