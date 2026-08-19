@@ -1897,15 +1897,17 @@ class RoutingOverruleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(self.order, ["interrupt:accountant", "start:worker"])
 
     async def test_a_third_party_cannot_reroute_someone_elses_message(self) -> None:
+        """La protezione è invariata — nessuna interruzione, nessun turno avviato
+        — ma dal #253 il rifiuto è un ESITO in risposta e non un 403: imparare e
+        agire declinano separatamente (vedi `OverruleDeclaresItsOutcomeTests`)."""
         with ExitStack() as stack:
-            record = self._enter(stack, "altro")
-            with self.assertRaises(channels.HTTPException) as raised:
-                await channels.channel_routing_overrule(
-                    "SEAL-1", "demo", self._request())
+            self._enter(stack, "altro")
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
 
-        self.assertEqual(raised.exception.status_code, 403)
+        self.assertEqual(result["outcome"], "not-authorized")
+        self.assertFalse(result["acted"])
         self.assertEqual(self.order, [])
-        record.assert_not_called()
 
     async def test_a_dead_embedder_does_not_cancel_the_overrule(self) -> None:
         """Registrare è l'ultimo passo, non una condizione: un endpoint che
@@ -1931,3 +1933,254 @@ class RoutingOverruleTests(unittest.IsolatedAsyncioTestCase):
             ])
 
         self.assertEqual(latest["author"], "guest")
+
+
+class OverruleStopsOneTurnTests(unittest.IsolatedAsyncioTestCase):
+    """#253 · Lo scavalcamento ri-instrada UN messaggio, quindi ferma UN turno.
+
+    Misurato su `main` dopo il merge di R9: `_interrupt_channel_turns` filtrava
+    per prefisso del canale, cioè fermava OGNI risponditore della stanza, e
+    risparmiava per uguaglianza esatta di stringa, cioè `keep="worker"` non
+    risparmiava `worker#2` — l'istanza a cui stiamo consegnando il turno poteva
+    essere quella che uccidiamo. Il «ferma tutti» ha già il suo endpoint.
+    """
+
+    def setUp(self) -> None:
+        self.worker = _a("worker", "normal", "P1")
+        self.meta = {"tier": "SEAL-1", "owner": "owner",
+                     "participants": ["owner", "guest", "worker", "accountant",
+                                      "librarian"]}
+        self.messages = [
+            {"id": "source-1", "kind": "human", "author": "guest",
+             "text": "questa è una domanda di contabilità"},
+            {"id": "reply-1", "kind": "ai", "author": "accountant",
+             "text": "ci penso io"},
+        ]
+        self.interrupted: list[str] = []
+        self.started: list[str] = []
+
+    def _request(self, agent: str = "worker",
+                 chosen: str | None = "accountant") -> SimpleNamespace:
+        body = {"agent": agent, **({"chosen": chosen} if chosen else {})}
+        return SimpleNamespace(headers={}, json=AsyncMock(return_value=body))
+
+    def _chat(self, label: str) -> SimpleNamespace:
+        async def interrupt() -> bool:
+            self.interrupted.append(label)
+            return True
+
+        return SimpleNamespace(chat_id=f"chan:SEAL-1:demo:{label}",
+                               interrupt_current_turn=interrupt)
+
+    def _enter(self, stack: ExitStack, principal: str = "guest", *,
+               running: tuple[str, ...] = ("accountant", "librarian"),
+               routable: bool = True, embedding=(0.1, 0.2)):
+        async def start_turn(*_a, **_k) -> bool:
+            self.started.append("worker")
+            return True
+
+        chats = [self._chat(label) for label in running]
+        people = {"guest": _a("guest", "human"), "owner": _a("owner", "human"),
+                  "altro": _a("altro", "human")}
+        for p in (
+            patch.object(channels.registry, "get_by_name",
+                         side_effect=lambda n: people.get(n)),
+            patch.object(channels, "_principal_from_request", return_value=principal),
+            patch.object(channels.topics_client, "open_topic",
+                         return_value={"meta": self.meta}),
+            patch.object(channels, "_require_contributor"),
+            patch.object(channels.topics_client, "list_messages",
+                         return_value=self.messages),
+            patch.object(channels, "_pick_responder",
+                         return_value=self.worker if routable else None),
+            patch.object(channels.manager, "list", return_value=chats),
+            patch.object(channels, "_start_turn", side_effect=start_turn),
+            patch.object(channels.responder_routing, "embed_text",
+                         return_value=list(embedding)),
+            patch.object(channels, "_latest_human_routing_context",
+                         return_value="finestra"),
+            patch.object(channels, "_track_routing_decision"),
+            patch.object(channels.bus, "publish", new_callable=AsyncMock),
+        ):
+            stack.enter_context(p)
+        return stack.enter_context(
+            patch.object(channels.routing_feedback, "record_correction"))
+
+    async def test_the_rest_of_the_room_keeps_working(self) -> None:
+        """`librarian` sta lavorando a una richiesta che non è questa: fermarlo
+        distrugge lavoro che nessuno ha chiesto di fermare."""
+        with ExitStack() as stack:
+            self._enter(stack)
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(self.interrupted, ["accountant"])
+        self.assertEqual(result["interrupted"], ["chan:SEAL-1:demo:accountant"])
+        self.assertEqual(self.started, ["worker"])
+        self.assertTrue(result["acted"])
+        self.assertEqual(result["outcome"], "overruled")
+
+    async def test_the_instance_taking_over_is_spared_and_the_wrong_one_is_not(
+            self) -> None:
+        """Identità di SEED, non uguaglianza di stringa: `accountant#2` è il turno
+        sbagliato, `worker#3` è quello a cui stiamo consegnando."""
+        with ExitStack() as stack:
+            self._enter(stack, running=("accountant#2", "worker#3"))
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(self.interrupted, ["accountant#2"])
+        self.assertEqual(result["interrupted"], ["chan:SEAL-1:demo:accountant#2"])
+        self.assertEqual(self.started, ["worker"])
+
+    async def test_a_finished_turn_leaves_the_room_alone_and_still_re_routes(
+            self) -> None:
+        """Turno già finito: la misura è la lista vuota degli interrotti. Il chip
+        dello scavalcamento è una richiesta esplicita di passare il turno, quindi
+        il turno giusto parte comunque — chiedere e non ottenere nulla sarebbe
+        peggio del difetto."""
+        with ExitStack() as stack:
+            self._enter(stack, running=("librarian",))
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(self.interrupted, [])
+        self.assertEqual(result["interrupted"], [])
+        self.assertEqual(self.started, ["worker"])
+        self.assertTrue(result["acted"])
+
+    async def test_without_the_router_pick_only_who_already_spoke_is_stopped(
+            self) -> None:
+        """Client che non manda `chosen`: il turno sbagliato è di chi ha parlato
+        dopo l'ultimo messaggio umano."""
+        with ExitStack() as stack:
+            self._enter(stack)
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request(chosen=None))
+
+        self.assertEqual(self.interrupted, ["accountant"])
+        self.assertEqual(self.started, ["worker"])
+        self.assertTrue(result["acted"])
+
+    async def test_when_nobody_spoke_yet_nothing_is_interrupted(self) -> None:
+        """Né `chosen` né una risposta da cui dedurlo: non sappiamo di chi sia il
+        turno sbagliato, e allora non si tocca il lavoro di nessuno."""
+        self.messages = [self.messages[0]]
+        with ExitStack() as stack:
+            self._enter(stack)
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request(chosen=None))
+
+        self.assertEqual(self.interrupted, [])
+        self.assertEqual(self.started, ["worker"])
+        self.assertTrue(result["acted"])
+
+
+class OverruleDeclaresItsOutcomeTests(unittest.IsolatedAsyncioTestCase):
+    """#253 · Imparare e agire declinano separatamente: un 403 per «non c'era
+    nessun turno da fermare» rende «non ho imparato» indistinguibile da «non ho
+    agito». L'esito torna in risposta; 401/404 restano eccezioni, perché non
+    sono esiti ma richieste malformate."""
+
+    def setUp(self) -> None:
+        OverruleStopsOneTurnTests.setUp(self)  # stessa stanza, stessi messaggi
+
+    _request = OverruleStopsOneTurnTests._request
+    _chat = OverruleStopsOneTurnTests._chat
+    _enter = OverruleStopsOneTurnTests._enter
+
+    async def test_a_third_party_is_declined_by_outcome_and_still_teaches(
+            self) -> None:
+        with ExitStack() as stack:
+            record = self._enter(stack, "altro")
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(result["outcome"], "not-authorized")
+        self.assertFalse(result["acted"])
+        self.assertEqual(self.interrupted, [])
+        self.assertEqual(self.started, [])
+        self.assertTrue(result["learned"])
+        record.assert_called_once()
+
+    async def test_an_unroutable_agent_declines_the_act_not_the_call(self) -> None:
+        with ExitStack() as stack:
+            record = self._enter(stack, routable=False)
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertEqual(result["outcome"], "not-routable")
+        self.assertFalse(result["acted"])
+        self.assertEqual(self.interrupted, [])
+        self.assertEqual(self.started, [])
+        record.assert_called_once()
+
+    async def test_overruling_to_the_agent_the_router_already_chose_does_nothing(
+            self) -> None:
+        """Nessun turno da fermare e nessuno da avviare: dirlo è meglio che
+        fermare e riavviare lo stesso agente."""
+        with ExitStack() as stack:
+            self._enter(stack)
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo",
+                self._request(agent="accountant", chosen="accountant"))
+
+        self.assertEqual(result["outcome"], "same-agent")
+        self.assertFalse(result["acted"])
+        self.assertEqual(self.interrupted, [])
+        self.assertEqual(self.started, [])
+
+    async def test_a_dead_embedder_still_lets_the_act_through(self) -> None:
+        with ExitStack() as stack:
+            record = self._enter(stack, embedding=())
+            result = await channels.channel_routing_overrule(
+                "SEAL-1", "demo", self._request())
+
+        self.assertTrue(result["acted"])
+        self.assertFalse(result["learned"])
+        record.assert_not_called()
+
+
+class LearningOnlyDoorsSaySoTests(unittest.IsolatedAsyncioTestCase):
+    """#253 · `routing/correct` e `routing/feedback kind=correction` insegnano e
+    NON agiscono: la separazione è voluta (imparare è gratis, ri-instradare
+    consuma un turno), ma va DETTA — altrimenti quale delle due porte chiama un
+    client diventa una differenza funzionale che niente dichiara."""
+
+    def _enter(self, stack: ExitStack):
+        for p in (
+            patch.object(channels, "_principal_from_request", return_value="guest"),
+            patch.object(channels.topics_client, "open_topic",
+                         return_value={"meta": {"tier": "SEAL-1"}}),
+            patch.object(channels, "_require_contributor"),
+            patch.object(channels.registry, "get_by_name",
+                         side_effect=lambda n: _a(n)),
+            patch.object(channels.topics_client, "list_messages", return_value=[]),
+            patch.object(channels, "_latest_human_routing_context",
+                         return_value="finestra"),
+            patch.object(channels.responder_routing, "embed_text",
+                         return_value=[0.1, 0.2]),
+            patch.object(channels.router_config, "load", return_value={}),
+            patch.object(channels.routing_feedback, "record_correction"),
+            patch.object(channels.routing_feedback, "record_feedback"),
+        ):
+            stack.enter_context(p)
+
+    async def test_correct_says_it_did_not_act(self) -> None:
+        with ExitStack() as stack:
+            self._enter(stack)
+            result = await channels.routing_correct(SimpleNamespace(
+                headers={}, json=AsyncMock(return_value={
+                    "tier": "SEAL-1", "name": "demo", "correct_agent": "worker"})))
+
+        self.assertFalse(result["acted"])
+
+    async def test_feedback_correction_says_it_did_not_act(self) -> None:
+        with ExitStack() as stack:
+            self._enter(stack)
+            result = await channels.routing_feedback_record(SimpleNamespace(
+                headers={}, json=AsyncMock(return_value={
+                    "tier": "SEAL-1", "name": "demo", "kind": "correction",
+                    "chosen": "accountant", "correct_agent": "worker"})))
+
+        self.assertFalse(result["acted"])
