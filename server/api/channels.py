@@ -34,7 +34,7 @@ from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
                                    topic_runtime_override)
-from . import (access_log, presence, responder_routing, router_config,
+from . import (access_log, mentions, presence, responder_routing, router_config,
                routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
 from .agents import _principal_from_request
@@ -1008,7 +1008,10 @@ def _norm(level: str | None) -> str:
 # La forma `#N` resta RICONOSCIUTA in ingresso: sta scritta nei messaggi già
 # inviati e nella memoria degli agenti, e smettere di capirla trasformerebbe una
 # menzione storica in un tag che non risolve.
-_TAG_RE = re.compile(r"@([a-z0-9][a-z0-9_-]{0,30}(?:#[1-9][0-9]{0,2})?)")
+#
+# Le regex che RICONOSCONO i sigilli non stanno più qui: sono in `mentions.py`,
+# copia allineata del parser del gateway (issue#255). Questo modulo taglia i
+# numeri di un tag già estratto, non decide che cosa è un tag.
 _ORD_SUFFIX_RE = re.compile(r"^(.*?)#([1-9][0-9]{0,2})$")
 _SPAWN_SUFFIX_RE = re.compile(r"^(.*?)-([1-9][0-9]{0,4})$")
 
@@ -1145,19 +1148,10 @@ def _can_access(clearance: str | None, tier: str | None) -> bool:
 
 
 def _tagged(text: str) -> str | None:
-    # Ignora le righe CITATE della reply (iniziano con ">"): contengono il testo
-    # dell'agente a cui si risponde, spesso con "@davide —" in testa → altrimenti
-    # _tagged prenderebbe quel @ e non il tag reale scritto dall'utente. Il tag
-    # dell'utente sta nel suo testo, non nella citazione.
-    own = "\n".join(ln for ln in (text or "").splitlines() if not ln.lstrip().startswith(">"))
-    m = _TAG_RE.findall(own)
-    return m[0] if m else None
+    """Il primo `@tag` del testo, o None. Vedi `_tags` per le regole."""
+    hard, _soft = _tags(text)
+    return hard[0] if hard else None
 
-
-# Tag SOFT ($agente): CITAZIONE, non una richiesta d'azione. Non avvia mai un
-# turno (R12): informa, resta nel campo `mentions` del messaggio e la si legge
-# nella storia del canale. `@agente` è la sola convocazione.
-_SOFT_TAG_RE = re.compile(r"\$([a-z0-9][a-z0-9_-]{0,30}(?:#[1-9][0-9]{0,2})?)")
 
 # Confine di frase, per ritagliare il contesto di una convocazione.
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?;:\n])\s+")
@@ -1165,18 +1159,21 @@ _SENTENCE_END_RE = re.compile(r"(?<=[.!?;:\n])\s+")
 
 def _tags(text: str) -> tuple[list[str], list[str]]:
     """(hard @tag, soft $tag) dal testo — dedup, in ordine, escluse le righe citate.
-    N tag possono attivare N agenti. Un nome sia @ che $ → conta come hard."""
-    own = "\n".join(ln for ln in (text or "").splitlines() if not ln.lstrip().startswith(">"))
-    hard: list[str] = []
-    soft: list[str] = []
-    seen: set[str] = set()
-    for m in _TAG_RE.findall(own):
-        if m not in seen:
-            seen.add(m); hard.append(m)
-    for m in _SOFT_TAG_RE.findall(own):
-        if m not in seen:
-            seen.add(m); soft.append(m)
-    return hard, soft
+    N tag possono attivare N agenti. Un nome sia @ che $ → conta come hard.
+
+    Tag SOFT (`$agente`): CITAZIONE, non una richiesta d'azione. Non avvia mai un
+    turno (R12): informa, resta nel campo `mentions` del messaggio e la si legge
+    nella storia del canale. `@agente` è la sola convocazione.
+
+    Le regole di riconoscimento stanno in `mentions.py` e sono le STESSE del
+    gateway, che produce il campo strutturato `mentions` (badge, notifiche).
+    Prima di #255 qui c'erano due regex diverse dalle sue, senza confine
+    sinistro: `foo@bar.com` diventava una menzione di `bar`, che non risolve, e
+    il messaggio non veniva instradato per rilevanza perché il router credeva di
+    aver già tentato una convocazione diretta. Cioè: il badge diceva «nessuna
+    menzione» e al messaggio non rispondeva nessuno.
+    """
+    return mentions.extract_tags(text)
 
 
 def _mention_context(text: str, tag: str, limit: int = 160) -> str:
