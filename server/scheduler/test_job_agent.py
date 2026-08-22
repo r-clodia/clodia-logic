@@ -13,7 +13,7 @@ from unittest import mock
 
 import yaml
 
-from . import db, scheduler
+from . import db, run_status, scheduler
 from ..agents.loader import registry
 from ..agents.models import AgentSpec
 from ..sdk_runtime import session as s
@@ -63,7 +63,15 @@ class JobRunLifecycleTests(unittest.IsolatedAsyncioTestCase):
         db.JOBS_DIR = self._old_dir
         self._tmp.cleanup()
 
-    async def test_agentic_run_transitions_from_running_to_success(self) -> None:
+    async def test_agentic_run_transitions_from_running_to_declared_status(self) -> None:
+        """RISCRITTO, e il cambio è il punto della modifica (clodia-platform#206).
+
+        Prima questo test pretendeva `success` da un turno che finisce senza
+        sollevare, ed era la definizione stessa del difetto: il job «Daily digest
+        GRC» ha girato 652 secondi, ha fallito tre invii e si è registrato
+        `success`. Ora lo stato lo dichiara l'agente, e un turno che dichiara
+        `success` continua a valere `success` — il resto del lifecycle (durata,
+        `last_status`) è invariato ed è quello che questo test copre."""
         run_id = db.mark_run(
             self.job["id"], status="dispatched (turno avviato in background)",
             chat_id="job:1",
@@ -71,7 +79,12 @@ class JobRunLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertIsNotNone(run_id)
         self.assertEqual(db.get_job(self.job["id"])["runs"][0]["stato"], "running")
         chat = mock.MagicMock(chat_id="job:1")
-        chat.send_user_message = mock.AsyncMock(return_value="done")
+
+        async def _turno(_prompt):
+            run_status.declare("job:1", "success")
+            return "done"
+
+        chat.send_user_message = _turno
 
         await scheduler._complete_agentic_run(self.job["id"], run_id, chat, "digest")
 
@@ -79,6 +92,24 @@ class JobRunLifecycleTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(stored["runs"][0]["stato"], "success")
         self.assertIsNotNone(stored["runs"][0]["durata"])
         self.assertEqual(stored["last_status"], "success")
+
+    async def test_agentic_run_without_a_declaration_is_not_success(self) -> None:
+        """Il turno finisce regolarmente e nessuno dichiara: `error`, non `success`.
+        È il caso del digest GRC, e la ragione per cui il test sopra è cambiato."""
+        run_id = db.mark_run(
+            self.job["id"], status="dispatched (turno avviato in background)",
+            chat_id="job:1",
+        )
+        chat = mock.MagicMock(chat_id="job:1")
+        chat.send_user_message = mock.AsyncMock(return_value="done")
+
+        await scheduler._complete_agentic_run(self.job["id"], run_id, chat, "digest")
+
+        stored = db.get_job(self.job["id"])
+        self.assertEqual(stored["runs"][0]["stato"], "error")
+        self.assertIn("non ha dichiarato", stored["runs"][0]["error"] or "")
+        self.assertIsNotNone(stored["runs"][0]["durata"],
+                             "la durata si misura comunque: il turno è avvenuto")
 
     async def test_agentic_run_persists_failure(self) -> None:
         run_id = db.mark_run(

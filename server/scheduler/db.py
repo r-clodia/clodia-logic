@@ -382,13 +382,46 @@ def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None) -> Opti
     return entry["id"]
 
 
-def complete_run(job_id: int, run_id: str, *, success: bool,
+#: Stati terminali di un run. `success`/`error`/`fatal` li dichiara l'AGENTE
+#: (`scheduler.run_status`), `failed` lo constata l'infrastruttura quando il
+#: turno muore. Insieme chiuso perché su questi stati la UI dipinge un pallino:
+#: uno stato inventato diventa `unknown` e si legge come «boh» esattamente dove
+#: serviva una risposta.
+TERMINAL_STATES = ("success", "error", "fatal", "failed")
+
+#: Stati terminali che NON sono un successo pieno. Serve a chi legge lo storico
+#: per sapere cosa merita un'occhiata, senza enumerare a mano tre stringhe in
+#: ogni chiamante — e la quarta nascerebbe senza.
+NOT_OK = ("error", "fatal", "failed")
+
+
+def complete_run(job_id: int, run_id: str, *, status: Optional[str] = None,
+                 success: Optional[bool] = None,
                  error: Optional[str] = None) -> bool:
     """Porta uno specifico run agentico a stato terminale e ne persiste durata.
 
     L'id evita che il completamento tardivo di un run aggiorni per errore una
     esecuzione successiva dello stesso job.
+
+    `status` è uno di `TERMINAL_STATES`. `success: bool` resta accettato per i
+    chiamanti che conoscono solo la vecchia forma binaria — mappato su
+    `success`/`failed` — perché il punto della modifica è che uno stato in più
+    esista, non che ogni chiamante debba cambiare nello stesso commit. Passarli
+    entrambi è un errore del chiamante, non una precedenza da indovinare.
     """
+    if status is None and success is None:
+        raise ValueError("complete_run richiede `status` oppure `success`")
+    if status is not None and success is not None:
+        raise ValueError(
+            "complete_run: passa `status` OPPURE `success`, non entrambi "
+            f"(status={status!r}, success={success!r})")
+    if status is None:
+        status = "success" if success else "failed"
+    status = str(status).strip().lower()
+    if status not in TERMINAL_STATES:
+        raise ValueError(
+            f"stato terminale '{status}' non valido; ammessi: "
+            f"{', '.join(TERMINAL_STATES)}")
     d = get_job(job_id)
     if d is None:
         return False
@@ -403,16 +436,24 @@ def complete_run(job_id: int, run_id: str, *, success: bool,
         duration = max(0.0, (finished - started).total_seconds())
     except (TypeError, ValueError):
         duration = None
+    # Il DETTAGLIO non è più «l'errore»: su `error` il lavoro è stato consegnato e
+    # il testo dice cosa può averne compromesso la qualità. Il campo si chiama
+    # ancora `error` perché è quello che la UI legge già; cambiargli nome qui
+    # avrebbe fatto sparire il testo dallo schermo senza che nulla segnalasse il
+    # perché.
+    dettaglio = str(error).strip() if error not in (None, "") else None
+    if status in NOT_OK and not dettaglio:
+        dettaglio = "nessun dettaglio fornito"
     entry.update({
-        "stato": "success" if success else "failed",
+        "stato": status,
         "finished_at": finished_at,
         "durata": duration,
-        "error": None if success else (str(error or "errore sconosciuto")),
+        "error": dettaglio if status in NOT_OK else None,
         "note": None,
     })
     d["runs"] = runs
     if str(d.get("run_seq")) == str(run_id):
-        d["last_status"] = "success" if success else f"failed: {error or 'errore sconosciuto'}"
+        d["last_status"] = status if status not in NOT_OK else f"{status}: {dettaglio}"
     d["updated_at"] = finished_at
     _write(d)
     return True
