@@ -28,7 +28,7 @@ except Exception:  # pragma: no cover
     import pytz
     _SCHED_TZ = pytz.timezone("Europe/Rome")
 
-from . import db
+from . import db, run_status
 from ..core.events import bus
 from ..core.models import Event
 from ..sdk_runtime.session import known_kind, manager
@@ -50,16 +50,46 @@ def _spawn_run(coro) -> None:
 
 
 async def _complete_agentic_run(job_id: int, run_id: str, chat, prompt: str) -> None:
+    """Esegue il turno di un job agentico e ne registra lo stato TERMINALE.
+
+    Lo stato non è più il valore di verità di «la chiamata ha sollevato?». Quello
+    misurava che il turno fosse finito, non che il lavoro fosse stato fatto: il
+    job «Daily digest GRC» ha girato 652 secondi, ha tentato l'invio tre volte,
+    ha fallito tre volte e ha registrato `success` (clodia-platform#206).
+
+    Ora ci sono due sorgenti, e restano distinte:
+
+    - se il turno MUORE → `failed`, e lo dice l'infrastruttura. Non è
+      dichiarabile da un agente, perché un agente che è morto non dichiara nulla;
+    - se il turno ARRIVA A TERMINE → lo stato è quello che l'agente ha dichiarato
+      con `jobs.report_status` (`success` | `error` | `fatal`). Se non ha
+      dichiarato niente è `error`, non `success`: un run di cui non conosciamo
+      l'esito non è un run andato bene.
+    """
+    chat_id = getattr(chat, "chat_id", None)
     LOG.info("Job run started job_id=%s run_id=%s chat_id=%s",
-             job_id, run_id, getattr(chat, "chat_id", None))
+             job_id, run_id, chat_id)
     try:
         await chat.send_user_message(prompt)
     except Exception as exc:  # noqa: BLE001
-        db.complete_run(job_id, run_id, success=False, error=str(exc) or repr(exc))
+        # Il turno è morto: qualunque cosa l'agente avesse dichiarato prima di
+        # morire descrive un lavoro che non è arrivato in fondo. La si scarta,
+        # altrimenti resterebbe in memoria e verrebbe letta dal PROSSIMO run.
+        if chat_id:
+            run_status.forget(str(chat_id))
+        db.complete_run(job_id, run_id, status="failed",
+                        error=str(exc) or repr(exc))
         LOG.exception("Job run failed job_id=%s run_id=%s: %s", job_id, run_id, exc)
     else:
-        db.complete_run(job_id, run_id, success=True)
-        LOG.info("Job run completed job_id=%s run_id=%s", job_id, run_id)
+        stato, dettaglio = run_status.take(str(chat_id or ""))
+        db.complete_run(job_id, run_id, status=stato, error=dettaglio)
+        if stato == "success":
+            LOG.info("Job run completed job_id=%s run_id=%s", job_id, run_id)
+        else:
+            # A livello WARNING perché è il caso che qualcuno deve leggere: il
+            # turno è finito regolarmente e il lavoro no.
+            LOG.warning("Job run completed job_id=%s run_id=%s stato=%s: %s",
+                        job_id, run_id, stato, dettaglio)
 
 
 # ---------------------------------------------------------------------------
