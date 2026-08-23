@@ -17,7 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import db, scheduler, nl_schedule
+from . import db, nl_schedule, run_status, scheduler
 from ..api import topics_client
 from ..sdk_runtime.session import available_kinds, known_kind, provider_connected_for
 
@@ -407,3 +407,41 @@ async def api_run_job(job_id: int, request: Request):
     _require_job_owner(request, _require_job(job_id))
     result = await scheduler.fire_job(job_id)
     return {"job_id": job_id, **result}
+
+
+@router.post("/clodia/jobs/report-status/internal")
+async def api_report_run_status(request: Request):
+    """L'AGENTE dichiara lo stato di uscita del proprio run.
+
+    Chiamato dal gateway per conto del verbo `jobs.report_status`.
+    Body: `{chat_id, status, detail?, agent?}`.
+
+    IDENTITÀ. `chat_id` non è scelto dall'agente: il gateway lo legge dal claim
+    `chat` del token di sessione, firmato dall'agent-server. Un modello non può
+    quindi dichiarare l'esito del run di qualcun altro cambiando un campo — ed è
+    la ragione per cui il chat_id sta lì e non fra gli argomenti del verbo.
+
+    NON verifica che `chat_id` appartenga a un run in corso. Servirebbe scandire
+    tutti i job a ogni chiamata, e non comprerebbe nulla: una dichiarazione
+    orfana è inerte, nessun completamento la consuma, e `run_status.pending_count`
+    la rende visibile. La barriera che conta è la firma, non un lookup.
+
+    `status` è uno di `success | error | fatal`. `failed` NON è dichiarabile: lo
+    constata l'infrastruttura quando il turno muore, e un agente che è morto non
+    dichiara nulla.
+    """
+    body = await request.json()
+    chat_id = str(body.get("chat_id") or "").strip()
+    status = str(body.get("status") or "").strip()
+    detail = body.get("detail")
+    if not chat_id:
+        raise HTTPException(400, "chat_id richiesto")
+    try:
+        normalizzato = run_status.declare(chat_id, status, detail)
+    except ValueError as e:
+        # 422 e non 400: la richiesta è ben formata, è il VALORE a non essere
+        # ammesso — e il messaggio elenca quelli che lo sono, così l'agente può
+        # correggersi da sé invece di ritentare lo stesso stato.
+        raise HTTPException(422, str(e)) from e
+    return {"ok": True, "chat_id": chat_id, "status": normalizzato,
+            "detail": (str(detail).strip() or None) if detail is not None else None}
