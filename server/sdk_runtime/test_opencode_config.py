@@ -89,5 +89,50 @@ class OpenCodeConfigTests(unittest.TestCase):
             self.assertIsNone(S._opencode_reasoning_effort("worker", "qwen3-coder"))
 
 
+class GenericProviderConfigTests(unittest.TestCase):
+    """Endpoint deciso dall'admin (clodia-platform#265): il config del turno lo
+    legge dal BUNDLE, non solo dalle env statiche della definizione."""
+
+    def _config(self, bundle: dict, provider: str = "generic-openai",
+                model: str = "qwen3-coder:30b") -> dict:
+        spec = SimpleNamespace(reasoning_effort=None)
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(S, "_runtime_provider", return_value=provider), \
+             mock.patch.object(S, "_runtime_model", return_value=model), \
+             mock.patch.object(S, "_kind_spec", return_value=spec), \
+             mock.patch("server.api.providers._read", return_value=bundle), \
+             mock.patch.object(S.pki, "mint_session_token", return_value="ckt1.test"):
+            _session()._write_config(Path(td))
+            return json.loads((Path(td) / "opencode.json").read_text(encoding="utf-8"))
+
+    def test_the_configured_endpoint_reaches_the_turn(self):
+        """Prima, `baseURL` veniva solo da `extra_env`: un endpoint configurato a
+        runtime non arrivava al config e il turno usciva verso il default."""
+        cfg = self._config({"method": "apikey", "base_url": "http://localhost:11434/v1"})
+        self.assertEqual("http://localhost:11434/v1",
+                         cfg["provider"]["generic-openai"]["options"]["baseURL"])
+
+    def test_an_unknown_provider_id_declares_its_package_and_model(self):
+        """OpenCode non trova `generic-openai` su models.dev: senza `npm` e senza
+        il modello dichiarato rifiuta il provider prima di provare l'endpoint."""
+        cfg = self._config({"method": "apikey", "base_url": "http://box:1234/v1"})
+        pcfg = cfg["provider"]["generic-openai"]
+        self.assertEqual("@ai-sdk/openai-compatible", pcfg["npm"])
+        self.assertIn("qwen3-coder:30b", pcfg["models"])
+
+    def test_a_local_endpoint_needs_no_key(self):
+        cfg = self._config({"method": "apikey", "base_url": "http://localhost:11434/v1"})
+        self.assertNotIn("apiKey", cfg["provider"]["generic-openai"]["options"])
+
+    def test_a_known_provider_gets_no_package_declaration(self):
+        """Su scaleway (che models.dev conosce) niente `npm`: dichiararlo a vuoto
+        sostituirebbe il provider integrato con uno generico."""
+        cfg = self._config({"method": "apikey", "api_key": "sk-test"},
+                           provider="scaleway", model="glm-5.2")
+        self.assertNotIn("npm", cfg["provider"]["scaleway"])
+        self.assertEqual("https://api.scaleway.ai/v1",
+                         cfg["provider"]["scaleway"]["options"]["baseURL"])
+
+
 if __name__ == "__main__":
     unittest.main()
