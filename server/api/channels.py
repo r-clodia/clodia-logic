@@ -69,6 +69,50 @@ def _routing_ambiguity(scored: list[tuple], config=None) -> list[tuple]:
     return ambiguous if len(ambiguous) >= 2 else []
 
 
+def _follow_up_pick(messages: list[dict] | None, candidates: list[tuple]):
+    """Il pari che ha appena risposto: un follow-up non è un tie (#264).
+
+    Quando una persona replica alla risposta di un bot senza rifare la menzione,
+    il routing per rilevanza trova due candidati a pari merito e chiede in chat
+    con le pills. Ma la domanda ha già una risposta scritta nel canale: fra i
+    pari, uno ha appena parlato, e chi replica a lui sta continuando QUELLA
+    conversazione. Restano candidati a pari merito, quindi la scelta non è un
+    sorteggio: si prende quello con cui il thread è già aperto.
+
+    Due guardie tengono bassa la probabilità residua che la persona si stesse
+    invece rivolgendo a un bot diverso:
+
+    - decide solo l'ULTIMO turno di agente della finestra: se in mezzo ha parlato
+      un altro agente, o il dialogo del router (`author=router`), il seed non sta
+      fra i candidati e la domanda resta;
+    - quel seed deve stare FRA i candidati a pari merito: altrimenti la
+      continuità non dice nulla su QUESTO tie.
+
+    Si guarda `kind == "ai"` e non «non è umano»: l'etichetta `human` è scritta
+    dal gateway in base all'on-behalf e su un messaggio di proxy mente
+    (vedi `_from_human`), mentre `ai` è la label che questo servizio scrive da sé
+    quando posta un turno. Chiedere all'etichetta che sappiamo giusta tiene la
+    classificazione fuori dal bug di quella che sappiamo sbagliata.
+
+    La finestra è quella del routing (`recent_messages`): la continuità scade
+    con la finestra e non resta appesa a un turno di ieri.
+    """
+    if not messages or len(candidates) < 2:
+        return None
+    per_seed: dict[str, tuple] = {}
+    for spec, score in candidates:
+        seed = _seed_name(getattr(spec, "name", None)) or ""
+        per_seed.setdefault(seed, (spec, score))
+    for msg in reversed(messages):
+        if str((msg or {}).get("kind") or "").lower() != "ai":
+            continue
+        if not str((msg or {}).get("text") or "").strip():
+            continue
+        seed = _seed_name(str((msg or {}).get("author") or "")) or ""
+        return per_seed.get(seed)
+    return None
+
+
 def _routing_choices_marker(candidates: list[tuple]) -> str:
     names = []
     for spec, _score in candidates:
@@ -312,7 +356,9 @@ def _track_routing_decision(payload: dict) -> None:
     mode = payload.get("mode")
     if mode in {"exemplar", "correction"}:
         origin = "exemplar"
-    elif mode in {"relevance", "relevance-multi", "multi-intent"}:
+    # `follow-up` (#264) è una decisione di rilevanza, non un rango e non
+    # un'ambiguità: i candidati vengono dagli score e il turno parte da solo.
+    elif mode in {"relevance", "relevance-multi", "multi-intent", "follow-up"}:
         origin = "relevance"
     elif mode in {"tag", "tag-unserved", "delega"}:
         origin = "tag"
@@ -1986,12 +2032,15 @@ def suggest_team(tier: str, description: str) -> dict:
 
 def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     message: str = "", trace: dict | None = None,
-                    multi: bool = False, routing_message: str | None = None):
+                    multi: bool = False, routing_message: str | None = None,
+                    routing_messages: list[dict] | None = None):
     """Chi risponde in un canale. Priorità:
     1. agente TAGGATO (@nome), se idoneo — override esplicito;
     2. routing per RILEVANZA: il bot il cui dominio matcha il messaggio
        (embedding, zero turni LLM); fallback al rango se non pertinente o router
        non disponibile;
+    2b. a pari merito, CONTINUITÀ: se fra i candidati c'è chi ha appena risposto,
+       questo è un follow-up e risponde lui invece di chiedere (#264);
     3. il più alto di RANGO fra gli idonei.
     Idoneità: provider scelto per il topic con SEAL ≥ tier."""
     specs = [registry.get_by_name(n) for n in participants]
@@ -2125,6 +2174,15 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         # traccia mostra gli stessi numeri con cui la scelta è stata abbandonata.
         ambiguous = _routing_ambiguity(scored, config=route_cfg)
         if ambiguous:
+            # #264: prima di chiedere, si guarda se la persona sta continuando la
+            # conversazione con chi ha appena risposto. La pill in più è una
+            # domanda a cui ha già risposto scrivendo.
+            follow_up = _follow_up_pick(routing_messages, ambiguous)
+            if follow_up is not None:
+                spec, score = follow_up
+                return _record(
+                    spec, f"follow-up all'ultimo risponditore (pari a {round(score, 3)})",
+                    "follow-up", scored)
             if trace is not None:
                 trace.update({
                     "tier": tier,
@@ -2174,7 +2232,7 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         ) or message
         picked = _pick_responder(
             participants, tier, None, message, trace=trace, multi=True,
-            routing_message=semantic_message,
+            routing_message=semantic_message, routing_messages=routing_messages,
         )
         responders = picked if isinstance(picked, list) else [picked]
         return [(spec, message) for spec in responders if spec is not None]
@@ -2195,10 +2253,11 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         ) or intent
         picked = _pick_responder(
             participants, tier, None, intent, trace=intent_trace,
-            routing_message=semantic_message,
+            routing_message=semantic_message, routing_messages=context,
         )
         mode = intent_trace.get("mode")
-        if picked is not None and mode in ("relevance", "exemplar", "correction"):
+        if picked is not None and mode in ("relevance", "exemplar", "correction",
+                                           "follow-up"):
             grouped.setdefault(picked.name, (picked, []))[1].append(intent)
             chosen = picked.name
         else:
