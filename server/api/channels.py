@@ -458,11 +458,23 @@ def _spawn_bg(coro) -> None:
 # Il valore era 2, fisso. Con un coordinatore e un esecutore la catena si esaurisce
 # al primo scambio di ritorno (clodia → dev → clodia → **niente**), ed è la ragione
 # per cui una menzione «a volte parte e a volte no»: dipende da dove ti trovi nella
-# catena, che dal canale non si vede. 4 lascia spazio a due scambi completi; il
-# freno resta, perché un rimpallo infinito è ciò che questo limite esiste per
-# fermare. Configurabile perché il valore giusto dipende da quanti agenti
-# collaborano in un canale, e non lo sappiamo a priori.
-_DEFAULT_MAX_DELEGATION_HOPS = 4
+# catena, che dal canale non si vede. Configurabile perché il valore giusto dipende
+# da quanti agenti collaborano in un canale, e non lo sappiamo a priori.
+#
+# Poi da 4 a 15 (clodia-platform#268). Ogni scambio completo costa DUE salti
+# (ordine e ritorno), quindi il numero è «quanti scambi regge il canale»: 4 sono
+# due, e una sessione di lavoro reale in `software-house` — lead assegna, dev
+# pianifica, lead approva, dev implementa, dev riferisce, lead richiama — li
+# esaurisce a metà giro, dopodiché ogni menzione produce solo l'avviso. 15 copre
+# sette scambi, cioè una sessione intera.
+#
+# Il freno resta, perché un rimpallo infinito è ciò che questo limite esiste per
+# fermare, ed è l'UNICO freno: R3 limita le menzioni per messaggio, non la
+# lunghezza della catena. Quindi questo numero è un moltiplicatore dei turni LLM
+# che un solo messaggio umano può innescare: 15 significa fino a quindici turni
+# consecutivi prima che la catena si fermi e lo dica. Alzarlo ancora è una spesa,
+# e va scelta di proposito.
+_DEFAULT_MAX_DELEGATION_HOPS = 15
 
 
 def _max_delegation_hops() -> int:

@@ -151,5 +151,46 @@ class TheLimitIsConfigurableTests(_Base):
                                      channels._max_delegation_hops())
 
 
+class TheDefaultCarriesAWorkingSessionTests(_Base):
+    """clodia-platform#268: chi installa senza scrivere l'env var deve poter
+    portare a termine una sessione di lavoro reale.
+
+    Con un coordinatore e un esecutore ogni scambio completo costa **due** salti
+    (ordine e ritorno), quindi il default è il numero di scambi che il canale
+    regge prima che la catena si fermi. A `4` sono due scambi: in
+    `software-house` la sessione tipica (tech lead assegna → dev pianifica →
+    lead approva → dev implementa → dev riferisce → lead richiama) li esaurisce
+    a metà giro, e da lì in poi ogni menzione produce solo l'avviso. `15` copre
+    sette scambi, che è la lunghezza di una sessione intera.
+
+    Il freno non sparisce: è la seconda asserzione di ogni test qui sotto: un
+    salto oltre il default la catena si ferma e **lo dice**.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        # Il default è ciò che si misura: l'env var, se qualcuno la esporta
+        # nell'ambiente di test, renderebbe verde un default sbagliato.
+        self._env = patch.dict(os.environ, {}, clear=False)
+        self._env.start()
+        os.environ.pop("CLODIA_MAX_DELEGATION_HOPS", None)
+
+    def tearDown(self) -> None:
+        self._env.stop()
+        super().tearDown()
+
+    async def test_the_last_hop_within_the_default_still_delegates(self) -> None:
+        posts, start = await self._delegate("Ci pensa @fullstack-dev", hop=14)
+        self.assertEqual(1, start.await_count,
+                         "il default non regge una sessione di lavoro intera")
+        self.assertEqual([], [p for p in posts if p["author"] == "router"])
+
+    async def test_one_hop_past_the_default_the_brake_holds_and_says_so(self) -> None:
+        posts, start = await self._delegate("Ci pensa @fullstack-dev", hop=15)
+        start.assert_not_awaited()
+        self.assertEqual("router", posts[-1]["author"])
+        self.assertIn("fullstack-dev", posts[-1]["text"])
+
+
 if __name__ == "__main__":
     unittest.main()
