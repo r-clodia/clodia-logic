@@ -467,6 +467,12 @@ def _spawn_bg(coro) -> None:
 # senza un umano sono ancora un numero che si raggiunge in fretta.
 # Configurabile perché il valore giusto dipende da quanti agenti collaborano in
 # un canale, e non lo sappiamo a priori.
+#
+# Prima di alzarlo ancora, sappi cosa si sta comprando: questo è l'UNICO freno
+# alla lunghezza della catena. R3 limita le menzioni per MESSAGGIO, non i salti,
+# quindi il numero qui sotto è il moltiplicatore dei turni LLM che un solo
+# messaggio umano può innescare — a 15, quindici turni consecutivi prima che la
+# catena si fermi e lo dica. Alzarlo è una spesa, e va scelta di proposito.
 _DEFAULT_MAX_DELEGATION_HOPS = 15
 
 
