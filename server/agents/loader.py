@@ -5,6 +5,7 @@ gli agenti persistono indipendentemente dai rebuild dell'immagine.
 """
 from __future__ import annotations
 import logging
+import re
 from pathlib import Path
 from typing import Iterator, Optional
 
@@ -67,6 +68,52 @@ def _incoerenze(spec) -> list[str]:
     return fuori
 
 
+#: Marcatore macchina in testa a una riga di seed: `#v7compat# max_spawns: 4`.
+#: Due `#` che delimitano una parola sola, per distinguerlo da un commento in
+#: prosa o da un separatore — un avviso che grida a ogni `#` non si legge più.
+_MARCATORE = re.compile(r"^\s*#(?P<marcatore>[A-Za-z][\w.-]*)#\s*(?P<riga>\S.*?)\s*$")
+
+
+def _neutralizzati(testo: str) -> list[str]:
+    """Dichiarazioni tolte dalla vista con un `#` davanti, non dal file.
+
+    clodia-platform#211: qualcosa ha riscritto i seed installati commentando
+    campi VALIDI con `#v7compat#`, marcatore che non compare in nessun
+    repository della piattaforma. Sette campi su quattro agenti, fra cui i
+    quindici `gated_tools` di `fullstack-dev` — verbi che il pack dichiara come
+    «richiede consenso umano» e che qui non gattavano nulla. Il seed carica,
+    l'agente funziona, meno le dichiarazioni: nessun errore, nessun log.
+
+    `extra="forbid"` copre il caso opposto e già rumoroso (campo sconosciuto →
+    lo spec non carica → `errors()`). Qui il campo è noto e valido, e per YAML
+    semplicemente non esiste: l'unico rilevatore era un umano che apriva il file.
+
+    Non ripristina niente — decidere per campo è una scelta umana, e
+    `gated_tools` non è `max_spawns`. Elenca, e nomina il marcatore: è l'unica
+    traccia di chi ha scritto, quindi l'unico capo da cui tirare.
+    """
+    per_marcatore: dict[str, list[str]] = {}
+    for riga in (testo or "").splitlines():
+        m = _MARCATORE.match(riga)
+        if not m:
+            continue
+        corpo = m.group("riga")
+        # `chiave: valore` → `chiave`; una voce di lista resta com'è (i verbi
+        # sotto un `gated_tools` commentato sono parte della dichiarazione persa).
+        per_marcatore.setdefault(m.group("marcatore"), []).append(
+            corpo.split(":", 1)[0].strip() if ":" in corpo else corpo)
+    avvisi: list[str] = []
+    for marcatore, chiavi in sorted(per_marcatore.items()):
+        mostrate = ", ".join(f"`{c}`" for c in chiavi[:8])
+        avvisi.append(
+            f"{len(chiavi)} dichiarazioni commentate dal marcatore "
+            f"`#{marcatore}#` ({mostrate}{'…' if len(chiavi) > 8 else ''}): sono "
+            "nel file ma INERTI, e nessun codice della piattaforma scrive quel "
+            "marcatore. Confronta col pack e decidi per campo, poi ripristina o "
+            "rimuovi le righe (clodia-platform#211)")
+    return avvisi
+
+
 class AgentRegistry:
     """Cache in memoria degli agenti definiti. Ricaricabile a runtime
     (utile in dev: edit dell'agent.yaml + POST /api/agents/reload).
@@ -101,8 +148,8 @@ class AgentRegistry:
         for spec_file in self.discover():
             agent_dir = spec_file.parent
             try:
-                with spec_file.open() as f:
-                    raw = yaml.safe_load(f) or {}
+                testo = spec_file.read_text()
+                raw = yaml.safe_load(testo) or {}
                 spec = AgentSpec.model_validate(raw)
                 spec.agent_dir = str(agent_dir)
                 if spec.name != agent_dir.name:
@@ -126,7 +173,12 @@ class AgentRegistry:
                         "agent '%s': campo `can_delegate_to` DEPRECATO "
                         "(AgentSpec v2) — la delega è il movimento di card",
                         spec.name)
-                avvisi = _incoerenze(spec)
+                # Le righe neutralizzate sono un fatto del FILE, non dello spec,
+                # quindi valgono anche per un `human`. Si raccolgono solo se il
+                # seed carica: se non carica, il titolo è l'errore, e affiancargli
+                # un avviso sposterebbe lo sguardo dalla ragione per cui
+                # l'agente non esiste.
+                avvisi = _incoerenze(spec) + _neutralizzati(testo)
                 for avviso in avvisi:
                     LOG.warning("agent '%s': %s", spec.name, avviso)
                 if avvisi:
