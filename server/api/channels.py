@@ -458,11 +458,16 @@ def _spawn_bg(coro) -> None:
 # Il valore era 2, fisso. Con un coordinatore e un esecutore la catena si esaurisce
 # al primo scambio di ritorno (clodia → dev → clodia → **niente**), ed è la ragione
 # per cui una menzione «a volte parte e a volte no»: dipende da dove ti trovi nella
-# catena, che dal canale non si vede. 4 lascia spazio a due scambi completi; il
-# freno resta, perché un rimpallo infinito è ciò che questo limite esiste per
-# fermare. Configurabile perché il valore giusto dipende da quanti agenti
-# collaborano in un canale, e non lo sappiamo a priori.
-_DEFAULT_MAX_DELEGATION_HOPS = 4
+# catena, che dal canale non si vede. Poi 4, che lascia spazio a due scambi
+# completi — e neanche quelli bastano: un lavoro reale in `software-house` è
+# umano → tech lead → dev → piano → via libera → implementazione → resoconto, e
+# muore a metà proprio quando c'è qualcosa da consegnare (clodia-platform#268).
+# 15 lascia correre una conversazione di lavoro intera; il freno resta, perché
+# un rimpallo infinito è ciò che questo limite esiste per fermare, e 15 turni
+# senza un umano sono ancora un numero che si raggiunge in fretta.
+# Configurabile perché il valore giusto dipende da quanti agenti collaborano in
+# un canale, e non lo sappiamo a priori.
+_DEFAULT_MAX_DELEGATION_HOPS = 15
 
 
 def _max_delegation_hops() -> int:

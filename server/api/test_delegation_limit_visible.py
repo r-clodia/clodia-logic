@@ -130,6 +130,29 @@ class BeyondTheLimitItSaysSoTests(_Base):
         self.assertEqual([], posts)
 
 
+class TheDefaultFitsAWholeJobTests(_Base):
+    """clodia-platform#268: il default deve reggere una conversazione di lavoro.
+
+    Con 4 la catena moriva a metà del giro che conta — umano → tech lead → dev →
+    piano → via libera → implementazione → resoconto — cioè proprio quando c'era
+    qualcosa da consegnare. Il test misura il comportamento, non la costante: al
+    decimo salto, senza env var, la delega deve ancora partire.
+    """
+
+    async def test_a_delegation_at_hop_ten_still_starts(self) -> None:
+        _posts, start = await self._delegate("Ci pensa @fullstack-dev", hop=10)
+        self.assertEqual(1, start.await_count)
+        self.assertEqual("fullstack-dev", start.await_args.args[3].name)
+
+    async def test_the_brake_still_exists(self) -> None:
+        """Alzare non è spegnere: oltre il default nessun turno parte."""
+        posts, start = await self._delegate(
+            "Ci pensa @fullstack-dev",
+            hop=channels._DEFAULT_MAX_DELEGATION_HOPS + 1)
+        start.assert_not_awaited()
+        self.assertIn("fullstack-dev", posts[-1]["text"])
+
+
 class TheLimitIsConfigurableTests(_Base):
     """Il valore giusto dipende da quanti agenti collaborano, e non lo sappiamo
     a priori: con un coordinatore e un esecutore, `2` esaurisce la catena al
