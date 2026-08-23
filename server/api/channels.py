@@ -465,6 +465,14 @@ def _spawn_bg(coro) -> None:
 # 15 lascia correre una conversazione di lavoro intera; il freno resta, perché
 # un rimpallo infinito è ciò che questo limite esiste per fermare, e 15 turni
 # senza un umano sono ancora un numero che si raggiunge in fretta.
+#
+# Il conto da fare per scegliere un valore diverso: **uno scambio completo costa
+# DUE salti** — l'ordine e il ritorno. Quindi questo numero non è «quanti
+# messaggi», è «quanti scambi regge il canale»: 4 sono due scambi, 15 sono sette.
+# La sessione di lavoro che ha aperto la issue — lead assegna, dev pianifica,
+# lead approva, dev implementa, dev riferisce, lead richiama — sono sei scambi, e
+# con 4 finiva a metà del secondo.
+#
 # Configurabile perché il valore giusto dipende da quanti agenti collaborano in
 # un canale, e non lo sappiamo a priori.
 #
