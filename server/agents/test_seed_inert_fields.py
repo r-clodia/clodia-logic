@@ -85,6 +85,17 @@ type: human
 #v7compat# telegram: "@davide"
 """
 
+# Il caso peggiore misurato: 19 verbi commentati in un colpo (`impiegato-tomato`).
+# Elencarli tutti fa un avviso lungo una pagina, e un avviso così viene scorso.
+MOLTE_RIGHE = """\
+name: moltoseed
+display_name: Molto
+description: d
+model: claude-sonnet-4-5
+system_prompt: system-prompt.md
+native_tools: []
+""" + "".join(f"#v7compat#  - verbo.numero_{i}\n" for i in range(19))
+
 # Campo che lo schema non conosce: `extra="forbid"` lo rifiuta, ed è giusto —
 # ma il messaggio deve dire cosa fare, o si finisce per commentarlo.
 CAMPO_IGNOTO = """\
@@ -105,6 +116,7 @@ class InertFieldsTests(unittest.TestCase):
         for nome, testo in (("devseed", V7COMPAT), ("listaseed", VOCE_COMMENTATA),
                             ("manoseed", COMMENTATO_A_MANO), ("prosaseed", PROSA),
                             ("davide", UMANO_NEUTRALIZZATO),
+                            ("moltoseed", MOLTE_RIGHE),
                             ("ignotoseed", CAMPO_IGNOTO)):
             d = base / nome
             d.mkdir()
@@ -160,6 +172,15 @@ class InertFieldsTests(unittest.TestCase):
         prima = len(self.reg.warnings()["devseed"])
         self.reg.load()
         self.assertEqual(prima, len(self.reg.warnings()["devseed"]))
+
+    def test_many_lines_are_summarised_not_dumped(self) -> None:
+        """Il totale è il dato che dice se andare a guardare il file; l'elenco
+        integrale, a 19 righe, è ciò che fa scorrere l'avviso senza leggerlo."""
+        testo = self._avvisi("moltoseed")
+        self.assertIn("19 righe neutralizzate", testo)
+        self.assertIn("e altre 11", testo)
+        self.assertIn("verbo.numero_0", testo)
+        self.assertNotIn("verbo.numero_18", testo)
 
     def test_an_unknown_field_error_says_not_to_comment_it(self) -> None:
         """`extra="forbid"` fa fallire il load, ed è il default sicuro. Ma il

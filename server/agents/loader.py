@@ -74,6 +74,8 @@ def _incoerenze(spec) -> list[str]:
 _RIGA_MARCATA = re.compile(r"^\s*#(?P<marker>[A-Za-z0-9][A-Za-z0-9_.-]*)#\s*(?P<corpo>.*)$")
 #: `# chiave: valore` — un'assegnazione commentata, senza firma.
 _CAMPO_COMMENTATO = re.compile(r"^\s*#\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*\S")
+#: Quante righe marcate si citano per esteso prima di riassumere il resto.
+_MAX_RIGHE_MOSTRATE = 8
 
 
 def _dichiarazioni_inerti(testo: str, raw: object) -> list[str]:
@@ -119,13 +121,19 @@ def _dichiarazioni_inerti(testo: str, raw: object) -> list[str]:
                 f"riga {n}: `{chiave}` è dichiarato solo dentro un commento. Il "
                 "campo esiste nello schema, quindi qui non fa niente e niente lo "
                 "dice: decommentalo o togli la riga")
-    for marker, righe in marcate.items():
+    for marker, righe in sorted(marcate.items()):
         quante = (f"{len(righe)} righe neutralizzate" if len(righe) > 1
                   else "1 riga neutralizzata")
+        # Si elencano le prime otto e si dichiara il resto: un avviso lungo una
+        # pagina è un avviso che nella scheda dell'agente viene scorso, e il
+        # numero totale è il dato che dice se guardare il file.
+        mostrate = ", ".join(righe[:_MAX_RIGHE_MOSTRATE])
+        resto = len(righe) - _MAX_RIGHE_MOSTRATE
         fuori.append(
             f"{quante} dal marker `{marker}` — "
             "dichiarazioni inerti: quello che il pack dichiara e questo seed non "
-            f"applica più (clodia-platform#211). {', '.join(righe)}")
+            f"applica più (clodia-platform#211). {mostrate}"
+            f"{f', e altre {resto}' if resto > 0 else ''}")
     return fuori
 
 
