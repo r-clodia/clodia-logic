@@ -13,6 +13,13 @@ Due meccanismi per provider:
     espone un'interfaccia uniforme (`pkce_pair/authorize_url/exchange/
     env_and_refresh`) così questo file resta agnostico dal provider.
   - **apikey**: chiave API → env dedicata (ANTHROPIC_API_KEY / OPENAI_API_KEY).
+
+Un provider può inoltre dichiarare un ENDPOINT configurabile (`configurable` +
+`apikey_optional`, clodia-platform#265): l'host non è noto al repository, lo
+inserisce l'admin al collegamento (anche nella forma `host:port`) e finisce nel
+bundle accanto alla chiave — che lì diventa facoltativa, perché un modello locale
+(ollama, LM Studio) non ne chiede nessuna. Ciò che rende «collegato» un provider
+del genere è l'endpoint, non la chiave.
 """
 from __future__ import annotations
 
@@ -96,6 +103,18 @@ def _load_catalog() -> tuple[dict, dict]:
                 "sovereignty": dict(d.get("sovereignty") or {}),
                 # opt-in: se False non è candidato di default per il suo SDK.
                 "default": is_default,
+                # Provider a ENDPOINT dichiarato dall'admin (clodia-platform#265):
+                # la chiave è facoltativa (ollama/LM Studio non la chiedono) e ciò
+                # che rende il provider collegato è il `base_url` configurato.
+                "apikey_optional": bool(d.get("apikey_optional")),
+                # Campi configurati dall'admin al collegamento → env da iniettare
+                # (es. base_url → OPENAI_BASE_URL). Persistiti nel bundle del vault
+                # accanto alla chiave, non nel repository: sono per-istanza.
+                "configurable": {str(k): str(v) for k, v in
+                                 (d.get("configurable") or {}).items() if v},
+                # Pacchetto provider per OpenCode, per gli id che models.dev non
+                # conosce (provider generico): senza, il turno non risolve il provider.
+                "opencode_npm": d.get("opencode_npm"),
                 # Modelli serviti dal provider (glob, es. 'claude-*', 'gpt-*',
                 # 'mistral*'). Vuoto = serve qualunque modello del suo SDK
                 # (back-compat). Usato per filtrare i candidati per il modello
@@ -271,6 +290,70 @@ def provider_extra_env(pid: str | None) -> dict:
     return dict((_CATALOG.get(_normalize(pid) or "") or {}).get("extra_env") or {})
 
 
+def normalize_base_url(raw: str) -> str:
+    """Normalizza l'endpoint inserito dall'admin in un base URL OpenAI-compatible.
+
+    La issue chiede di poter inserire `host:port` (`localhost:11434`): senza
+    schema `urlsplit` leggerebbe `localhost` come schema e `11434` come path,
+    quindi lo schema va messo prima di parsare. Il path vuoto diventa `/v1`, che
+    è dove ollama, LM Studio e vLLM espongono l'API compatibile.
+
+    Solleva ValueError su ciò che non è un endpoint HTTP indirizzabile. NON si
+    filtra per indirizzo privato: loopback e LAN sono esattamente il caso d'uso
+    (un modello locale), una blocklist qui spegnerebbe la feature. Si rifiutano
+    invece le credenziali nell'URL, che finirebbero in chiaro in un campo non
+    segreto — per quelle c'è `api_key`, che sta nel vault.
+    """
+    s = (raw or "").strip()
+    if not s:
+        raise ValueError("base_url vuoto")
+    if "://" not in s:
+        s = f"http://{s}"          # forma `host:port` chiesta dalla issue
+    parts = urllib.parse.urlsplit(s)
+    if parts.scheme not in ("http", "https"):
+        raise ValueError(f"schema non supportato: {parts.scheme} (usa http o https)")
+    if "@" in parts.netloc:
+        raise ValueError("credenziali nell'URL non ammesse: usa api_key")
+    if not parts.hostname:
+        raise ValueError("host mancante nel base_url")
+    path = parts.path.rstrip("/") or "/v1"
+    # query/fragment scartati: un base URL non li porta.
+    return urllib.parse.urlunsplit((parts.scheme, parts.netloc, path, "", ""))
+
+
+def _config_env(meta: dict, bundle: dict | None) -> dict[str, str]:
+    """Env dai campi CONFIGURATI dall'admin (bundle nel vault) secondo la mappa
+    `configurable` della definizione. Solo i campi dichiarati: un bundle non può
+    iniettare env arbitrarie nel subprocess."""
+    out: dict[str, str] = {}
+    for field, env_name in (meta.get("configurable") or {}).items():
+        val = (bundle or {}).get(field)
+        if val:
+            out[env_name] = str(val)
+    return out
+
+
+def provider_display_name(pid: str | None) -> str | None:
+    return (_CATALOG.get(_normalize(pid) or "") or {}).get("name")
+
+
+def provider_opencode_npm(pid: str | None) -> str | None:
+    """Pacchetto provider da dichiarare a OpenCode per gli id che non conosce
+    (provider generico): senza, il turno non risolve il provider."""
+    return (_CATALOG.get(_normalize(pid) or "") or {}).get("opencode_npm")
+
+
+def provider_base_url(pid: str | None, bundle: dict | None = None) -> str | None:
+    """Endpoint OpenAI-compatible del provider: quello CONFIGURATO dall'admin
+    (bundle) se c'è, altrimenti quello statico della definizione (scaleway).
+
+    Punto unico: il runtime OpenCode leggeva solo `extra_env`, quindi un endpoint
+    configurato a runtime non sarebbe mai arrivato al config del turno. `bundle`
+    si passa quando il chiamante l'ha già letto, per non rileggere dal vault."""
+    d = bundle if bundle is not None else (_read(_normalize(pid) or "") or {})
+    return (d or {}).get("base_url") or provider_extra_env(pid).get("OPENAI_BASE_URL")
+
+
 def is_bedrock_provider(pid: str | None) -> bool:
     """True se il provider usa Amazon Bedrock (attiva la modalità Bedrock dell'SDK)."""
     return "CLAUDE_CODE_USE_BEDROCK" in provider_extra_env(pid)
@@ -419,6 +502,12 @@ def _bundle_usable(pid: str, d: dict | None) -> bool:
     if not meta:
         return False
     if meta["mechanism"] == "apikey":
+        if meta.get("apikey_optional"):
+            # Provider a endpoint (#265): ollama/LM Studio non chiedono chiave, è
+            # il base_url a rendere l'auth possibile. Senza endpoint configurato
+            # NON è collegato, altrimenti verrebbe scelto come effettivo e il
+            # turno partirebbe verso nessun host.
+            return bool(d.get("base_url"))
         return bool(d.get("api_key"))
     return d.get("method") == "subscription"
 
@@ -538,30 +627,68 @@ async def list_providers() -> dict:
             "sovereignty": meta.get("sovereignty") or None,
             # pausa per-provider: connesso ma escluso dalla selezione.
             "paused": provider_paused(pid),
+            # Provider a endpoint (#265): quali campi la UI deve chiedere al
+            # collegamento, e cosa c'è configurato adesso. `base_url`/`model` NON
+            # sono segreti (a differenza di api_key, che non esce mai da qui).
+            "configurable": sorted(meta.get("configurable") or {}) or None,
+            "apikey_optional": meta.get("apikey_optional") or None,
+            "base_url": (d or {}).get("base_url"),
+            "model": (d or {}).get("model"),
         })
     return {"providers": out}
 
 
 class KeyBody(BaseModel):
-    api_key: str
+    # Facoltativa: un endpoint OpenAI-compatible locale (ollama, LM Studio) non
+    # chiede chiave. Chi la esige lo dichiara nella definizione (default).
+    api_key: str = ""
+    # Campi `configurable` del provider a endpoint (#265). `base_url` accetta
+    # anche la forma `host:port` e viene normalizzato.
+    base_url: str | None = None
+    model: str | None = None
 
 
 @router.post("/api/providers/{pid}/key")
 async def set_key(pid: str, body: KeyBody, request: Request) -> dict:
     await gateway_pdp.require_authz_async(request, "providers.set_key")  # admin-only (PDP gateway)
-    if pid not in _CATALOG:
+    meta = _CATALOG.get(pid)
+    if meta is None:
         raise HTTPException(404, f"provider sconosciuto: {pid}")
     from .. import instance_profile
     edition = instance_profile.load().providers
     if edition is not None and pid not in edition:
         raise HTTPException(403, f"provider '{pid}' non previsto dall'edizione")
-    if not body.api_key.strip():
+    key = (body.api_key or "").strip()
+    if not key and not meta.get("apikey_optional"):
         raise HTTPException(400, "api_key vuota")
+    bundle: dict = {"method": "apikey"}
+    if key:
+        bundle["api_key"] = key
+    configurable = meta.get("configurable") or {}
+    supplied = {k: v for k, v in (("base_url", body.base_url), ("model", body.model))
+                if (v or "").strip()}
+    # Un campo non dichiarato dalla definizione si RIFIUTA invece di ignorarlo in
+    # silenzio: chi lo manda crede di aver configurato un endpoint.
+    for field in supplied:
+        if field not in configurable:
+            raise HTTPException(400, f"'{field}' non configurabile per il provider '{pid}'")
+    if "base_url" in configurable and not supplied.get("base_url"):
+        # Senza endpoint il provider risulterebbe non collegato (`_bundle_usable`):
+        # meglio un 400 che una credenziale muta depositata nel vault.
+        raise HTTPException(400, f"base_url richiesto per il provider '{pid}'")
+    if supplied.get("base_url"):
+        try:
+            bundle["base_url"] = normalize_base_url(supplied["base_url"])
+        except ValueError as e:
+            raise HTTPException(400, f"base_url non valido: {e}")
+    if supplied.get("model"):
+        bundle["model"] = supplied["model"].strip()
     try:
-        await _write_async(pid, {"method": "apikey", "api_key": body.api_key.strip()})
+        await _write_async(pid, bundle)
     except provider_store.ProviderStoreError as e:
         raise HTTPException(502, f"salvataggio sul gateway fallito: {str(e)[:160]}")
-    return {"connected": True, "via": "apikey"}
+    return {"connected": True, "via": "apikey", "base_url": bundle.get("base_url"),
+            "model": bundle.get("model")}
 
 
 @router.post("/api/providers/{pid}/login/start")
@@ -708,10 +835,16 @@ def provider_env(pid: str | None = None) -> dict[str, str]:
                 except provider_store.ProviderStoreError as e:
                     LOG.warning("writeback refresh provider '%s' non persistito: %s", pid, e)
             env.update(sub_env)
-        elif d.get("method") == "apikey" and d.get("api_key"):
-            env[meta["apikey_env"]] = d["api_key"]
+        elif d.get("method") == "apikey" and _bundle_usable(pid, d):
+            # `_bundle_usable` invece di `api_key` non vuoto: su un provider a
+            # endpoint la chiave è facoltativa, ma l'endpoint va iniettato.
+            if d.get("api_key") and meta.get("apikey_env"):
+                env[meta["apikey_env"]] = d["api_key"]
             # Env statiche del provider (es. Bedrock: flag + region + model id EU).
             env.update(meta.get("extra_env") or {})
+            # Campi configurati dall'admin (es. base_url/model del provider
+            # generico): dopo le statiche, così l'endpoint scelto ora vince.
+            env.update(_config_env(meta, d))
     return env
 
 
@@ -731,5 +864,9 @@ def all_provider_env_keys() -> set[str]:
         # vanno azzerate quando l'agent usa un ALTRO provider, altrimenti un residuo
         # Bedrock dirotterebbe un agent assegnato all'API diretta. Mutua esclusione.
         keys.update((meta.get("extra_env") or {}).keys())
+        # Idem per le env CONFIGURATE (base_url/model del provider generico): un
+        # OPENAI_BASE_URL residuo dirotterebbe verso l'endpoint generico un agent
+        # assegnato a openai-api. Stessa mutua esclusione delle statiche.
+        keys.update((meta.get("configurable") or {}).values())
     keys.add(anthropic_oauth.SUBSCRIPTION_ENV)
     return keys

@@ -1,0 +1,60 @@
+# Provider GENERICO OpenAI-compatible — pezzo di sistema CLONABILE.
+# Solo DEFINIZIONE (catalogo), MAI credenziali (→ vault del gateway).
+#
+# A differenza degli altri provider, qui l'ENDPOINT non è noto al repository: lo
+# dichiara l'admin al momento del collegamento (`POST /api/providers/<id>/key`
+# con `base_url`, forma `host:port` accettata e normalizzata). Serve a collegare
+# un modello che gira altrove: ollama (`localhost:11434/v1`), LM Studio
+# (`localhost:1234/v1`), vLLM, o qualunque gateway OpenAI-compatible.
+# clodia-platform#265.
+name: LLM generico (OpenAI-compatible)
+# Meccanismo apikey, ma la chiave è FACOLTATIVA: ollama e LM Studio non ne
+# chiedono nessuna. Ciò che rende questo provider «collegato» è il base_url.
+mechanism: apikey
+apikey_env: OPENAI_API_KEY
+apikey_optional: true
+# Campi che l'admin configura al collegamento → env iniettate quando il provider
+# è effettivo. Sono anche le env che il runtime AZZERA per i provider non
+# effettivi (`all_provider_env_keys`): un OPENAI_BASE_URL residuo dirotterebbe
+# un agent assegnato a openai-api verso questo endpoint.
+configurable:
+  base_url: OPENAI_BASE_URL
+  model: OPENAI_MODEL
+# SDK di esecuzione: OpenCode (provider-agnostico, apikey + baseURL). NON codex,
+# che è legato all'abbonamento OpenAI e non parla con endpoint arbitrari.
+sdk: opencode
+# OpenCode non conosce questo id (non è su models.dev): va dichiarato il pacchetto
+# del provider generico, altrimenti il turno muore con «provider not found».
+opencode_npm: "@ai-sdk/openai-compatible"
+# OPT-IN: fuori dalla selezione automatica per-SDK. Un endpoint arbitrario non
+# deve dirottare un agent che non l'ha dichiarato.
+default: false
+priority: 90
+# Costo IGNOTO per definizione: dietro il base_url può stare un modello locale
+# (gratis) o un'API a pagamento. Nessuno sconto dichiarato = non vince a sorpresa
+# la selezione per costo dentro un topic.
+cost_rank: 90
+# Qualunque modello: il nome lo decide chi serve l'endpoint.
+models: ["*"]
+
+# ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) — SEAL eff = min(SOV-2/3/7)
+# L'host lo inserisce l'admin e la piattaforma NON può verificarlo: nessuna
+# fiducia implicita. Chi ha un endpoint verificabile (ollama sulla propria
+# macchina, box in SEE) CLONA questa definizione con il SEAL che gli spetta e
+# documenta lì giurisdizione e trattamento — è una definizione-dato, non codice.
+sovereignty:
+  seal: SEAL-0
+  assessment: { SOV-2: SEAL-0, SOV-3: SEAL-0, SOV-7: SEAL-0 }
+  dimensions:
+    jurisdiction: unknown       # dipende da dove sta l'endpoint
+    dpa: false                  # nessun contratto noto alla piattaforma
+    no_training: default
+    data_residency: unknown
+    retention: unknown
+    cloud_act_exposed: true     # non escludibile senza sapere chi ospita
+  note: >
+    Endpoint dichiarato dall'admin e non verificabile dalla piattaforma → SEAL-0:
+    usabile nei topic SEAL-0, MAI in un topic con riservatezza. Un modello locale
+    è potenzialmente il più sovrano della lista, ma «potenzialmente» non è un
+    livello: chi può dimostrarlo clona questa definizione dichiarando il SEAL
+    (es. `ollama-locale.yaml` con seal: SEAL-4 e la nota che lo giustifica).

@@ -2353,18 +2353,32 @@ class OpenCodeChatSession:
         cfg: dict = {"$schema": "https://opencode.ai/config.json", "provider": {}, "mcp": {}}
         # credenziale del provider effettivo (apikey provider, es. scaleway)
         try:
-            from ..api.providers import _read, provider_extra_env
+            from ..api.providers import (_read, provider_base_url,
+                                         provider_display_name, provider_opencode_npm)
             bundle = _read(self._provider) or {}
             key = bundle.get("api_key")
             opts: dict = {}
             if key:
                 env["OPENCODE_PROVIDER_KEY"] = key
                 opts["apiKey"] = "{env:OPENCODE_PROVIDER_KEY}"
-            base = (provider_extra_env(self._provider) or {}).get("OPENAI_BASE_URL")
+            # Endpoint: configurato dall'admin (provider generico, #265) o statico
+            # della definizione (scaleway). Un solo punto per entrambi.
+            base = provider_base_url(self._provider, bundle)
             if base:
                 opts["baseURL"] = base
             if opts:
                 cfg["provider"][self._provider] = {"options": opts}
+            # Provider che models.dev non conosce (endpoint generico): OpenCode
+            # deve sapere QUALE pacchetto parlare e quali modelli esistono, o
+            # rifiuta il provider prima di provare l'endpoint.
+            npm = provider_opencode_npm(self._provider)
+            if npm and self._provider:
+                pcfg = cfg["provider"].setdefault(self._provider, {})
+                pcfg["npm"] = npm
+                pcfg.setdefault("name", provider_display_name(self._provider) or self._provider)
+                oc_model = self._model or bundle.get("model")
+                if oc_model:
+                    pcfg.setdefault("models", {}).setdefault(oc_model, {})
             # OpenCode expects model options in camelCase. The seed field keeps
             # Clodia's Python/YAML snake_case, so translate it here; placing it
             # under the selected model makes the `/message` request pick it up.
