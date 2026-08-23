@@ -130,6 +130,51 @@ class BeyondTheLimitItSaysSoTests(_Base):
         self.assertEqual([], posts)
 
 
+class TheDefaultFitsAWholeJobTests(_Base):
+    """clodia-platform#268: il default deve reggere una conversazione di lavoro.
+
+    Con 4 la catena moriva a metà del giro che conta — umano → tech lead → dev →
+    piano → via libera → implementazione → resoconto — cioè proprio quando c'era
+    qualcosa da consegnare. Il test misura il comportamento, non la costante: al
+    decimo salto, senza env var, la delega deve ancora partire.
+    """
+
+    async def test_a_delegation_at_hop_ten_still_starts(self) -> None:
+        _posts, start = await self._delegate("Ci pensa @fullstack-dev", hop=10)
+        self.assertEqual(1, start.await_count)
+        self.assertEqual("fullstack-dev", start.await_args.args[3].name)
+
+    async def test_the_brake_still_exists(self) -> None:
+        """Alzare non è spegnere: oltre il default nessun turno parte."""
+        posts, start = await self._delegate(
+            "Ci pensa @fullstack-dev",
+            hop=channels._DEFAULT_MAX_DELEGATION_HOPS + 1)
+        start.assert_not_awaited()
+        self.assertIn("fullstack-dev", posts[-1]["text"])
+
+    async def test_the_last_hop_of_a_session_still_delegates(self) -> None:
+        """Il bordo, con i numeri scritti a mano.
+
+        I due test qui sopra fissano «almeno undici salti, e il freno c'è»: il
+        primo usa un `10` letterale, il secondo il default stesso — e un test
+        che legge la costante che dovrebbe giudicare non può accorgersi se la
+        costante è sbagliata. Questi due la fissano *esattamente* a 15: al
+        quattordicesimo salto si delega ancora, al quindicesimo no. Se domani
+        qualcuno cambia il default, questo test glielo fa notare invece di
+        restare verde.
+        """
+        posts, start = await self._delegate("Ci pensa @fullstack-dev", hop=14)
+        self.assertEqual(1, start.await_count,
+                         "il default non regge una sessione di lavoro intera")
+        self.assertEqual([], [p for p in posts if p["author"] == "router"])
+
+    async def test_one_hop_past_the_session_the_brake_says_so(self) -> None:
+        posts, start = await self._delegate("Ci pensa @fullstack-dev", hop=15)
+        start.assert_not_awaited()
+        self.assertEqual("router", posts[-1]["author"])
+        self.assertIn("fullstack-dev", posts[-1]["text"])
+
+
 class TheLimitIsConfigurableTests(_Base):
     """Il valore giusto dipende da quanti agenti collaborano, e non lo sappiamo
     a priori: con un coordinatore e un esecutore, `2` esaurisce la catena al

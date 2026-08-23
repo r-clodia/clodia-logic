@@ -458,11 +458,30 @@ def _spawn_bg(coro) -> None:
 # Il valore era 2, fisso. Con un coordinatore e un esecutore la catena si esaurisce
 # al primo scambio di ritorno (clodia → dev → clodia → **niente**), ed è la ragione
 # per cui una menzione «a volte parte e a volte no»: dipende da dove ti trovi nella
-# catena, che dal canale non si vede. 4 lascia spazio a due scambi completi; il
-# freno resta, perché un rimpallo infinito è ciò che questo limite esiste per
-# fermare. Configurabile perché il valore giusto dipende da quanti agenti
-# collaborano in un canale, e non lo sappiamo a priori.
-_DEFAULT_MAX_DELEGATION_HOPS = 4
+# catena, che dal canale non si vede. Poi 4, che lascia spazio a due scambi
+# completi — e neanche quelli bastano: un lavoro reale in `software-house` è
+# umano → tech lead → dev → piano → via libera → implementazione → resoconto, e
+# muore a metà proprio quando c'è qualcosa da consegnare (clodia-platform#268).
+# 15 lascia correre una conversazione di lavoro intera; il freno resta, perché
+# un rimpallo infinito è ciò che questo limite esiste per fermare, e 15 turni
+# senza un umano sono ancora un numero che si raggiunge in fretta.
+#
+# Il conto da fare per scegliere un valore diverso: **uno scambio completo costa
+# DUE salti** — l'ordine e il ritorno. Quindi questo numero non è «quanti
+# messaggi», è «quanti scambi regge il canale»: 4 sono due scambi, 15 sono sette.
+# La sessione di lavoro che ha aperto la issue — lead assegna, dev pianifica,
+# lead approva, dev implementa, dev riferisce, lead richiama — sono sei scambi, e
+# con 4 finiva a metà del secondo.
+#
+# Configurabile perché il valore giusto dipende da quanti agenti collaborano in
+# un canale, e non lo sappiamo a priori.
+#
+# Prima di alzarlo ancora, sappi cosa si sta comprando: questo è l'UNICO freno
+# alla lunghezza della catena. R3 limita le menzioni per MESSAGGIO, non i salti,
+# quindi il numero qui sotto è il moltiplicatore dei turni LLM che un solo
+# messaggio umano può innescare — a 15, quindici turni consecutivi prima che la
+# catena si fermi e lo dica. Alzarlo è una spesa, e va scelta di proposito.
+_DEFAULT_MAX_DELEGATION_HOPS = 15
 
 
 def _max_delegation_hops() -> int:
