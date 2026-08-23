@@ -1,0 +1,50 @@
+name: tests
+on:
+  pull_request:
+  push:
+    branches: [main]
+jobs:
+  suite:
+    runs-on: ubuntu-latest
+    env:
+      # I test non devono parlare con un gateway vero. Il default nel codice è
+      # `http://clodia-tools:7849` (server/colony/pki.py e altri 15 punti): su
+      # un runner quel nome non risolve, ma «non risolve» è una proprietà
+      # dell'ambiente, non una garanzia del repository. Qui la garanzia è
+      # scritta: porta 9 (discard), nessuna connessione possibile.
+      # Misurato il 23 ago 2026: eseguendo la suite dove quel gateway RISPONDE,
+      # 8 test falliscono (server/colony/test_pki.py e altri) senza che nulla
+      # sia rotto nel codice. Un rosso così si impara a ignorare.
+      CLODIA_TOOLS_MCP_URL: http://127.0.0.1:9/mcp/
+      # Numero minimo di test che devono essere ESEGUITI. Misurato 1304 su main
+      # (2e00746) il 23 ago 2026; la soglia sta sotto con margine, perché deve
+      # muoversi solo quando qualcuno cancella test di proposito.
+      # Serve perché exit code e conteggio sono due guasti distinti: una suite
+      # che non si carica esce 0 con zero test raccolti, ed è la modalità di
+      # guasto descritta in clodia-platform#263 — silenziosa e indistinguibile
+      # da un successo.
+      MIN_TEST: 1250
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      # `requirements.txt` e non un elenco scritto qui: la CI deve installare
+      # le stesse versioni che il repository dichiara, pin compresi.
+      - name: dipendenze come le dichiara il repository
+        run: pip install -r requirements.txt
+      # `make test` e non il comando unittest ricopiato nello YAML: il modo di
+      # eseguire la suite vive nel Makefile (decision record 34), e due copie
+      # divergono. `set -o pipefail` perché senza di esso `tee` restituirebbe il
+      # proprio exit code e una suite ROSSA passerebbe: la pipe che maschera
+      # l'esito è esattamente ciò che la issue chiama decorazione.
+      - name: suite, esito e numero di test eseguiti
+        run: |
+          set -eo pipefail
+          make test 2>&1 | tee "$RUNNER_TEMP/suite.log"
+          eseguiti=$(sed -nE 's/^Ran ([0-9]+) tests?.*/\1/p' "$RUNNER_TEMP/suite.log" | tail -1)
+          echo "test eseguiti: ${eseguiti:-0} — minimo richiesto: ${MIN_TEST}"
+          if [ "${eseguiti:-0}" -lt "${MIN_TEST}" ]; then
+            echo "::error::solo ${eseguiti:-0} test eseguiti, minimo ${MIN_TEST}: la suite non è partita per intero, un verde qui non significherebbe niente"
+            exit 1
+          fi
