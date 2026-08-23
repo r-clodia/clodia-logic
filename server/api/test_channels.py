@@ -165,6 +165,45 @@ class ResponderTests(unittest.TestCase):
         load.assert_called_once_with({"clodia", "worker"})
         evaluate.assert_called_once()
 
+    def test_routing_stats_say_why_enforce_is_not_in_effect(self) -> None:
+        """clodia-platform#186: «ho scritto `enforce` e non instrada» deve avere
+        una risposta leggibile, non un mistero. Modo richiesto, modo effettivo e
+        il numero che separa i due, nella stessa risposta."""
+        request = SimpleNamespace(headers={})
+        channels.responder_routing._GATE_CACHE = None
+        try:
+            with (
+                patch.object(channels, "_principal_from_request", return_value="owner"),
+                patch.object(
+                    channels.registry, "list",
+                    return_value=[self.agents["clodia"], self.agents["worker"]],
+                ),
+                patch.object(
+                    channels.routing_feedback, "load_exemplars",
+                    return_value=[{"agent": "clodia", "vec": [1.0]}],
+                ),
+                patch.object(
+                    channels.routing_feedback, "stats", return_value={},
+                ),
+                patch.object(
+                    channels.responder_routing, "evaluate_exemplars",
+                    return_value={"evaluated": 39, "predicted": 39,
+                                  "accuracy": 0.28},
+                ),
+                patch.dict(os.environ, {"RESPONDER_EXEMPLAR_MODE": "enforce"}),
+            ):
+                result = channels.routing_stats(request)
+        finally:
+            channels.responder_routing._GATE_CACHE = None
+
+        gate = result["exemplar"]["gate"]
+        self.assertEqual("enforce", gate["requested_mode"])
+        self.assertEqual("shadow", gate["effective_mode"])
+        self.assertEqual("shadow", result["exemplar"]["mode"])
+        self.assertEqual(0.28, gate["accuracy"])
+        self.assertEqual(0.70, gate["min_accuracy"])
+        self.assertIn("accuracy", gate["reason"])
+
     def test_routing_decision_tracks_exemplar_origin(self) -> None:
         with patch.object(
             channels.routing_feedback, "record_decision"

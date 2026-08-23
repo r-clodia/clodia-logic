@@ -278,11 +278,101 @@ EXEMPLAR_FLOOR = min(1.0, max(
 # automatica.
 EXEMPLAR_MODE = (os.environ.get("RESPONDER_EXEMPLAR_MODE", "shadow") or "shadow").strip().lower()
 
+# SOGLIA DI PROMOZIONE, e adesso è un controllo invece di una frase.
+#
+# Il «≥ 70% su copertura non banale» qui sopra è stato per mesi solo prosa in un
+# commento, mentre l'interruttore che dipende da quel numero era una variabile
+# d'ambiente libera: con l'accuratezza al 21% bastava scrivere `enforce` e il
+# routing peggiorava in silenzio, senza che nulla mettesse in relazione la
+# misura con la manopola che la presuppone (clodia-platform#186).
+#
+# Il gate può SOLO impedire: non accende mai `enforce` da sé. Se la misura non
+# regge, il classificatore resta shadow e lo dice. `MIN_ACCURACY=0` è la via di
+# fuga esplicita per chi vuole forzare (banco di prova, corpus sintetico).
+EXEMPLAR_MIN_ACCURACY = min(1.0, max(
+    0.0, float(os.environ.get("RESPONDER_EXEMPLAR_MIN_ACCURACY", "0.70"))))
+# Supporto minimo: un'accuratezza dell'100% su tre predizioni non è una misura.
+EXEMPLAR_MIN_SUPPORT = max(
+    0, int(os.environ.get("RESPONDER_EXEMPLAR_MIN_SUPPORT", "20")))
 
-def exemplar_enforced() -> bool:
-    """True se le decisioni degli esemplari vengono APPLICATE (non solo tracciate)."""
-    return (os.environ.get("RESPONDER_EXEMPLAR_MODE", EXEMPLAR_MODE)
-            or "").strip().lower() == "enforce"
+# Il gate misurato, memoizzato sull'impronta del corpus.
+#
+# SHORTCUT: la leave-one-out è O(n²) sulle dimensioni del corpus, e qui il
+#           corpus sono decine di esemplari. Sopra il migliaio va campionata
+#           (o calcolata fuori dal percorso del turno, in un job).
+_GATE_CACHE: tuple[tuple, dict] | None = None
+
+
+def _exemplar_corpus_fingerprint(exemplars: list[dict]) -> tuple:
+    """Impronta a basso costo: cambia quando cambia ciò che il gate misura."""
+    return (
+        len(exemplars),
+        exemplars[-1].get("ts") if exemplars else None,
+        EXEMPLAR_MIN_ACCURACY, EXEMPLAR_MIN_SUPPORT,
+        EXEMPLAR_K, EXEMPLAR_MARGIN, EXEMPLAR_FLOOR,
+    )
+
+
+def exemplar_gate(exemplars: list[dict] | None = None) -> dict:
+    """Modo richiesto, modo effettivo e la misura che decide fra i due.
+
+    Chiamata solo quando qualcuno ha chiesto `enforce`: in shadow non c'è niente
+    da impedire e la leave-one-out non viene calcolata affatto (costo zero nella
+    configurazione di default).
+    """
+    global _GATE_CACHE
+    richiesto = (os.environ.get("RESPONDER_EXEMPLAR_MODE", EXEMPLAR_MODE)
+                 or "").strip().lower()
+    gate = {
+        "requested_mode": richiesto,
+        "effective_mode": "shadow",
+        "min_accuracy": EXEMPLAR_MIN_ACCURACY,
+        "min_support": EXEMPLAR_MIN_SUPPORT,
+        "accuracy": None,
+        "support": 0,
+        "reason": None,
+    }
+    if richiesto != "enforce":
+        gate["reason"] = "mode is not enforce"
+        return gate
+
+    if exemplars is None:
+        from . import routing_feedback
+        exemplars = routing_feedback.load_exemplars()
+    impronta = _exemplar_corpus_fingerprint(exemplars)
+    if _GATE_CACHE is not None and _GATE_CACHE[0] == impronta:
+        return dict(_GATE_CACHE[1])
+
+    nomi = sorted({e.get("agent") for e in exemplars if e.get("agent")})
+    metriche = evaluate_exemplars(exemplars, nomi)
+    accuratezza = metriche.get("accuracy")
+    supporto = metriche.get("predicted") or 0
+    gate["accuracy"] = accuratezza
+    gate["support"] = supporto
+    if supporto < EXEMPLAR_MIN_SUPPORT:
+        gate["reason"] = (f"support {supporto} < {EXEMPLAR_MIN_SUPPORT}: "
+                          "not enough evidence to judge the classifier")
+    elif accuratezza is None or accuratezza < EXEMPLAR_MIN_ACCURACY:
+        gate["reason"] = (f"accuracy {accuratezza} < {EXEMPLAR_MIN_ACCURACY}: "
+                          "obeying the store would make routing worse")
+    else:
+        gate["effective_mode"] = "enforce"
+        gate["reason"] = "measured accuracy justifies enforcing"
+
+    _GATE_CACHE = (impronta, dict(gate))
+    if gate["effective_mode"] != "enforce":
+        LOG.warning("routing exemplar: `enforce` richiesto ma non applicato — %s",
+                    gate["reason"])
+    return gate
+
+
+def exemplar_enforced(exemplars: list[dict] | None = None) -> bool:
+    """True se le decisioni degli esemplari vengono APPLICATE (non solo tracciate).
+
+    `enforce` è necessario ma non sufficiente: vale solo se la leave-one-out sul
+    corpus installato raggiunge soglia e supporto (`exemplar_gate`).
+    """
+    return exemplar_gate(exemplars)["effective_mode"] == "enforce"
 
 
 def _temporal_weight(timestamp: str | None,
@@ -376,7 +466,7 @@ def pick_by_exemplar(message: str, eligible_names: list[str],
     result = _classify_exemplar_vector(mv, ex, eligible_names)
     if result is None:
         return None
-    enforced = exemplar_enforced()
+    enforced = exemplar_enforced(ex)
     LOG.info(
         "routing exemplar (%s): agent=%s confidence=%.3f support=%d max_sim=%.3f",
         "enforce" if enforced else "shadow",

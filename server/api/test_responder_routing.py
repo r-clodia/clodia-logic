@@ -94,6 +94,10 @@ class ExemplarRoutingTest(unittest.TestCase):
         ]
         with (
             patch.dict(os.environ, {"RESPONDER_EXEMPLAR_MODE": "enforce"}),
+            # Corpus sintetico da tre esemplari: sotto il supporto minimo del
+            # gate di promozione (#186), che qui non è ciò che si misura.
+            patch.object(responder_routing, "EXEMPLAR_MIN_SUPPORT", 0),
+            patch.object(responder_routing, "EXEMPLAR_MIN_ACCURACY", 0.0),
             patch(
                 "server.api.routing_feedback.load_exemplars",
                 return_value=exemplars,
@@ -157,6 +161,10 @@ class ExemplarRoutingTest(unittest.TestCase):
     def test_enforce_mode_applies_the_decision(self):
         with (
             patch.dict(os.environ, {"RESPONDER_EXEMPLAR_MODE": "enforce"}),
+            # Vedi sopra: due esemplari non passano il gate di promozione, che
+            # ha i suoi test in `TheEnforceSwitchIsGatedByTheMeasurementTests`.
+            patch.object(responder_routing, "EXEMPLAR_MIN_SUPPORT", 0),
+            patch.object(responder_routing, "EXEMPLAR_MIN_ACCURACY", 0.0),
             patch.object(responder_routing, "embed_text", return_value=[1.0]),
             patch("server.api.routing_feedback.load_exemplars",
                        return_value=[_ex("clodia", 0.95), _ex("clodia", 0.94)]),
@@ -182,6 +190,109 @@ class ExemplarRoutingTest(unittest.TestCase):
         self.assertEqual(metrics["correct"], 4)
         self.assertEqual(metrics["coverage"], 1.0)
         self.assertEqual(metrics["accuracy"], 1.0)
+
+
+class TheEnforceSwitchIsGatedByTheMeasurementTests(unittest.TestCase):
+    """clodia-platform#186 · la soglia di promozione era prosa, l'interruttore no.
+
+    «≥ 70% su copertura non banale» stava in un commento, mentre
+    `RESPONDER_EXEMPLAR_MODE=enforce` era una variabile d'ambiente libera: con
+    l'accuratezza leave-one-out al 21% bastava scriverla e il routing
+    peggiorava senza che niente collegasse la misura alla manopola che la
+    presuppone. Il gate collega le due cose, e può solo IMPEDIRE.
+    """
+
+    def setUp(self) -> None:
+        responder_routing._GATE_CACHE = None
+
+    def tearDown(self) -> None:
+        responder_routing._GATE_CACHE = None
+
+    def _corpus(self, n: int = 40) -> list:
+        return [_ex("clodia", 0.95) for _ in range(n)]
+
+    def test_enforce_is_refused_when_the_measurement_is_below_threshold(self):
+        """Il caso reale di oggi: 21–30% di accuratezza. `enforce` non basta."""
+        with (
+            patch.dict(os.environ, {"RESPONDER_EXEMPLAR_MODE": "enforce"}),
+            patch.object(responder_routing, "evaluate_exemplars",
+                         return_value={"predicted": 39, "accuracy": 0.28}),
+        ):
+            gate = responder_routing.exemplar_gate(self._corpus())
+            self.assertFalse(responder_routing.exemplar_enforced(self._corpus()))
+
+        self.assertEqual("enforce", gate["requested_mode"])
+        self.assertEqual("shadow", gate["effective_mode"])
+        self.assertIn("accuracy", gate["reason"])
+
+    def test_below_threshold_the_router_is_not_hijacked(self):
+        """La proprietà che conta non è il dizionario: è che il classificatore
+        NON instrada. Senza il gate, qui tornava ('clodia', ...)."""
+        tracked = []
+        with (
+            patch.dict(os.environ, {"RESPONDER_EXEMPLAR_MODE": "enforce"}),
+            patch.object(responder_routing, "embed_text", return_value=[1.0]),
+            patch.object(responder_routing, "evaluate_exemplars",
+                         return_value={"predicted": 39, "accuracy": 0.28}),
+            patch("server.api.routing_feedback.load_exemplars",
+                  return_value=self._corpus()),
+            patch("server.api.routing_feedback.record_decision",
+                  side_effect=lambda *a, **k: tracked.append(a)),
+        ):
+            self.assertIsNone(responder_routing.pick_by_exemplar("m", ["clodia"]))
+
+        self.assertEqual("exemplar-shadow", tracked[0][0])
+
+    def test_enforce_holds_when_the_measurement_justifies_it(self):
+        """Alzare un freno non è saldarlo: sopra soglia e con supporto, applica."""
+        with (
+            patch.dict(os.environ, {"RESPONDER_EXEMPLAR_MODE": "enforce"}),
+            patch.object(responder_routing, "embed_text", return_value=[1.0]),
+            patch.object(responder_routing, "evaluate_exemplars",
+                         return_value={"predicted": 40, "accuracy": 0.86}),
+            patch("server.api.routing_feedback.load_exemplars",
+                  return_value=self._corpus()),
+            patch("server.api.routing_feedback.record_decision"),
+        ):
+            result = responder_routing.pick_by_exemplar("m", ["clodia"])
+
+        self.assertIsNotNone(result)
+        self.assertEqual("clodia", result[0])
+
+    def test_a_handful_of_votes_is_not_a_measurement(self):
+        """100% su tre predizioni non è un'accuratezza: sotto il supporto
+        minimo si resta shadow, e il motivo lo dice."""
+        with patch.dict(os.environ, {"RESPONDER_EXEMPLAR_MODE": "enforce"}):
+            gate = responder_routing.exemplar_gate(self._corpus(3))
+
+        self.assertEqual("shadow", gate["effective_mode"])
+        self.assertIn("support", gate["reason"])
+
+    def test_in_shadow_the_measurement_is_not_even_computed(self):
+        """Costo zero nella configurazione di default: non si paga una
+        leave-one-out per confermare ciò che è già spento."""
+        with (
+            patch.dict(os.environ, {"RESPONDER_EXEMPLAR_MODE": "shadow"}),
+            patch.object(responder_routing, "evaluate_exemplars") as evaluate,
+        ):
+            gate = responder_routing.exemplar_gate(self._corpus())
+
+        evaluate.assert_not_called()
+        self.assertEqual("shadow", gate["effective_mode"])
+
+    def test_the_escape_hatch_is_explicit(self):
+        """Chi vuole forzare (banco di prova, corpus sintetico) azzera le
+        soglie: il gate resta un controllo, non un divieto."""
+        with (
+            patch.dict(os.environ, {"RESPONDER_EXEMPLAR_MODE": "enforce"}),
+            # `RESPONDER_EXEMPLAR_MIN_ACCURACY=0` / `..._MIN_SUPPORT=0`
+            # all'avvio: qui si patcha la costante perché è letta all'import,
+            # come tutte le manopole di questo modulo.
+            patch.object(responder_routing, "EXEMPLAR_MIN_ACCURACY", 0.0),
+            patch.object(responder_routing, "EXEMPLAR_MIN_SUPPORT", 0),
+        ):
+            self.assertTrue(
+                responder_routing.exemplar_enforced(self._corpus(3)))
 
 
 class RoutingContextTest(unittest.TestCase):

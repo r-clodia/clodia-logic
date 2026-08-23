@@ -4074,8 +4074,14 @@ def routing_stats(request: Request) -> dict:
     # Stato del classificatore: `shadow` traccia senza applicare, `enforce`
     # applica. Le soglie sono qui perché la decisione di passare a enforce si
     # prende guardando `leave_one_out` in questa stessa risposta.
+    #
+    # `gate` risponde alla domanda che altrimenti resta un mistero: ho scritto
+    # `enforce` e il classificatore non instrada — perché? Modo richiesto, modo
+    # effettivo e il numero che separa i due, nella stessa risposta (#186).
+    gate = responder_routing.exemplar_gate(exemplars)
     result["exemplar"] = {
-        "mode": "enforce" if responder_routing.exemplar_enforced() else "shadow",
+        "mode": gate["effective_mode"],
+        "gate": gate,
         "floor": responder_routing.EXEMPLAR_FLOOR,
         "k": responder_routing.EXEMPLAR_K,
         "margin": responder_routing.EXEMPLAR_MARGIN,
