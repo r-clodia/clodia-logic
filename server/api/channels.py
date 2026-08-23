@@ -2593,14 +2593,30 @@ def _reused_turn_prompt(tier: str, name: str, responder: str, principal: str,
     basta il `fallback` (il nuovo messaggio a cui rispondere).
 
     Senza questo, un agente non "vede" le risposte degli altri agenti nel canale.
+
+    «I PROPRI turni» si riconoscono per SEED, non per etichetta. In canale i
+    messaggi sono firmati dallo spawn (`_spawn_label`: `fullstack-dev-86`),
+    mentre qui `responder` arriva in due forme diverse a seconda del chiamante —
+    l'etichetta dello spawn da `_deliver_to_session`, il nome del seed da
+    `_respond_in_channel`. Col confronto letterale i due nomi non combaciavano
+    mai: `last_own` restava -1, TUTTA la storia risultava non vista e ogni turno
+    su sessione riusata riceveva di nuovo l'intero storico — compresi gli ordini
+    che quell'agente aveva già eseguito, che così tornavano indistinguibili da
+    ordini nuovi. Normalizzare entrambi i lati con `_seed_name` costa una riga e
+    vale per tutte e due le forme.
     """
     msgs = topics_client.list_messages(tier, name, limit=200)
+
+    def _chi(label: str | None) -> str:
+        return _seed_name(label or "") or ""
+
+    mio = _chi(responder)
     last_own = max((i for i, m in enumerate(msgs)
-                    if (m.get("author") or "") == responder), default=-1)
+                    if _chi(m.get("author")) == mio), default=-1)
     unseen = msgs[last_own + 1:]
     # C'è un messaggio non-visto di un TERZO (né il responder né chi ha appena
     # scritto)? → il responder deve vederlo per non perdere il filo multi-agente.
-    if any((m.get("author") or "") not in (responder, principal) for m in unseen):
+    if any(_chi(m.get("author")) not in (mio, principal) for m in unseen):
         return _history_prompt(name, tier, _context_messages(unseen))
     return fallback
 
