@@ -229,8 +229,15 @@ KIND_MODEL = {
 # workspace non viene applicato in modalità SDK headless — questo parametro sì.
 # 'bypassPermissions' = nessun gate sul permesso, ma KIND_DISALLOWED_TOOLS
 # blocca comunque le azioni esterne irreversibili via --disallowedTools.
+#
+# RIPIEGO PER I KIND SENZA SEED, non policy (clodia-platform#199, residuo di A9).
+# Chi ha un seed lo dichiara là (`AgentSpec.permission_mode`): `clodia` è uscita
+# da questa tabella il 24 ago 2026 e la sua riga vive nel suo agent.yaml. Qui
+# restano `ada` e `looper`, che seed non hanno — e `ada` non è togliibile senza
+# decidere qualcosa: vale `None`, cioè i prompt interattivi del CLI, che il
+# ripiego dinamico di `_resolve_permission_mode` NON produce. Levarla la
+# aprirebbe a `bypassPermissions` per omissione.
 KIND_PERMISSION_MODE = {
-    "clodia": "bypassPermissions",
     "ada":    None,
     "looper": "bypassPermissions",
 }
@@ -666,6 +673,17 @@ def _resolve_model(kind: str) -> Optional[str]:
 
 
 def _resolve_permission_mode(kind: str) -> Optional[str]:
+    """Il seed prima, poi la tabella dei kind senza seed, poi il ripiego.
+
+    L'ordine è l'INVERSO di `_resolve_model`, e di proposito: là la tabella è
+    l'autorità dei tre kind statici, qui l'autorità è l'agente — è tutto ciò che
+    la #199 chiede. `None` dal seed vuol dire «non mi pronuncio» e non stringe:
+    un seed non aggiornato non deve ritrovarsi con dei prompt di permesso che
+    nessuno è lì ad approvare.
+    """
+    dichiarato = getattr(_kind_spec(kind), "permission_mode", None)
+    if dichiarato:
+        return dichiarato
     if kind in KIND_PERMISSION_MODE:
         return KIND_PERMISSION_MODE[kind]
     # Dinamico: l'agent gira autonomo (es. fire di un job, nessun human-in-loop)

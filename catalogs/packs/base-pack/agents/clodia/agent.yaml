@@ -200,3 +200,20 @@ native_tools:
   - Agent
   - Workflow
   - Task*
+
+# Permessi del runtime. `bypassPermissions` = nessun prompt di conferma, e non è
+# una comodità: Clodia gira anche senza nessuno davanti — il fire di un job, una
+# convocazione notturna — e un prompt che nessuno approva è un turno che si
+# blocca in silenzio.
+#
+# Era una riga di `KIND_PERMISSION_MODE` in `sdk_runtime/session.py`
+# (clodia-platform#199, residuo di A9): una decisione su questo agente scritta
+# accanto al codice invece che qui. Sta nel suo seed per la stessa ragione di
+# `native_tools` sopra — «cosa può fare questo agente» ha UNA risposta, in un
+# file.
+#
+# Ciò che questo NON spegne: `disallowed_tools`, che resta l'unico interruttore
+# vero (vedi `sdk_runtime/native_tools.py`) e continua a togliere gli strumenti
+# fuori da `native_tools`; e i grant del gateway MCP, che stanno altrove e non li
+# scrive lei.
+permission_mode: bypassPermissions
