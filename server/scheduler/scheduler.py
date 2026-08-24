@@ -417,12 +417,24 @@ def _on_job_missed(event) -> None:
 
 
 def _on_job_submitted(event) -> None:
-    """Un fire è partito. Se era ARRETRATO, lo dice — a livello WARNING.
+    """Un fire è partito. Se era ARRETRATO, lo REGISTRA come `missed` e lo dice.
 
     Il recupero è la metà buona del grace derivato dalla cadenza, ma un backup
     eseguito con dieci ore di ritardo non è un backup eseguito puntualmente: per
     un controllo con un'evidenza datata la differenza è l'unica cosa che conta, e
     senza questa riga il run risulterebbe indistinguibile da uno regolare.
+
+    Fino a #287 la differenza viveva solo in un WARNING nei log. Due conseguenze,
+    entrambe misurate: un fire recuperato spariva nello storico dentro un run
+    dall'aria puntuale, e un fire perso fra il submit e l'avvio del run — processo
+    ucciso, loop chiuso — non era mai esistito per nessuno. Ora il fatto è scritto
+    QUANDO ACCADE, cioè nell'unico istante in cui è noto; il run che segue nello
+    storico è la sua chiusura, e se non arriva la riga resta lì a dirlo.
+
+    La riga è `missed` e non un terzo stato: dal punto di vista del registro il
+    fire previsto per quell'ora NON è avvenuto a quell'ora. Uno stato in più
+    («late») direbbe la stessa cosa costringendo ogni lettore — UI, guard, storico
+    — a impararlo.
     """
     job_id = _job_id_from_key(getattr(event, "job_id", ""))
     if job_id is None:
@@ -434,11 +446,22 @@ def _on_job_submitted(event) -> None:
     ritardo = max(ritardi)
     if ritardo <= _MISFIRE_GRACE_FLOOR_S:
         return
+    collassati = (f" ({len(previsti)} fire arretrati collassati in uno)"
+                  if len(previsti) > 1 else "")
+    dettaglio = (
+        f"fire previsto {previsti[0].isoformat()} non eseguito a quell'ora "
+        f"(ritardo {ritardo / 60.0:.0f} min, entro il grace: recupero in corso)"
+        f"{collassati}")
+    try:
+        db.mark_run(job_id, status=f"missed ({dettaglio})", chat_id=None,
+                    note=dettaglio)
+    except Exception as e:  # noqa: BLE001
+        # Come nel listener del misfire: il fire che sta partendo vale più della
+        # registrazione del suo ritardo.
+        LOG.error("job %s: recupero non registrato (%s)", job_id, e)
     LOG.warning(
         "Job RECUPERATO id=%s: fire previsto %s eseguito con %.0f min di ritardo%s",
-        job_id, previsti[0].isoformat(), ritardo / 60.0,
-        f" ({len(previsti)} fire arretrati collassati in uno)"
-        if len(previsti) > 1 else "")
+        job_id, previsti[0].isoformat(), ritardo / 60.0, collassati)
 
 
 def shutdown_scheduler() -> None:
