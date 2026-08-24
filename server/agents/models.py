@@ -425,6 +425,29 @@ class AgentSpec(BaseModel):
     #: di rete può arbitrare perché lo esegue il provider (vedi
     #: `sdk_runtime/native_tools.py` per la misura).
     native_tools: Optional[list[str]] = None
+    #: Come il runtime tratta le richieste di permesso di QUESTO agent, con i
+    #: nomi dell'SDK: `default` (chiede), `acceptEdits`, `plan`,
+    #: `bypassPermissions` (non chiede niente). `None` = il seed non si
+    #: pronuncia.
+    #:
+    #: Sta qui per la stessa ragione di `native_tools`: era una riga di
+    #: `KIND_PERMISSION_MODE` in `sdk_runtime/session.py` — `bypassPermissions`
+    #: scritto accanto al codice per `clodia` e `looper` — cioè una decisione su
+    #: un agente tenuta in una tabella invece che nell'agente
+    #: (clodia-platform#199, residuo di A9). Peggio: `extra="forbid"` rendeva
+    #: questo nome un campo VIETATO, quindi un seed che ci provava non caricava
+    #: affatto.
+    #:
+    #: **Non è una via di scalata**, ed è misurabile: il ripiego di
+    #: `_resolve_permission_mode` per chi non si pronuncia è già
+    #: `bypassPermissions`, il valore più largo dei quattro. Una dichiarazione
+    #: qui può dunque solo STRINGERE, e un agente che riscrivesse il proprio
+    #: seed non guadagnerebbe niente scrivendoci il valore che ha già per
+    #: assenza. Il giorno in cui il ripiego diventasse restrittivo, questo campo
+    #: diventerebbe un'estensione e andrebbe custodito come `gated_tools` (copia
+    #: nella config del gateway, dove l'agente non scrive).
+    permission_mode: Optional[
+        Literal["default", "acceptEdits", "plan", "bypassPermissions"]] = None
     #: Verbi che, per QUESTO agent, richiedono un consenso umano a ogni uso.
     #:
     #: Dichiarati qui perché è il posto in cui si sa quali dei propri verbi sono
