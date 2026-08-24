@@ -261,14 +261,27 @@ async def api_delete_topic_cron_trigger(tier: str, name: str, request: Request):
     return {"deleted": True}
 
 
+def _with_freshness(job: dict) -> dict:
+    """Allega al payload il giudizio di freschezza (#273).
+
+    Additivo: `stale` è `False` per ogni job che gira come previsto, quindi un
+    client che non conosce il campo non cambia comportamento. Calcolato in
+    lettura e non persistito, perché è una proprietà del TEMPO — un job fresco
+    stamattina è stale stasera senza che nessuno abbia scritto niente, e un campo
+    salvato su file sarebbe vecchio quanto l'ultima scrittura."""
+    motivo = scheduler.stale_reason(job)
+    return {**job, "stale": motivo is not None, "stale_reason": motivo}
+
+
 @router.get("/clodia/jobs")
 async def api_list_jobs():
-    return [job for job in db.list_jobs() if job.get("mode") != "topic_trigger"]
+    return [_with_freshness(job) for job in db.list_jobs()
+            if job.get("mode") != "topic_trigger"]
 
 
 @router.get("/clodia/jobs/{job_id}")
 async def api_get_job(job_id: int):
-    return _require_job(job_id)
+    return _with_freshness(_require_job(job_id))
 
 
 @router.post("/clodia/jobs", status_code=201)
