@@ -33,6 +33,18 @@ class _FakeMissedEvent:
         self.scheduled_run_time = scheduled_run_time
 
 
+class _FakeSubmittedEvent:
+    """`EVENT_JOB_SUBMITTED` porta gli orari previsti dei fire eseguiti.
+
+    Sono al plurale perché con `coalesce=True` un backlog di fire arretrati viene
+    consegnato all'executor come UN solo submit.
+    """
+
+    def __init__(self, job_id: str, scheduled_run_times: list[datetime]) -> None:
+        self.job_id = job_id
+        self.scheduled_run_times = scheduled_run_times
+
+
 class _CapturingScheduler:
     """Cattura i kwargs di `add_job` senza avviare nulla."""
 
@@ -142,6 +154,60 @@ class MissedRunIsRecordedTests(JobsDirTestCase):
         db.create_job("backup", "0 0 * * *", "x")
         scheduler._on_job_missed(
             _FakeMissedEvent("qualcun-altro-42", datetime.now(timezone.utc)))
+        self.assertEqual(db.get_job(1)["runs"] or [], [])
+
+
+class RecoveredFireIsRecordedTests(JobsDirTestCase):
+    """Il fire perso ENTRO il grace deve lasciare traccia quando accade
+    (clodia-platform#287).
+
+    Fino a #273 il recupero era raccontato solo da un WARNING nei log: se il
+    processo moriva fra il submit e il run, quel fire non era mai esistito per
+    nessuno — e se il recupero andava a buon fine lo storico mostrava un run
+    puntuale, indistinguibile da uno partito all'ora giusta.
+    """
+
+    def test_late_fire_is_recorded_before_the_recovery_runs(self) -> None:
+        job = db.create_job("backup", "0 0 * * *", "backup della piattaforma")
+        db.mark_run(job["id"], status="ok", chat_id=None)  # l'ultima volta andò bene
+        previsto = datetime.now(timezone.utc) - timedelta(hours=10, minutes=56)
+        scheduler._on_job_submitted(
+            _FakeSubmittedEvent(f"clodia-job-{job['id']}", [previsto]))
+        stored = db.get_job(job["id"])
+        # La riga esiste ORA, prima che il run di recupero dichiari il suo esito:
+        # è l'unico istante in cui il fatto «questo fire era arretrato» è noto.
+        self.assertEqual(stored["runs"][-1]["stato"], "missed")
+        self.assertTrue(stored["last_status"].startswith("missed"),
+                        f"last_status = {stored['last_status']!r}")
+        self.assertIn("recupero", stored["runs"][-1]["note"])
+        self.assertIn(previsto.isoformat(), stored["runs"][-1]["note"])
+
+    def test_punctual_fire_leaves_no_row(self) -> None:
+        # Il rumore ucciderebbe il segnale: un fire puntuale non è un fire perso.
+        job = db.create_job("backup", "0 0 * * *", "x")
+        scheduler._on_job_submitted(
+            _FakeSubmittedEvent(f"clodia-job-{job['id']}",
+                                [datetime.now(timezone.utc)]))
+        self.assertEqual(db.get_job(job["id"])["runs"] or [], [])
+
+    def test_collapsed_backlog_leaves_one_row(self) -> None:
+        # `coalesce=True` collassa i fire arretrati in uno: la riga è una, e dice
+        # quanti fire quel recupero rappresenta.
+        job = db.create_job("backup", "0 0 * * *", "x")
+        adesso = datetime.now(timezone.utc)
+        arretrati = [adesso - timedelta(days=3), adesso - timedelta(days=2),
+                     adesso - timedelta(days=1)]
+        scheduler._on_job_submitted(
+            _FakeSubmittedEvent(f"clodia-job-{job['id']}", arretrati))
+        runs = db.get_job(job["id"])["runs"]
+        self.assertEqual(len(runs), 1)
+        self.assertIn("3 fire", runs[0]["note"])
+
+    def test_event_of_another_scheduler_is_ignored(self) -> None:
+        db.create_job("backup", "0 0 * * *", "x")
+        scheduler._on_job_submitted(
+            _FakeSubmittedEvent("qualcun-altro-42",
+                                [datetime.now(timezone.utc) - timedelta(days=1)]))
         self.assertEqual(db.get_job(1)["runs"] or [], [])
 
 
