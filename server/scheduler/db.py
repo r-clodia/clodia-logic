@@ -344,10 +344,15 @@ def delete_job(job_id: int) -> bool:
 _RUNS_CAP = 100  # storico run tenuto per job (i più recenti)
 
 
-def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None) -> Optional[str]:
+def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None,
+             note: Optional[str] = None) -> Optional[str]:
     """Registra un fire nello STORICO run del job (`runs`) e aggiorna i campi
     `last_*`. Ritorna l'id del run, usato dal completamento asincrono per
-    aggiornare la stessa entry. Lo storico è cappato agli ultimi _RUNS_CAP."""
+    aggiornare la stessa entry. Lo storico è cappato agli ultimi _RUNS_CAP.
+
+    `note` allega un dettaglio leggibile a un'entry che non è né `running` né uno
+    stato terminale — il caso è il run `missed` di un fire scartato (#273), che
+    non ha un `error` da mostrare ma ha un motivo da leggere."""
     d = get_job(job_id)
     if d is None:
         return None
@@ -368,7 +373,7 @@ def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None) -> Opti
         "stato": stato,
         "chat_id": chat_id,
         "error": s.split(":", 1)[-1].strip() or s if stato == "failed" else None,
-        "note": s if stato == "running" else None,
+        "note": note or (s if stato == "running" else None),
     }
     runs = list(d.get("runs") or [])
     runs.append(entry)
@@ -388,6 +393,13 @@ def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None) -> Opti
 #: uno stato inventato diventa `unknown` e si legge come «boh» esattamente dove
 #: serviva una risposta.
 TERMINAL_STATES = ("success", "error", "fatal", "failed")
+
+#: Il fire che NON è avvenuto (#273). Fuori da `TERMINAL_STATES` di proposito:
+#: quelli sono gli esiti di un run partito, dichiarabili con `complete_run`, e un
+#: run mai iniziato non ha nulla da completare — non ha durata, non ha chat, non
+#: ha un agente che possa parlarne. È uno stato che solo lo scheduler può
+#: scrivere, dal listener `EVENT_JOB_MISSED`.
+MISSED = "missed"
 
 #: Stati terminali che NON sono un successo pieno. Serve a chi legge lo storico
 #: per sapere cosa merita un'occhiata, senza enumerare a mano tre stringhe in

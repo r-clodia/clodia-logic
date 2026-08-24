@@ -16,6 +16,7 @@ import logging
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
+from apscheduler.events import EVENT_JOB_MISSED, EVENT_JOB_SUBMITTED
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -210,12 +211,148 @@ def cron_to_interval_minutes(expr: str, samples: int = 30) -> Optional[int]:
 
 
 # ---------------------------------------------------------------------------
+# Cadenza, recupero dei misfire e freschezza (clodia-platform#273)
+# ---------------------------------------------------------------------------
+
+def job_cadence_minutes(job: dict) -> Optional[float]:
+    """Cadenza dichiarata del job in minuti; `None` se non è deducibile.
+
+    Legge la periodicità dalla stessa fonte di `_trigger_for` — `interval_minutes`
+    oppure `cron_expr` — riusando `min_cron_gap_minutes` invece di reinterpretare
+    il cron: un secondo parser darebbe due risposte diverse alla stessa domanda.
+
+    Per un cron irregolare (`0 9 * * 1-5`: 24h, 24h, 24h, 24h, 72h) il minimo è
+    la cadenza CONSERVATIVA, che è quella giusta qui: sia il recupero di un
+    misfire sia il giudizio di freschezza vanno tarati sull'intervallo più corto,
+    non sul più lungo.
+    """
+    minuti = job.get("interval_minutes")
+    if minuti:
+        try:
+            n = int(minuti)
+        except (TypeError, ValueError):
+            return None
+        return float(n) if n > 0 else None
+    expr = str(job.get("cron_expr") or "").strip()
+    if not expr:
+        return None
+    try:
+        gap = min_cron_gap_minutes(expr)
+    except (ValueError, TypeError):
+        return None
+    return None if gap == float("inf") else gap
+
+
+#: Grace minimo: sotto il minuto un misfire è jitter dello scheduler, non un
+#: fire perso, ed è il valore con cui ogni job è stato registrato fino a #273.
+_MISFIRE_GRACE_FLOOR_S = 60
+
+#: Tetto al recupero: un fire arretrato di più di 24 ore non è più «il job di
+#: stanotte partito tardi», è un job di un altro giorno. Il restore-test
+#: settimanale ci sbatte contro di proposito — recuperarlo il sabato seguente
+#: produrrebbe un'evidenza datata la domenica sbagliata, e per un controllo ISO
+#: l'evidenza con la data storta è peggio dell'evidenza mancante (che almeno il
+#: check di freschezza segnala).
+_MISFIRE_GRACE_CAP_S = 24 * 3600
+
+#: Il trigger di un topic NON si recupera: ogni fire è un turno agentico, e un
+#: prompt di sorveglianza consegnato dieci ore dopo non sorveglia niente — è
+#: rumore in un canale, con lo stesso vettore di backlog che lo skip-if-busy di
+#: #46 esiste per evitare.
+_TOPIC_TRIGGER_GRACE_S = 60
+
+
+def misfire_grace_for(job: dict) -> int:
+    """Secondi di ritardo entro cui un fire perso va ancora eseguito.
+
+    Era una costante di 60s per ogni job (#273): un portatile che dorme dieci ore
+    produce un misfire di 36.000s, APScheduler lo scarta, la callback non parte e
+    **nessuno registra niente** — due notti di backup ISO 27001 A.8.13 mancanti
+    con `last_status` a `ok`.
+
+    Ora il grace è la CADENZA del job: un giornaliero recupera fino a 24 ore di
+    ritardo, un orario fino a un'ora, un «ogni 10 minuti» dieci minuti. È la
+    scala giusta perché è la stessa con cui il job è stato pensato: recuperare un
+    fire entro il suo periodo non ne sovrappone mai due, e `coalesce=True`
+    collassa comunque a un fire solo il backlog accumulato durante il sonno.
+    """
+    if job.get("mode") == "topic_trigger":
+        return _TOPIC_TRIGGER_GRACE_S
+    cadenza = job_cadence_minutes(job)
+    if cadenza is None:
+        # Cadenza illeggibile: si resta al valore storico. Un grace generoso
+        # dedotto da una periodicità che non sappiamo interpretare recupererebbe
+        # fire su una scala che nessuno ha dichiarato.
+        return _MISFIRE_GRACE_FLOOR_S
+    return int(max(_MISFIRE_GRACE_FLOOR_S,
+                   min(cadenza * 60.0, _MISFIRE_GRACE_CAP_S)))
+
+
+# SHORTCUT: «stale» = nessun run da più di 2 volte la cadenza. Il 2 è un margine
+#           per il jitter e per un fire recuperato tardi, non una verità: regge
+#           finché le cadenze sono regolari e il job parte a ogni fire. Se
+#           servisse distinguere per job (un backup tollera meno di un digest),
+#           il fattore va nel record del job, non qui.
+_STALE_FACTOR = 2.0
+
+
+def stale_reason(job: dict, *, now: Optional[datetime] = None) -> Optional[str]:
+    """`None` se il job è fresco; altrimenti perché non lo è, in chiaro.
+
+    È il controllo che non guarda il MECCANISMO ma il RISULTATO: «l'ultimo run è
+    più vecchio di quanto la cadenza consenta?». Gli altri due pezzi di #273
+    (grace e run `missed`) coprono il misfire, cioè l'unica causa che oggi
+    conosciamo; questo copre anche le cause che non conosciamo ancora — uno
+    scheduler che non fira, un job registrato su un trigger sbagliato, un
+    processo vivo ma bloccato — perché nessuna di quelle sopravvive alla domanda
+    «e allora dov'è il run?».
+
+    Un job disabilitato non è stale: non doveva partire.
+    """
+    if not job.get("enabled"):
+        return None
+    cadenza = job_cadence_minutes(job)
+    if cadenza is None:
+        return None
+    adesso = now or datetime.now(timezone.utc)
+    # Un job che non ha mai girato si misura dalla creazione: senza questo
+    # riferimento resterebbe fresco per sempre, che è esattamente il silenzio
+    # che #273 chiude.
+    riferimento = job.get("last_run_at") or job.get("created_at")
+    try:
+        visto = datetime.fromisoformat(str(riferimento))
+    except (TypeError, ValueError):
+        return None
+    if visto.tzinfo is None:
+        visto = visto.replace(tzinfo=timezone.utc)
+    trascorsi = (adesso - visto).total_seconds() / 60.0
+    soglia = cadenza * _STALE_FACTOR
+    if trascorsi <= soglia:
+        return None
+    quando = "mai girato" if not job.get("last_run_at") else f"ultimo run {visto.isoformat()}"
+    return (f"{quando}: {trascorsi / 60.0:.1f} ore senza run, "
+            f"ma la cadenza è ogni {cadenza:.0f} min")
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
 
 def _job_key(job_id: int) -> str:
     """Chiave stabile per APScheduler (così possiamo replace/remove by id)."""
     return f"clodia-job-{job_id}"
+
+
+def _job_id_from_key(key: str) -> Optional[int]:
+    """Inverso di `_job_key`: dall'id APScheduler all'id del record. `None` se la
+    chiave non è nostra (un job registrato da altri non ha un file jobs/<id>)."""
+    prefisso = "clodia-job-"
+    if not str(key).startswith(prefisso):
+        return None
+    try:
+        return int(str(key)[len(prefisso):])
+    except ValueError:
+        return None
 
 
 def start_scheduler(loop: asyncio.AbstractEventLoop) -> BackgroundScheduler:
@@ -228,9 +365,80 @@ def start_scheduler(loop: asyncio.AbstractEventLoop) -> BackgroundScheduler:
     # Jobstore in-memory: la fonte di verità sono i file jobs/<id>.yaml (db.py),
     # da cui sync_jobs_from_db ricostruisce lo schedule al boot e on-change.
     _scheduler = BackgroundScheduler(timezone=_SCHED_TZ)
+    # Un fire che non avviene non ha nulla da dichiarare e fino a #273 non
+    # lasciava traccia: questi due listener sono l'unico posto da cui quel fatto
+    # può essere raccontato, perché la callback del job non viene mai chiamata.
+    _scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
+    _scheduler.add_listener(_on_job_submitted, EVENT_JOB_SUBMITTED)
     _scheduler.start()
     LOG.info("Scheduler avviato (timezone=Europe/Rome, jobs da %s)", db.JOBS_DIR)
     return _scheduler
+
+
+def _late_by_seconds(scheduled) -> Optional[float]:
+    """Ritardo in secondi fra l'orario previsto di un fire e adesso."""
+    if not isinstance(scheduled, datetime):
+        return None
+    adesso = datetime.now(scheduled.tzinfo or _SCHED_TZ)
+    return max(0.0, (adesso - scheduled).total_seconds())
+
+
+def _on_job_missed(event) -> None:
+    """Un fire è stato SCARTATO: lo registra come run in stato `missed`.
+
+    Perché serve un run: un job che parte e va male lascia un'entry con uno
+    stato, e chi legge lo storico la vede; un job che non parte non lasciava
+    niente, e `last_status` continuava a riportare l'esito dell'ultima volta che
+    era andato bene. Il registro sembrava sano — che per un controllo dichiarato
+    (ISO 27001 A.8.13) è peggio di un controllo assente.
+
+    `missed` NON entra in `TERMINAL_STATES`: quelli sono gli esiti ammessi da
+    `complete_run`, cioè di un run che è PARTITO. Qui il run non è mai iniziato,
+    non ha una durata e non c'è nessun completamento tardivo da correlare.
+    """
+    job_id = _job_id_from_key(getattr(event, "job_id", ""))
+    if job_id is None:
+        return
+    previsto = getattr(event, "scheduled_run_time", None)
+    ritardo = _late_by_seconds(previsto)
+    dettaglio = (
+        f"fire previsto {previsto.isoformat()} non eseguito"
+        if isinstance(previsto, datetime) else "fire non eseguito")
+    if ritardo is not None:
+        dettaglio += f" (ritardo {ritardo / 60.0:.0f} min, oltre il grace del job)"
+    try:
+        db.mark_run(job_id, status=f"missed ({dettaglio})", chat_id=None, note=dettaglio)
+    except Exception as e:  # noqa: BLE001
+        # Un listener che solleva non deve poter fermare lo scheduler: il fire
+        # successivo vale più della registrazione di quello perso.
+        LOG.error("job %s: misfire non registrato (%s)", job_id, e)
+        return
+    LOG.warning("Job MISSED id=%s: %s", job_id, dettaglio)
+
+
+def _on_job_submitted(event) -> None:
+    """Un fire è partito. Se era ARRETRATO, lo dice — a livello WARNING.
+
+    Il recupero è la metà buona del grace derivato dalla cadenza, ma un backup
+    eseguito con dieci ore di ritardo non è un backup eseguito puntualmente: per
+    un controllo con un'evidenza datata la differenza è l'unica cosa che conta, e
+    senza questa riga il run risulterebbe indistinguibile da uno regolare.
+    """
+    job_id = _job_id_from_key(getattr(event, "job_id", ""))
+    if job_id is None:
+        return
+    previsti = getattr(event, "scheduled_run_times", None) or []
+    ritardi = [r for r in (_late_by_seconds(t) for t in previsti) if r is not None]
+    if not ritardi:
+        return
+    ritardo = max(ritardi)
+    if ritardo <= _MISFIRE_GRACE_FLOOR_S:
+        return
+    LOG.warning(
+        "Job RECUPERATO id=%s: fire previsto %s eseguito con %.0f min di ritardo%s",
+        job_id, previsti[0].isoformat(), ritardo / 60.0,
+        f" ({len(previsti)} fire arretrati collassati in uno)"
+        if len(previsti) > 1 else "")
 
 
 def shutdown_scheduler() -> None:
@@ -275,6 +483,7 @@ def register_job(job: dict) -> None:
     # precedente è ancora in esecuzione (belt; lo skip-if-busy vero è sul turno
     # del responder in _fire_topic_trigger).
     max_instances = 1 if job.get("mode") == "topic_trigger" else 3
+    grace = misfire_grace_for(job)
     _scheduler.add_job(
         _fire_job_threadsafe,
         trigger=trigger,
@@ -282,15 +491,18 @@ def register_job(job: dict) -> None:
         replace_existing=True,
         coalesce=True,
         max_instances=max_instances,
-        misfire_grace_time=60,
+        # Ricavato dalla cadenza, non costante: con 60s fissi un fire perso
+        # mentre la macchina dorme veniva scartato in silenzio (#273).
+        misfire_grace_time=grace,
         args=[job["id"]],
         name=job["name"],
     )
     LOG.info(
-        "Registered job id=%s name=%s schedule='%s'",
+        "Registered job id=%s name=%s schedule='%s' grace=%ss",
         job["id"], job["name"],
         f"ogni {job['interval_minutes']} min" if job.get("interval_minutes")
         else job.get("cron_expr"),
+        grace,
     )
 
 
@@ -329,6 +541,14 @@ def reload_all_enabled_jobs() -> int:
             n += 1
         except Exception as e:
             LOG.error("Errore registrando job id=%s: %s", job.get("id"), e)
+        # Il boot è il momento in cui qualcuno guarda i log, ed è anche quello in
+        # cui un arretrato accumulato mentre il processo era giù è appena
+        # diventato invisibile: se il job risulta fermo da più della sua cadenza,
+        # lo si dice qui (#273).
+        motivo = stale_reason(job)
+        if motivo:
+            LOG.warning("Job STALE id=%s name=%s: %s",
+                        job.get("id"), job.get("name"), motivo)
     LOG.info("Reloaded %d enabled jobs from db", n)
     return n
 
