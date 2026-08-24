@@ -62,15 +62,27 @@ class ResponderTests(unittest.TestCase):
 
     def test_state_writer_only_agent_is_not_auto_routed_for_technical_questions(self) -> None:
 
-        """agents-notebook A1: il profilo stretto del segretario — non viene scelto dal router per ciò che non è stato del topic."""
+        """agents-notebook A1: il profilo stretto del segretario — non viene scelto dal router per ciò che non è stato del topic.
+
+        Le due metà dell'asimmetria di A1 vanno verificate insieme, perché è la
+        loro convivenza a essere la regola: NON per rilevanza (il profilo resta
+        stretto), MA come coordinatore dichiarato (R10) — «never chosen by
+        relevance, always available as fallback». Prima di #188 la seconda metà
+        non esisteva e questo caso finiva in silenzio: nessun turno, davanti a
+        una persona che aveva scritto.
+        """
+        trace: dict = {}
         r = channels._pick_responder(
             ["owner", "segretario"],
             "P0",
             None,
             "come funziona il boot degli agenti e il routing della piattaforma?",
+            trace=trace,
         )
 
-        self.assertIsNone(r)
+        self.assertEqual(r.name, "segretario")
+        self.assertEqual(trace["mode"], "coordinator")
+        self.assertNotEqual(trace["mode"], "relevance")
 
     def test_state_writer_only_agent_can_be_auto_routed_for_topic_state(self) -> None:
         r = channels._pick_responder(
@@ -525,11 +537,14 @@ class ResponderTests(unittest.TestCase):
         self.assertIn("best-fit", trace["reason"])
         self.assertEqual(trace["chosen"], "worker")
 
-    def test_no_soft_match_still_falls_back_to_rank(self) -> None:
+    def _fallback(self, participants, message="fuori dominio", scored=None,
+                  trace=None):
+        """Il ramo di ripiego: rilevanza attiva, nessun match, nessun soft match.
 
-        """router-notebook R6: il routing semantico è il fallback, non la via maestra."""
-        scored = [(self.agents["worker"], 0.10)]
-        trace = {}
+        È l'unico punto in cui R10 vive, e va raggiunto identico da ogni caso —
+        se ogni test se lo ricostruisce, la prima divergenza passa inosservata.
+        """
+        trace = {} if trace is None else trace
         with (
             patch.object(channels, "_provider_seal_ok", return_value=True),
             patch.object(channels, "_routing_mode", return_value="relevance"),
@@ -537,7 +552,8 @@ class ResponderTests(unittest.TestCase):
                 channels.responder_routing, "pick_by_exemplar", return_value=None
             ),
             patch.object(
-                channels.responder_routing, "score_specialists", return_value=scored
+                channels.responder_routing, "score_specialists",
+                return_value=list(scored or []),
             ),
             patch.object(channels.responder_routing, "decide", return_value=None),
             patch.object(
@@ -548,12 +564,102 @@ class ResponderTests(unittest.TestCase):
         ):
             os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
             picked = channels._pick_responder(
-                ["clodia", "worker"], "P0", None, "fuori dominio", trace=trace,
-                multi=True,
+                participants, "P0", None, message, trace=trace, multi=True,
             )
+        return picked, trace
+
+    def test_fallback_goes_to_the_declared_coordinator(self) -> None:
+
+        """router-notebook R6+R10: senza soft match si ripiega — e il ripiego è il
+        coordinatore DICHIARATO, non il rango.
+
+        Prima di #188 qui rispondeva `rank_mod.highest(ai)` e l'esito coincideva
+        — Clodia è anche la più anziana. È la coincidenza il difetto: nessuno
+        aveva deciso, e bastava cambiare un `created_at` per spostare il ripiego
+        senza che una riga lo dicesse.
+        """
+        picked, trace = self._fallback(
+            ["clodia", "worker"], scored=[(self.agents["worker"], 0.10)])
 
         self.assertEqual(picked.name, "clodia")
-        self.assertEqual(trace["reason"], "fallback-rank")
+        self.assertEqual(trace["mode"], "coordinator")
+        self.assertIn("coordinatore", trace["reason"])
+
+    def test_seniority_does_not_move_the_coordinator(self) -> None:
+
+        """La prova che la coincidenza è rotta: `worker` più anziano di tutti."""
+        self.agents["worker"].created_at = "2020-01-01T00:00:00Z"
+        picked, trace = self._fallback(
+            ["clodia", "worker"], scored=[(self.agents["worker"], 0.10)])
+
+        self.assertEqual(
+            channels.rank_mod.highest(list(self.agents.values())).name, "worker")
+        self.assertEqual(picked.name, "clodia")
+        self.assertEqual(trace["mode"], "coordinator")
+
+    def test_segretario_coordinates_when_clodia_is_absent(self) -> None:
+
+        """La ruling dell'11 ago: senza Clodia il coordinatore è `segretario`.
+
+        E lo è *nonostante* `routing_mode: state_writer_only`, che lo esclude
+        dalla gara di rilevanza: il ripiego pesca prima di quel filtro, perché
+        «selezionabile proprio quando nulla ha matchato» è l'inverso esatto di
+        «selezionabile solo per le richieste di stato».
+        """
+        picked, trace = self._fallback(
+            ["owner", "worker", "segretario"],
+            scored=[(self.agents["worker"], 0.10)])
+
+        self.assertEqual(picked.name, "segretario")
+        self.assertEqual(trace["mode"], "coordinator")
+
+    def test_no_declared_coordinator_falls_back_to_rank_and_says_so(self) -> None:
+
+        """Ultima rete: il rango resta, ma smette di essere silenzioso.
+
+        Il punto lasciato aperto dal notebook («no super, no secretary: no turn,
+        or the highest rank as today?»). Una stanza che oggi risponde continua a
+        rispondere — ma la traccia dice che è successo per assenza di
+        coordinatore, che è precisamente il difetto che #188 riporta.
+        """
+        picked, trace = self._fallback(
+            ["worker", "accountant"], scored=[(self.agents["worker"], 0.10)])
+
+        self.assertEqual(picked.name, "worker")            # rango: il più anziano
+        self.assertEqual(trace["mode"], "rank")
+        self.assertEqual(trace["reason"], "fallback-rank-senza-coordinatore")
+
+    def test_unmatched_intents_are_batched_on_the_coordinator(self) -> None:
+
+        """Il batch multi-intento chiedeva «chi coordina» a un messaggio vuoto.
+
+        La variabile si chiamava `coordinator` e l'esito era il rango: la stessa
+        decisione del ripiego, con una seconda regola che nessuno aveva scritto.
+        Il messaggio è vuoto per costruzione — chi chiama ha già in mano gli
+        intenti — quindi passava dal ramo che il router usa quando non instrada.
+        """
+        trace: dict = {}
+        picked = channels._pick_responder(
+            ["owner", "worker", "clodia"], "P0", None,
+            trace=trace, coordinator_only=True,
+        )
+
+        self.assertEqual(picked.name, "clodia")
+        self.assertEqual(trace["mode"], "coordinator")
+
+    def test_coordination_turn_is_told_why_it_started(self) -> None:
+
+        """agents-notebook A1: il secondo mandato è condizionale a COME sei arrivato.
+
+        Senza questa direttiva il coordinatore non sa di esserlo e risponde per
+        riflesso — che è la metà del difetto («risponde invece di decidere») che
+        nessuna scelta del risponditore, da sola, sistema.
+        """
+        d = channels._tag_directive("coordinamento", "davide", "testo del messaggio")
+
+        self.assertIsNotNone(d)
+        self.assertIn("testo del messaggio", d)
+        self.assertIn("@", d)                              # l'hand-over è una menzione
 
     def test_routing_plan_does_not_decompose_by_default(self) -> None:
         # messaggio con due bullet: un solo turno, messaggio integro
@@ -1370,6 +1476,57 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(start.await_count, 2)
         self.assertEqual([c.args[5] for c in start.await_args_list],
                          ["Aggiorna il summary", "Invia il preventivo"])
+
+    async def test_the_fallback_turn_starts_as_coordination(self) -> None:
+        """Il giunto fra le due metà di R10, ed è il punto che si rompe in silenzio.
+
+        La scelta del coordinatore e la direttiva che gli dice di decidere sono
+        verificate separatamente: passano entrambe anche se il `kind` non arriva
+        mai al turno, e in quel caso il coordinatore risponderebbe per riflesso
+        esattamente come prima — con il difetto della issue intatto sotto due
+        test verdi. Qui si guarda il valore che raggiunge `_start_turn`.
+        """
+        clodia = _a("clodia", "super", "P3", "2026-01-01T00:00:00Z")
+        start = AsyncMock(return_value=True)
+
+        def routing_plan(_participants, _tier, message, trace=None,
+                         routing_messages=None):
+            if trace is not None:
+                trace.update({"mode": "coordinator",
+                              "reason": "fallback-coordinatore dichiarato (clodia)",
+                              "chosen": "clodia"})
+            return [(clodia, message)]
+
+        with (
+            patch.object(channels, "_routing_plan", side_effect=routing_plan),
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+        ):
+            await channels.post_channel_message(
+                "P0", "ops", "una richiesta che non somiglia a nessuno", "owner")
+
+        self.assertEqual(start.await_args_list[0].args[6], "coordinamento")
+
+    async def test_an_ordinary_routed_turn_is_not_coordination(self) -> None:
+        """L'altra metà della guardia: il `kind` non si accende da solo."""
+        worker = _a("worker", "normal", "P1")
+        start = AsyncMock(return_value=True)
+
+        def routing_plan(_participants, _tier, message, trace=None,
+                         routing_messages=None):
+            if trace is not None:
+                trace.update({"mode": "relevance", "chosen": "worker"})
+            return [(worker, message)]
+
+        with (
+            patch.object(channels, "_routing_plan", side_effect=routing_plan),
+            patch.object(channels, "_start_turn", start),
+            patch.object(channels, "_provider_seal_ok", return_value=True),
+        ):
+            await channels.post_channel_message(
+                "P0", "ops", "una richiesta nel dominio di worker", "owner")
+
+        self.assertEqual(start.await_args_list[0].args[6], "plain")
 
 
 class SingleResponderCallSiteTests(unittest.IsolatedAsyncioTestCase):
