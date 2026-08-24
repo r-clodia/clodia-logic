@@ -27,6 +27,7 @@ from datetime import datetime, timezone
 from fastapi import APIRouter, HTTPException, Request
 
 from ..agents import activity_log, rank as rank_mod, registry
+from ..agents import coordinator as coordinator_mod
 from ..agents import feedback as agent_feedback
 from ..agents import trifecta, trifecta_reset
 from .. import debug_watch
@@ -375,6 +376,13 @@ def _track_routing_decision(payload: dict) -> None:
         origin = "tag"
     elif mode == "ambiguous":
         origin = "ambiguity"
+    # Bucket proprio: dopo #188 il ripiego non è più un rango, e lasciarlo cadere
+    # nell'`else` farebbe raccontare alla telemetria «ha risposto il rango»
+    # proprio dove il rango ha smesso di decidere. Resta `rank` solo ciò che il
+    # rango decide davvero — comprese le stanze senza coordinatore, che è il
+    # numero da guardare per sapere quante ce ne sono.
+    elif mode == "coordinator":
+        origin = "coordinator"
     else:
         origin = "rank"
     chosen = payload.get("chosen_agents")
@@ -1491,6 +1499,35 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "Concentrati SOLO su questa parte, coordinandoti con gli altri partecipanti "
             "se necessario; non duplicare il lavoro sugli altri sotto-task.\n\n"
             "Parte assegnata:\n" + text)
+    if kind == "coordinamento":
+        # Il quarto valore, e la ragione per cui R10 è piccolo dove sembrava
+        # grande (agents-notebook A1): il secondo mandato del coordinatore è
+        # condizionale a COME il turno è iniziato, non a cosa ha matchato. Così
+        # il profilo del seed resta stretto — la duty di coordinamento non entra
+        # nell'expertise, quindi il router semantico non ci scora sopra e il
+        # coordinatore non diventa una calamita per il traffico ordinario.
+        #
+        # I tre esiti sono la risposta alla domanda che R10 lasciava aperta. Il
+        # terzo è quello da proteggere in implementazione: è l'unico percorso di
+        # tutto il router che finisce in «questa stanza non può rispondere»
+        # detto ad alta voce, invece che in silenzio o nel generalista che
+        # risponde comunque.
+        return (
+            "[COORDINAMENTO] Il router semantico non ha trovato nessun agente "
+            "pertinente a questo messaggio, e in questa stanza il coordinatore "
+            "sei tu. Il tuo compito ora è DECIDERE, non rispondere per riflesso: "
+            "classifica la richiesta con quello che sai del contesto — che è "
+            "esattamente ciò che al router mancava.\n\n"
+            "Tre esiti possibili, e nessun altro:\n"
+            "1. è lavoro tuo, del tuo mandato → fallo;\n"
+            "2. è di un altro partecipante → passaglielo con UNA sola menzione "
+            "`@nome`, dicendo in una riga perché è suo. La menzione È la "
+            "consegna: apre il suo turno;\n"
+            "3. nessuno nella stanza è competente → dillo chiaramente, e nomina "
+            "i due rimedi: riformulare la richiesta, oppure aggiungere allo "
+            "scope l'agente che serve (l'owner può farlo). Non inventare una "
+            "risposta pur di darne una, e non restare in silenzio.\n\n"
+            f"Messaggio di {author}:\n" + text)
     if kind == "topic-bootstrap":
         return (
             "[BOOTSTRAP DEL TOPIC] Sei il coordinatore introduttivo di riserva. "
@@ -1943,15 +1980,37 @@ def _select_topic_intro_agent(meta: dict, tier: str) -> str:
     provider suitable for the topic. Segretario is the narrow fallback. A
     custom edition contact remains a participant; only an unavailable default
     Clodia is replaced entirely.
+
+    È lo stesso ordine di precedenza del ripiego del router — A4 lo chiama «il
+    ruolo di coordinatore spezzato in due momenti»: al bootstrap si chiedono gli
+    obiettivi e si sceglie la squadra, dopo si coordina. Un momento solo era
+    scritto qui a mano, per nome; ora l'ordine viene da `coordinator.DECLARED`,
+    così cambiarlo in un punto non lascia l'altro indietro. Le CONDIZIONI restano
+    diverse e restano qui, perché lo sono davvero: Clodia introduce solo la
+    stanza di cui è già partecipante, mentre `segretario` in quella stanza ci
+    entra — e per entrarci ovunque deve dichiarare `all_tier`.
     """
     participants = list(meta.get("participants") or [])
-    clodia = registry.get_by_name("clodia")
-    if "clodia" in participants and clodia and _provider_seal_ok(clodia, tier):
+
+    def _intro_candidate(nome: str):
+        spec = registry.get_by_name(nome)
+        if not spec or not _provider_seal_ok(spec, tier):
+            return None
+        if nome == "clodia" and nome not in participants:
+            return None
+        if nome == "segretario" and not _declares_all_tier(spec):
+            return None
+        return spec
+
+    idonei = [s for s in (_intro_candidate(n) for n in coordinator_mod.DECLARED)
+              if s is not None]
+    scelto, _reason = coordinator_mod.pick(idonei)
+    if scelto is not None and scelto.name == "clodia":
         meta["team_bootstrap_agent"] = "clodia"
         return "clodia"
 
     segretario = registry.get_by_name("segretario")
-    if segretario and _declares_all_tier(segretario) and _provider_seal_ok(segretario, tier):
+    if scelto is not None and scelto.name == "segretario":
         if meta.get("contact_agent") == "clodia":
             participants = [p for p in participants if p != "clodia"]
             meta["contact_agent"] = "segretario"
@@ -2110,16 +2169,21 @@ def suggest_team(tier: str, description: str) -> dict:
 def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     message: str = "", trace: dict | None = None,
                     multi: bool = False, routing_message: str | None = None,
-                    routing_messages: list[dict] | None = None):
+                    routing_messages: list[dict] | None = None,
+                    coordinator_only: bool = False):
     """Chi risponde in un canale. Priorità:
     1. agente TAGGATO (@nome), se idoneo — override esplicito;
     2. routing per RILEVANZA: il bot il cui dominio matcha il messaggio
-       (embedding, zero turni LLM); fallback al rango se non pertinente o router
-       non disponibile;
+       (embedding, zero turni LLM); ripiego sul COORDINATORE dichiarato se non
+       pertinente o router non disponibile;
     2b. a pari merito, CONTINUITÀ: se fra i candidati c'è chi ha appena risposto,
        questo è un follow-up e risponde lui invece di chiedere (#264);
-    3. il più alto di RANGO fra gli idonei.
-    Idoneità: provider scelto per il topic con SEAL ≥ tier."""
+    3. il più alto di RANGO fra gli idonei, se nessun coordinatore è dichiarato
+       partecipante — ultima rete, e lo dice.
+    Idoneità: provider scelto per il topic con SEAL ≥ tier.
+
+    `coordinator_only=True` chiede solo il punto 3 senza instradare: serve a chi
+    ha già in mano ciò che non ha matchato e cerca chi lo prende in carico."""
     specs = [registry.get_by_name(n) for n in participants]
     route_cfg = router_config.load()
     semantic_message = routing_message if routing_message is not None else message
@@ -2178,6 +2242,39 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         })
         return chosen
 
+    def _record_fallback(scored=None):
+        """Il router semantico ha rinunciato: decide il COORDINATORE dichiarato.
+
+        R10 (clodia-platform#188): il ripiego non è «risponde il più forte», è un
+        secondo stadio di routing fatto da un modello invece che dai coseni — il
+        coordinatore classifica con ciò che un embedding non può avere, il
+        contesto della stanza. L'esito può essere «questa è per Aitiero», che il
+        rango non sa produrre.
+
+        Si pesca da `ai_all`, cioè PRIMA del filtro `_auto_routing_allowed`, ed è
+        il punto della ruling: `state_writer_only` toglie `segretario` dalla gara
+        di rilevanza, non dal ruolo di ultimo ripiego — «never chosen by
+        relevance, always available as fallback». Il profilo resta stretto, e con
+        lui la calamita che non nasce.
+        """
+        chosen, reason = coordinator_mod.pick(ai_all)
+        if chosen is not None:
+            return _record(chosen, f"fallback-{reason}", "coordinator", scored)
+        # Ultima rete, e rumorosa. Il notebook lasciava aperto «no super, no
+        # secretary: no turn, or the highest rank as today?»: resta il rango,
+        # perché una stanza che oggi risponde non deve ammutolire per una
+        # configurazione — ma con una ragione propria, perché la deriva
+        # silenziosa è esattamente il difetto che #188 riporta. Un ripiego che
+        # non si distingue dalla regola è un ripiego che nessuno vede scattare.
+        LOG.warning(
+            "topic tier %s: nessun coordinatore dichiarato fra i partecipanti "
+            "idonei (%s) — risponde il rango. Aggiungere %s allo scope.",
+            tier, ", ".join(s.name for s in ai_all) or "nessuno",
+            " o ".join(coordinator_mod.DECLARED),
+        )
+        return _record(rank_mod.highest(ai), "fallback-rank-senza-coordinatore",
+                       "rank", scored)
+
     def _record_unserved_tag(reason: str) -> None:
         if trace is not None:
             trace.update({
@@ -2192,6 +2289,9 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                 "candidates": [],
                 "eligible": [s.name for s in ai],
             })
+
+    if coordinator_only:
+        return _record_fallback()
 
     if tagged:
         t = next((s for s in ai if s.name == tagged), None)
@@ -2285,12 +2385,12 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         if soft_hits:
             # BEST FIT: `scored` è ordinato per rilevanza discendente, quindi
             # soft_hits[0] è il più pertinente. Prima, con ≥2 soft match,
-            # rispondevano tutti; ora risponde solo il migliore. Il generalista
-            # (rango) resta il fallback quando nessuno è pertinente.
+            # rispondevano tutti; ora risponde solo il migliore. Il coordinatore
+            # dichiarato resta il fallback quando nessuno è pertinente.
             best, best_score = soft_hits[0]
             return _record(best, f"best-fit (soft {round(best_score, 3)})",
                            "relevance", scored)
-        return _record(rank_mod.highest(ai), "fallback-rank", "rank", scored)
+        return _record_fallback(scored)
     return _record(rank_mod.highest(ai), "rank", "rank")
 
 
@@ -2350,13 +2450,20 @@ def _routing_plan(participants: list[str], tier: str, message: str,
                 eligible.append(agent)
 
     if unmatched:
-        coordinator = _pick_responder(participants, tier, None)
+        # Il batch di ciò che non ha matchato va a CHI COORDINA la stanza. Era la
+        # stessa domanda del ripiego con una seconda risposta: qui arrivava un
+        # messaggio vuoto, che cadeva nel ramo del rango — e la variabile si
+        # chiamava `coordinator` da sempre, senza che nessuna regola lo rendesse
+        # vero. Due copie della stessa decisione divergono; ora è una.
+        coord_trace: dict = {}
+        coordinator = _pick_responder(participants, tier, None,
+                                      coordinator_only=True, trace=coord_trace)
         if coordinator is not None:
             grouped.setdefault(coordinator.name, (coordinator, []))[1].extend(unmatched)
             for route in routes:
                 if route["chosen"] is None:
                     route["chosen"] = coordinator.name
-                    route["mode"] = "fallback-rank"
+                    route["mode"] = coord_trace.get("mode") or "rank"
 
     plan = []
     for spec, assigned in grouped.values():
@@ -3117,13 +3224,22 @@ async def post_channel_message(
     started: list[str] = []
     skipped: list[str] = []
     routed = routing.get("mode") in ("multi-intent", "relevance-multi")
+    # Il turno porta con sé PERCHÉ è iniziato: senza questa riga il coordinatore
+    # arriva per ripiego e non lo sa, quindi risponde come chiunque altro — e la
+    # metà «decide invece di rispondere» di R10 resterebbe non implementata anche
+    # scegliendo il risponditore giusto.
+    # Nome proprio: `kind` in questa funzione è già il tipo del MESSAGGIO in
+    # arrivo (`human`/`ai`), e riusarlo per il tipo del TURNO metterebbe due cose
+    # diverse sotto la stessa parola, in un punto dove sbagliarle si vede solo in
+    # produzione.
+    turn_kind = "coordinamento" if routing.get("mode") == "coordinator" else (
+        "routed" if routed else "plain")
     for responder, assigned in plan:
         if skip_if_busy and _responder_busy(tier, name, responder.name):
             skipped.append(responder.name)
             continue
         if await _start_turn(
-            tier, name, tier_real, responder, principal, assigned,
-            "routed" if routed else "plain",
+            tier, name, tier_real, responder, principal, assigned, turn_kind,
         ):
             started.append(responder.name)
     if len(plan) == 1:
