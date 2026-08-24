@@ -31,11 +31,13 @@ class LocalHookTests(unittest.IsolatedAsyncioTestCase):
         self.old_queue = api._queue_turn
         self.posts: list[dict] = []
         self.queued: list[dict] = []
+        # Nessun `hook_enabled` nel meta: da clodia-tools#211 l'invocazione
+        # locale non lo consulta più, e tenerlo qui farebbe credere il contrario.
+        # Il caso col flag a False sta in test_no_automatic_hook.py.
         api.topics_client.open_topic = lambda _tier, _name: {
             "meta": {
                 "owner": "owner",
                 "participants": ["owner", "clodia"],
-                "hook_enabled": True,
             }
         }
         api.topics_client.post_message = lambda *args, **kwargs: self.posts.append(kwargs)

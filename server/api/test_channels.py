@@ -773,7 +773,7 @@ class ResponderTests(unittest.TestCase):
         def provider_ok(spec, _tier):
             return spec.name == "segretario"
 
-        def create(_tier, _name, meta, hook_enabled=True):
+        def create(_tier, _name, meta, hook_enabled=False):
             return dict(meta)
 
         with (
