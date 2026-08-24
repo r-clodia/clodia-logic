@@ -35,7 +35,9 @@ con un warning, perché questi file si editano a mano e far sparire da
 `list_jobs()` un job programmato sarebbe un guasto peggiore di quello curato.
 """
 import logging
+import os
 import sqlite3  # solo per IntegrityError: contratto con api.py sul nome duplicato
+import threading
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Iterable, Optional
@@ -92,11 +94,24 @@ def init_db() -> None:
 
 
 def _read(p: Path) -> Optional[dict]:
+    # Un file che non si legge o non parsa fa SPARIRE il job: `_all` salta il
+    # `None`, quindi il job non è in `list_jobs()`, non compare nell'API, non
+    # viene registrato al boot successivo. Prima usciva in silenzio, ed è così
+    # che il `6.yaml` corrotto del 24 ago 2026 ha reso invisibile un trigger
+    # attivo senza lasciare una riga da nessuna parte (clodia-platform#291).
+    #
+    # Continua a ritornare `None` — un job illeggibile NON va inventato — ma lo
+    # dice a livello ERROR, perché è l'unico posto in cui si può dire. Chi legge
+    # i log ha il nome del file e il motivo, che è quanto serve per ripararlo.
     try:
         d = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
-    except (OSError, yaml.YAMLError):
+    except (OSError, yaml.YAMLError) as e:
+        LOG.error("job %s ILLEGGIBILE, quindi assente da list_jobs e dallo "
+                  "scheduler: %s: %s", p.name, type(e).__name__, e)
         return None
     if "id" not in d:
+        LOG.error("job %s senza campo `id`, quindi assente da list_jobs e "
+                  "dallo scheduler", p.name)
         return None
     d["enabled"] = bool(d.get("enabled", True))
     d["mode"] = d.get("mode") or "agentic"
@@ -146,11 +161,51 @@ def _non_neg_int(v) -> int:
     return n if n > 0 else 0
 
 
+# Un lock per l'intero modulo, non uno per job: le scritture durano microsecondi
+# e la contesa vera è fra listener dello STESSO job. Un dizionario di lock per id
+# aggiungerebbe la sua sincronizzazione senza togliere un caso reale.
+_LOCK = threading.Lock()
+
+
 def _write(d: dict) -> None:
+    """Scrive il job in modo ATOMICO e serializzato.
+
+    Prima era un `write_text` diretto, che apre in troncamento e riscrive: due
+    scritture concorrenti si mescolavano e restavano in coda i byte della più
+    lunga. Il 24 ago 2026 ha prodotto un `6.yaml` con un frammento orfano
+    (`:00'`) e due `updated_at` a 15 millisecondi di distanza — e da lì il job è
+    diventato **invisibile**, perché `_read` scarta un file che non parsa e
+    `_all` salta il `None`. Nessun log lo diceva.
+
+    I due scrittori erano i due listener dello scheduler per lo stesso fire:
+    `_on_job_missed` e `_on_job_submitted` (quest'ultimo diventato scrittore con
+    clodia-platform#288), che nei log compaiono nello stesso millisecondo.
+
+    Due proprietà, e servono entrambe:
+
+    - `os.replace` su un temporaneo nella STESSA directory rende la
+      sostituzione atomica: un lettore vede il file vecchio o quello nuovo, mai
+      un miscuglio. Fuori dalla directory sarebbe una copia fra filesystem, e
+      l'atomicità la perderebbe;
+    - il lock serializza il *read-modify-write* dei chiamanti. Senza, due
+      aggiornamenti atomici si sovrascriverebbero a vicenda: nessun file
+      corrotto, ma un run perso — che è più difficile da vedere.
+    """
     JOBS_DIR.mkdir(parents=True, exist_ok=True)
     payload = {k: d.get(k) for k in _FIELDS}
-    _path(d["id"]).write_text(
-        yaml.safe_dump(payload, sort_keys=False, allow_unicode=True), encoding="utf-8")
+    testo = yaml.safe_dump(payload, sort_keys=False, allow_unicode=True)
+    dst = _path(d["id"])
+    tmp = dst.with_suffix(f".yaml.tmp-{os.getpid()}-{threading.get_ident()}")
+    with _LOCK:
+        try:
+            tmp.write_text(testo, encoding="utf-8")
+            os.replace(tmp, dst)
+        finally:
+            # Se `os.replace` è riuscito il temporaneo non c'è più; se è fallito
+            # non deve restare in giro — il glob di `_all` prende `*.yaml`, e un
+            # `.yaml.tmp-…` non lo intercetta, ma resterebbe a sporcare la
+            # cartella dei dati di qualcuno.
+            tmp.unlink(missing_ok=True)
 
 
 def _all() -> list[dict]:
