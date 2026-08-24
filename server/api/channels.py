@@ -133,8 +133,19 @@ def _routing_request_marker(owner: str, source_id: str) -> str:
 
 
 def _elenco_or(nomi: list[str]) -> str:
-    """`[a]` → `@a` · `[a, b]` → `@a o @b` · `[a, b, c]` → `@a, @b o @c`."""
-    tag = [f"@{n}" for n in nomi]
+    """`[a]` → `@a` · `[a, b]` → `@a o @b` · `[a, b, c]` → `@a, @b o @c`.
+
+    Deduplica, in ordine di prima apparizione: questa è la funzione che STAMPA,
+    e «scegli fra @worker e @worker» non è una scelta (#256). I chiamanti passano
+    già target distinti — la soglia si decide sull'identità risolta, non qui —
+    ma la cintura sta nel punto che compone la frase perché copre anche il
+    chiamante che verrà, che ricadrà nello stesso errore: due etichette diverse
+    (`worker-2`, `worker-3`) collassate a un nome solo dal `_seed_name`.
+    """
+    tag: list[str] = []
+    for n in nomi:
+        if f"@{n}" not in tag:
+            tag.append(f"@{n}")
     if len(tag) <= 1:
         return "".join(tag)
     return ", ".join(tag[:-1]) + " o " + tag[-1]
@@ -905,6 +916,11 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         (t, "direct") for t in hard
         if _seed_name(t) in participants
         and not _is_self_tag(t, from_agent, _spec_of(from_agent))]
+    # Due tag, un solo agente: `@worker` e `@worker#2` chiedono LO STESSO turno.
+    # Il dedup sta qui e non nelle tre frasi che stampano `plan` più sotto perché
+    # da `plan` dipendono anche la soglia dell'ambiguità e il ciclo che avvia i
+    # turni: deduplicare solo il testo avrebbe lasciato la domanda inutile (#256).
+    plan = _distinct_by(plan, lambda p: _target_identity(p[0]))
     for t in soft:
         if _seed_name(t) in participants:
             LOG.info("citazione $%s da %s su %s/%s: nessun turno (R12)",
@@ -922,7 +938,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     # riempirebbe di avvisi su menzioni che non c'erano.
     limite = _max_delegation_hops()
     if hop >= limite:
-        negati = [_seed_name(t) for t, kind in plan if kind == "direct"]
+        negati = [_target_identity(t) for t, kind in plan if kind == "direct"]
         if not negati:
             return                       # solo citazioni: niente di negato da dire
         testo = (
@@ -958,7 +974,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             # fermo che si dichiara è invece recuperabile.
             testo = (
                 f"@{seed_autore} ha risposto con più di una menzione "
-                f"({_elenco_or([_seed_name(t) for t in diretti])}) a una domanda di "
+                f"({_elenco_or([_target_identity(t) for t in diretti])}) a una domanda di "
                 "disambiguazione: nessun turno avviato. Serve un messaggio con una "
                 "sola menzione."
             )
@@ -969,7 +985,10 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             LOG.info("delega da %s su %s/%s: ambigua due volte, nessun turno",
                      from_agent, tier, name)
             return
-        nomi = [_seed_name(t) for t in diretti]
+        # Le etichette portano l'identità che l'AUTORE ha usato (`@worker-3`, non
+        # `@worker`): così un caso a due istanze è rispondibile — una menzione del
+        # solo seed non dice quale.
+        nomi = [_target_identity(t) for t in diretti]
         testo = (
             f"@{seed_autore} hai menzionato {_elenco_or(nomi)}: chi intendevi "
             "attivare? Rispondi con UNA sola menzione.\n\n"
@@ -1121,6 +1140,45 @@ def _split_target(tag: str | None) -> tuple[str | None, str | None]:
     if m and _is_known_seed(m.group(1)):
         return m.group(1), tag
     return _split_ord(tag)[0], None
+
+
+def _target_identity(tag: str | None) -> str:
+    """CHI indirizza questa menzione — la chiave su cui si decide l'ambiguità.
+
+    È lo SPAWN se il tag lo porta (`@worker-3`), altrimenti il SEED (`@worker`,
+    e `@worker#2` che per `_split_target` non indirizza più un'istanza).
+
+    Serve perché `_seed_name` da solo CANCELLA la distinzione che l'autore ha
+    espresso: `[worker-2, worker-3] → [worker, worker]`, e da lì nascono tutti i
+    sintomi di #256 — due pill identiche, una soglia che conta i tag anziché gli
+    agenti, e una domanda a cui non si può rispondere perché una menzione del
+    seed non dice *quale* istanza.
+
+    `@worker` e `@worker-3` restano DUE identità di proposito: la prima chiede
+    un'istanza qualsiasi secondo l'allocazione, la seconda quella. Collassarle
+    sarebbe più silenzioso, ma deciderebbe al posto dell'autore proprio dove ha
+    espresso una differenza.
+    """
+    seed, want_spawn = _split_target(tag)
+    return str(want_spawn or seed or tag or "").strip().lower()
+
+
+def _distinct_by(items: list, chiave) -> list:
+    """Dedup ORDINATO per `chiave`: vince la prima occorrenza.
+
+    L'ordine è quello di prima apparizione perché è l'ordine in cui l'autore ha
+    scritto i nomi, e la domanda che gli si rimanda va letta nella stessa
+    sequenza del suo messaggio.
+    """
+    viste: set = set()
+    out: list = []
+    for item in items:
+        k = chiave(item)
+        if k in viste:
+            continue
+        viste.add(k)
+        out.append(item)
+    return out
 
 
 def _is_known_seed(nome: str) -> bool:
@@ -2631,7 +2689,13 @@ _CONGIUNZIONI = {"o", "e", "oppure", "both", "entrambi"}
 
 def _routing_dialog_reply(content: str, participants: list[str], tier: str,
                           request: dict | None = None) -> tuple[list, str]:
-    """Risposta a una pill del router: `@router worker` o `@router both`.
+    """Risposta a una pill del router: `@router worker` (o `@router worker-3`).
+
+    Ritorna `[(spec, spawn indirizzato o None), ...]`: la coppia e non il solo
+    spec, perché la domanda può offrire ISTANZE distinte dello stesso seed e
+    allora la risposta arriva in quella forma. Perdere lo spawn qui significa
+    formulare una domanda che distingue le istanze e poi confonderle un passo
+    dopo, nell'allocazione (#256).
 
     La UI invia le choices come reply al messaggio che le ha proposte. Per i
     dialoghi di routing quell'autore non è un agente vero: è il router. Qui
@@ -2660,14 +2724,24 @@ def _routing_dialog_reply(content: str, participants: list[str], tier: str,
     }
     # Nessuna scorciatoia per «entrambi»: `both` non è più fra le opzioni, e non
     # deve restare un accesso di servizio che riapre il fan-out con una parola.
-    selected = [c for c in choices if c in body_words]
-    out = []
-    for seed in selected:
-        if seed not in participants:
+    # Dedup sulla lista LETTA, non solo su quella scritta: i dialoghi con
+    # `choices=worker,worker` sono già in cronologia e restano cliccabili dopo il
+    # deploy. Senza questa riga una pill cliccata UNA volta avviava DUE turni
+    # dello stesso agente — misurato, `responders: ['worker','worker']` (#256).
+    # È il difetto più caro dei quattro, ed è il solo che il fix di chi formula la
+    # domanda non può raggiungere.
+    selected = _distinct_by([c for c in choices if c in body_words], _target_identity)
+    out: list[tuple] = []
+    for scelta in selected:
+        # `worker-3` è una risposta legittima: la domanda può offrire istanze
+        # distinte, e allora è in quella forma che torna. Il partecipante da
+        # verificare resta il SEED — gli spawn non compaiono nel meta del topic.
+        seed, want_spawn = _split_target(scelta)
+        if not seed or seed not in participants:
             continue
         spec = _pick_responder(participants, tier, seed)
         if spec is not None and spec.name == seed:
-            out.append(spec)
+            out.append((spec, want_spawn))
     source_text = str(((request or {}).get("source") or {}).get("text") or "")
     return out, source_text
 
@@ -2839,13 +2913,13 @@ async def post_channel_message(
     if router_choice:
         started: list[str] = []
         skipped: list[str] = []
-        for s in router_choice:
+        for s, want_spawn in router_choice:
             if skip_if_busy and _responder_busy(tier, name, s.name):
                 skipped.append(s.name)
                 continue
             if await _start_turn(
                 tier, name, tier_real, s, principal,
-                routed_source or content, "direct",
+                routed_source or content, "direct", spawn=want_spawn,
             ):
                 started.append(s.name)
         return {"posted": True, "queued": bool(started), "responders": started,
@@ -2872,6 +2946,13 @@ async def post_channel_message(
         LOG.info("citazione $%s di %s su %s/%s: nessun turno (soft)",
                  nm, principal, tier, name)
 
+    # Stesso dedup del percorso agente, e per la stessa ragione: `targets` ha una
+    # entry per TAG SCRITTO, e due tag possono chiedere lo stesso agente (#256).
+    # Prima del dedup `@worker @worker#2` produceva `choices=worker,worker` — due
+    # pulsanti identici, e la soglia qui sotto tratteneva un turno che non aveva
+    # nulla da disambiguare.
+    targets = _distinct_by(
+        targets, lambda t: _target_identity(t[2] or getattr(t[0], "name", "")))
     hard_targets = [(s, want_spawn) for s, kind, want_spawn in targets if kind == "direct"]
     # R3: la norma è UNA menzione per messaggio. Due o più non si risolvono
     # indovinando, e non c'è più una soglia speciale a tre: «quale fra B, C e D» è
@@ -2883,7 +2964,10 @@ async def post_channel_message(
     # due turni. Terzo restringimento del fan-out (30 lug, 10 ago, oggi) — non
     # ripristinarlo credendolo una regressione.
     if len(hard_targets) >= 2:
-        nomi = [s.name for s, _want in hard_targets]
+        # L'etichetta è l'identità indirizzata, non il seed: due istanze dello
+        # stesso seed sono due opzioni distinguibili, e `_routing_dialog_reply`
+        # sa risolvere la forma `nome-N` che rimanda indietro.
+        nomi = [(want or s.name) for s, want in hard_targets]
         text = (
             f"Routing: scegli {_elenco_or(nomi)}.\n\n"
             f"<!-- choices={','.join(nomi)} -->\n"
