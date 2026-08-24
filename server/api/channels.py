@@ -3634,7 +3634,9 @@ async def channel_create(request: Request) -> dict:
         raise HTTPException(400, "nome richiesto")
     meta = _channel_meta(body, principal, name)
     intro_agent = _select_topic_intro_agent(meta, tier)
-    hook_enabled = bool(body.get("hook_enabled", True))
+    # Default False (clodia-tools#211): l'hook è una cosa che si chiede, non
+    # una dote di ogni stanza. Chi lo vuole lo passa esplicitamente nel body.
+    hook_enabled = bool(body.get("hook_enabled", False))
     try:
         created = await topics_client.async_create_topic(
             tier, name, meta, hook_enabled=hook_enabled)

@@ -116,7 +116,9 @@ def open_topic(tier: str, name: str) -> dict | None:
 
 
 def create_topic(tier: str, name: str, meta: dict,
-                 hook_enabled: bool = True) -> dict:
+                 hook_enabled: bool = False) -> dict:
+    """Un topic nuovo non nasce con un hook: la porta pubblica e il suo segreto
+    si creano solo se qualcuno li chiede (clodia-tools#211)."""
     try:
         r = _gw_http.post(_base(), headers=_headers(),
                           json={"tier": tier, "name": name, "meta": meta,

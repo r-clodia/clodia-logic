@@ -200,8 +200,13 @@ async def invoke_local(tier: str, name: str, request: Request) -> dict:
     if row and (row.get("tier"), row.get("name")) != (tier, name):
         raise HTTPException(409, f"slug '{name}' associato a un altro topic")
     if row is None:
-        if not meta.get("hook_enabled", True):
-            raise HTTPException(409, "hook disattivato")
+        # Nessun gate su `meta.hook_enabled` qui. Da clodia-tools#211 quel flag
+        # è False su ogni topic nuovo, e significa «nessuno ha chiesto la porta
+        # pubblica» — non «l'invocazione locale è vietata». Questa chiamata È la
+        # richiesta: arriva da un participant autenticato dal session token, e
+        # la porta pubblica POST /hooks/{id} è chiusa da #300. Tenere il gate
+        # avrebbe reso ogni topic nuovo un 409, cioè avrebbe rotto una feature
+        # viva senza chiudere niente.
         try:
             row, _ = db.ensure(tier, name, name, created_by=caller)
         except db.HookConflictError as e:
