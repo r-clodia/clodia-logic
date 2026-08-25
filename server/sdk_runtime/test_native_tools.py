@@ -300,3 +300,39 @@ class TheRootCallbackMustNotSayYesToEverythingTests(unittest.TestCase):
             else inspect.getsource(S)
         self.assertLess(src.index("disallowed = list(_resolve_disallowed_tools"),
                         src.index("opts_kwargs[\"can_use_tool\"]"))
+
+
+class TheCodexSandboxFollowsTheSeedTests(unittest.TestCase):
+    """clodia-platform#204, punto 3. `--dangerously-bypass-approvals-and-sandbox`
+    era passato a OGNI seed codex, incondizionatamente: su quel runtime la shell
+    non si può negare (`tools.shell` non esiste) e l'unico strato che poteva
+    ridurne il raggio era spento in partenza."""
+
+    def test_nobody_declared_anything_does_not_restrict(self):
+        """`None` = non si è pronunciato nessuno, nemmeno l'arciseed. Stessa
+        direzione d'errore di `disallowed_for`: non si restringe di soppiatto."""
+        self.assertEqual(nt.codex_sandbox_mode(None), nt.CODEX_FULL_ACCESS)
+
+    def test_a_seed_with_bash_writes_in_its_own_workspace(self):
+        for concessi in (["Bash"], ["Bash(git:*)"], ["Read", "Bash"]):
+            with self.subTest(concessi=concessi):
+                self.assertEqual(nt.codex_sandbox_mode(concessi),
+                                 nt.CODEX_WORKSPACE_WRITE)
+
+    def test_write_without_bash_still_needs_to_write(self):
+        """L'`apply_patch` di codex passa dallo stesso sandbox: `read-only`
+        toglierebbe la scrittura che il seed CONCEDE."""
+        self.assertEqual(nt.codex_sandbox_mode(["Read", "Write"]),
+                         nt.CODEX_WORKSPACE_WRITE)
+        self.assertEqual(nt.codex_sandbox_mode(["Edit"]), nt.CODEX_WORKSPACE_WRITE)
+
+    def test_neither_shell_nor_write_is_read_only(self):
+        self.assertEqual(nt.codex_sandbox_mode(["Read", "WebFetch"]),
+                         nt.CODEX_READ_ONLY)
+        self.assertEqual(nt.codex_sandbox_mode([]), nt.CODEX_READ_ONLY)
+
+    def test_confinement_is_not_a_denial_of_bash(self):
+        """`read-only` lascia al modello una shell che LEGGE. Se un domani
+        `ENFORCEABLE["codex"]` guadagnasse `Bash` per via del sandbox, la scheda
+        dell'agente direbbe «applicato» di una cosa applicata a metà."""
+        self.assertIn("Bash", nt.unenforced_denied("codex", ["Bash"]))

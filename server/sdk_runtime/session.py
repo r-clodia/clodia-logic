@@ -11,6 +11,7 @@ import json
 import logging
 import os
 import re
+import subprocess
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -1735,6 +1736,53 @@ class ChatSession:
 
 
 CODEX_BIN = os.environ.get("CODEX_BIN", "codex")
+
+#: Quanto si aspetta la sonda del sandbox prima di dichiararlo inservibile.
+#: `/bin/true` dentro bwrap è istantaneo: qui si tollera solo un container lento.
+_CODEX_SANDBOX_PROBE_TIMEOUT = 10
+#: Esito della sonda, misurato UNA volta per processo. `None` = non ancora.
+_CODEX_SANDBOX_OK: Optional[bool] = None
+
+
+def _codex_sandbox_usable() -> bool:
+    """Il sandbox di codex può partire QUI? Si misura, non si assume.
+
+    Su Linux quel sandbox è **bubblewrap**: `bwrap` chiede uno user namespace
+    nuovo, e in un container che non lo concede fallisce *prima* del comando —
+    `No permissions to create a new namespace`. In quel caso passare
+    `sandbox_mode` non restringerebbe la shell dell'agente: la spegnerebbe, con
+    ogni comando che esce 2. Una restrizione che non ho modo di verificare non
+    vale un agente che smette di lavorare, quindi si prova `/bin/true` dentro il
+    sandbox e si guarda l'esito vero.
+
+    Se non parte si torna al comportamento storico
+    (`--dangerously-bypass-approvals-and-sandbox`) **e si dice**: il ripiego
+    silenzioso è il difetto d'origine di questa issue, non la sua cura.
+    """
+    global _CODEX_SANDBOX_OK
+    if _CODEX_SANDBOX_OK is not None:
+        return _CODEX_SANDBOX_OK
+    from . import native_tools as _nt
+    dettaglio = ""
+    try:
+        esito = subprocess.run(
+            [CODEX_BIN, "sandbox", "-c", f'sandbox_mode="{_nt.CODEX_READ_ONLY}"',
+             "--", "/bin/true"],
+            capture_output=True, timeout=_CODEX_SANDBOX_PROBE_TIMEOUT, check=False)
+        _CODEX_SANDBOX_OK = esito.returncode == 0
+        dettaglio = (esito.stderr or b"").decode("utf-8", "replace").strip()
+    except (OSError, subprocess.SubprocessError) as e:  # noqa: BLE001
+        _CODEX_SANDBOX_OK, dettaglio = False, f"{type(e).__name__}: {e}"
+    if _CODEX_SANDBOX_OK:
+        LOG.info("sandbox di codex disponibile: i seed codex girano confinati")
+    else:
+        LOG.warning(
+            "il sandbox di codex NON parte in questo container (%s): i seed codex "
+            "restano su --dangerously-bypass-approvals-and-sandbox e la loro "
+            "dichiarazione di shell non è applicata", _snippet(dettaglio) or "nessun dettaglio")
+    return _CODEX_SANDBOX_OK
+
+
 _CODEX_MODEL_REJECTION_MARKERS = (
     "not supported",
     "unsupported",
@@ -1844,6 +1892,13 @@ class CodexChatSession:
             LOG.warning("codex: %s dichiara di negare %d strumenti nativi che "
                         "questo runtime NON toglie: %s", self.kind, len(residuo),
                         ", ".join(residuo))
+        # La sonda del sandbox si paga qui, fuori dal percorso del turno: è un
+        # subprocess, e `_codex_cmd` gira mentre l'utente aspetta una risposta.
+        modo = _nt.codex_sandbox_mode(_resolve_native_allowed(self.kind))
+        if modo != _nt.CODEX_FULL_ACCESS:
+            confinato = await asyncio.to_thread(_codex_sandbox_usable)
+            LOG.info("codex: %s gira con sandbox_mode=%s", self.kind,
+                     modo if confinato else _nt.CODEX_FULL_ACCESS)
         self.sessions_dir.mkdir(parents=True, exist_ok=True)
         # webchat = SPAWN: materializza il seed (costituzione + skill + memory +
         # scratch). Per codex l'AGENTS.md dello spawn include già la governance
@@ -2016,10 +2071,29 @@ class CodexChatSession:
             cmd += ["--model", runtime_model]
         # niente -C: il workdir è già imposto via cwd= sul subprocess (e `resume`
         # non accetta -C). --skip-git-repo-check: il workspace non è un repo git.
-        cmd += ["--json", "--dangerously-bypass-approvals-and-sandbox", "--skip-git-repo-check"]
-        # L'unico strumento nativo che codex 0.137 sa spegnere. Si passa solo il
-        # diniego: `tools.web_search=true` forzerebbe una concessione che il seed
-        # non ha chiesto, e la sottrazione resta l'unico canale.
+        cmd += ["--json", "--skip-git-repo-check"]
+        from . import native_tools as _nt
+        # Il sandbox segue la DICHIARAZIONE del seed, non un default: finché il
+        # bypass era incondizionato, un seed codex senza `Bash` teneva comunque
+        # una shell illimitata (clodia-platform#204).
+        modo = _nt.codex_sandbox_mode(_resolve_native_allowed(self.kind))
+        if modo != _nt.CODEX_FULL_ACCESS and _codex_sandbox_usable():
+            # Via `-c`, non `-s`: **`codex exec resume` non accetta `--sandbox`**
+            # (misurato su codex-cli 0.149.0, e `-c` c'è su entrambi). Col flag
+            # il confinamento sarebbe valso solo per il PRIMO turno di una chat —
+            # cioè quasi mai, e senza che niente lo dicesse.
+            cmd += ["-c", f'sandbox_mode="{modo}"', "-c", 'approval_policy="never"']
+            if modo == _nt.CODEX_WORKSPACE_WRITE:
+                # La rete la arbitra il proxy di egress con la sua allowlist, non
+                # questo strato (vedi l'intestazione di native_tools.py): a
+                # `false` toglierebbe `git`/`gh`/`npm` che i seed dichiarano, e
+                # non a chi ha già passato la whitelist.
+                cmd += ["-c", "sandbox_workspace_write.network_access=true"]
+        else:
+            cmd += ["--dangerously-bypass-approvals-and-sandbox"]
+        # L'unico strumento nativo che codex sa spegnere per nome. Si passa solo
+        # il diniego: `tools.web_search=true` forzerebbe una concessione che il
+        # seed non ha chiesto, e la sottrazione resta l'unico canale.
         if "WebSearch" in _resolve_native_denied(self.kind):
             cmd += ["-c", "tools.web_search=false"]
         # `-` rende esplicito il contratto stdin sia per exec sia per exec resume.

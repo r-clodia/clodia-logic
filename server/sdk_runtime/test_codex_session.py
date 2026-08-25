@@ -146,3 +146,73 @@ class CodexEventTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class CodexSandboxTests(unittest.TestCase):
+    """clodia-platform#204: il sandbox di codex segue la dichiarazione del seed,
+    e quando non può partire lo dice invece di sparire."""
+
+    def _cmd(self, concessi, sandbox_ok=True, thread=None):
+        sess = _make_session()
+        sess._thread_id = thread
+        with mock.patch.object(S, "_resolve_native_allowed", return_value=concessi), \
+             mock.patch.object(S, "_resolve_native_denied", return_value=[]), \
+             mock.patch.object(S, "_codex_sandbox_usable", return_value=sandbox_ok):
+            return sess._codex_cmd("gpt-5.5")
+
+    def test_a_seed_without_shell_is_no_longer_unsandboxed(self):
+        """Il difetto: il bypass era incondizionato, quindi un seed che non
+        concede `Bash` teneva comunque una shell senza limiti."""
+        cmd = self._cmd(["Read", "WebFetch"])
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
+        self.assertIn('sandbox_mode="read-only"', cmd)
+        self.assertIn('approval_policy="never"', cmd)
+
+    def test_a_seed_with_shell_is_confined_to_its_workspace_with_network(self):
+        cmd = self._cmd(["Bash", "Agent"])
+        self.assertIn('sandbox_mode="workspace-write"', cmd)
+        self.assertIn("sandbox_workspace_write.network_access=true", cmd)
+        self.assertNotIn("--dangerously-bypass-approvals-and-sandbox", cmd)
+
+    def test_a_seed_nobody_declared_keeps_todays_behaviour(self):
+        """`None` non restringe: un'istanza senza registry non deve trovarsi gli
+        agenti codex confinati da una dichiarazione che nessuno ha scritto."""
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox",
+                      self._cmd(None))
+
+    def test_the_confinement_travels_on_resumed_turns_too(self):
+        """IL GIUNTO. `codex exec resume` NON accetta `--sandbox` (misurato su
+        codex-cli 0.149.0), e dal secondo turno di ogni chat il comando è un
+        `resume`: passarlo come flag avrebbe confinato solo il primo turno, senza
+        che niente lo dicesse. Perciò viaggia come `-c`, che resume accetta."""
+        cmd = self._cmd(["Read"], thread="thread-1")
+        self.assertEqual(cmd[2:4], ["resume", "thread-1"])
+        self.assertIn('sandbox_mode="read-only"', cmd)
+        self.assertNotIn("-s", cmd)
+        self.assertNotIn("--sandbox", cmd)
+
+    def test_a_sandbox_that_cannot_start_falls_back_and_says_so(self):
+        """L'altro giunto: se bwrap non parte, `sandbox_mode` non restringerebbe
+        la shell — la spegnerebbe. Si torna al bypass, ma un ripiego che non
+        avvisa è indistinguibile dal difetto di partenza."""
+        cmd = self._cmd(["Read"], sandbox_ok=False)
+        self.assertIn("--dangerously-bypass-approvals-and-sandbox", cmd)
+        self.assertNotIn('sandbox_mode="read-only"', cmd)
+
+    def test_the_probe_measures_and_warns_once(self):
+        import subprocess
+        esito = mock.Mock(returncode=1, stderr=b"bwrap: No permissions to create a new namespace")
+        with mock.patch.object(S, "_CODEX_SANDBOX_OK", None), \
+             mock.patch.object(subprocess, "run", return_value=esito) as run:
+            with self.assertLogs("agent-server.sdk_runtime.session", level="WARNING") as log:
+                self.assertFalse(S._codex_sandbox_usable())
+            self.assertFalse(S._codex_sandbox_usable())   # memorizzato
+            self.assertEqual(run.call_count, 1)
+        self.assertTrue(any("bwrap" in r.getMessage() for r in log.records))
+
+    def test_a_codex_that_is_not_there_is_not_a_working_sandbox(self):
+        import subprocess
+        with mock.patch.object(S, "_CODEX_SANDBOX_OK", None), \
+             mock.patch.object(subprocess, "run", side_effect=FileNotFoundError("codex")):
+            with self.assertLogs("agent-server.sdk_runtime.session", level="WARNING"):
+                self.assertFalse(S._codex_sandbox_usable())

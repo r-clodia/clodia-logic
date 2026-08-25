@@ -104,8 +104,11 @@ ALIAS = {"FileRead": "Read", "FileWrite": "Write", "FileEdit": "Edit"}
 #:   Misurato con `--strict-config` su codex-cli 0.137.0: `tools.web_search`
 #:   passa, `tools.shell`/`tools.apply_patch`/`tools.view_image` e altre cinque
 #:   sono «unknown configuration field». Tutto il resto della dichiarazione, su
-#:   codex, non è applicato — e il processo gira per giunta con
-#:   `--dangerously-bypass-approvals-and-sandbox`.
+#:   codex, non è applicato. Il processo NON gira più con
+#:   `--dangerously-bypass-approvals-and-sandbox` incondizionato (vedi
+#:   `codex_sandbox_mode`), ma il confinamento del sandbox **non è** un diniego:
+#:   `read-only` lascia al modello una shell che legge. Perciò `Bash` resta nel
+#:   residuo, e questa riga resta `{"WebSearch"}`.
 ENFORCEABLE: dict[str, frozenset[str] | None] = {
     "claude": None,
     "opencode": None,
@@ -259,3 +262,54 @@ def opencode_permission(allowed: list[str] | set[str] | None) -> dict:
         regole["*"] = "deny"
         perm["bash"] = regole
     return perm
+
+
+#: Le tre modalità che codex accetta, dalla più larga alla più stretta. Sono i
+#: valori di `-s`/`--sandbox` **e** del campo di config `sandbox_mode`.
+CODEX_FULL_ACCESS = "danger-full-access"
+CODEX_WORKSPACE_WRITE = "workspace-write"
+CODEX_READ_ONLY = "read-only"
+
+
+def codex_sandbox_mode(allowed: list[str] | set[str] | None) -> str:
+    """La stessa dichiarazione tradotta nel solo strato che codex ha: il sandbox.
+
+    Su codex la shell non si può TOGLIERE — `tools.shell` è «unknown
+    configuration field», rimisurato con `--strict-config` su codex-cli 0.149.0
+    il 25 ago 2026 (era già così su 0.137). Quello che si può fare è
+    **confinarla**: `sandbox_mode` è un campo riconosciuto. Finché il processo
+    partiva con `--dangerously-bypass-approvals-and-sandbox` incondizionato,
+    nemmeno quel confinamento contava, e un agente il cui seed non concede
+    `Bash` teneva comunque una shell senza limiti — su un runtime dove nessun
+    altro strato la vede.
+
+    La mappa, e il perché di ogni riga:
+
+    - **nessuna dichiarazione** (`None`: non si è pronunciato nessuno, nemmeno
+      l'arciseed) → `danger-full-access`. `None` non restringe, esattamente come
+      in `disallowed_for`: la direzione d'errore è la stessa di tutto il file.
+    - **`Bash` concesso**, nudo o ritagliato → `workspace-write`. Il ritaglio per
+      comando codex non lo sa fare (`tools.shell` non esiste, e i pattern non
+      hanno dove andare), quindi quel pezzo resta residuo dichiarato; la radice
+      scrivibile è la cwd, che per una sessione è lo scratch dello spawn — cioè
+      l'`allow_write: ["{scratch}/**"]` che i seed codex già dichiarano.
+    - **niente `Bash` ma `Write`/`Edit`** → `workspace-write` comunque:
+      l'`apply_patch` di codex passa dal medesimo sandbox, e `read-only` gli
+      toglierebbe la scrittura che il seed CONCEDE.
+    - **né shell né scrittura** → `read-only`.
+
+    ⚠️ `read-only` non è un diniego di `Bash`: il modello può ancora leggere con
+    la shell. Per questo `ENFORCEABLE["codex"]` resta `{"WebSearch"}` e `Bash`
+    continua a comparire nel residuo. Il confinamento riduce il raggio; chiamarlo
+    enforcement sarebbe rifare il difetto che questo file esiste per non rifare.
+    """
+    if allowed is None:
+        return CODEX_FULL_ACCESS
+    esatti, prefissi, _, _ = _granted(allowed)
+
+    def concesso(nome: str) -> bool:
+        return nome in esatti or nome.startswith(prefissi or ("\0",))
+
+    if any(concesso(n) for n in ("Bash", "Write", "Edit")):
+        return CODEX_WORKSPACE_WRITE
+    return CODEX_READ_ONLY
