@@ -115,32 +115,18 @@ def open_topic(tier: str, name: str) -> dict | None:
     return r.json()
 
 
-def create_topic(tier: str, name: str, meta: dict,
-                 hook_enabled: bool = False) -> dict:
-    """Un topic nuovo non nasce con un hook: la porta pubblica e il suo segreto
-    si creano solo se qualcuno li chiede (clodia-tools#211)."""
+def create_topic(tier: str, name: str, meta: dict) -> dict:
+    """Crea il topic sul gateway. Nessun hook, nessun segreto: la superficie è
+    uscita con clodia-platform#223."""
     try:
         r = _gw_http.post(_base(), headers=_headers(),
-                          json={"tier": tier, "name": name, "meta": meta,
-                                "hook_enabled": hook_enabled,
-                                # Evita il ciclo logic → gateway → logic: questo
-                                # client assicura l'hook localmente dopo il POST.
-                                "ensure_hook": False},
+                          json={"tier": tier, "name": name, "meta": meta},
                           timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         raise TopicsClientError(f"gateway create_topic irraggiungibile: {e}") from e
     if r.status_code != 200:
         raise TopicsClientError(f"gateway create_topic → HTTP {r.status_code}: {r.text[:160]}")
-    created = r.json().get("meta", {})
-    if hook_enabled:
-        from ..hooks import db as hooks_db
-        try:
-            hooks_db.ensure(
-                created.get("tier", tier), name, name,
-                created_by=meta.get("owner") or _PRINCIPAL)
-        except hooks_db.HookConflictError as e:
-            raise TopicsClientError(str(e)) from e
-    return created
+    return r.json().get("meta", {})
 
 
 

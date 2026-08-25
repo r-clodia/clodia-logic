@@ -45,7 +45,7 @@ what it monitors is a convention rather than a boundary.
 | `server/sdk_runtime/` | the session that drives an agent SDK (`claude`, `codex`, `opencode`) |
 | `catalogs/packs/` | the bundled packs — `base-pack`, `comms-pack`, `editorial-pack` |
 | `catalogs/PACKS.md` | what a pack is, and what a plugin is |
-| `providers/`, `routing/`, `hooks/` | inference providers, routing, hooks |
+| `providers/`, `routing/` | inference providers, routing |
 | `docker/` | the image |
 
 Semantic responder routing defaults live in `catalogs/router.yaml`. An instance

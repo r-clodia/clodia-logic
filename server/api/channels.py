@@ -299,10 +299,12 @@ def _inbound_kind(author: str | None) -> str:
 def _untrusted_trigger_directive(author: str | None) -> str:
     """Avviso al responder: il testo di questo turno arriva da FUORI (#221).
 
-    Vale per ogni porta d'ingresso di provenienza `external` — il proxy che
-    chiama `trigger/internal` e il webhook che entra da `hooks/{id}` sono lo
-    stesso caso, quindi lo stesso avviso: sta qui una volta perché il giorno in
-    cui il taint vero arriva, si tocca un posto solo.
+    Vale per ogni porta d'ingresso di provenienza `external`: sta qui una volta
+    perché il giorno in cui il taint vero arriva, si tocca un posto solo. Le
+    porte di oggi sono il proxy che chiama `trigger/internal` e Telegram — il
+    webhook di `hooks/{id}`, che era il terzo esempio, non esiste più
+    (clodia-platform#223), ma l'avviso non era suo: è del *kind*, e resta valido
+    per la prossima porta che si apre.
 
     Mitigazione SOFT, e dichiarata tale: dipende dall'aderenza del modello, non
     è enforcement. Il gate vero è il taint di provenienza, che si accende nel
@@ -3649,7 +3651,7 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         responder = forced if (forced and _can_access(_effective_clearance(forced), tier_real)) else None
     else:
         # trace del routing → barra "🧭 Routing" anche per i path non-POST
-        # (trigger/hook/telegram): così la barra riflette CHI parte davvero.
+        # (trigger/telegram): così la barra riflette CHI parte davvero.
         routing: dict = {}
         route_cfg = router_config.load()
         try:
@@ -3750,12 +3752,8 @@ async def channel_create(request: Request) -> dict:
         raise HTTPException(400, "nome richiesto")
     meta = _channel_meta(body, principal, name)
     intro_agent = _select_topic_intro_agent(meta, tier)
-    # Default False (clodia-tools#211): l'hook è una cosa che si chiede, non
-    # una dote di ogni stanza. Chi lo vuole lo passa esplicitamente nel body.
-    hook_enabled = bool(body.get("hook_enabled", False))
     try:
-        created = await topics_client.async_create_topic(
-            tier, name, meta, hook_enabled=hook_enabled)
+        created = await topics_client.async_create_topic(tier, name, meta)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"creazione canale fallita: {str(e)[:160]}")
     # Benvenuto con action pills (playbook dei pack, per tipo, filtrate sulle

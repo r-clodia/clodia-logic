@@ -79,7 +79,6 @@ rules: []
 #   profile.*                  PII di persone (email, IBAN, domicilio)
 #   logs.tail                  log del server: mescola i compartimenti
 #   topic.migrate_storage      sposta tutto lo storage; da steward
-#   topic.invoke_hook          esecuzione locale di un hook
 # ANTENATO. `archseed` dà i verbi base per ereditarietà (specification §1.3):
 # leggere nella stanza in cui lo spawn sta, parlarci, e la propria memoria. Qui
 # sotto resta SOLO il mestiere di questo seed — se un verbo base ricomparisse in

@@ -356,9 +356,6 @@ def create_app() -> FastAPI:
         # attività (issue clodia-platform#83).
         from .api import topic_signals
         app.include_router(topic_signals.router)
-        # Chat Hooks: iniezione di messaggi in una chat via hook/webhook (F1).
-        from .hooks import api as hooks_api
-        app.include_router(hooks_api.router)
     # Pagina di decisione dei gate via link firmato (no login, token-auth):
     # deve essere raggiungibile senza sessione (arrivi da mail/Telegram).
     # Montata SEMPRE: serve le proposte di job, ed era dietro il flag dei
