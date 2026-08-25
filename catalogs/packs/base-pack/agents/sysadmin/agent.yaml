@@ -140,7 +140,6 @@ tool_permissions:
   - "topic.add_minute"
   - "topic.archive"
   - "topic.delete_file"
-  - "topic.invoke_hook"
   - "topic.migrate_storage"
   - "topic.new"
   - "topic.put"
