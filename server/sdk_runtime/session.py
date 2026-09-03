@@ -742,6 +742,49 @@ def _resolve_disallowed_tools(kind: str) -> list[str]:
 # qui sta la guardia autoritativa, sul choke point unico (ChatManager.create),
 # attraversato sia dalla webchat sia dal fire dei job.
 
+class _ThinkSeam:
+    """Cuce fra loro i blocchi di RAGIONAMENTO, che arrivano senza confine.
+
+    Il testo visibile ha `_BlockFilter`, che fra due blocchi distinti inserisce
+    `\n\n` — e la sua docstring dice perché: il confine lo conosce solo il
+    produttore, e ricostruirlo nel chiamante vuol dire tenerne due copie. Il
+    ragionamento non aveva niente: `thinking_delta` veniva pubblicato grezzo, un
+    delta dopo l'altro, e la webui fa `think = think + delta`.
+
+    Finché il turno è un blocco solo non si vede. Ma un turno ne ha molti — con
+    il thinking adattivo il ragionamento si riapre dopo ogni tool-call — e
+    l'ultimo delta di un blocco non finisce con un capo a riga: così l'ultima
+    riga del blocco N si salda alla prima del blocco N+1 **sulla stessa riga**.
+    In un `<pre>` monospazio il risultato è che le righe si accavallano e il
+    riquadro diventa illeggibile: è il difetto segnalato il 3 set 2026.
+
+    Peggio nei runtime codex/opencode, dove un item `reasoning` è un paragrafo
+    INTERO: due paragrafi finivano attaccati senza nemmeno uno spazio.
+
+    Il separatore si aggiunge solo se serve davvero — se il testo di prima non
+    chiudeva già con un capo a riga e quello nuovo non ne comincia con uno — o
+    fra due blocchi già spaziati comparirebbero righe vuote a vuoto.
+    """
+
+    def __init__(self) -> None:
+        self._index: object = None
+        self._primo = True
+        self._chiudeva_a_capo = True
+
+    def feed(self, index: object, text: str) -> str:
+        """Il testo da pubblicare ORA, col separatore se il blocco è cambiato."""
+        if not text:
+            return text
+        cucitura = ""
+        if not self._primo and index != self._index:
+            if not self._chiudeva_a_capo and not text.startswith("\n"):
+                cucitura = "\n\n"
+        self._index = index
+        self._primo = False
+        self._chiudeva_a_capo = text.endswith("\n")
+        return cucitura + text
+
+
 class ProviderNotConnected(RuntimeError):
     """L'agent non è disponibile perché il suo provider non è collegato."""
 
@@ -1465,6 +1508,7 @@ class ChatSession:
         parts: list[str] = []
         saw_text_delta = False
         blockfilter = _BlockFilter()
+        thinkseam = _ThinkSeam()
         # Confine di bolla (clodia-platform#243): se qualcuno ha registrato
         # `on_visible_block`, ogni blocco di testo CHIUSO gli viene consegnato
         # mentre il turno prosegue, invece di essere accumulato fino alla fine.
@@ -1572,9 +1616,13 @@ class ChatSession:
                                 timestamp=datetime.now(timezone.utc),
                             ))
                     elif dtype == "thinking_delta" and delta.get("thinking"):
+                        # Come il testo visibile qui sopra: al cambio di blocco
+                        # ci vuole un confine, o le righe si saldano. Vedi
+                        # `_ThinkSeam`.
+                        pensiero = thinkseam.feed(ev.get("index"), delta["thinking"])
                         await bus.publish(Event(
                             type="thinking_chunk",
-                            payload={"chat_id": self.chat_id, "delta": delta["thinking"]},
+                            payload={"chat_id": self.chat_id, "delta": pensiero},
                             timestamp=datetime.now(timezone.utc),
                         ))
                 continue
@@ -1837,6 +1885,11 @@ class CodexChatSession:
         self._proc: Optional[asyncio.subprocess.Process] = None
         self._codex_home: Optional[Path] = None
         self._thread_id: Optional[str] = None   # session id codex per il resume
+        # Cucitura fra blocchi di ragionamento (vedi `_ThinkSeam`): un item
+        # `reasoning` è un paragrafo intero, e senza confine si salda al
+        # precedente sulla stessa riga.
+        self._thinkseam = _ThinkSeam()
+        self._think_n = 0
         self._last_usage: dict[str, int] = {}
         self._usage_cumulative: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
@@ -2231,9 +2284,13 @@ class CodexChatSession:
                     ))
             elif itype == "reasoning":
                 if text:
+                    # Qui `text` è un paragrafo INTERO, non un delta: ogni item
+                    # è un blocco nuovo, quindi il contatore basta come indice.
+                    self._think_n += 1
                     await bus.publish(Event(
                         type="thinking_chunk",
-                        payload={"chat_id": self.chat_id, "delta": text},
+                        payload={"chat_id": self.chat_id,
+                                 "delta": self._thinkseam.feed(self._think_n, text)},
                         timestamp=datetime.now(timezone.utc),
                     ))
             elif itype in ("command_execution", "mcp_tool_call", "local_shell_call",
@@ -2391,6 +2448,11 @@ class OpenCodeChatSession:
         self._port: Optional[int] = None
         self._base_url: Optional[str] = None
         self._oc_session: Optional[str] = None   # id sessione OpenCode (per il resume)
+        # Cucitura fra blocchi di ragionamento (vedi `_ThinkSeam`): un item
+        # `reasoning` è un paragrafo intero, e senza confine si salda al
+        # precedente sulla stessa riga.
+        self._thinkseam = _ThinkSeam()
+        self._think_n = 0
         self._provider: Optional[str] = None
         self._model: Optional[str] = None
         self._last_usage: dict[str, int] = {}
@@ -2866,8 +2928,11 @@ class OpenCodeChatSession:
                                                  "delta": p["text"]},
                                         timestamp=datetime.now(timezone.utc)))
             elif t == "reasoning" and p.get("text"):
+                # Stesso caso di codex: una part `reasoning` è un blocco intero.
+                self._think_n += 1
                 await bus.publish(Event(type="thinking_chunk",
-                                        payload={"chat_id": self.chat_id, "delta": p["text"]},
+                                        payload={"chat_id": self.chat_id,
+                                                 "delta": self._thinkseam.feed(self._think_n, p["text"])},
                                         timestamp=datetime.now(timezone.utc)))
             elif t == "tool":
                 st = p.get("state") or {}
