@@ -12,9 +12,39 @@ apikey_env: AWS_BEARER_TOKEN_BEDROCK
 extra_env:
   CLAUDE_CODE_USE_BEDROCK: "1"
   AWS_REGION: eu-west-1
-  ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-4-6-v1"
-  ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-4-6"
+  # Default di FAMIGLIA: ultima spiaggia di `bedrock_model_id()` quando un seed
+  # chiede una versione che non è in `model_ids` (e in quel caso il ripiego
+  # finisce nei log). Portati alla versione più recente disponibile in regione:
+  # erano fermi a opus-4-6 / sonnet-4-6, e siccome la vecchia traduzione
+  # guardava solo la famiglia, OGNI agent opus girava su Opus 4.6 qualunque cosa
+  # dichiarasse.
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-5"
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-5"
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+
+# Traduzione ESPLICITA modello-del-seed → inference-profile della regione, così
+# la versione che un agent dichiara è quella che gira davvero.
+#
+# Esplicita e non derivata da una regola (`eu.` + nome) perché i nomi dei
+# profili NON sono regolari: `claude-opus-4-6` è `…-4-6-v1`, haiku porta data e
+# versione, i modelli 2024 hanno entrambe. Una regola che sbaglia produce un 400
+# di Bedrock a metà turno; una mappa che non conosce un modello nuovo ripiega
+# sulla famiglia e lo dice nei log.
+#
+# Verificato con ListInferenceProfiles su eu-west-1 il 3 set 2026 (12 profili
+# Claude EU). Quando ne compaiono di nuovi, questa lista va estesa: è il posto
+# giusto in cui farlo, perché è la definizione del provider e viaggia col clone.
+model_ids:
+  claude-opus-5: "eu.anthropic.claude-opus-5"
+  claude-opus-4-8: "eu.anthropic.claude-opus-4-8"
+  claude-opus-4-7: "eu.anthropic.claude-opus-4-7"
+  claude-opus-4-6: "eu.anthropic.claude-opus-4-6-v1"
+  claude-opus-4-5: "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+  claude-sonnet-5: "eu.anthropic.claude-sonnet-5"
+  claude-sonnet-4-6: "eu.anthropic.claude-sonnet-4-6"
+  claude-sonnet-4-5: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  claude-haiku-4-5: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
+  claude-haiku-4-5-20251001: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 # SDK di esecuzione: i modelli Claude via Bedrock.
 sdk: claude
 priority: 20

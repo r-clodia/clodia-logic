@@ -20,6 +20,11 @@ _BY_SDK: dict[str, list[tuple[str, int]]] = {
     # Claude Code / claude agent SDK: default 200k; 1M sui modelli 1M-capable
     # (Opus 4.6+/Sonnet 4.6+/5), senza beta header, su piani che lo abilitano.
     "claude": [
+        # `opus-5` mancava, quindi cadeva nel fallback di famiglia (200k) pur
+        # essendo 1M-capable: la barra del contesto nella webui diceva un quinto
+        # del vero per ogni agent su Opus 5. Le voci vanno dalla PIÙ specifica
+        # alla meno, e `opus-5` deve stare prima di `opus`.
+        ("opus-5", 1_000_000),
         ("opus-4-6", 1_000_000),
         ("opus-4-7", 1_000_000),
         ("opus-4-8", 1_000_000),

@@ -120,6 +120,13 @@ def _load_catalog() -> tuple[dict, dict]:
                 # (back-compat). Usato per filtrare i candidati per il modello
                 # NON sindacabile dell'agent.
                 "models": [str(m) for m in (d.get("models") or [])],
+                # Traduzione modello-del-seed → id che il provider pretende
+                # (Bedrock: inference profile della regione). Esplicita perché i
+                # nomi dei profili non sono regolari, e per-versione perché
+                # ricavarla dalla sola FAMIGLIA scartava in silenzio la versione
+                # dichiarata dall'agent — vedi `bedrock_model_id()`.
+                "model_ids": {str(k).strip().lower(): str(v) for k, v in
+                              (d.get("model_ids") or {}).items() if v},
             }
             # Solo i provider `default` entrano nella selezione automatica per-SDK.
             if d.get("sdk") and is_default:
@@ -366,29 +373,70 @@ def provider_sdk(pid: str | None) -> str | None:
     return (_CATALOG.get(_normalize(pid) or "") or {}).get("sdk")
 
 
+def _bedrock_family_default(env: dict, model: str) -> str | None:
+    """L'inference-profile di FAMIGLIA dichiarato dal provider (ultima spiaggia)."""
+    if "opus" in model:
+        return env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
+    if "sonnet" in model:
+        return env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
+    if "haiku" in model:
+        return env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
+    return None
+
+
 def bedrock_model_id(pid: str | None, model: str | None) -> str | None:
     """Su un provider Bedrock, traduce il modello dichiarato dall'agent
-    (`claude-{opus,sonnet,haiku}-*`) nell'inference-profile EU dichiarato dal
-    provider in extra_env (`ANTHROPIC_DEFAULT_{OPUS,SONNET,HAIKU}_MODEL`).
+    nell'inference-profile che Bedrock pretende.
 
     Serve perché Bedrock rifiuta gli id modello Anthropic "puri" (es.
     `claude-sonnet-4-5` → 400 invalid): vuole l'inference-profile (es.
-    `eu.anthropic.claude-sonnet-4-6`). L'env DEFAULT_* mappa solo l'ALIAS di
-    tier, non un id esplicito → qui facciamo la traduzione noi.
+    `eu.anthropic.claude-sonnet-4-6`).
 
-    Ritorna None se il provider NON è Bedrock o il tier non è riconosciuto
-    (→ il chiamante lascia il modello invariato)."""
+    LA VERSIONE DICHIARATA DAL SEED VIENE RISPETTATA. Prima si guardava solo la
+    FAMIGLIA — `if "opus" in m` → il default opus del provider — e la versione
+    veniva scartata in silenzio: `claude-opus-5`, `claude-opus-4-8` e
+    `claude-opus-4-7` finivano tutti su `eu.anthropic.claude-opus-4-6-v1`.
+    Nessun log, nessun errore, e `GET /api/agents` continuava a mostrare il
+    modello del seed — cioè la configurazione, non ciò che gira. Trovato da
+    Davide il 3 set 2026 su `avvocato`, che dichiarava `claude-opus-5` da un
+    giorno e girava su Opus 4.6; i profili delle altre versioni erano
+    disponibili in `eu-west-1` da sempre (verificato con ListInferenceProfiles:
+    opus-4-5, 4-6, 4-7, 4-8, 5 e sonnet-4-6, 5).
+
+    L'ordine di risoluzione è: `model_ids` del provider (mappa esplicita) →
+    default di famiglia, con un WARNING. La mappa è esplicita e non derivata da
+    una regola (`eu.` + nome) perché i nomi dei profili NON sono regolari —
+    `claude-opus-4-6` è `eu.anthropic.claude-opus-4-6-v1`, haiku porta data e
+    versione — e una regola che sbaglia produce un 400 di Bedrock a metà turno
+    invece di un ripiego che funziona. Un modello nuovo assente dalla mappa
+    ricade sulla famiglia e lo si LEGGE nei log, che è la differenza fra un
+    ripiego e il dirottamento muto di prima.
+
+    Ritorna None se il provider NON è Bedrock (→ il chiamante lascia il modello
+    invariato)."""
     env = provider_extra_env(pid)
     if "CLAUDE_CODE_USE_BEDROCK" not in env:
         return None
-    m = (model or "").lower()
-    if "opus" in m:
-        return env.get("ANTHROPIC_DEFAULT_OPUS_MODEL")
-    if "sonnet" in m:
-        return env.get("ANTHROPIC_DEFAULT_SONNET_MODEL")
-    if "haiku" in m:
-        return env.get("ANTHROPIC_DEFAULT_HAIKU_MODEL")
-    return None
+    m = (model or "").strip().lower()
+    if not m:
+        return None
+    # Già un id Bedrock (il runtime override porta la forma tradotta): non si
+    # traduce due volte.
+    if m.startswith(("eu.", "us.", "global.", "apac.")):
+        return model
+    mappa = {str(k).strip().lower(): v
+             for k, v in ((_CATALOG.get(_normalize(pid) or "") or {})
+                          .get("model_ids") or {}).items()}
+    if m in mappa:
+        return mappa[m]
+    fallback = _bedrock_family_default(env, m)
+    if fallback:
+        LOG.warning(
+            "provider %s: '%s' non è fra i model_ids dichiarati → ripiego sul "
+            "default di famiglia '%s'. Se quel modello esiste nella regione, "
+            "aggiungilo a model_ids in providers/%s.yaml.",
+            pid, model, fallback, _normalize(pid) or pid)
+    return fallback
 
 
 def provider_supports_model(pid: str | None, model: str | None) -> bool:
