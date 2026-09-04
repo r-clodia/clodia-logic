@@ -963,6 +963,31 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                                message=avviso, topic_title=meta.get("title"))
         LOG.info("delega da %s su %s/%s: limite catena (%d) raggiunto, non "
                  "avviati: %s", from_agent, tier, name, limite, ", ".join(negati))
+        # SEGNALE, non solo messaggio (#332). Il messaggio in canale parla a chi
+        # sta guardando la chat; qui muore una menzione, e chi deve saperlo è
+        # anche chi NON la sta guardando — il monitor, e chiunque legga il bus
+        # per chiedersi «un'istanza è già attiva su questo lavoro?» prima di
+        # aprirne una a valle. È il doppio assegnamento raccontato nella issue:
+        # la menzione bloccata dal limite era comunque riuscita a produrre un
+        # secondo spawn, e nessun segnale diceva che il primo esisteva.
+        try:
+            await bus.publish(Event(
+                type="routing_decision",
+                payload={"tier": tier, "name": name, "mode": "delega-non-servita",
+                         "reason": (f"catena di delega al limite ({limite} passaggi): "
+                                    f"{', '.join(negati)} non avviati"),
+                         "from_agent": _seed_name(from_agent), "negati": negati,
+                         "hop": hop, "limite": limite,
+                         "chosen": None, "candidates": [], "eligible": []},
+                timestamp=datetime.now(timezone.utc)))
+        except Exception as e:  # noqa: BLE001 — un segnale non rompe un turno
+            LOG.debug("routing_decision limite catena non pubblicato: %s", e)
+        _spawn_bg(_watch_report(
+            tier, name, "delegation_limit", _seed_name(from_agent),
+            f"{_seed_name(from_agent)} ha taggato {', '.join(negati)} ma la catena "
+            f"di delega era al limite di {limite} passaggi: nessun turno è partito. "
+            f"Se quel lavoro era già in corso, un'istanza potrebbe essere attiva.",
+            negati=negati, hop=hop, limite=limite))
         return
     # R3 · una menzione per messaggio, e la seconda si chiede a CHI HA SCRITTO.
     #
@@ -982,11 +1007,27 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             # Seconda volta di fila: non si richiede. Due agenti che si rimbalzano
             # domande consumerebbero token senza che nessuno lo veda; un turno
             # fermo che si dichiara è invece recuperabile.
+            #
+            # RECUPERABILE COME, però, va detto in modo cliccabile (#332): «serve
+            # un messaggio con una sola menzione» era vero e inerte — restava a
+            # una persona riscrivere a mano uno dei nomi che l'agente aveva già
+            # scritto, e finché non lo faceva la catena era ferma. Le menzioni
+            # ricevute diventano pill: un click posta un messaggio con UNA sola
+            # menzione, che il ramo dei tag serve già, e la catena riparte da un
+            # umano (quindi con il budget dei salti nuovo).
+            #
+            # Le pill portano il `@`: il testo del click deve essere una menzione
+            # vera, non il nome nudo. Il nome nudo funziona nel dialogo umano
+            # perché lì c'è un `routing-request` che lo lega a un turno; qui il
+            # sorgente è il reply di un agente, quel legame non c'è, e la strada
+            # che resta è quella ordinaria — che è anche la più semplice.
+            nomi = [_target_identity(t) for t in diretti]
             testo = (
                 f"@{seed_autore} ha risposto con più di una menzione "
-                f"({_elenco_or([_target_identity(t) for t in diretti])}) a una domanda di "
+                f"({_elenco_or(nomi)}) a una domanda di "
                 "disambiguazione: nessun turno avviato. Serve un messaggio con una "
-                "sola menzione."
+                "sola menzione — scegline una qui sotto e la catena riparte.\n\n"
+                f"<!-- choices={','.join('@' + n for n in nomi)} -->"
             )
             fermo = await topics_client.async_post_message(
                 tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
@@ -1015,8 +1056,27 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             return
         LOG.info("delega da %s su %s/%s: %d menzioni, chiedo all'autore",
                  from_agent, tier, name, len(diretti))
+        # `hop=hop`, NON `hop + 1` (#332). Il chiarimento non è un passo di delega
+        # in più: è lo stesso passo detto meglio. Contarlo faceva pagare la
+        # domanda alla catena — e il conto arrivava alla RISPOSTA, valutata un
+        # salto più avanti, dove il controllo del limite scatta per primo. Esito
+        # osservato: il router chiede «chi intendevi attivare?», l'agente risponde
+        # con la menzione giusta e riceve «limite raggiunto, nessun turno è
+        # partito». Una domanda posta e non onorata, e chiedere che costa più che
+        # tirare a indovinare.
+        #
+        # Il freno al rimbalzo resta dove è stato pensato: `_ambiguity_already_asked`
+        # (una domanda per catena), non il budget dei salti. Quel budget frena
+        # l'AVANZAMENTO della catena, e un chiarimento non la fa avanzare.
+        #
+        # SHORTCUT: al peggio un turno di ask in più per salto, quindi i turni LLM
+        #           che un messaggio umano può innescare passano da `limite` a
+        #           2×`limite`. Regge perché la domanda si pone una volta per
+        #           catena. Se un giorno gli ask diventassero più di uno per
+        #           salto, la via è un budget separato per i chiarimenti, non
+        #           rimettere il +1 qui.
         await _start_turn(tier, name, tier_real, autore_spec,
-                          principal or "channel", testo, "disambigua", hop=hop + 1,
+                          principal or "channel", testo, "disambigua", hop=hop,
                           origin=origin_chain)
         return
     if not _multi_responder_enabled() and len(plan) > 1:
