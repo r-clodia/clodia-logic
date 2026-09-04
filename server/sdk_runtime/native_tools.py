@@ -128,6 +128,59 @@ def unenforced_denied(sdk: str | None, denied: list[str] | None) -> list[str]:
     return sorted(t for t in (denied or []) if t.split("(", 1)[0] not in copre)
 
 
+#: I campi di `sandbox` che un seed può dichiarare. Uno per uno perché il
+#: residuo si dice per CAMPO: «il sandbox non è applicato» non dice a chi legge
+#: quale dei suoi elenchi è finto.
+SANDBOX_FIELDS: tuple[str, ...] = (
+    "allow_read", "deny_read", "allow_write",
+    "allow_shell_cmds", "deny_shell_patterns",
+)
+
+#: Quali di quei campi ciascun runtime applica DAVVERO.
+#: `None` = tutti; un insieme = solo quelli; assente = nessuno.
+#:
+#: Stessa domanda di `ENFORCEABLE` un piano più sotto: quello dice *quali
+#: strumenti* il seed concede, questa *come si stringe la shell che il seed ha
+#: già*. Stanno nello stesso file perché divergono se stanno in due.
+#:
+#: - **claude**: tutti, via `.claude/settings.local.json` — è l'unico posto dove
+#:   qualcuno li traduce (`agents/workspace._build_settings_json`, chiamato solo
+#:   dal layout claude; un test AST tiene ferma la premessa).
+#: - **codex**: nessuno. La sezione `[permissions.<profile>]` di codex 0.149
+#:   sarebbe il canale giusto, ma i campi ignoti dentro un profilo non danno
+#:   errore con `--strict-config`: lo schema non è stabilibile dall'interno del
+#:   container, e scriverci sopra dichiarerebbe un canale che nessuno porta
+#:   (clodia-platform#204, #359). Dopo la #359 il confinamento di codex esiste,
+#:   ma è di grana grossa (`read-only`/`workspace-write`/`danger-full-access`):
+#:   non è questa granularità.
+#: - **opencode**: nessuno, oggi. Ha una configurazione di permessi documentata,
+#:   quindi è il primo candidato quando l'enforcement si porterà davvero
+#:   (clodia-platform#296 punto 2) — ma finché non lo si porta, dirlo qui è la
+#:   sola cosa che non mente.
+SANDBOX_ENFORCED: dict[str, frozenset[str] | None] = {
+    "claude": None,
+    "opencode": frozenset(),
+    "codex": frozenset(),
+}
+
+
+def sandbox_unenforced(sdk: str | None, sandbox) -> list[str]:
+    """I campi che il seed DICHIARA e questo runtime non porta, per nome.
+
+    Solo i campi non vuoti: un campo assente non racconta nulla, e nominarlo
+    trasformerebbe l'avviso in rumore su ogni seed non-claude. Un elenco vuoto
+    quindi vuol dire «tutto ciò che è dichiarato è applicato», non «non c'è
+    niente di dichiarato».
+    """
+    if sandbox is None:
+        return []
+    copre = SANDBOX_ENFORCED.get((sdk or "claude").strip().lower(), frozenset())
+    if copre is None:
+        return []
+    return [c for c in SANDBOX_FIELDS
+            if (getattr(sandbox, c, None) or []) and c not in copre]
+
+
 #: Chiave di permesso di opencode → tool(i) nativi che la governano.
 #:
 #: I due vocabolari non coincidono e non possono: opencode ha ~15 permessi a

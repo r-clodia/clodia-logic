@@ -61,11 +61,50 @@ def _incoerenze(spec) -> list[str]:
             f"`allow_shell_cmds` autorizza {len(shell)} comandi ({', '.join(shell[:4])}"
             f"{'…' if len(shell) > 4 else ''}) ma `native_tools` non concede `Bash`: "
             "comandi che l'agente non ha modo di eseguire")
-    if ha_bash and not shell:
+    # Il consiglio «riempi `allow_shell_cmds`» si dà solo dove quell'elenco lo
+    # legge qualcuno. Su codex e opencode non lo porta nessuno: suggerire di
+    # riempirlo sarebbe consigliare un file che non carica — la stessa forma di
+    # difetto che questa funzione esiste per segnalare (clodia-platform#296).
+    if ha_bash and not shell and _sandbox_applicato(spec, "allow_shell_cmds"):
         fuori.append(
             "`native_tools` concede `Bash` ma `allow_shell_cmds` è vuoto: una "
             "porta su una stanza senza niente dentro")
+    fuori += _sandbox_inerte(spec, sandbox)
     return fuori
+
+
+def _sandbox_applicato(spec, campo: str) -> bool:
+    """Questo runtime porta `campo` del sandbox? (tabella in `native_tools`)"""
+    from ..sdk_runtime import native_tools as nt
+    copre = nt.SANDBOX_ENFORCED.get(
+        (getattr(spec, "agent_sdk", None) or "claude").strip().lower(), frozenset())
+    return copre is None or campo in copre
+
+
+def _sandbox_inerte(spec, sandbox) -> list[str]:
+    """I campi `sandbox` dichiarati che il runtime NON applica.
+
+    `workspace.py` li traduce in `.claude/settings.local.json` e solo lì: su
+    codex e opencode restano parole nel file. La lettura però esiste — la scheda
+    dell'agente li mostra, `trifecta` li interroga — quindi oggi la piattaforma
+    *racconta* una restrizione che non c'è, ed è peggio di un campo assente
+    (clodia-platform#296). Stesso pattern di `native_tools_info.unenforced`: non
+    si corregge il seed, si dice la verità su cosa conta.
+    """
+    if sandbox is None:
+        return []
+    from ..sdk_runtime import native_tools as nt
+    sdk = (getattr(spec, "agent_sdk", None) or "claude").strip().lower()
+    inerti = nt.sandbox_unenforced(sdk, sandbox)
+    if not inerti:
+        return []
+    dettaglio = ", ".join(
+        f"`{c}` ({len(getattr(sandbox, c, None) or [])})" for c in inerti)
+    return [f"il runtime `{sdk}` non applica il sandbox del seed: {dettaglio} "
+            f"{'sono' if len(inerti) > 1 else 'è'} dichiarat"
+            f"{'i' if len(inerti) > 1 else 'o'} e non port"
+            f"{'ati' if len(inerti) > 1 else 'ato'} — la restrizione non esiste "
+            "a runtime (clodia-platform#296)"]
 
 
 #: `#tag# ...` — riga firmata da chi l'ha neutralizzata. Il marker parte per
