@@ -19,6 +19,7 @@ import os
 import requests
 from fastapi import HTTPException, Request
 
+from ..agents import registry
 from ..colony import pki
 from . import admin
 from .agents import _principal_from_request
@@ -66,8 +67,39 @@ class AuthzUnavailable(RuntimeError):
     da fare è diversa e il messaggio all'utente deve dirlo."""
 
 
-def gw_authorize(tool: str, principal: str) -> bool:
-    """True se l'umano `principal` può invocare `tool` (decisione del gateway).
+def _bearer(request: Request) -> str:
+    """Il token grezzo della richiesta. Si inoltra solo DOPO che
+    `_principal_from_request` ne ha verificato la firma: un principal non nullo
+    è già la prova che questo token è valido."""
+    auth = request.headers.get("authorization", "")
+    return auth[7:].strip() if auth.lower().startswith("bearer ") else ""
+
+
+def is_agent(name: str | None) -> bool:
+    """Il chiamante è un AGENTE della colonia, non una persona?
+
+    La distinzione è `type` nella registry — la stessa che usa
+    `loader.get_by_telegram` per non prendere un AI per un committente umano.
+    Serve qui perché un token di sessione ha la stessa forma per i due (claim
+    `agent` = il nome, nessun `on_behalf`): senza guardare il tipo, la guardia
+    trattava un agente come un umano senza ruolo, cioè come un utente
+    qualunque.
+
+    Chi non è nella registry non è un agente: i principal umani non ci sono
+    tutti, e inoltrare il loro token chiederebbe al gateway una matrice che per
+    loro non esiste.
+    """
+    if not name:
+        return False
+    spec = registry.get_by_name(name)
+    return spec is not None and getattr(spec, "type", "") != "human"
+
+
+def gw_authorize(tool: str, principal: str, agent_token: str | None = None) -> bool:
+    """True se `principal` può invocare `tool` (decisione del gateway).
+
+    `agent_token`: il Bearer del chiamante, da INOLTRARE quando il chiamante è
+    un agente. Senza, si conia un token on-behalf (il caso della webui).
 
     Solleva `AuthzUnavailable` se il gateway non risponde o risponde 5xx: NON è
     un rifiuto. Il 7 ago 2026 questa funzione ritornava `False` su qualunque
@@ -79,9 +111,10 @@ def gw_authorize(tool: str, principal: str) -> bool:
     un rifiuto. Cambia solo che dice la verità su PERCHÉ, e un guasto che si
     traveste da decisione è il modo più efficace di nascondere un guasto.
     """
+    bearer = agent_token or _token(principal)
     try:
         r = _gw_http.post(f"{_gw_base()}/internal/authorize",
-                          headers={"Authorization": f"Bearer {_token(principal)}"},
+                          headers={"Authorization": f"Bearer {bearer}"},
                           json={"tool": tool}, timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
         LOG.warning("authorize '%s' per '%s': gateway irraggiungibile (%s)",
@@ -120,8 +153,15 @@ def require_authz(request: Request, tool: str) -> str:
     principal = _principal_from_request(request)
     if not principal:
         raise HTTPException(401, "autenticazione richiesta")
+    # CHI CHIEDE. Un agente va autorizzato come agente: si inoltra il SUO token,
+    # così il gateway decide sulla matrice del suo seed. Coniarne uno on-behalf
+    # sul suo nome (quel che si faceva sempre) chiede al PDP il ruolo di un
+    # umano che non esiste — `is_admin('sysadmin')` è False → `user` → negato
+    # qualunque grant abbia (clodia-platform#297).
+    agente = is_agent(principal)
     try:
-        consentito = gw_authorize(tool, principal)
+        consentito = gw_authorize(tool, principal,
+                                  agent_token=_bearer(request) if agente else None)
     except AuthzUnavailable as e:
         # 503 e non 403: la richiesta non è stata rifiutata, non è stata
         # DECISA. Un 403 direbbe «non hai i permessi» a un admin che li ha.
@@ -130,6 +170,14 @@ def require_authz(request: Request, tool: str) -> str:
                  "Non è un problema di permessi — riprova fra qualche secondo, "
                  "e se persiste guarda i log del gateway.")
     if not consentito:
+        if agente:
+            # Il messaggio nomina il verbo e il principal: «riservata agli
+            # admin» detto a un agente manda a cercare un ruolo umano che non
+            # c'entra, ed è la parte della #297 che è costata le diagnosi.
+            raise HTTPException(
+                403, f"verbo '{tool}' non concesso all'agente '{principal}': "
+                     "il gateway ha deciso sui grant del suo seed. Per abilitarlo "
+                     "si aggiunge il verbo alle sue capability.")
         raise HTTPException(403, f"azione '{tool}' riservata agli admin")
     return principal
 
