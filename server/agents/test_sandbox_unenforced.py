@@ -221,6 +221,107 @@ class TheAgentCardCarriesIt(unittest.TestCase):
         self.assertEqual(self._info(CLAUDE_LIKE)["unenforced"], [])
 
 
+#: Un seed opencode che NEGA tutta la shell col pattern universale, e concede
+#: `Bash`. Su claude questo è «shell chiusa»; su opencode il pattern non lo
+#: porta nessuno e la shell è aperta.
+OPENCODE_DENY_TUTTO = """\
+name: opencodenega
+display_name: Opencodenega
+description: d
+model: gpt-oss-120b
+agent_sdk: opencode
+system_prompt: system-prompt.md
+native_tools: ["Bash"]
+sandbox:
+  deny_shell_patterns: ["*"]
+"""
+
+#: Lo stesso, su claude: qui il pattern è tradotto in `deny` e la shell è chiusa
+#: davvero.
+CLAUDE_DENY_TUTTO = """\
+name: claudenega
+display_name: Claudenega
+description: d
+model: claude-sonnet-4-5
+agent_sdk: claude
+system_prompt: system-prompt.md
+native_tools: ["Bash"]
+sandbox:
+  allow_shell_cmds: ["git"]
+  deny_shell_patterns: ["*"]
+"""
+
+#: opencode senza `Bash`: là i native tools SONO applicati, quindi la shell non
+#: c'è — e il flag deve dirlo, o si passa dalla bugia opposta.
+OPENCODE_SENZA_BASH = """\
+name: opencodemuto
+display_name: Opencodemuto
+description: d
+model: gpt-oss-120b
+agent_sdk: opencode
+system_prompt: system-prompt.md
+native_tools: ["Read"]
+"""
+
+#: codex senza `Bash`: la negazione dei native tools su codex non è applicata
+#: (`ENFORCEABLE["codex"] == {"WebSearch"}`), quindi la shell c'è comunque.
+CODEX_SENZA_BASH = """\
+name: codexsenzabash
+display_name: Codexsenzabash
+description: d
+model: gpt-5
+agent_sdk: codex
+system_prompt: system-prompt.md
+native_tools: ["Read"]
+"""
+
+
+class TheShellFlagTellsTheTruth(unittest.TestCase):
+    """`trifecta.has_shell` decideva sui due elenchi del sandbox anche dove non
+    li applica nessuno, e sbagliava nella direzione PERICOLOSA: rispondeva
+    «niente shell» a un agente che ce l'ha aperta. `shell` è un flag descrittivo
+    (non un lato: non entra in `score`/`bits`), quindi qui cambia solo ciò che il
+    profilo del canale RACCONTA — che è il punto dell'issue.
+    """
+
+    def _shell(self, testo: str) -> bool:
+        from .trifecta import has_shell
+        with tempfile.TemporaryDirectory() as tmp:
+            base = Path(tmp)
+            nome = [r.split(":", 1)[1].strip()
+                    for r in testo.splitlines() if r.startswith("name:")][0]
+            (base / nome).mkdir()
+            (base / nome / "agent.yaml").write_text(testo)
+            reg = AgentRegistry(base_dir=base)
+            reg.load()
+            return has_shell(reg.get_by_name(nome))
+
+    def test_a_universal_deny_that_nobody_carries_does_not_close_the_shell(self):
+        self.assertTrue(self._shell(OPENCODE_DENY_TUTTO))
+
+    def test_an_empty_allow_list_does_not_close_it_either(self):
+        """`allow_shell_cmds` vuoto significa «nessun comando ammesso» solo dove
+        quell'elenco è la porta. Su codex la porta è un'altra."""
+        self.assertTrue(self._shell(MESSAGGERO_LIKE))
+
+    def test_on_claude_a_universal_deny_still_closes_it(self):
+        self.assertFalse(self._shell(CLAUDE_DENY_TUTTO))
+
+    def test_on_claude_an_empty_allow_list_still_closes_it(self):
+        self.assertFalse(self._shell(CODEX_MUTO.replace("agent_sdk: codex",
+                                                        "agent_sdk: claude")))
+
+    def test_without_bash_opencode_really_has_no_shell(self):
+        """La bugia opposta è un difetto uguale: opencode applica i native tools,
+        quindi un seed senza `Bash` non ha la shell e il flag deve dirlo."""
+        self.assertFalse(self._shell(OPENCODE_SENZA_BASH))
+
+    def test_on_codex_denying_bash_does_not_take_the_shell_away(self):
+        """Su codex la negazione dei native tools non è applicata: `Bash` resta
+        nel residuo di `unenforced_denied`, quindi la shell c'è."""
+        self.assertTrue(self._shell(CODEX_SENZA_BASH))
+
+
 class TheTablePremiseStaysTrue(unittest.TestCase):
     """La tabella dice «solo claude» perché una sola funzione applica quei campi
     e la chiama un solo layout. Se domani l'enforcement arriva su opencode, è

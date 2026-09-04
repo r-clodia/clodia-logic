@@ -128,6 +128,37 @@ def unenforced_denied(sdk: str | None, denied: list[str] | None) -> list[str]:
     return sorted(t for t in (denied or []) if t.split("(", 1)[0] not in copre)
 
 
+def union_allowed(proprio: list[str] | None,
+                  pavimento: list[str] | None) -> list[str] | None:
+    """I nativi concessi: quelli del seed PIÙ il pavimento dell'arciseed.
+
+    `None` da entrambi = nessuno si è pronunciato → nessuna restrizione (la
+    stessa direzione d'errore di `disallowed_for`). La regola sta qui e non nel
+    runtime perché ha due lettori: `session._resolve_native_allowed`, che
+    configura il processo, e `trifecta.has_shell`, che deve dire se la shell c'è
+    davvero — e due copie di una regola divergono.
+    """
+    if proprio is None and pavimento is None:
+        return None
+    return sorted(set(proprio or []) | set(pavimento or []))
+
+
+def tool_reachable(sdk: str | None, allowed: list[str] | set[str] | None,
+                   tool: str) -> bool:
+    """Lo strumento arriva DAVVERO al modello su questo runtime?
+
+    Non basta guardare la dichiarazione: una negazione che il runtime non
+    applica non toglie niente. Su codex `Bash` è nel residuo di
+    `unenforced_denied`, quindi un seed che non lo concede ha comunque una
+    shell — ed è il fatto che un profilo di sicurezza deve riportare, invece di
+    ripetere la dichiarazione (clodia-platform#296).
+    """
+    negati = disallowed_for(allowed)
+    if tool not in negati:
+        return True
+    return tool in unenforced_denied(sdk, negati)
+
+
 #: I campi di `sandbox` che un seed può dichiarare. Uno per uno perché il
 #: residuo si dice per CAMPO: «il sandbox non è applicato» non dice a chi legge
 #: quale dei suoi elenchi è finto.
