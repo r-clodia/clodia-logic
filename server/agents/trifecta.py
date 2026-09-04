@@ -418,15 +418,52 @@ def unclassified_namespaces(grants: Iterable[str], cfg: dict) -> list[str]:
 # ── profilo di un agente ──────────────────────────────────────────────────
 
 def has_shell(spec) -> bool:
-    """L'agente può eseguire comandi di shell (→ il gate è aggirabile)."""
+    """L'agente può eseguire comandi di shell (→ il gate è aggirabile).
+
+    Si decide su ciò che il RUNTIME applica, non su ciò che il seed scrive.
+    Prima si guardavano `allow_shell_cmds`/`deny_shell_patterns` sempre, ma li
+    porta solo claude (`SANDBOX_ENFORCED`): su codex e opencode un elenco di
+    comandi vuoto o un `deny: ["*"]` producevano `shell: False` per un agente
+    con la shell aperta — l'errore nella direzione pericolosa, perché un profilo
+    di canale che dichiara «nessuno ha la shell» è una rassicurazione
+    (clodia-platform#296).
+
+    Dove il sandbox non è applicato la shell dipende da dove sta davvero: i
+    native tools, e se questo runtime li applica. Su codex `Bash` è nel residuo
+    di `unenforced_denied` — negarlo non lo toglie — quindi la shell c'è
+    comunque; su opencode i native tools contano, e un seed senza `Bash` non ha
+    la shell (dire il contrario sarebbe la bugia opposta, uguale difetto).
+    """
+    from ..sdk_runtime import native_tools as nt
     sandbox = getattr(spec, "sandbox", None)
     allow = list(getattr(sandbox, "allow_shell_cmds", None) or [])
     deny = list(getattr(sandbox, "deny_shell_patterns", None) or [])
-    if not allow:
-        return False
-    if any(d.strip() in ("*", "**") for d in deny):
-        return False
-    return True
+    sdk = (getattr(spec, "agent_sdk", None) or "claude").strip().lower()
+    if nt.sandbox_applies(sdk, "allow_shell_cmds"):
+        if not allow:
+            return False
+        if any(d.strip() in ("*", "**") for d in deny):
+            return False
+        return True
+    return nt.tool_reachable(sdk, _native_allowed(spec), "Bash")
+
+
+def _native_allowed(spec) -> list[str] | None:
+    """I nativi concessi allo spec: i suoi più il pavimento dell'arciseed.
+
+    Stessa unione di `session._resolve_native_allowed` (la regola sta in
+    `native_tools.union_allowed`, non in due copie), ma a partire dallo SPEC che
+    il chiamante ha già: qui si misura anche un agente che non sta girando.
+    """
+    from ..sdk_runtime import native_tools as nt
+    pavimento = None
+    try:
+        from .loader import registry
+        arch = registry.get_by_name("archseed")
+        pavimento = getattr(arch, "native_tools", None) if arch else None
+    except Exception:  # noqa: BLE001 — un registry muto non deve restringere
+        pavimento = None
+    return nt.union_allowed(getattr(spec, "native_tools", None), pavimento)
 
 
 def agent_profile(spec, config: Optional[dict] = None,

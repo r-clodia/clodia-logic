@@ -45,6 +45,12 @@ class Sandbox(BaseModel):
     Tutti i path sono relativi alla data root (`/clodia` nel container,
     `WORKSPACE_ROOT` localmente). Il placeholder `{scratch}` è risolto
     runtime al path dello scratch dell'istanza.
+
+    ⚠️ **Solo il runtime claude li applica.** Su codex e opencode nessuno li
+    traduce: chi li dichiara lì scrive una restrizione che non esiste a runtime.
+    Quali campi ciascun runtime porta sta in `sdk_runtime.native_tools`
+    (`SANDBOX_ENFORCED`), e ciò che non porta esce come avviso del loader e nel
+    `sandbox_info.unenforced` della scheda (clodia-platform#296).
     """
     model_config = ConfigDict(extra="forbid")
 

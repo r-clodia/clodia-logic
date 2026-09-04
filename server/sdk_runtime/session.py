@@ -718,9 +718,8 @@ def _resolve_native_allowed(kind: str) -> list[str] | None:
         pavimento = getattr(arch, "native_tools", None) if arch else None
     except Exception:  # noqa: BLE001
         pavimento = None
-    if proprio is None and pavimento is None:
-        return None
-    return sorted(set(proprio or []) | set(pavimento or []))
+    from . import native_tools as _nt
+    return _nt.union_allowed(proprio, pavimento)
 
 
 def _resolve_native_denied(kind: str) -> list[str]:

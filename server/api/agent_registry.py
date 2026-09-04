@@ -114,6 +114,29 @@ def _native_tools_info(spec: AgentSpec) -> dict:
                 "denied": [], "unenforced": []}
 
 
+def _sandbox_info(spec: AgentSpec) -> dict:
+    """Il sandbox del seed, e **quanto ne applica questo runtime**.
+
+    Gemello di `_native_tools_info`, per lo strato sotto: quello dice quali
+    strumenti il seed concede, questo come si stringe la shell che ha già.
+    `allow_shell_cmds` e compagni sono tradotti solo in
+    `.claude/settings.local.json`; su codex e opencode restano parole nel file,
+    mentre la scheda li mostrava come se contassero — una restrizione raccontata
+    e inesistente è peggio di un campo assente (clodia-platform#296).
+    """
+    if spec.type in ("human", "proxy"):
+        return {"declared": None, "unenforced": []}
+    sb = getattr(spec, "sandbox", None)
+    dichiarato = sb.model_dump() if hasattr(sb, "model_dump") else None
+    try:
+        from ..sdk_runtime import native_tools as nt
+        return {"declared": dichiarato,
+                "unenforced": nt.sandbox_unenforced(spec.agent_sdk, sb)}
+    except Exception as e:  # noqa: BLE001 — diagnostica, non un percorso critico
+        LOG.warning("sandbox non risolto per %s: %s", spec.name, e)
+        return {"declared": dichiarato, "unenforced": []}
+
+
 def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
     """Provider risolto (esplicito o derivato dall'agent_sdk) + flag di
     connessione. Completa lo stack agent/model/provider nelle risposte API e
@@ -243,6 +266,7 @@ async def get_agent(name: str, request: Request) -> dict:
     d["rank_label"] = rank_mod.rank_label(spec)
     d["contact_channels"] = contacts.channels(spec)
     d["native_tools_info"] = _native_tools_info(spec)
+    d["sandbox_info"] = _sandbox_info(spec)
     # Le incoerenze del seed viaggiano con la scheda: una capacità che un agente
     # DICHIARA e non HA era esattamente ciò che nessuno poteva vedere finché
     # l'avviso restava nel log del server (clodia-platform#227).
