@@ -560,8 +560,15 @@ async def update_pack(name: str, request: Request):
 async def mark_pack_setup_done(name: str, request: Request):
     """Marca il setup del pack come COMPLETATO (smarca il marker `setup_pending`).
     Lo chiama il sysadmin/steward alla fine del task di setup (tool gateway
-    `packs.setup_done`), o l'admin manualmente. Admin-only (PDP gateway)."""
-    await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
+    `packs.setup_done`), o l'admin manualmente.
+
+    Chiede al PDP il verbo che questa rotta IMPLEMENTA. Chiedeva
+    `packs.import_url` come sinonimo di «admin-only»: un prestito che regge
+    finché l'unico chiamante è un umano admin, e nega a chi ha il grant giusto —
+    `sysadmin` ha `packs.*` e riceveva un 403 (clodia-platform#297). Il verbo
+    esiste come tool del gateway: `packs.setup_done`.
+    """
+    await gateway_pdp.require_authz_async(request, "packs.setup_done")
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     set_setup_pending(name, False)
