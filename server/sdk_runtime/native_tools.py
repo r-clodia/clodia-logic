@@ -195,6 +195,19 @@ SANDBOX_ENFORCED: dict[str, frozenset[str] | None] = {
 }
 
 
+def sandbox_applies(sdk: str | None, campo: str) -> bool:
+    """Questo runtime porta `campo` del sandbox?
+
+    La domanda ha tre lettori — l'avviso del loader, il flag `shell` di
+    `trifecta` e `sandbox_unenforced` qui sotto — e ognuno se l'era riscritta
+    come lettura diretta di `SANDBOX_ENFORCED`. Tre copie della stessa
+    interrogazione divergono dalla tabella: la sola ragione per cui la tabella
+    esiste è che la risposta stia misurata in un posto (clodia-platform#296).
+    """
+    copre = SANDBOX_ENFORCED.get((sdk or "claude").strip().lower(), frozenset())
+    return copre is None or campo in copre
+
+
 def sandbox_unenforced(sdk: str | None, sandbox) -> list[str]:
     """I campi che il seed DICHIARA e questo runtime non porta, per nome.
 
@@ -205,11 +218,8 @@ def sandbox_unenforced(sdk: str | None, sandbox) -> list[str]:
     """
     if sandbox is None:
         return []
-    copre = SANDBOX_ENFORCED.get((sdk or "claude").strip().lower(), frozenset())
-    if copre is None:
-        return []
     return [c for c in SANDBOX_FIELDS
-            if (getattr(sandbox, c, None) or []) and c not in copre]
+            if (getattr(sandbox, c, None) or []) and not sandbox_applies(sdk, c)]
 
 
 #: Chiave di permesso di opencode → tool(i) nativi che la governano.

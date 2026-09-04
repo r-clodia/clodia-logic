@@ -76,9 +76,7 @@ def _incoerenze(spec) -> list[str]:
 def _sandbox_applicato(spec, campo: str) -> bool:
     """Questo runtime porta `campo` del sandbox? (tabella in `native_tools`)"""
     from ..sdk_runtime import native_tools as nt
-    copre = nt.SANDBOX_ENFORCED.get(
-        (getattr(spec, "agent_sdk", None) or "claude").strip().lower(), frozenset())
-    return copre is None or campo in copre
+    return nt.sandbox_applies(getattr(spec, "agent_sdk", None), campo)
 
 
 def _sandbox_inerte(spec, sandbox) -> list[str]:

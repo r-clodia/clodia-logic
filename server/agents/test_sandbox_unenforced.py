@@ -132,6 +132,20 @@ class TheTableSaysWhatEachRuntimeApplies(unittest.TestCase):
     def test_no_sandbox_at_all_is_not_a_crash(self):
         self.assertEqual(nt.sandbox_unenforced("codex", None), [])
 
+    def test_the_predicate_answers_for_the_three_readers(self):
+        """`sandbox_applies` è la stessa domanda che si facevano, come lettura
+        diretta della tabella, il loader e `trifecta.has_shell`: se un giorno
+        divergesse dal residuo, è qui che si vede."""
+        for campo in nt.SANDBOX_FIELDS:
+            self.assertTrue(nt.sandbox_applies("claude", campo), campo)
+            self.assertFalse(nt.sandbox_applies("codex", campo), campo)
+            self.assertFalse(nt.sandbox_applies("opencode", campo), campo)
+            self.assertFalse(nt.sandbox_applies("qualcosa-di-nuovo", campo), campo)
+        # `None` = il seed non dichiara un runtime → è claude, come nel loader.
+        self.assertTrue(nt.sandbox_applies(None, "allow_shell_cmds"))
+        # E la maiuscola non è un runtime diverso.
+        self.assertTrue(nt.sandbox_applies(" Claude ", "allow_shell_cmds"))
+
 
 class TheSeedSaysItWhereItIsRead(unittest.TestCase):
     """Gli avvisi del loader: dalla #227 viaggiano con la scheda dell'agente,

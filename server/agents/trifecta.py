@@ -439,9 +439,7 @@ def has_shell(spec) -> bool:
     allow = list(getattr(sandbox, "allow_shell_cmds", None) or [])
     deny = list(getattr(sandbox, "deny_shell_patterns", None) or [])
     sdk = (getattr(spec, "agent_sdk", None) or "claude").strip().lower()
-    copre = nt.SANDBOX_ENFORCED.get(sdk, frozenset())
-    porta_il_sandbox = copre is None or "allow_shell_cmds" in copre
-    if porta_il_sandbox:
+    if nt.sandbox_applies(sdk, "allow_shell_cmds"):
         if not allow:
             return False
         if any(d.strip() in ("*", "**") for d in deny):
