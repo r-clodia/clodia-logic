@@ -42,6 +42,7 @@ from ..agents.models import AgentSpec, _PROXY_ALLOWED_TOOLS
 from ..colony import pki
 from .. import scoped_overrides
 from .providers import (connected_provider_ids, candidate_providers, effective_provider,
+                        effective_provider_for_tier,
                         provider_seal, provider_override, set_provider_override,
                         provider_paused, provider_supports_model)
 from .provider_store import ProviderStoreError
@@ -174,11 +175,40 @@ def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
         "paused": provider_paused(c),
         "default": bool(cands) and c == cands[0],  # il primo in lista è il default (*)
         "selected": c == ov,                        # override manuale attivo
-        "effective": c == pid,                      # provider realmente in uso ora
+        # Preferito fuori da una stanza. NON «quello in uso ora»: dentro un
+        # topic decide il tier (vedi `provider_by_tier`), e chiamarlo effettivo
+        # è ciò che faceva leggere la card come «un provider per agente».
+        "effective": c == pid,
     } for c in cands]
+    # PER STANZA, non in assoluto (clodia-platform#306). `pid` qui sopra è il
+    # preferito: risolve l'ordine dichiarato e non sa niente di nessun topic.
+    # Ma un turno di canale apre la sessione con `topic_runtime_override`, cioè
+    # col provider MENO COSTOSO idoneo al tier di quella stanza — e la sessione
+    # è per `(topic, agente)`. Lo stesso agente può quindi girare su provider
+    # diversi in stanze diverse, e la card ne mostrava uno solo dicendo che era
+    # «quello realmente in uso».
+    #
+    # Non si toglie `provider`: è il default fuori da una stanza, e per un
+    # agente con un solo provider idoneo resta anche l'unica risposta. Gli si
+    # affianca la mappa per tier, che è ciò che rende la card VERA — cinque
+    # voci, calcolate con la stessa funzione che decide davvero.
+    per_tier = {}
+    for t in _CLR_VALID:
+        try:
+            per_tier[t] = effective_provider_for_tier(
+                getattr(spec, "providers", None), getattr(spec, "provider", None),
+                spec.agent_sdk, connected, t, getattr(spec, "model", None),
+                getattr(spec, "provider_models", None))
+        except Exception:  # noqa: BLE001 — una card non cade per un tier
+            per_tier[t] = None
     return {
         "provider": pid,
-        # SEAL del provider a cui l'agent è ATTUALMENTE attribuito (per la card).
+        # Il provider EFFETTIVO dipende dalla stanza: questa è la mappa
+        # tier → provider, `None` dove nessun provider dell'agent regge il tier
+        # (e in quel tier l'agente non può prendere turni).
+        "provider_by_tier": per_tier,
+        # SEAL del provider PREFERITO. Per il SEAL che conta in una stanza si
+        # guarda `provider_by_tier`.
         "provider_seal": provider_seal(pid),
         # modello dello stack EFFETTIVO: può differire dal `model` top-level
         # quando il provider effettivo ha un override per-provider. La card
