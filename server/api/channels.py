@@ -1598,6 +1598,38 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "con il tier e chiudi con il marker di invito previsto dalla skill "
             "team-composition. Non invitare direttamente nessuno.\n\n"
             "Descrizione dell'owner:\n" + text)
+    if kind == "plain":
+        # IL PERCORSO PIÙ COMUNE, ed era l'unico MUTO. Un messaggio senza
+        # menzioni arriva qui: il router ha scelto per rilevanza, il turno parte,
+        # e all'agente non veniva detto niente — `None`, quindi il prompt è la
+        # sola storia del canale. Chi legge una conversazione in cui nessuno lo
+        # nomina non ha motivo di concludere che tocchi a lui, e infatti
+        # rispondeva «resto in attesa di istruzioni» (segnalato il 5 set 2026).
+        #
+        # Tutti gli altri percorsi il mandato ce l'hanno — `direct`, `routed`,
+        # `coordinamento`, `topic-bootstrap`. Mancava proprio quello che si
+        # imbocca quando l'utente scrive normalmente.
+        #
+        # La direttiva dice anche COSA FARE SE IL ROUTER HA SBAGLIATO: senza
+        # quella via d'uscita, l'unico modo di obbedire sarebbe rispondere a una
+        # domanda fuori dominio — e una risposta inventata è peggio del silenzio
+        # che stiamo togliendo.
+        return (
+            f"[TURNO TUO] {author} ha scritto in canale senza menzionare nessuno, e "
+            "il router semantico ha scelto TE come il partecipante più pertinente. "
+            "Non è un messaggio per conoscenza: il turno è tuo e nessun altro sta "
+            "rispondendo.\n\n"
+            "Lavora per OBIETTIVI, non per comandi: capisci il fine e portalo a casa "
+            "con i tuoi strumenti. Se ti manca un tool, un grant o una skill, non "
+            "fermarti — guarda i partecipanti del canale (`runtime.agents` mostra "
+            "skill, grant e dominio di ciascuno), trova chi può aiutarti e "
+            "coinvolgilo con UNA menzione `@nome`, che apre il suo turno.\n\n"
+            "Se il router ha sbagliato e la richiesta non è del tuo dominio, dillo "
+            "in una riga e passala a chi è competente con `@nome`. Se non è "
+            "competente nessuno nella stanza, dillo: sono esiti legittimi. Quello "
+            "che non va bene è restare in attesa di istruzioni — le istruzioni sono "
+            "il messaggio qui sotto.\n\n"
+            f"Messaggio di {author}:\n" + text)
     return None
 
 
