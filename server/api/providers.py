@@ -511,6 +511,29 @@ def effective_provider(providers: list[str] | None, provider: str | None,
     return None
 
 
+def provider_usable_for_tier(pid: str | None, tier: str | None) -> bool:
+    """Questo provider è ancora spendibile in una stanza di questo tier?
+
+    Le tre condizioni che `effective_provider_for_tier` applica quando SCEGLIE,
+    qui poste su un provider GIÀ scelto: connesso, non in pausa, SEAL >= tier.
+    Serve perché la scelta si fa alla nascita della sessione e la stanza dura
+    molto di più (clodia-platform#305): fra il primo turno e il decimo un
+    provider può essere stato messo in pausa, o il tier del topic alzato.
+
+    Un provider ignoto è `False`: se non si sa cosa serve, non lo si usa per
+    dati di un tier. È la stessa direzione del `return None` di
+    `effective_provider_for_tier`, che non ripiega mai sotto il tier.
+    """
+    if not pid:
+        return False
+    try:
+        return (pid in connected_provider_ids()
+                and pid not in _load_paused()
+                and provider_meets_tier(pid, tier))
+    except Exception:  # noqa: BLE001 — infra muta: non è una licenza a proseguire
+        return False
+
+
 def effective_provider_for_tier(providers: list[str] | None, provider: str | None,
                                 agent_sdk: str | None, connected: set[str],
                                 tier: str | None, model: str | None = None,

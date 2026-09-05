@@ -34,7 +34,7 @@ from .. import debug_watch
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
-                                   topic_runtime_override)
+                                   topic_runtime_override, session_provider)
 from . import (access_log, mentions, presence, responder_routing, router_config,
                routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
@@ -1633,11 +1633,26 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
     return None
 
 
-def _provider_below_tier_warning(spec, tier_real: str) -> dict:
-    """Warning UI quando un bot risponde con provider sotto il tier."""
+def _provider_below_tier_warning(spec, tier_real: str, pid: str | None = None) -> dict:
+    """Warning: la stanza sta girando su un provider che non regge il suo tier.
+
+    `pid` è il provider DELLA STANZA. Prima veniva risolto qui con
+    `agent_effective_provider`, la variante SENZA tier — cioè l'ordine di
+    preferenza dell'agente, che non sa niente di nessun topic. Il messaggio
+    diceva «il provider in uso» nominando un provider che questa stanza poteva
+    non aver mai toccato, e mandava chi legge a controllare la cosa sbagliata
+    (clodia-platform#307). Con il default `None` si ricade sul preferito, ma i
+    chiamanti passano quello vero.
+
+    Perché questa funzione era morta: nasce per l'eccezione dei super-agent
+    («consentita solo ai super, con popup», così la descrive ancora il tipo nel
+    frontend), e `_SUPER_AGENTS` è vuoto dalla #104. Il caso che la rendeva
+    necessaria non esiste più; quello che la rende necessaria ORA è un altro —
+    una sessione nata idonea che smette di esserlo, #305.
+    """
     from ..sdk_runtime.session import agent_effective_provider
     from .providers import provider_seal
-    pid = agent_effective_provider(spec.name)
+    pid = pid or agent_effective_provider(spec.name)
     return {
         "kind": "provider_below_tier", "tier": tier_real, "responder": spec.name,
         "provider": pid, "provider_seal": provider_seal(pid),
@@ -1918,6 +1933,8 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         LOG.info("turno rifiutato per %s su %s/%s: activation=refuse e sessione occupata",
                  label, tier, name)
         await _announce_refusal(tier, name, label)
+        return False
+    if not await _provider_della_stanza_ancora_valido(tier, name, tier_real, spec, chat_id):
         return False
     created = False
     try:
@@ -2998,6 +3015,79 @@ def _chat_busy(chat_id: str) -> bool:
     return bool(lock is not None and lock.locked())
 
 
+async def _announce_provider_inadeguato(tier: str, name: str, spec, pid) -> None:
+    """Dice nel topic che il turno non parte perché il provider non regge il tier.
+
+    Stesso principio di `_announce_refusal`: un turno che non parte in silenzio è
+    indistinguibile da un agente rotto. Qui la ragione è di sostanza — è un
+    rifiuto per SOVRANITÀ DEL DATO, e chi guarda la stanza deve saperlo invece
+    di dedurlo dal fatto che nessuno risponde.
+    """
+    w = _provider_below_tier_warning(spec, tier, pid)
+    try:
+        testo = ("🛑 **Turno non avviato.** " + w["message"] + "\n\n"
+                 + "\n".join(f"- {x}" for x in (w.get("suggestions") or [])))
+        msg = await topics_client.async_post_message(tier, name, "system", testo, kind="system")
+        await _channel_message(tier, name, "system", "system", message=msg)
+    except Exception as e:  # noqa: BLE001 — dirlo non deve rompere altro
+        LOG.warning("nota provider-sotto-tier non pubblicata su %s/%s: %s", tier, name, e)
+    _spawn_bg(_watch_report(tier, name, "provider_below_tier", spec.name,
+                            w["message"], tier=tier, kind="system"))
+
+
+async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: str,
+                                               spec, chat_id: str) -> bool:
+    """Il provider della sessione VIVA regge ancora il tier? Altrimenti la rifà.
+
+    Il provider si sceglie alla nascita della sessione, dentro il ramo
+    `except KeyError`; la stanza però dura molto di più. Una sessione viva
+    teneva per sempre il provider con cui era nata, quindi mettere in pausa un
+    provider SEMBRAVA immediato e sulle stanze già aperte non lo era, e un topic
+    promosso di tier continuava a girare su un provider che non lo regge
+    (clodia-platform#305).
+
+    Si ricalcola **solo quando quello in uso è diventato inidoneo**, non quando
+    se ne connette uno più economico: cambiare provider vuol dire ricreare la
+    sessione, cioè perdere il contesto della conversazione. Per la sovranità del
+    dato quel prezzo si paga, per qualche centesimo no. È una scelta di prodotto
+    e sta scritta qui perché non si deduce dal codice.
+
+    Ritorna False solo quando il turno NON deve partire: nessun provider idoneo.
+    Un `True` significa «prosegui», e può voler dire che la sessione è appena
+    stata cancellata perché il chiamante la ricrei col provider giusto.
+
+    Sta in una funzione e non in linea perché i punti che creano una sessione di
+    canale sono DUE, e correggerne uno solo ripeterebbe il difetto che il codice
+    qui accanto già denuncia: «tre punti che promettono la stessa cosa e uno che
+    non la mantiene».
+    """
+    from .providers import provider_usable_for_tier
+    try:
+        chat = manager.get(chat_id)
+    except KeyError:
+        return True                      # non esiste: la create farà la scelta
+    in_uso = session_provider(chat)
+    if not in_uso or provider_usable_for_tier(in_uso, tier_real):
+        return True
+    if _chat_busy(chat_id):
+        # Un turno è in corso proprio ora su quel provider: interromperlo non lo
+        # rende retroattivamente idoneo e ucciderebbe un lavoro a metà. Si lascia
+        # finire, e il ricalcolo tocca al turno dopo.
+        LOG.warning("provider %s non più idoneo al tier %s su %s/%s ma la sessione "
+                    "è occupata: ricalcolo rimandato", in_uso, tier_real, tier, name)
+        return True
+    sostituto = _topic_provider(spec, tier_real)
+    if not sostituto:
+        LOG.warning("nessun provider idoneo al tier %s per %s su %s/%s: turno non "
+                    "avviato", tier_real, spec.name, tier, name)
+        await _announce_provider_inadeguato(tier, name, spec, in_uso)
+        return False
+    LOG.info("provider di %s su %s/%s: %s → %s (non più idoneo al tier %s)",
+             spec.name, tier, name, in_uso, sostituto, tier_real)
+    await manager.delete(chat_id)
+    return True
+
+
 async def _announce_refusal(tier: str, name: str, label: str) -> None:
     """Dice nel topic che il turno non parte, e perché.
 
@@ -3790,6 +3880,9 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     if responder is None:
         return None, None
     chat_id = f"chan:{tier}:{name}:{responder.name}"
+    if not await _provider_della_stanza_ancora_valido(tier, name, tier_real,
+                                                     responder, chat_id):
+        return None, None
     created = False
     try:
         chat = manager.get(chat_id)

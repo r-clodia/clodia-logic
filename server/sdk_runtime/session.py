@@ -935,6 +935,17 @@ def _runtime_token_ttl(override: Optional[dict]) -> int:
     return max(1, min(_CLODIA_TOOLS_TOKEN_TTL, remaining))
 
 
+def session_provider(chat) -> Optional[str]:
+    """Il provider con cui QUESTA sessione è nata, non quello che sceglieremmo ora.
+
+    `topic_runtime_override` risponde alla domanda «quale provider per questa
+    stanza?»; questa risponde a «quale provider sta usando la sessione che c'è
+    già?». Sono la stessa domanda solo finché niente cambia, ed è la differenza
+    su cui poggia il ricalcolo di clodia-platform#305.
+    """
+    return (getattr(chat, "_runtime_override", None) or {}).get("provider")
+
+
 def topic_runtime_override(kind: str, tier: str | None) -> dict:
     """Runtime override per sessioni di topic: provider min-cost idoneo al tier."""
     provider = agent_effective_provider_for_tier(kind, tier)
