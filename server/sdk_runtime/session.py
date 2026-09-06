@@ -1346,7 +1346,11 @@ class ChatSession:
         await self._set_status(ClodiaStatus.STOPPED)
 
     async def send_user_message(self, content: str) -> str:
-        if self._client is None:
+        # «Mai avviata» si legge sulle opzioni, non sul client: `_recover_session()`
+        # azzera `_client` prima di riaprirlo, e leggerlo QUI — fuori dal lock —
+        # uccideva con "session not started" il turno che arrivava durante una
+        # recovery, invece di accodarlo (clodia-platform#311).
+        if self._opts_kwargs is None:
             raise RuntimeError("session not started")
         async with self._lock:
             # Token OAuth long-lived: se è in scadenza, provider_env lo rinnova;
@@ -1358,6 +1362,11 @@ class ChatSession:
             if self._refresh_provider_env() | self._refresh_mcp_principal():
                 LOG.info("token rinnovato (provider/principal) → riapro il client per %s", self.chat_id)
                 await self._recover_session()
+            # Il lock è nostro: ogni recovery concorrente è finita. Se il client
+            # manca ancora è perché quella recovery è fallita — ritenta, e solo
+            # se non riparte rinuncia al turno.
+            if self._client is None and not await self._recover_session():
+                raise RuntimeError("session not started")
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
             activity_log.append(self.kind, "run_started",
@@ -1463,7 +1472,10 @@ class ChatSession:
         Usato dal looper per dispacciare task ad altri agent senza bloccarsi
         in attesa della loro risposta.
         """
-        if self._client is None:
+        # Stesso motivo di send_user_message: il pre-check non deve leggere
+        # `_client`, transitoriamente None durante una recovery (#311). Il turno
+        # vero ricontrolla comunque sotto lock.
+        if self._opts_kwargs is None:
             raise RuntimeError("session not started")
         asyncio.create_task(self._do_send_bg(content))
         return {"chat_id": self.chat_id, "queued": True}

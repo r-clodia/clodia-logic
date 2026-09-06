@@ -56,6 +56,7 @@ def _make_session() -> ChatSession:
     sess._opts_kwargs = {"cwd": "/tmp"}  # presente → recovery ammesso
     sess.principal = "davide"
     sess._token_principal = None
+    sess._runtime_override = None
     return sess
 
 
@@ -205,6 +206,86 @@ class SendFailureUnblocksTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(recovered["n"], 1)             # recovery invocato
         self.assertEqual(sess.status, ClodiaStatus.IDLE)  # pronta, non THINKING
         self.assertFalse(sess._lock.locked())           # lock libero → niente deadlock
+
+
+class ConcurrentTurnDuringRecoveryTests(unittest.IsolatedAsyncioTestCase):
+    """clodia-platform#311 — `_recover_session()` azzera `_client` prima di
+    riaprirlo, sotto lock. Un secondo turno che arriva in quella finestra deve
+    ACCODARSI al lock, non morire con RuntimeError('session not started'):
+    la sessione è viva, sta solo cambiando client."""
+
+    async def test_second_turn_queues_behind_recovery_instead_of_dying(self):
+        sess = _make_session()
+        client = mock.AsyncMock()
+        sess._client = client
+
+        in_recovery = asyncio.Event()
+        release = asyncio.Event()
+
+        async def fake_recover():
+            # riproduce _recover_session: client assente finché non riapre
+            sess._client = None
+            in_recovery.set()
+            await release.wait()
+            sess._client = client
+            return True
+
+        calls = {"refresh": 0}
+
+        def fake_refresh():
+            calls["refresh"] += 1
+            return calls["refresh"] == 1  # solo il primo turno rinnova il token
+
+        with _patch_seams(), \
+             mock.patch.object(sess, "_record", new=mock.AsyncMock()), \
+             mock.patch.object(sess, "_publish_error", new=mock.AsyncMock()), \
+             mock.patch.object(sess, "_refresh_provider_env", side_effect=fake_refresh), \
+             mock.patch.object(sess, "_refresh_mcp_principal", return_value=False), \
+             mock.patch.object(sess, "_set_status", new=mock.AsyncMock()), \
+             mock.patch.object(sess, "_turn_watchdog", new=mock.AsyncMock()), \
+             mock.patch.object(sess, "_collect_response",
+                               new=mock.AsyncMock(return_value="ok")), \
+             mock.patch.object(sess, "_recover_session", side_effect=fake_recover), \
+             mock.patch.object(S.activity_log, "append"):
+
+            first = asyncio.create_task(sess.send_user_message("primo"))
+            await asyncio.wait_for(in_recovery.wait(), timeout=1)  # lock preso, client None
+
+            second = asyncio.create_task(sess.send_user_message("secondo"))
+            await asyncio.sleep(0)  # dà al secondo turno la possibilità di fallire
+
+            release.set()
+            results = await asyncio.wait_for(
+                asyncio.gather(first, second, return_exceptions=True), timeout=5)
+
+        self.assertEqual(results, ["ok", "ok"],
+                         "il turno concorrente alla recovery è stato perso")
+        self.assertEqual(client.query.await_count, 2)  # entrambi i turni inviati
+
+    async def test_async_enqueue_survives_recovery_window(self):
+        """Stessa causa nel gemello fire-and-forget: il pre-check non deve
+        leggere `_client`, che durante una recovery è transitoriamente None."""
+        sess = _make_session()
+        sess._client = None  # finestra di recovery su sessione viva
+
+        with mock.patch.object(sess, "send_user_message",
+                               new=mock.AsyncMock(return_value="ok")) as sent:
+            res = await sess.send_user_message_async("ciao")
+            self.assertTrue(res["queued"])
+            await asyncio.sleep(0)  # lascia partire il task di background
+            sent.assert_awaited_once_with("ciao")
+
+    async def test_session_never_started_still_raises(self):
+        """La regressione da evitare: senza opzioni la sessione non è mai
+        partita e «session not started» resta la risposta giusta."""
+        sess = _make_session()
+        sess._opts_kwargs = None
+        sess._client = None
+        with self.assertRaises(RuntimeError):
+            await sess.send_user_message("ciao")
+        with self.assertRaises(RuntimeError):
+            await sess.send_user_message_async("ciao")
+        self.assertFalse(sess._lock.locked())
 
 
 class CollectResponseTests(unittest.IsolatedAsyncioTestCase):
