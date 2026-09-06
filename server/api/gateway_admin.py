@@ -85,6 +85,21 @@ def flow_allow(flows: dict, source: str = "", validate: bool = False) -> dict:
     return r.json()
 
 
+def registration(agent: str) -> dict:
+    """La entry REGISTRATA nel gateway per `agent`, alla lettera.
+
+    Il termine di paragone della dichiarazione del seed (clodia-platform#203).
+    Non si usa `agent_verbs` al suo posto: quella è la vista da pannello —
+    espande i wildcard, salta i grant che sono anche `denied` — e una lista
+    ricostruita di lì diverge dall'originale proprio nei casi che a un
+    rilevatore di divergenze interessano.
+    """
+    r = requests.get(f"{_base_url()}/{agent}/registration", headers=_headers(),
+                     timeout=_HTTP_TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+
 def agent_verbs(agent: str) -> dict:
     """Verbi EFFETTIVI dell'agent col flag gated, dal gateway.
 
@@ -123,3 +138,7 @@ async def flow_allow_async(flows: dict, source: str = "", validate: bool = False
 
 async def agent_verbs_async(agent: str) -> dict:
     return await asyncio.to_thread(agent_verbs, agent)
+
+
+async def registration_async(agent: str) -> dict:
+    return await asyncio.to_thread(registration, agent)

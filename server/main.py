@@ -106,6 +106,24 @@ async def _lifespan(app: FastAPI):
                      "; ".join(f"{k}={v}" for k, v in riempiti.items()))
     except Exception as e:  # noqa: BLE001 — un seed mancante non blocca il boot
         LOG.warning("sync dei seed dal pack fallita: %s", e)
+    # La gamba che non aveva una sync: dichiarazione del seed → gateway. La
+    # registrazione avviene all'import di un pack, e basta: da lì in poi la
+    # config del gateway è la fotografia di quel giorno mentre il seed è una
+    # dichiarazione che nessuno rilegge (clodia-platform#203). Qui si CONFRONTA
+    # e si scrive nel log — non si sovrascrive: la config viva può contenere
+    # modifiche intenzionali, e un overwrite muto è proprio l'evento che
+    # dovrebbe essere visibile. L'unica riparazione è l'agente ASSENTE, dove non
+    # c'è nessuna scelta da proteggere e i verbi sono zero.
+    #
+    # In un thread: sono N GET verso il gateway, e una chiamata sincrona in un
+    # handler async ferma l'event loop di tutto il processo (#106). Best-effort
+    # come le altre sync: una diagnosi che impedisce l'avvio è peggio della
+    # diagnosi che manca.
+    try:
+        from .agents.gateway_drift import report_at_boot
+        await asyncio.to_thread(report_at_boot)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("confronto seed↔gateway non eseguito: %s", e)
     try:
         if not admin.is_initialized():
             LOG.warning("[BOOTSTRAP] istanza NON reclamata — apri la webui e crea il "
