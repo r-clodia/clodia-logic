@@ -780,7 +780,8 @@ async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -
                                          "via codice/seed")
 
     yaml_path = Path(spec.agent_dir) / "agent.yaml"
-    text = yaml_path.read_text()
+    prima = yaml_path.read_text()
+    text = prima
     for key, items in (("capabilities", patch.capabilities),
                        ("rules", patch.rules),
                        ("tool_permissions", patch.tool_permissions)):
@@ -793,6 +794,42 @@ async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -
     if updated is None:
         raise HTTPException(500, f"dopo la modifica l'agent '{name}' non valida: "
                                  f"{registry.errors().get(name)}")
+
+    # I `tool_permissions` sono una DICHIARAZIONE finché il gateway non li
+    # registra. L'autorizzazione si legge da `allowed_tools` nella config del
+    # gateway (`whitelist._agent_may`), che vive su un volume che questo processo
+    # non monta — per progetto (§3.5). Scrivere `agent.yaml` e fermarsi qui
+    # significa cambiare ciò che l'agente VEDE senza cambiare ciò che può fare:
+    # è il difetto di clodia-platform#304, dove `agents.grant_tool` rispondeva
+    # `ok` su un permesso che restava negato a ogni chiamata, e la revoca —
+    # direzione peggiore — toglieva un verbo solo sulla carta.
+    #
+    # Il canale esiste già ed è lo stesso che usa l'install di un pack
+    # (`pack_import._install_seed`): non è il soggetto che si riscrive
+    # l'autorità, è l'agent-server che la chiede al gateway, che riverifica.
+    # Si mandano SOLO gli `allowed_tools`: gli altri campi si omettono perché
+    # per il gateway l'assenza è «non mi pronuncio» e la lista vuota è
+    # «azzerali» — mandarli qui riscriverebbe gate e deny che questa PATCH non
+    # ha toccato.
+    if patch.tool_permissions is not None:
+        from . import gateway_admin
+        try:
+            await gateway_admin.register_agent_async(
+                name, list(updated.tool_permissions or []))
+        except Exception as e:  # noqa: BLE001
+            # ROLLBACK: il seed torna com'era. Lasciare la dichiarazione nuova
+            # accanto a un'autorità vecchia ricrea in piccolo esattamente lo
+            # stato che questa modifica elimina — con l'aggravante che il file
+            # mostrerebbe il verbo concesso (o tolto) e nessuno andrebbe a
+            # cercare la divergenza.
+            yaml_path.write_text(prima)
+            registry.load()
+            raise HTTPException(
+                502, f"registrazione al gateway fallita ({str(e)[:160]}): "
+                     f"nessuna modifica applicata a '{name}' — i tool_permissions "
+                     f"sono tornati a com'erano. L'autorizzazione vive nella "
+                     f"whitelist del gateway: senza quella registrazione la "
+                     f"modifica sarebbe stata solo dichiarativa") from e
     return updated
 
 
