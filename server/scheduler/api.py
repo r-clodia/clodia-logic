@@ -17,7 +17,7 @@ from typing import Optional
 from fastapi import APIRouter, HTTPException, Request
 from pydantic import BaseModel, Field
 
-from . import db, nl_schedule, run_status, scheduler
+from . import db, nl_schedule, refusals, run_status, scheduler
 from ..api import topics_client
 from ..sdk_runtime.session import available_kinds, known_kind, provider_connected_for
 
@@ -458,3 +458,42 @@ async def api_report_run_status(request: Request):
         raise HTTPException(422, str(e)) from e
     return {"ok": True, "chat_id": chat_id, "status": normalizzato,
             "detail": (str(detail).strip() or None) if detail is not None else None}
+
+
+@router.post("/clodia/jobs/refusal/internal")
+async def api_note_run_refusal(request: Request):
+    """Il GATEWAY constata che un verbo è stato NEGATO dentro un turno.
+
+    Chiamato da `clodia-tools` nel ramo `except PermissionError` del dispatch,
+    dove il verbo e la CLASSE del motivo (`denied_tools`, `whitelist`,
+    `unattended`, `egress`, `clearance`) sono già calcolati per la telemetria.
+    Body: `{chat_id, verb, why?}`.
+
+    Non è una dichiarazione: qui non parla l'agente, parla chi ha negato. È la
+    differenza che clodia-platform#206 chiedeva di rendere visibile — un turno
+    può chiudersi «bene» proprio perché l'agente ha preso atto del rifiuto.
+
+    `chat_id` viene dal claim `chat` del token di sessione, letto lato gateway:
+    stessa provenienza di `report-status`, per la stessa ragione (non lo sceglie
+    il modello). Stessa postura di autenticazione della rotta sorella — la
+    barriera è la rete interna — e il verso di ciò che si può ottenere qui è
+    quello sicuro: una chiamata forgiata può solo PEGGIORARE lo stato di un run,
+    mai autorizzare alcunché.
+
+    Un rifiuto che non appartiene a nessun run in corso è inerte: nessun
+    completamento lo consuma, il registro lo azzera all'inizio del run
+    successivo, e `refusals.pending_count` lo rende visibile.
+    """
+    body = await request.json()
+    chat_id = str(body.get("chat_id") or "").strip()
+    verb = str(body.get("verb") or "").strip()
+    why = str(body.get("why") or "").strip()
+    if not chat_id:
+        raise HTTPException(400, "chat_id richiesto")
+    if not verb:
+        # 400 e non «registra comunque»: una riga senza verbo nel dettaglio di un
+        # run è rumore esattamente dove serviva un nome.
+        raise HTTPException(400, "verb richiesto: senza, il run record non "
+                                 "nominerebbe nulla")
+    refusals.note(chat_id, verb, why)
+    return {"ok": True, "chat_id": chat_id, "verb": verb, "why": why or None}

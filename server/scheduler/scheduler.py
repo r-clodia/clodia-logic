@@ -29,7 +29,7 @@ except Exception:  # pragma: no cover
     import pytz
     _SCHED_TZ = pytz.timezone("Europe/Rome")
 
-from . import db, run_status
+from . import db, refusals, run_status
 from ..core.events import bus
 from ..core.models import Event
 from ..sdk_runtime.session import known_kind, manager
@@ -50,6 +50,37 @@ def _spawn_run(coro) -> None:
     task.add_done_callback(_RUN_TASKS.discard)
 
 
+def _con_i_rifiuti(stato: str, dettaglio: Optional[str],
+                   rifiuti: list[dict]) -> tuple[str, Optional[str]]:
+    """Combina l'esito DICHIARATO con i verbi NEGATI, misurati nel turno.
+
+    Le tre regole, e perché non è la stessa in tre casi:
+
+    - nessun rifiuto → nulla cambia. Il verso opposto di questo difetto — far
+      nascere `error` su run puliti — non è meno grave, ed è quello che si
+      ottiene leggendo male un registro vuoto;
+    - `success` dichiarato con un rifiuto incassato → `error`. Non `failed`:
+      quello lo constata l'infrastruttura quando il turno MUORE, e questo turno
+      è arrivato in fondo. Il declassamento non è cosmetico — `complete_run`
+      persiste il dettaglio solo per gli stati `NOT_OK`, quindi su `success` il
+      verbo negato non sarebbe leggibile da nessuna parte;
+    - `error`/`fatal` dichiarati → restano. `fatal` dice più di `error` (il
+      lavoro non è stato fatto, e lo sa l'agente): sovrascriverlo perderebbe
+      informazione invece di aggiungerla. Il fatto si affianca alle sue parole.
+    """
+    if not rifiuti:
+        return stato, dettaglio
+    nota = f"verbi negati durante il run: {refusals.summary(rifiuti)}"
+    if stato == "success":
+        stato = "error"
+    if dettaglio == run_status.UNDECLARED_DETAIL:
+        # Il verbo davanti, la frase generica ridotta a coda: «non ha
+        # dichiarato» resta un fatto (diverso dal rifiuto), ma non è quello che
+        # chi apre lo storico sta cercando.
+        return stato, f"{nota} — e l'agente non ha dichiarato l'esito del run"
+    return stato, (f"{dettaglio} — {nota}" if dettaglio else nota)
+
+
 async def _complete_agentic_run(job_id: int, run_id: str, chat, prompt: str) -> None:
     """Esegue il turno di un job agentico e ne registra lo stato TERMINALE.
 
@@ -66,23 +97,40 @@ async def _complete_agentic_run(job_id: int, run_id: str, chat, prompt: str) -> 
       con `jobs.report_status` (`success` | `error` | `fatal`). Se non ha
       dichiarato niente è `error`, non `success`: un run di cui non conosciamo
       l'esito non è un run andato bene.
+
+    A queste si aggiunge un FATTO, che non è una dichiarazione: i verbi negati
+    dentro il turno (`refusals`). Un agente può dichiarare `success` in buona
+    fede su un lavoro che non è avvenuto — è il caso del digest — e su `success`
+    lo storico non conserva nemmeno il dettaglio. Quindi un rifiuto declassa un
+    `success` a `error` e nomina il verbo; una dichiarazione peggiore di
+    `success` NON viene sovrascritta (`fatal` dice più di `error`: il lavoro non
+    è stato fatto e lo sa l'agente), il fatto le si aggiunge accanto.
     """
     chat_id = getattr(chat, "chat_id", None)
+    chiave = str(chat_id or "")
     LOG.info("Job run started job_id=%s run_id=%s chat_id=%s",
              job_id, run_id, chat_id)
+    # Il registro dei rifiuti è del TURNO. Azzerarlo qui è ciò che impedisce a un
+    # diniego incassato ieri — o in una chat interattiva sulla stessa sessione —
+    # di far fallire il run di oggi.
+    refusals.forget(chiave)
     try:
         await chat.send_user_message(prompt)
     except Exception as exc:  # noqa: BLE001
         # Il turno è morto: qualunque cosa l'agente avesse dichiarato prima di
         # morire descrive un lavoro che non è arrivato in fondo. La si scarta,
         # altrimenti resterebbe in memoria e verrebbe letta dal PROSSIMO run.
+        # Stessa ragione per i rifiuti: appartengono a questo turno, non al
+        # prossimo.
         if chat_id:
             run_status.forget(str(chat_id))
+        refusals.forget(chiave)
         db.complete_run(job_id, run_id, status="failed",
                         error=str(exc) or repr(exc))
         LOG.exception("Job run failed job_id=%s run_id=%s: %s", job_id, run_id, exc)
     else:
-        stato, dettaglio = run_status.take(str(chat_id or ""))
+        stato, dettaglio = run_status.take(chiave)
+        stato, dettaglio = _con_i_rifiuti(stato, dettaglio, refusals.take(chiave))
         db.complete_run(job_id, run_id, status=stato, error=dettaglio)
         if stato == "success":
             LOG.info("Job run completed job_id=%s run_id=%s", job_id, run_id)

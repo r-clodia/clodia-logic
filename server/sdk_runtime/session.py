@@ -306,13 +306,18 @@ DEFAULT_KIND = "clodia"
 #
 # Da qui `_permission_gate`: lo stesso «approva tutto» che serviva al flag, meno
 # ciò che qualcuno ha deciso di negare.
-def _permission_gate(disallowed: list[str] | None):
+def _permission_gate(disallowed: list[str] | None, chat_id: str = ""):
     """`can_use_tool` che approva tutto TRANNE ciò che è nella blocklist.
 
     Il confronto è sul nome del tool e sulla sua base (`Bash(rm:*)` → `Bash`):
     una regola con pattern la applica il CLI, ma se qui passasse comunque il
     permesso il CLI non la vedrebbe nemmeno. Nel dubbio si nega la base — è la
     direzione in cui un errore si vede subito, invece di lasciare passare.
+
+    Con `chat_id` il diniego viene anche REGISTRATO (clodia-platform#206): è uno
+    dei due soli punti in cui un rifiuto viene deciso invece che dedotto, e senza
+    questa riga un job che perde un permesso continua a chiudere senza che il suo
+    run record nomini il verbo mancante.
     """
     negati = {str(x).strip() for x in (disallowed or []) if str(x).strip()}
     basi = {n.split("(", 1)[0] for n in negati}
@@ -321,6 +326,18 @@ def _permission_gate(disallowed: list[str] | None):
                     ctx: ToolPermissionContext):
         nome = str(tool_name or "")
         if nome in negati or nome.split("(", 1)[0] in basi:
+            if chat_id:
+                # Import LOCALE, non in testa al modulo: la dipendenza fra i due
+                # package corre nel verso opposto (`scheduler` importa
+                # `sdk_runtime`), e importarlo qui sopra la invertirebbe a tempo
+                # di import. Qui siamo a turno avviato, tutto è già caricato.
+                from ..scheduler import refusals as _refusals
+                try:
+                    _refusals.note(chat_id, nome, _refusals.WHY_NATIVE_TOOLS)
+                except Exception:  # noqa: BLE001
+                    # La misura non rompe la decisione misurata: negare resta il
+                    # lavoro di questa funzione, registrarlo è un di più.
+                    LOG.warning("rifiuto non registrato per %s (%s)", nome, chat_id)
             return PermissionResultDeny(
                 message=(f"'{nome}' non è fra gli strumenti dichiarati da questo "
                          f"agente (native_tools nel suo seed)."))
@@ -1171,7 +1188,7 @@ class ChatSession:
         if permission_mode_override == "bypassPermissions" and _IS_ROOT:
             # Root: --dangerously-skip-permissions rifiutato dal CLI. Il callback
             # fa da bypass PER CIÒ CHE NON È NEGATO — non per tutto.
-            opts_kwargs["can_use_tool"] = _permission_gate(disallowed)
+            opts_kwargs["can_use_tool"] = _permission_gate(disallowed, self.chat_id)
         elif permission_mode_override:
             opts_kwargs["permission_mode"] = permission_mode_override
         # clodia-tools via MCP HTTP (microservizio segregato): conio un token
