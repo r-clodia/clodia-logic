@@ -1331,6 +1331,22 @@ class ChatSession:
                 pass
         self._client = None
         self._client_ctx = None
+        # Le opzioni muoiono con la sessione, e da qui in poi la distinzione che
+        # conta è «ferma», non «in recovery»: `_client is None` significa
+        # entrambe le cose, `_opts_kwargs` no. Senza questa riga una sessione
+        # fermata passerebbe il pre-check di `send_user_message` (le opzioni ci
+        # sono ancora) e il ricontrollo sotto lock la farebbe RISORGERE — su
+        # opzioni che non descrivono più niente di vivo: `cwd`/`HOME` puntano
+        # allo spawn distrutto qui sotto, e `CLODIA_AGENT_UID` porta un uid già
+        # restituito al pool, che `_alloc_uid()` può aver dato a un altro spawn.
+        # Due sessioni con lo stesso uid è il contenimento per-istanza (spawn
+        # 700, uid unico) che salta fra spawn diversi.
+        #
+        # `_recover_session()` controlla già `_opts_kwargs is None` e rinuncia:
+        # su una sessione fermata la risposta torna a essere «session not
+        # started», che è quella giusta. Un riavvio non si rompe — `start()`
+        # riassegna le opzioni.
+        self._opts_kwargs = None
         # Nice termination dello spawn: la memory (symlink) è preservata, scratch
         # e copia effimera distrutti.
         if self._spawn is not None:

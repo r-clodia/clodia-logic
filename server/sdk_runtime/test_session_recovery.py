@@ -53,6 +53,7 @@ def _make_session() -> ChatSession:
     sess._last_usage = {}
     sess._total_tokens = {"input": 0, "output": 0, "runs": 0}
     sess._spawn = None
+    sess._sandbox_uid = None             # letto da stop() per rilasciare l'uid
     sess._opts_kwargs = {"cwd": "/tmp"}  # presente → recovery ammesso
     sess.principal = "davide"
     sess._token_principal = None
@@ -286,6 +287,58 @@ class ConcurrentTurnDuringRecoveryTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(RuntimeError):
             await sess.send_user_message_async("ciao")
         self.assertFalse(sess._lock.locked())
+
+
+class StoppedSessionStaysStoppedTests(unittest.IsolatedAsyncioTestCase):
+    """L'altra faccia della #311, trovata revisionando la correzione.
+
+    Spostare il pre-check da `_client` a `_opts_kwargs` distingue «in recovery»
+    da «mai avviata» — ma `stop()` non azzerava le opzioni, quindi una sessione
+    FERMATA finiva dalla parte sbagliata: pre-check superato, e il ricontrollo
+    sotto lock la faceva riaprire.
+
+    Ciò che riapriva non è una sessione: `cwd`/`HOME` puntano allo spawn che
+    `stop()` ha appena distrutto, e `CLODIA_AGENT_UID` porta un uid restituito
+    al pool, che nel frattempo può appartenere a un altro spawn — cioè
+    l'isolamento per-istanza che salta fra spawn diversi.
+
+    La finestra è quella di chi ha già in mano l'oggetto `chat` quando il
+    manager lo toglie dal registro: `reap_idle` e `drop_all` saltano le sessioni
+    con un turno in corso, non i `_do_send_bg` in volo.
+    """
+
+    async def _stopped(self) -> ChatSession:
+        sess = _make_session()
+        sess._client = mock.AsyncMock()
+        sess._client_ctx = mock.AsyncMock()
+        with mock.patch.object(sess, "_set_status", new=mock.AsyncMock()):
+            await sess.stop()
+        return sess
+
+    async def test_a_stopped_session_refuses_instead_of_resurrecting(self):
+        sess = await self._stopped()
+        with mock.patch.object(sess, "_open_client", new=mock.AsyncMock()) as riapre:
+            with self.assertRaises(RuntimeError):
+                await sess.send_user_message("ciao")
+        # Il punto NON è solo l'eccezione: senza questa asserzione una sessione
+        # che risorge in silenzio e poi fallisce altrove passerebbe lo stesso.
+        riapre.assert_not_awaited()
+        self.assertFalse(sess._lock.locked())
+
+    async def test_the_fire_and_forget_twin_refuses_too(self):
+        """`_do_send_bg` inghiotte le eccezioni: se il pre-check qui passasse,
+        la risurrezione sarebbe muta."""
+        sess = await self._stopped()
+        with self.assertRaises(RuntimeError):
+            await sess.send_user_message_async("ciao")
+
+    async def test_recovery_of_a_stopped_session_is_a_noop(self):
+        """La guardia che regge tutto il resto: `_recover_session()` rinuncia
+        quando le opzioni non ci sono, quindi basta che `stop()` le tolga."""
+        sess = await self._stopped()
+        with mock.patch.object(sess, "_open_client", new=mock.AsyncMock()) as riapre:
+            self.assertFalse(await sess._recover_session())
+        riapre.assert_not_awaited()
 
 
 class CollectResponseTests(unittest.IsolatedAsyncioTestCase):
