@@ -1348,6 +1348,22 @@ class ChatSession:
                 pass
         self._client = None
         self._client_ctx = None
+        # Le opzioni muoiono con la sessione, e da qui in poi la distinzione che
+        # conta è «ferma», non «in recovery»: `_client is None` significa
+        # entrambe le cose, `_opts_kwargs` no. Senza questa riga una sessione
+        # fermata passerebbe il pre-check di `send_user_message` (le opzioni ci
+        # sono ancora) e il ricontrollo sotto lock la farebbe RISORGERE — su
+        # opzioni che non descrivono più niente di vivo: `cwd`/`HOME` puntano
+        # allo spawn distrutto qui sotto, e `CLODIA_AGENT_UID` porta un uid già
+        # restituito al pool, che `_alloc_uid()` può aver dato a un altro spawn.
+        # Due sessioni con lo stesso uid è il contenimento per-istanza (spawn
+        # 700, uid unico) che salta fra spawn diversi.
+        #
+        # `_recover_session()` controlla già `_opts_kwargs is None` e rinuncia:
+        # su una sessione fermata la risposta torna a essere «session not
+        # started», che è quella giusta. Un riavvio non si rompe — `start()`
+        # riassegna le opzioni.
+        self._opts_kwargs = None
         # Nice termination dello spawn: la memory (symlink) è preservata, scratch
         # e copia effimera distrutti.
         if self._spawn is not None:
@@ -1363,7 +1379,11 @@ class ChatSession:
         await self._set_status(ClodiaStatus.STOPPED)
 
     async def send_user_message(self, content: str) -> str:
-        if self._client is None:
+        # «Mai avviata» si legge sulle opzioni, non sul client: `_recover_session()`
+        # azzera `_client` prima di riaprirlo, e leggerlo QUI — fuori dal lock —
+        # uccideva con "session not started" il turno che arrivava durante una
+        # recovery, invece di accodarlo (clodia-platform#311).
+        if self._opts_kwargs is None:
             raise RuntimeError("session not started")
         async with self._lock:
             # Token OAuth long-lived: se è in scadenza, provider_env lo rinnova;
@@ -1375,6 +1395,11 @@ class ChatSession:
             if self._refresh_provider_env() | self._refresh_mcp_principal():
                 LOG.info("token rinnovato (provider/principal) → riapro il client per %s", self.chat_id)
                 await self._recover_session()
+            # Il lock è nostro: ogni recovery concorrente è finita. Se il client
+            # manca ancora è perché quella recovery è fallita — ritenta, e solo
+            # se non riparte rinuncia al turno.
+            if self._client is None and not await self._recover_session():
+                raise RuntimeError("session not started")
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
             activity_log.append(self.kind, "run_started",
@@ -1480,7 +1505,10 @@ class ChatSession:
         Usato dal looper per dispacciare task ad altri agent senza bloccarsi
         in attesa della loro risposta.
         """
-        if self._client is None:
+        # Stesso motivo di send_user_message: il pre-check non deve leggere
+        # `_client`, transitoriamente None durante una recovery (#311). Il turno
+        # vero ricontrolla comunque sotto lock.
+        if self._opts_kwargs is None:
             raise RuntimeError("session not started")
         asyncio.create_task(self._do_send_bg(content))
         return {"chat_id": self.chat_id, "queued": True}
