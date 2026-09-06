@@ -44,7 +44,10 @@ class Sandbox(BaseModel):
 
     Tutti i path sono relativi alla data root (`/clodia` nel container,
     `WORKSPACE_ROOT` localmente). Il placeholder `{scratch}` è risolto
-    runtime al path dello scratch dell'istanza.
+    runtime al path dello scratch dell'istanza, in ogni campo — a farlo, per
+    tutti i runtime, è `sdk_runtime.native_tools.normalize_sandbox`, che è anche
+    dove sta il default del campo non dichiarato (elenco vuoto = il seed non si
+    pronuncia, quindi non restringe).
 
     ⚠️ **Solo il runtime claude li applica.** Su codex e opencode nessuno li
     traduce: chi li dichiara lì scrive una restrizione che non esiste a runtime.

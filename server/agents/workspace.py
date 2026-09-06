@@ -19,6 +19,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import data_path
+from ..sdk_runtime import native_tools as _nt
 from .models import AgentSpec
 
 LOG = logging.getLogger("agent-server.agents.workspace")
@@ -156,32 +157,33 @@ def _floor_from_dirs(name: str) -> int:
     return mx
 
 
-def _resolve_path(path_template: str, scratch_dir: Path) -> str:
-    """Sostituisce `{scratch}` con il path effettivo dello scratch."""
-    return path_template.replace("{scratch}", str(scratch_dir))
-
-
 def _build_settings_json(spec: AgentSpec, scratch_dir: Path) -> dict:
     """Costruisce il `.claude/settings.json` per il workspace effimero.
 
     permissions.deny ha precedenza su permissions.allow (default Claude Code).
     `Read(...)` e `Write(...)` accettano glob.
+
+    La lettura del seed (segnaposto `{scratch}` risolto, voci vuote e doppioni
+    via) sta in `native_tools.normalize_sandbox`, non qui: opencode sta per
+    tradurre gli stessi campi in un'altra forma (clodia-platform#296 punto 2), e
+    due pulizie separate divergono. Qui resta solo la traduzione nella sintassi
+    di claude, che è l'unica cosa che di claude è.
     """
-    sb = spec.sandbox
+    sb = _nt.normalize_sandbox(spec.sandbox, scratch_dir)
     allow: list[str] = []
     deny: list[str] = []
 
-    for p in list(sb.allow_read):
-        allow.append(f"Read({_resolve_path(p, scratch_dir)})")
-    for p in list(sb.allow_write):
-        allow.append(f"Write({_resolve_path(p, scratch_dir)})")
-        allow.append(f"Edit({_resolve_path(p, scratch_dir)})")
+    for p in sb.allow_read:
+        allow.append(f"Read({p})")
+    for p in sb.allow_write:
+        allow.append(f"Write({p})")
+        allow.append(f"Edit({p})")
     for c in sb.allow_shell_cmds:
         # Sintassi Bash documentata: 'Bash(<cmd> *)' con spazio, non ':' .
         allow.append(f"Bash({c} *)")
 
     for p in sb.deny_read:
-        deny.append(f"Read({_resolve_path(p, scratch_dir)})")
+        deny.append(f"Read({p})")
     for pattern in sb.deny_shell_patterns:
         deny.append(f"Bash({pattern})")
 
