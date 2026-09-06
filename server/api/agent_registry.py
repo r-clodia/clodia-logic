@@ -323,8 +323,29 @@ async def get_agent_verbs(name: str, request: Request):
     intestazioni = {"Cache-Control": "no-store, must-revalidate",
                     "Pragma": "no-cache"}
     try:
-        return JSONResponse(status_code=200, content=await gateway_admin.agent_verbs_async(name),
-                            headers=intestazioni)
+        corpo = await gateway_admin.agent_verbs_async(name)
+        # La DIVERGENZA fra ciò che il seed dichiara e ciò che il gateway
+        # custodisce si mostra qui, dove i verbi si guardano
+        # (clodia-platform#203). Nel log da solo se la porta via la prima
+        # rotazione, e tutti e tre i guasti che hanno prodotto l'issue erano
+        # silenziosi: `ophelia` con un `*` sopravvissuto al proprio ritiro si
+        # vedeva soltanto aprendo un file che nessuno apre.
+        #
+        # Best-effort dentro un best-effort: la scheda esiste per mostrare i
+        # verbi, e un rilevatore che la fa sparire insegna a non fidarsi del
+        # pannello — che è il danno peggiore in una vista di sicurezza.
+        try:
+            from ..agents import gateway_drift
+            spec = registry.get_by_name(name)
+            if spec is not None and gateway_drift._e_agente(spec):
+                riga = gateway_drift.confronta(
+                    spec, await gateway_admin.registration_async(name))
+                if riga["status"] != "clean":
+                    corpo["drift"] = riga
+        except Exception as e:  # noqa: BLE001
+            corpo["drift"] = {"agent": name, "status": "unavailable",
+                              "fields": [], "detail": str(e)[:160]}
+        return JSONResponse(status_code=200, content=corpo, headers=intestazioni)
     except Exception as e:  # noqa: BLE001 — diagnostica, non un percorso critico
         return JSONResponse(status_code=200, headers=intestazioni,
                             content={"agent": name, "verbs": [], "groups": [],
