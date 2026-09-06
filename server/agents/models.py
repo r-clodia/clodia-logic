@@ -430,6 +430,16 @@ class AgentSpec(BaseModel):
     #: dichiarava e li avevano tutti — compreso `WebSearch`, che nessuna policy
     #: di rete può arbitrare perché lo esegue il provider (vedi
     #: `sdk_runtime/native_tools.py` per la misura).
+    #:
+    #: **Nome o famiglia**: la FAMIGLIA (`Task*`, `Cron*`) quando si intende
+    #: tutta, i NOMI quando si intende una parte. Le due forme funzionano
+    #: entrambe — `native_tools._granted` le scioglie da sempre — quindi la
+    #: convenzione non serve al runtime, serve a chi legge il file: `Task*` è una
+    #: decisione in una riga e contiene il verbo che la CLI aggiungerà domani, gli
+    #: stessi sei nomi elencati sono la stessa decisione in sei righe che alla
+    #: prossima aggiunta ne diranno cinque su sei, restando valide.
+    #: `native_tools.redundant_declarations()` la dice per un seed, e un test la
+    #: applica ai seed del base-pack (clodia-platform#199, punto 3).
     native_tools: Optional[list[str]] = None
     #: Come il runtime tratta le richieste di permesso di QUESTO agent, con i
     #: nomi dell'SDK: `default` (chiede), `acceptEdits`, `plan`,

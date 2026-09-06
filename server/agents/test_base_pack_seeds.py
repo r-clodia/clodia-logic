@@ -237,3 +237,28 @@ class HumanContactFieldTests(unittest.TestCase):
         extras = getattr(s, "extras", None) or {}
         self.assertNotIn("telegram", extras,
                          "A10: il valore è finito anche negli extras — due fonti, una divergerà")
+
+
+class NativeToolsFormTests(unittest.TestCase):
+    """La famiglia quando è tutta, i nomi quando è una parte.
+
+    clodia-platform#199, punto 3: `native_tools._granted` accetta entrambe le
+    forme e continuerà ad accettarle, quindi nessun seed si rompe scegliendo
+    male — il prezzo lo paga chi legge il file. `Task*` è una decisione in una
+    riga e contiene già il verbo che la CLI aggiungerà domani; gli stessi sei
+    nomi elencati sono la stessa decisione in sei righe, che alla prossima
+    aggiunta ne diranno cinque su sei restando valide.
+
+    Il controllo sta qui, sui seed che spediamo, e non in validazione: un errore
+    su un campo che funziona romperebbe i seed di terzi, e un warning al load
+    sarebbe il punto 4 della stessa issue — rumore in un elenco di sicurezza —
+    rifatto un piano più sotto.
+    """
+
+    def test_no_shipped_seed_says_the_same_thing_twice(self) -> None:
+        from ..sdk_runtime import native_tools as nt
+        for nome, y in _seeds().items():
+            with self.subTest(seed=nome):
+                self.assertEqual(
+                    nt.redundant_declarations(y.get("native_tools")), [],
+                    f"'{nome}': native_tools ridondante")
