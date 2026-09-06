@@ -80,6 +80,38 @@ KNOWN_FALLBACK: tuple[str, ...] = (
     "WebSearch", "Workflow",
 )
 
+#: I nomi che il `.d.ts` dichiara e che in questo harness NON sono tool.
+#:
+#: Negarli non toglieva niente — non c'era niente da togliere — e la CLI lo dice
+#: su stderr una riga per nome. Misurato il 6 set 2026 dentro il container, CLI
+#: 2.1.197, con l'env dei provider vuoto (il warning esce PRIMA dell'errore di
+#: autenticazione, quindi la verifica non costa una chiamata):
+#:
+#:     --disallowed-tools Mcp       → Permission deny rule "Mcp" matches no
+#:                                    known tool — check for typos.
+#:     --disallowed-tools Projects  → (niente)
+#:     --disallowed-tools REPL      → (niente)
+#:     --disallowed-tools Bogus1    → Permission deny rule "Bogus1" matches …
+#:
+#: clodia-platform#199 ne elencava tre: `Projects` e `REPL` oggi sono strumenti
+#: veri e restano fra i negati — un nome che la issue dava per finto e che nega
+#: qualcosa è il caso peggiore dei due. Resta `Mcp`.
+#:
+#: Perché non tenerli e ignorare il warning, che era il baratto scritto nella
+#: issue: quel warning è l'unico strato che dice «un nome della vostra lista di
+#: sicurezza non corrisponde a nulla», e una lista che lo stampa a ogni avvio
+#: insegna a non leggerlo — il giorno in cui la riga parla di un nome VERO,
+#: nessuno la vede. La proprietà «un nome che domani diventa reale è già negato»
+#: non si perde: la tiene `test_native_tools`, che interroga la CLI e va rosso
+#: nelle due direzioni (un nome in quarantena che diventa reale, e un nome che
+#: spediamo e non corrisponde più a niente).
+NOT_A_TOOL_HERE: tuple[str, ...] = ("Mcp",)
+
+#: Il testo con cui la CLI segnala un nome della lista che non è un tool. Sta
+#: qui perché è ciò che il test cerca: se la CLI cambiasse frase, il controllo
+#: va rosso invece di diventare verde per sempre.
+DENY_RULE_UNKNOWN = "matches no known tool"
+
 #: I nomi con cui il modello vede i tre tool di file. Nel `.d.ts` sono
 #: `FileRead`/`FileWrite`/`FileEdit`; all'agente arrivano come `Read`/`Write`/
 #: `Edit`, e `disallowed_tools` vuole il nome che l'agente vede. Una tabella di
@@ -360,12 +392,19 @@ def disallowed_for(allowed: list[str] | set[str] | None) -> list[str]:
     coincidono nell'effetto. La differenza qui dentro resta perché questa funzione
     riceve il risultato dell'unione, e `None` da lì significa che NESSUNO si è
     pronunciato, nemmeno l'arciseed.
+
+    Fuori dal risultato i nomi di `NOT_A_TOOL_HERE`: la CLI li dichiara nel
+    `.d.ts` ma non sono strumenti, quindi negarli non toglie nulla e fa dire alla
+    CLI, per ciascuno, che la nostra lista di sicurezza contiene un nome che non
+    corrisponde a niente (clodia-platform#199, punto 4).
     """
     if allowed is None:
         return []
     esatti, prefissi, _, _ = _granted(allowed)
+    finti = set(NOT_A_TOOL_HERE)
     return sorted(t for t in known_tools()
-                  if t not in esatti and not t.startswith(prefissi or ("\0",)))
+                  if t not in esatti and t not in finti
+                  and not t.startswith(prefissi or ("\0",)))
 
 
 def _granted(allowed) -> tuple[set[str], tuple[str, ...], dict[str, list[str]], set[str]]:
@@ -398,6 +437,59 @@ def _granted(allowed) -> tuple[set[str], tuple[str, ...], dict[str, list[str]], 
     prefissi = tuple(b[:-1] for b in basi if b.endswith("*") and len(b) > 1)
     esatti = {b for b in basi if not b.endswith("*")}
     return esatti, prefissi, pattern, nudi
+
+
+#: I prefissi che formano una FAMIGLIA di strumenti. I membri non sono elencati
+#: qui: si leggono da `known_tools()`, così una CLI che aggiunge un `TaskX` lo
+#: mette nella famiglia senza che nessuno aggiorni una lista a mano.
+FAMILY_PREFIXES: tuple[str, ...] = ("Task", "Cron")
+
+
+def families() -> dict[str, frozenset[str]]:
+    """Prefisso → i suoi membri fra i tool noti. `Task` → i sei verbi dei task."""
+    noti = known_tools()
+    fam = {}
+    for p in FAMILY_PREFIXES:
+        membri = frozenset(t for t in noti if t != p and t.startswith(p))
+        if membri:
+            fam[p] = membri
+    return fam
+
+
+def redundant_declarations(allowed: list[str] | set[str] | None) -> list[str]:
+    """Le dichiarazioni che dicono due volte la stessa cosa, in chiaro.
+
+    **La convenzione** (clodia-platform#199, punto 3): la FAMIGLIA quando il seed
+    intende tutta la famiglia, i NOMI quando intende una parte. `_granted` accetta
+    entrambe le forme e continuerà ad accettarle — quindi la scelta non è fra ciò
+    che funziona e ciò che non funziona, è fra due file che si leggono in modo
+    diverso. `Task*` dice «i task, tutti»: una decisione, una riga, e il verbo che
+    la CLI aggiungerà domani ci è già dentro. Gli stessi sei nomi elencati dicono
+    la stessa cosa in sei righe, e alla prossima aggiunta ne diranno cinque su
+    sei — con la differenza invisibile, perché il seed resta valido.
+    Elencare i nomi resta giusto per un sottoinsieme vero (`TaskGet` e nient'altro
+    è una decisione che la famiglia non sa esprimere).
+
+    Ritorna una riga per ogni ridondanza, vuoto se non ce n'è. NON solleva e non
+    logga: chi la chiama decide se è un errore. Oggi la chiama un test sui seed
+    del base-pack — un errore in validazione romperebbe i seed di terzi che sono
+    validi, e un warning al load sarebbe il punto 4 di questa issue rifatto un
+    piano più sotto.
+    """
+    if not allowed:
+        return []
+    esatti, prefissi, _, _ = _granted(allowed)
+    fuori: list[str] = []
+    for p, membri in families().items():
+        elencati = membri & esatti
+        if p in prefissi:
+            if elencati:
+                fuori.append(f"{p}*: {', '.join(sorted(elencati))} "
+                             f"già compreso nella famiglia")
+        elif elencati == membri:
+            fuori.append(f"{p}*: la famiglia è elencata per intero "
+                         f"({len(membri)} nomi) invece di dichiararla")
+    return fuori
 
 
 def opencode_permission(allowed: list[str] | set[str] | None) -> dict:

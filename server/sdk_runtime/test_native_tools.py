@@ -26,6 +26,10 @@ agents-notebook A8: i tool del runtime stanno fuori dal modello dei verbi, e per
 """
 from __future__ import annotations
 
+import os
+import shutil
+import subprocess
+import tempfile
 import unittest
 from unittest.mock import patch
 
@@ -67,9 +71,13 @@ class TheSubtractionTests(unittest.TestCase):
         self.assertEqual(nt.disallowed_for(None), [])
 
     def test_an_empty_declaration_denies_everything(self):
-        """`[]` invece è una dichiarazione, e va rispettata."""
+        """`[]` invece è una dichiarazione, e va rispettata.
+
+        Tutto ciò che è noto MENO i nomi che non sono strumenti qui: negare un
+        nome che non esiste non toglie niente, e la classe qui sotto dice cosa
+        costava tenerlo (clodia-platform#199, punto 4)."""
         negati = nt.disallowed_for([])
-        self.assertEqual(set(negati), nt.known_tools())
+        self.assertEqual(set(negati), nt.known_tools() - set(nt.NOT_A_TOOL_HERE))
 
     def test_what_is_declared_survives_and_the_rest_goes(self):
         negati = nt.disallowed_for(["Read", "Write", "Skill"])
@@ -98,6 +106,124 @@ class TheSubtractionTests(unittest.TestCase):
         ritaglio invece di applicarlo. Il taglio fine sta nei pattern, che è dove
         la CLI lo sa fare."""
         self.assertNotIn("Bash", nt.disallowed_for(["Bash(git:*)"]))
+
+
+class NamesThatAreNotToolsHereTests(unittest.TestCase):
+    """clodia-platform#199, punto 4: rumore in una lista di sicurezza.
+
+    Il `.d.ts` della CLI dichiara nomi che in questo harness non sono strumenti.
+    Negarli non toglieva nulla — non c'era nulla da togliere — e la CLI stampava
+    su stderr, per ciascuno, che la nostra lista contiene un nome che non
+    corrisponde a niente. Il baratto scritto nella issue («tenuti di proposito:
+    un nome che diventa reale domani è già negato») costava la leggibilità
+    dell'unica riga che sa dirci che quella lista ha un buco — e una riga stampata
+    a ogni avvio insegna a non leggerla.
+
+    Qui la proprietà del baratto non è affidata alla fiducia: la CLI stessa sa
+    dire se un nome corrisponde a un tool, lo dice **senza credenziali** (il
+    warning esce prima dell'errore di autenticazione), e i due controlli sotto la
+    interrogano nelle due direzioni.
+    """
+
+    def test_a_name_that_is_no_tool_is_not_in_the_list_we_ship(self):
+        negati = nt.disallowed_for([])
+        for finto in nt.NOT_A_TOOL_HERE:
+            with self.subTest(nome=finto):
+                self.assertNotIn(finto, negati)
+
+    def test_the_two_names_the_issue_called_fake_are_real_and_stay_denied(self):
+        """La issue ne elencava tre. Rimisurato il 6 set 2026 su CLI 2.1.197:
+        `Projects` e `REPL` sono strumenti veri — un nome creduto finto che nega
+        qualcosa è il peggiore dei due errori, e togliere anche quelli avrebbe
+        concesso due tool a ogni seed che non li dichiara."""
+        negati = nt.disallowed_for([])
+        self.assertIn("Projects", negati)
+        self.assertIn("REPL", negati)
+
+    def test_the_quarantine_holds_only_names_the_cli_declares(self):
+        """Un nome sparito dal `.d.ts` va togliuto anche da qui: la quarantena
+        deve restare la fotografia di una divergenza reale, non un elenco che
+        cresce e nessuno rilegge."""
+        noti = nt.known_tools()
+        for finto in nt.NOT_A_TOOL_HERE:
+            with self.subTest(nome=finto):
+                self.assertIn(finto, noti)
+
+
+@unittest.skipUnless(shutil.which("claude"), "CLI claude assente")
+class TheCliIsAskedWhichNamesAreRealTests(unittest.TestCase):
+    """Le due direzioni in cui questo può rompersi, chieste alla CLI.
+
+    Costa due processi e nessuna chiamata al modello: l'env dei provider è vuoto e
+    `HOME` è una cartella temporanea, quindi la CLI stampa il warning sui nomi e
+    poi esce con «Not logged in». Se non fosse così questo test sarebbe una
+    telefonata all'API a ogni `make test`, e allora non esisterebbe.
+    """
+
+    def _complaints(self, nomi) -> list[str]:
+        with tempfile.TemporaryDirectory() as casa:
+            esito = subprocess.run(
+                [shutil.which("claude"), "-p", "hi", "--max-turns", "1",
+                 "--disallowed-tools", ",".join(nomi)],
+                # env NUDO: niente credenziali provider → nessun turno reale.
+                env={"PATH": os.environ.get("PATH", ""), "HOME": casa},
+                cwd=casa, stdin=subprocess.DEVNULL,
+                capture_output=True, text=True, timeout=180,
+            )
+        return [r for r in esito.stderr.splitlines() if nt.DENY_RULE_UNKNOWN in r]
+
+    def test_the_quarantined_names_still_match_nothing(self):
+        """Il giorno in cui `Mcp` diventa uno strumento vero, questo va rosso e
+        il nome torna fra i negati. È il baratto della issue, tenuto da un
+        controllo invece che da una riga di stderr che nessuno legge."""
+        righe = self._complaints(nt.NOT_A_TOOL_HERE)
+        for finto in nt.NOT_A_TOOL_HERE:
+            with self.subTest(nome=finto):
+                self.assertTrue([r for r in righe if f'"{finto}"' in r],
+                                f"la CLI non si lamenta più di '{finto}': è "
+                                f"diventato un tool e va rimesso fra i negati")
+
+    def test_the_list_we_ship_contains_no_name_the_cli_ignores(self):
+        """La direzione opposta, che è quella che il punto 4 chiedeva: la lista
+        spedita non deve contenere nomi che non corrispondono a niente."""
+        self.assertEqual(self._complaints(nt.disallowed_for([])), [])
+
+
+class NameOrFamilyIsAConventionTests(unittest.TestCase):
+    """clodia-platform#199, punto 3. Entrambe le forme funzionano — quindi la
+    convenzione non la impone il runtime, la dice `redundant_declarations` e la
+    applica un test. Un errore in validazione romperebbe seed di terzi che sono
+    validi; un warning al load sarebbe il punto 4 rifatto un piano più sotto."""
+
+    def test_the_families_come_from_the_known_set(self):
+        fam = nt.families()
+        self.assertEqual(fam["Cron"], frozenset(
+            {"CronCreate", "CronDelete", "CronList"}))
+        self.assertIn("TaskGet", fam["Task"])
+
+    def test_a_clean_declaration_says_nothing(self):
+        for pulita in (["Read", "Write"], ["Task*", "Bash"], ["TaskGet"], [], None):
+            with self.subTest(dichiarazione=pulita):
+                self.assertEqual(nt.redundant_declarations(pulita), [])
+
+    def test_a_member_next_to_its_family_is_redundant(self):
+        righe = nt.redundant_declarations(["Task*", "TaskGet", "Read"])
+        self.assertEqual(len(righe), 1)
+        self.assertIn("TaskGet", righe[0])
+
+    def test_a_family_enumerated_in_full_is_the_form_to_avoid(self):
+        """Il caso che la convenzione esiste per prevenire: sei righe per una
+        decisione, e alla prossima aggiunta della CLI cinque su sei — con la
+        differenza invisibile, perché il seed resta valido."""
+        righe = nt.redundant_declarations(sorted(nt.families()["Cron"]))
+        self.assertEqual(len(righe), 1)
+        self.assertIn("Cron*", righe[0])
+
+    def test_a_real_subset_is_not_redundant(self):
+        """Elencare i nomi resta giusto quando si intende una parte: `Cron*` non
+        saprebbe dire «CronList e nient'altro»."""
+        membri = sorted(nt.families()["Cron"])
+        self.assertEqual(nt.redundant_declarations(membri[:-1]), [])
 
 
 class TheFloorAndTheSeedUnionTests(unittest.TestCase):
