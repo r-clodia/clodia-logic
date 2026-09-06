@@ -58,6 +58,7 @@ from __future__ import annotations
 
 import logging
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 LOG = logging.getLogger("agent-server.native_tools")
@@ -220,6 +221,87 @@ def sandbox_unenforced(sdk: str | None, sandbox) -> list[str]:
         return []
     return [c for c in SANDBOX_FIELDS
             if (getattr(sandbox, c, None) or []) and not sandbox_applies(sdk, c)]
+
+
+#: Il segnaposto dello scratch dello spawn, l'unico che i campi `sandbox`
+#: conoscono. Vale in TUTTI i campi, non solo nei due di path: un
+#: `deny_shell_patterns: ["rm -rf {scratch}/*"]` lasciato letterale sarebbe una
+#: regola che non combacia mai — cioè un divieto scritto e mai applicato, che è
+#: il difetto per cui esiste questo file.
+SCRATCH_PLACEHOLDER = "{scratch}"
+
+
+@dataclass(frozen=True)
+class NormalizedSandbox:
+    """I campi `sandbox` del seed in una forma sola, prima di ogni runtime.
+
+    Cosa fa: risolve `{scratch}`, toglie spazi e voci vuote, elimina i doppioni
+    tenendo l'ordine di dichiarazione. Non decide NIENTE: non dice cosa si nega,
+    non inventa un permesso, non guarda l'sdk. Solo la stessa lista, pulita.
+
+    Perché esiste: la traduzione sta per avere due destinazioni — il
+    `.claude/settings.json` di `agents/workspace` e la sezione `permission` di
+    opencode (clodia-platform#296 punto 2) — e questa pulizia è identica per
+    entrambe. Scritta due volte diverge alla prima correzione, e divergerebbe
+    proprio sul lato che nessuno rilegge.
+
+    **Il default del campo assente è l'elenco vuoto**, e qui vuol dire *«il seed
+    non si pronuncia»*: la stessa direzione d'errore di `disallowed_for(None)` e
+    `codex_sandbox_mode(None)` in questo file — chi tace non restringe. Il
+    modello (`agents.models.Sandbox`) fa già collassare «campo assente» e `[]`
+    sullo stesso valore, quindi la distinzione non esiste a monte e non va
+    simulata qui.
+
+    ⚠️ Quel default dice cosa CONTIENE il campo, non cosa il runtime debba farne:
+    se un `allow_read` dichiarato valga come allowlist con diniego implicito su
+    tutto il resto, oppure resti non applicato, è una decisione di prodotto che
+    non appartiene alla normalizzazione. Chi la prenderà la scrive nel
+    traduttore, un piano sopra questo.
+    """
+
+    allow_read: tuple[str, ...] = ()
+    deny_read: tuple[str, ...] = ()
+    allow_write: tuple[str, ...] = ()
+    allow_shell_cmds: tuple[str, ...] = ()
+    deny_shell_patterns: tuple[str, ...] = ()
+
+    def declared(self) -> tuple[str, ...]:
+        """I campi su cui il seed si è pronunciato, nell'ordine di
+        `SANDBOX_FIELDS`. È la stessa domanda di `sandbox_unenforced`, meno
+        l'sdk: «di cosa parla questo seed?»."""
+        return tuple(c for c in SANDBOX_FIELDS if getattr(self, c))
+
+
+def normalize_sandbox(sandbox, scratch: str | Path | None = None) -> NormalizedSandbox:
+    """Il `sandbox` di un seed nella forma normalizzata. Vedi `NormalizedSandbox`.
+
+    `sandbox=None` (seed senza sezione) → tutti i campi vuoti, che è il default
+    esplicito: nessuna dichiarazione.
+
+    `scratch=None` → `{scratch}` resta letterale. Serve a chi la forma la deve
+    solo MOSTRARE (la scheda dell'agente, gli avvisi del loader): fuori da uno
+    spawn quel path non esiste ancora, e stamparne uno inventato mentirebbe.
+    """
+    if sandbox is None:
+        return NormalizedSandbox()
+    return NormalizedSandbox(**{
+        campo: _normalize_entries(getattr(sandbox, campo, None), scratch)
+        for campo in SANDBOX_FIELDS
+    })
+
+
+def _normalize_entries(voci, scratch: str | Path | None) -> tuple[str, ...]:
+    """Una lista del sandbox: risolta, ripulita, senza doppioni, in ordine."""
+    fuori: list[str] = []
+    for voce in (voci or []):
+        v = str(voce).strip()
+        if scratch is not None:
+            v = v.replace(SCRATCH_PLACEHOLDER, str(scratch))
+        # Il doppione si scarta DOPO la risoluzione: due voci diverse nel seed
+        # possono indicare lo stesso path una volta risolto il segnaposto.
+        if v and v not in fuori:
+            fuori.append(v)
+    return tuple(fuori)
 
 
 #: Chiave di permesso di opencode → tool(i) nativi che la governano.
