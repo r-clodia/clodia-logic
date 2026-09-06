@@ -208,18 +208,6 @@ def mcp_clients(tier: str, name: str, payload: dict | None = None) -> dict:
     return r.json()
 
 
-def set_portable(tier: str, name: str, portable: bool) -> dict:
-    url = f"{_base()}/{tier}/{name}/portable"
-    try:
-        r = _gw_http.post(url, headers=_headers(), json={"portable": bool(portable)},
-                          timeout=_HTTP_TIMEOUT)
-    except requests.RequestException as e:
-        raise TopicsClientError(f"gateway portable irraggiungibile: {e}") from e
-    if r.status_code >= 400:
-        raise TopicsClientError(f"gateway portable → HTTP {r.status_code}: {r.text[:160]}")
-    return r.json()
-
-
 def archive_topic(tier: str, name: str) -> dict:
     url = f"{_base()}/{tier}/{name}/archive"
     try:
@@ -503,7 +491,6 @@ async_clear_taint = _async_of("clear_taint")
 async_telegram_binding = _async_of("telegram_binding")
 async_topic_logo = _async_of("topic_logo")
 async_read_topic_logo = _async_of("read_topic_logo")
-async_set_portable = _async_of("set_portable")
 async_set_status = _async_of("set_status")
 async_set_deadline = _async_of("set_deadline")
 async_export_bundle = _async_of("export_bundle")
