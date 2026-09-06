@@ -335,6 +335,166 @@ def stale_reason(job: dict, *, now: Optional[datetime] = None) -> Optional[str]:
 
 
 # ---------------------------------------------------------------------------
+# I fire mai GENERATI, mentre il processo era giù (clodia-platform#289)
+# ---------------------------------------------------------------------------
+#
+# #273 e #287 raccontano il fire che APScheduler ha visto: scartato come misfire
+# o eseguito in ritardo. Entrambi hanno un evento, e da un evento un listener può
+# scrivere. Il caso che ha prodotto le tre notti del 22/23/24 ago 2026 non ne ha
+# nessuno: il jobstore è in-memory, a processo giù non esiste nemmeno lo
+# scheduler, e al riavvio `add_job` ricalcola il prossimo fire da adesso. Quei
+# fire non sono mai esistiti per nessuno — nello storico di `id=2` non c'era una
+# riga fra il 21 ago e oggi.
+#
+# Il boot è l'unico momento in cui il buco è ancora deducibile: si conosce
+# `last_run_at`, si conosce il trigger, e la differenza fra i due è la lista dei
+# fire che sarebbero dovuti avvenire.
+
+#: Quanto indietro si guarda. Un job fermo da sei mesi non ha bisogno di
+#: seimila righe per dire che è fermo: lo dice `stale` (#287) in una riga sola.
+#: Trenta giorni è la finestra in cui la domanda «quali notti mancano?» ha ancora
+#: una risposta operativa — un'evidenza ISO 27001 A.8.13 si recupera dentro il
+#: mese, non dopo.
+_BACKFILL_HORIZON_DAYS = 30
+
+#: SHORTCUT: tetto alle ITERAZIONI del cammino, non alle righe. Regge finché la
+#:           cadenza minima è dell'ordine dei minuti: un job ogni minuto fermo
+#:           trenta giorni sono 43.200 passi. Misurato, un cammino di 10.000
+#:           passi costa 0,1 s — il tetto non serve a questo caso, serve a
+#:           garantire che NESSUN record faccia del boot un'attesa. Oltre il
+#:           tetto la sintesi dice «almeno N»; se servisse il numero esatto anche
+#:           lì, si conta per aritmetica sulla cadenza invece di camminare.
+_BACKFILL_MAX_ITER = 10_000
+
+#: Righe individuali scritte per job. `_RUNS_CAP` è 100: senza questo tetto un
+#: job ogni 10 minuti fermo un mese scriverebbe 4.320 righe e cancellerebbe TUTTO
+#: lo storico buono — la traccia del buco avrebbe distrutto la traccia del resto.
+#: Si tengono le più recenti, più una riga di sintesi che dice quante mancano:
+#: troncare e basta perderebbe il numero, che è l'unica cosa che dice quanto è
+#: grave.
+_BACKFILL_MAX_ROWS = 20
+
+
+def missed_fires_since(job: dict, since: datetime,
+                       now: datetime) -> tuple[list[datetime], bool]:
+    """I fire previsti in `(since, now]`, e se il cammino è stato troncato.
+
+    Cammina il trigger VERO del job (`_trigger_for`), non una riparametrizzazione
+    della cadenza: un secondo interprete della periodicità darebbe due risposte
+    diverse alla stessa domanda, ed è la ragione per cui `job_cadence_minutes`
+    riusa già `min_cron_gap_minutes`.
+
+    SHORTCUT: per un job a intervallo la griglia dei fire viene riancorata a
+              `since`, perché la griglia vera viveva nel jobstore in-memory ed è
+              morta col processo. Regge per il CONTO e per la scala dei buchi;
+              i singoli orari possono essere sfasati fino a un intervallo. Se
+              un giorno il jobstore diventasse persistente, la griglia autentica
+              sarebbe lì e questo ancoraggio andrebbe tolto.
+    """
+    try:
+        trigger = _trigger_for(job, start_date=since)
+    except (KeyError, ValueError, TypeError) as e:
+        # Cadenza illeggibile: si tace. Un buco dedotto da una periodicità che
+        # non sappiamo interpretare sarebbe una riga inventata nello storico.
+        LOG.warning("job %s: periodicità illeggibile, nessuna riconciliazione "
+                    "(%s: %s)", job.get("id"), type(e).__name__, e)
+        return [], False
+    fuori: list[datetime] = []
+    prossimo = trigger.get_next_fire_time(None, since)
+    while prossimo is not None and prossimo <= now:
+        if prossimo > since:
+            fuori.append(prossimo)
+            if len(fuori) >= _BACKFILL_MAX_ITER:
+                return fuori, True
+        prossimo = trigger.get_next_fire_time(prossimo, now)
+    return fuori, False
+
+
+def _as_utc(grezzo) -> Optional[datetime]:
+    """ISO → datetime aware. `None` se manca o non si legge: i file dei job si
+    editano a mano, e una data storta non deve far esplodere il boot."""
+    if not grezzo:
+        return None
+    try:
+        t = datetime.fromisoformat(str(grezzo))
+    except (TypeError, ValueError):
+        return None
+    return t.replace(tzinfo=timezone.utc) if t.tzinfo is None else t
+
+
+def _backfill_start(job: dict, now: datetime) -> Optional[datetime]:
+    """Da dove ricomincia il cammino: il più RECENTE fra l'ultimo run, la
+    filigrana della scansione precedente e l'orizzonte.
+
+    - `last_run_at` (o `created_at` per un job mai girato): prima di lì i fire
+      sono avvenuti, e non sono buchi;
+    - `missed_scan_at`: fin dove si è già guardato. È l'idempotenza — due
+      riavvii ravvicinati non devono scrivere due volte lo stesso fire — e sta
+      nel record del job perché `runs` è cappato: dedurla dalle righe smetterebbe
+      di funzionare appena le più vecchie scorrono via.
+    """
+    # Stesso riferimento di `stale_reason`: un job mai girato si misura dalla
+    # creazione, altrimenti non avrebbe nessun inizio e resterebbe muto per
+    # sempre — che è il silenzio che questa issue chiude.
+    momenti = [_as_utc(job.get("last_run_at") or job.get("created_at")),
+               _as_utc(job.get("missed_scan_at"))]
+    noti = [t for t in momenti if t is not None]
+    if not noti:
+        return None
+    return max(max(noti), now - timedelta(days=_BACKFILL_HORIZON_DAYS))
+
+
+def backfill_missed_fires(job: dict, *, now: Optional[datetime] = None) -> int:
+    """Scrive una riga `missed` per ogni fire mai generato. Ritorna quante.
+
+    Chiamata al boot, una volta per job `enabled`. Un job disabilitato non
+    doveva partire, quindi non ha perso niente — stessa regola di `stale_reason`.
+    """
+    if not job.get("enabled"):
+        return 0
+    adesso = now or datetime.now(_SCHED_TZ)
+    if adesso.tzinfo is None:
+        adesso = adesso.replace(tzinfo=timezone.utc)
+    inizio = _backfill_start(job, adesso)
+    if inizio is None or inizio >= adesso:
+        return 0
+    fires, troncato = missed_fires_since(job, inizio, adesso)
+    if not fires:
+        # Nessuna scrittura: un boot che tocca ogni job cambierebbe `updated_at`
+        # senza che sia successo niente. E senza filigrana nuova non si perde
+        # nulla — il prossimo boot ripartirà dallo stesso `last_run_at`.
+        return 0
+    if troncato:
+        # Cammino interrotto: i fire in mano sono i PIÙ VECCHI del buco, non i
+        # più recenti, e elencarne venti darebbe una finestra presa dal mezzo
+        # spacciandola per la coda. Si scrive solo il fatto, che è quello certo.
+        righe = [{"ts": fires[0].isoformat(),
+                  "note": (f"almeno {len(fires)} fire mai generati da "
+                           f"{fires[0].isoformat()} in poi: il processo era "
+                           f"fermo e il cammino è stato troncato al tetto di "
+                           f"{_BACKFILL_MAX_ITER} passi (riconciliazione al boot)")}]
+    else:
+        elencati, nascosti = fires[-_BACKFILL_MAX_ROWS:], fires[:-_BACKFILL_MAX_ROWS]
+        righe = [{"ts": t.isoformat(),
+                  "note": (f"fire previsto {t.isoformat()} mai generato: il "
+                           "processo era fermo (riconciliazione al boot)")}
+                 for t in elencati]
+        if nascosti:
+            righe.insert(0, {
+                "ts": nascosti[0].isoformat(),
+                "note": (f"altri {len(nascosti)} fire persi fra "
+                         f"{nascosti[0].isoformat()} e {nascosti[-1].isoformat()}, "
+                         f"non elencati: cap di {_BACKFILL_MAX_ROWS} righe per non "
+                         "cancellare lo storico buono")})
+    scritte = db.append_missed_runs(job["id"], righe,
+                                    scanned_through=adesso.isoformat())
+    LOG.warning("Job id=%s name=%s: %d fire mai generati fra %s e %s "
+                "(%d righe scritte)", job.get("id"), job.get("name"),
+                len(fires), inizio.isoformat(), adesso.isoformat(), scritte)
+    return scritte
+
+
+# ---------------------------------------------------------------------------
 # Lifecycle
 # ---------------------------------------------------------------------------
 
@@ -481,16 +641,25 @@ def shutdown_scheduler() -> None:
 # Register / unregister / reload
 # ---------------------------------------------------------------------------
 
-def _trigger_for(job: dict):
+def _trigger_for(job: dict, *, start_date: Optional[datetime] = None):
     """Costruisce il trigger APScheduler dalla periodicità del record.
 
     Due forme (db.py): `interval_minutes` (trigger di topic, #239) o `cron_expr`
     (job globali e trigger legacy). L'intervallo NON passa da un cron derivato:
     `*/45 * * * *` non vuol dire «ogni 45 minuti» ma «ai minuti 0 e 45», cioè un
-    gap di 15 — un fire su due arriverebbe in anticipo di mezz'ora."""
+    gap di 15 — un fire su due arriverebbe in anticipo di mezz'ora.
+
+    `start_date` serve solo alla ricostruzione retroattiva (#289) e resta `None`
+    per la registrazione, che si comporta esattamente come prima. Un
+    `IntervalTrigger` senza start_date la fissa a *adesso + intervallo*: chiesto
+    di enumerare i fire di ieri risponderebbe «nessuno», e il buco resterebbe
+    invisibile proprio per i trigger di topic. Il cron non ne ha bisogno —
+    `get_next_fire_time(None, quando)` parte da `quando`.
+    """
     minuti = job.get("interval_minutes")
     if minuti:
-        return IntervalTrigger(minutes=int(minuti), timezone=_SCHED_TZ)
+        return IntervalTrigger(minutes=int(minuti), start_date=start_date,
+                               timezone=_SCHED_TZ)
     return CronTrigger.from_crontab(job["cron_expr"], timezone=_SCHED_TZ)
 
 
@@ -572,6 +741,16 @@ def reload_all_enabled_jobs() -> int:
         if motivo:
             LOG.warning("Job STALE id=%s name=%s: %s",
                         job.get("id"), job.get("name"), motivo)
+        # ...e i fire di quel fermo si scrivono nello storico, che è l'unico
+        # posto dove restano dopo che i log sono ruotati (#289). DOPO la
+        # registrazione e dentro un try: un boot che non registra i job perché
+        # la ricostruzione è esplosa sarebbe un rimedio peggiore del difetto —
+        # lì i fire smetterebbero di avvenire davvero.
+        try:
+            backfill_missed_fires(job)
+        except Exception as e:  # noqa: BLE001
+            LOG.error("job %s: fire mancanti non ricostruiti (%s: %s)",
+                      job.get("id"), type(e).__name__, e)
     LOG.info("Reloaded %d enabled jobs from db", n)
     return n
 

@@ -54,6 +54,11 @@ _FIELDS = (
     "mode", "plan", "tier", "topic_tier", "topic_name", "runs", "run_seq",
     "interval_minutes", "repeat_count", "fired_count",
     "last_run_at", "last_status", "last_chat_id", "created_at", "updated_at",
+    # Filigrana della riconciliazione al boot (#289): fin dove si è già guardato
+    # a caccia di fire mai generati. Sta QUI e non solo fra le righe di `runs`
+    # perché `runs` è cappato: quando le righe vecchie scorrono via, un controllo
+    # basato su di esse ricomincerebbe a scrivere i fire già registrati.
+    "missed_scan_at",
 )
 
 # Agent di fallback per job senza il campo `agent` (creati prima del 19 giu 2026).
@@ -442,6 +447,45 @@ def mark_run(job_id: int, *, status: str, chat_id: Optional[str] = None,
     return entry["id"]
 
 
+def append_missed_runs(job_id: int, entries: list[dict],
+                       *, scanned_through: str) -> int:
+    """Aggiunge righe RETROATTIVE allo storico, senza toccare i campi `last_*`.
+
+    Serve alla riconciliazione al boot (#289), che è un caso diverso da
+    `mark_run` e per questo non lo riusa:
+
+    - la `ts` della riga è l'orario del FIRE MANCATO, non adesso. Datarla al
+      riavvio direbbe «è successo ora» di una cosa successa stanotte, e la data
+      del fire è precisamente l'informazione che mancava;
+    - `last_status`/`last_run_at` restano fermi. Al boot non è avvenuto nulla:
+      riscriverli cambierebbe ciò che l'utente vede senza che nessuno abbia
+      eseguito niente. `last_run_at`, poi, è il riferimento di `stale_reason` —
+      spostarlo in avanti spegnerebbe il badge STALE (#287) proprio sul job che
+      ha appena perso tre notti, cioè la traccia cancellerebbe l'allarme.
+
+    Le righe si appendono in coda e restano in ordine: al boot la più recente
+    dello storico è al più `last_run_at`, e ogni riga scritta qui viene dopo.
+
+    `scanned_through` è la filigrana: fin dove si è guardato. Senza, due riavvii
+    ravvicinati riscriverebbero gli stessi fire.
+    """
+    d = get_job(job_id)
+    if d is None:
+        return 0
+    seq = int(d.get("run_seq") or 0)
+    runs = list(d.get("runs") or [])
+    for e in entries:
+        seq += 1
+        runs.append({"id": str(seq), "ts": e["ts"], "stato": MISSED,
+                     "chat_id": None, "error": None, "note": e.get("note")})
+    d["run_seq"] = seq
+    d["runs"] = runs[-_RUNS_CAP:]
+    d["missed_scan_at"] = scanned_through
+    d["updated_at"] = _now_iso()
+    _write(d)
+    return len(entries)
+
+
 #: Stati terminali di un run. `success`/`error`/`fatal` li dichiara l'AGENTE
 #: (`scheduler.run_status`), `failed` lo constata l'infrastruttura quando il
 #: turno muore. Insieme chiuso perché su questi stati la UI dipinge un pallino:
@@ -453,7 +497,9 @@ TERMINAL_STATES = ("success", "error", "fatal", "failed")
 #: quelli sono gli esiti di un run partito, dichiarabili con `complete_run`, e un
 #: run mai iniziato non ha nulla da completare — non ha durata, non ha chat, non
 #: ha un agente che possa parlarne. È uno stato che solo lo scheduler può
-#: scrivere, dal listener `EVENT_JOB_MISSED`.
+#: scrivere: dai listener `EVENT_JOB_MISSED`/`EVENT_JOB_SUBMITTED`, e dalla
+#: riconciliazione al boot per i fire mai generati (#289), che nessun evento può
+#: raccontare perché il processo era giù quando sarebbero dovuti avvenire.
 MISSED = "missed"
 
 #: Stati terminali che NON sono un successo pieno. Serve a chi legge lo storico
