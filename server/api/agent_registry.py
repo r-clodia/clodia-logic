@@ -38,7 +38,7 @@ LOG = logging.getLogger("agent-server.agent-registry")
 from pydantic import BaseModel, Field
 
 from ..agents import activity_log, pause as pause_mod, rank as rank_mod, registry
-from ..agents.models import AgentSpec, _PROXY_ALLOWED_TOOLS
+from ..agents.models import AgentSpec, normalize_telegram, _PROXY_ALLOWED_TOOLS
 from ..colony import pki
 from .. import scoped_overrides
 from .providers import (connected_provider_ids, candidate_providers, effective_provider,
@@ -270,6 +270,10 @@ async def list_agents() -> dict:
         d["success_stats"] = _success_stats(a.name)
         d["rank_tier"] = rank_mod.rank_tier(a)
         d["rank_label"] = rank_mod.rank_label(a)
+        # Anche nella LISTA, non solo nella scheda: è dove si vedono le persone
+        # tutte insieme, ed è lì che una persona irraggiungibile deve leggersi
+        # come tale invece di sembrare uguale alle altre (clodia-platform#200).
+        d["contact_channels"] = contacts.channels(a)
         d.update(_provider_fields(a, connected))
         agents.append(d)
     return {
@@ -507,6 +511,21 @@ class AgentPatch(BaseModel):
     email: Optional[str] = None
     telegram: Optional[str] = None          # opzionale
     mailbox_parent: Optional[str] = None    # parent mailbox per il subaddress dei bot
+
+
+def _telegram_or_400(value: Optional[str]) -> Optional[str]:
+    """Recapito normalizzato, o 400 con il perché.
+
+    La validazione sta PRIMA della scrittura perché questo endpoint scrive
+    `agent.yaml` e poi ricarica: un valore che lo schema rifiuta usciva di qui
+    come 500 «dopo la modifica l'agent non valida», lasciando sul disco un seed
+    che non carica più. Un errore dell'utente non deve poter rompere l'agente su
+    cui è stato commesso (clodia-platform#200).
+    """
+    try:
+        return normalize_telegram(value)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
 
 
 def _is_immutable(spec) -> bool:
@@ -810,6 +829,9 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
                                  "modificabile solo via codice/rebuild del seed")
     if patch.clearance is not None and patch.clearance and _norm_clearance(patch.clearance) not in _CLR_VALID:
         raise HTTPException(400, f"clearance invalida: {patch.clearance} (SEAL-0..4)")
+    # `""` resta `""` (= rimuovi il campo); qualunque altro valore passa dalla
+    # forma canonica prima di toccare il disco.
+    telegram = patch.telegram if patch.telegram in (None, "") else _telegram_or_400(patch.telegram)
     agent_dir = Path(spec.agent_dir)
 
     if patch.system_prompt is not None:
@@ -820,7 +842,7 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
         "agent_sdk": patch.agent_sdk, "model": patch.model,
         "description": patch.description, "display_name": patch.display_name,
         "avatar_color": patch.avatar_color, "clearance": patch.clearance,
-        "email": patch.email, "telegram": patch.telegram,
+        "email": patch.email, "telegram": telegram,
         "mailbox_parent": patch.mailbox_parent,
     }
     if any(v is not None for v in _scalars.values()):
@@ -982,7 +1004,9 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
         if body.email:
             spec_yaml["email"] = body.email.strip()
         if body.telegram:
-            spec_yaml["telegram"] = body.telegram.strip()
+            # Validato QUI e non dopo: il seed di una persona nasce da questa
+            # riga, e un recapito malformato la farebbe nascere non caricabile.
+            spec_yaml["telegram"] = _telegram_or_400(body.telegram)
         if body.pubkey:
             from ..colony import pki
             try:

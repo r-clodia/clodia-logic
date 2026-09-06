@@ -4,6 +4,7 @@ Lo schema riflette esattamente i 4 prototipi validati nel topic
 `acme-blog-agents/files/agents-proto/` (29 mag 2026).
 """
 from __future__ import annotations
+import re
 from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
@@ -37,6 +38,57 @@ def normalize_agent_type(value: object) -> str:
     if raw in {"normal", "super"}:
         return "bot"
     return raw
+
+
+# ── Recapito Telegram: due forme, una sola recapita ────────────────────────
+#: `chat_id` numerico. È l'unica forma che il bot può usare come destinatario:
+#: `sendMessage` risolve `@nome` solo per canali pubblici, mai per una persona.
+#: Negativo = gruppo/supergruppo.
+_TELEGRAM_ID = re.compile(r"^-?\d{5,20}$")
+#: `@handle`. Serve in INGRESSO: il relay identifica il mittente con lo username
+#: (`from_username`, l'uid solo in mancanza), quindi `get_by_telegram` deve
+#: continuare a riconoscerlo. Regole di Telegram: iniziale alfabetica, 5–32
+#: caratteri fra lettere, cifre e underscore.
+_TELEGRAM_HANDLE = re.compile(r"^@?[A-Za-z][A-Za-z0-9_]{4,31}$")
+
+
+def normalize_telegram(value: object) -> Optional[str]:
+    """Recapito Telegram normalizzato, o `ValueError` se non è né id né handle.
+
+    Due forme ammesse perché servono a due cose diverse: l'id numerico
+    IDENTIFICA e RECAPITA, l'handle identifica soltanto. Ciò che non è nessuna
+    delle due (un link `t.me`, un numero di telefono, un indirizzo email, una
+    frase) non è un recapito: oggi entrava senza un controllo e restava lì con
+    l'aria di funzionare, che è il modo in cui l'owner risulta raggiungibile
+    sulla carta e non lo è nei fatti (clodia-platform#200).
+
+    `None`/stringa vuota → `None`: «non dichiarato» resta dicibile.
+    """
+    if value is None:
+        return None
+    raw = str(value).strip()
+    if not raw:
+        return None
+    if _TELEGRAM_ID.match(raw):
+        return raw
+    if _TELEGRAM_HANDLE.match(raw):
+        return "@" + raw.lstrip("@")
+    raise ValueError(
+        f"recapito Telegram non valido: {raw!r}. Ammessi il chat_id numerico "
+        "(es. 76632169 — l'unica forma a cui il bot sa consegnare) o l'handle "
+        "(es. @davide_c, che identifica chi scrive ma NON riceve notifiche). "
+        "Non sono recapiti: link t.me, numeri di telefono, indirizzi email")
+
+
+def telegram_delivers(value: object) -> bool:
+    """`value` è una forma a cui si può CONSEGNARE? (solo il chat_id numerico)
+
+    Sta qui, accanto alla validazione, perché la scheda dell'agente, la lista
+    delle persone e chi notifica devono rispondere tutti nello stesso modo: una
+    seconda copia di questa regola è il modo in cui una UI dice «raggiungibile»
+    mentre la notifica cade per terra.
+    """
+    return bool(value) and bool(_TELEGRAM_ID.match(str(value).strip()))
 
 
 class Sandbox(BaseModel):
@@ -346,8 +398,19 @@ class AgentSpec(BaseModel):
     # clodia da convenzione, gli altri bot come subaddress dell'email parent
     # genitore (mailbox_parent, default "clodia"). Vedi api.contacts.
     email: Optional[str] = None
-    telegram: Optional[str] = None          # handle o chat_id Telegram
+    #: Recapito Telegram: chat_id numerico (identifica E recapita) oppure
+    #: @handle (identifica soltanto — vedi `normalize_telegram`). È un CAMPO
+    #: della persona, non un dato personale libero: il profilo PII del vault lo
+    #: rifiuta, perché due case scrivibili di cui una sola letta sono il modo in
+    #: cui il contatto dell'owner è finito dove nessuno lo cerca
+    #: (clodia-platform#200).
+    telegram: Optional[str] = None
     mailbox_parent: Optional[str] = None    # per i bot: parent di cui usare il subaddress
+
+    @field_validator("telegram", mode="before")
+    @classmethod
+    def _validate_telegram(cls, v):
+        return normalize_telegram(v)
 
     # DEPRECATO (AgentSpec v2): meccanismo di delega v3 via sub-card alle
     # inbox. Nel modello skill-driven la delega è il movimento di card fra
