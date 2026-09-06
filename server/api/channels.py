@@ -2179,13 +2179,15 @@ def _provider_seal_ok(spec, tier: str | None) -> bool:
 
 def _eligibility(spec, tier: str | None) -> dict:
     """Idoneità di un AeI al tier del topic, per la UI.
-    - umani: sempre idonei (non trattano dati via provider).
+    - umani: sempre idonei (non trattano dati via provider), nessun provider.
     - bot: idoneo SOLO se la SEAL EFFETTIVA (= quella del provider) ≥ tier.
-      Nessuno tratta dati SEAL-3+ su un provider SEAL-2-. Stessa regola per tutti."""
+      Nessuno tratta dati SEAL-3+ su un provider SEAL-2-. Stessa regola per tutti.
+    `provider` è quello EFFETTIVO in questa stanza (clodia-platform#310, A14):
+    lo stesso agente può girare su provider diversi da un topic all'altro (A13)."""
     if not spec or spec.type != "bot":
-        return {"eligible": True, "warn": False}
+        return {"eligible": True, "warn": False, "provider": None}
     ok = _provider_seal_ok(spec, tier)
-    return {"eligible": bool(ok), "warn": False}
+    return {"eligible": bool(ok), "warn": False, "provider": _topic_provider(spec, tier)}
 
 
 # --- Composizione squadra alla creazione di un topic ----------------------
