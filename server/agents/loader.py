@@ -195,6 +195,18 @@ def _messaggio_errore(e: Exception) -> str:
     return msg
 
 
+def _tg_key(value: object) -> str:
+    """Chiave di confronto per un recapito Telegram: niente spazi, niente '@',
+    tutto minuscolo (gli username Telegram sono case-insensitive).
+
+    Lo `strip()` viene PRIMA: `" @Davide_C ".lstrip("@")` non toglie niente,
+    perché la stringa inizia con uno spazio — e il valore che arriva da una
+    riga scritta a mano ne ha spesso uno. La tolleranza era dichiarata nel
+    docstring e non applicata in quell'ordine.
+    """
+    return str(value or "").strip().lstrip("@").strip().lower()
+
+
 class AgentRegistry:
     """Cache in memoria degli agenti definiti. Ricaricabile a runtime
     (utile in dev: edit dell'agent.yaml + POST /api/agents/reload).
@@ -298,13 +310,13 @@ class AgentRegistry:
         committenti-umani di un canale."""
         if handle is None:
             return None
-        want = str(handle).lstrip("@").strip().lower()
+        want = _tg_key(handle)
         if not want:
             return None
         for spec in self._agents.values():
             if spec.type != "human" or not spec.telegram:
                 continue
-            if str(spec.telegram).lstrip("@").strip().lower() == want:
+            if _tg_key(spec.telegram) == want:
                 return spec
         return None
 
