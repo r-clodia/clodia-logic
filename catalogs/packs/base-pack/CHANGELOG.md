@@ -9,6 +9,43 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.12.0] — 2026-09-06
+- **The secretary's mandate learns to be convened** (agents-notebook A5,
+  clodia-platform#196). The issue asked for «the two verbs to convene a team».
+  Measured in repo, half of it was already there and the other half was not
+  needed: `topic.suggest_team` is in the seed since 7.x, and the fourth summon
+  exists in code — `_record_fallback` picks the coordinator from `ai_all`, i.e.
+  **before** the `state_writer_only` filter, so in a room where Clodia's provider
+  does not cover the tier the secretary already receives `[COORDINAMENTO]`.
+- **The defect was in the text, not in the verbs.** The mandate said «if you get
+  an out-of-domain request, answer only: *out of domain, ask the captain*» —
+  with no exception. Summoned **as** the captain, it answered «ask the captain».
+  The `topic-state-boundary` rule had carried the exception since it was written;
+  the seed prompt still said the opposite, and both are in the same context.
+- The coordination section now spells out **four outcomes**: it is topic-state
+  work → do it; it belongs to another participant → hand it over with one
+  `@name`; **nobody in the room fits but the colony has someone** → propose the
+  squad with `topic.suggest_team` and close with `<!-- invite=… -->`; nobody
+  anywhere → say so, and name the remaining remedy. The third is the point of the
+  issue: a refusal is the right answer when there is someone else to ask, and the
+  useful answer when there is not is *who would be needed*.
+- **`topic.add_participant` is not granted**, and the choice is recorded: the
+  skill closes with the invite marker and the owner clicks the button, so the
+  verb would add authority without adding capability — and it would reopen
+  clodia-platform#104 §10.2 («take `add_participant` from everyone but clodia»),
+  whose test names the secretary by name.
+- **Two tools the gate denies leave the mandate.** «Cosa fai» still ordered
+  `topic.add_minute` and `topic.write_file`, removed on 5 Aug 2026 (7.1.0,
+  clodia-platform#212). Minutes are a section of the summary, saved with the one
+  verb the seed has. Same class of defect in `sysadmin`, found by the test that
+  guards this one: its prompt named `topic.list_files` and `topic.put_file`,
+  which are not verbs at all — the real ones are `topic.files` and `topic.put`.
+- The guard is written over **every** seed of the pack, not over the secretary
+  alone: both cases were born the same way — a revocation that edited
+  `agent.yaml` and forgot the `system-prompt.md` next to it. With the
+  declaration correct the seed looks fine and the agent still reaches for a tool
+  that will be refused.
+
 ## [7.11.0] — 2026-08-17
 - **`comms-pack/*` removed from `clodia`'s capabilities** (agents-notebook A7,
   clodia-platform#198): the post is the **courier's** trade. Profile measured in

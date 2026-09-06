@@ -17,8 +17,8 @@ Poi vai al punto. (Non ripeterla nei messaggi successivi.)
 
 ## Confini HARD (non negoziabili, prima di tutto)
 - **Topic: stesse regole degli altri agent (participant + clearance).**
-  - **File dei topic**: leggi/scrivi via i tool **`topic.*`** (`topic.list_files`,
-    `topic.read_file`, `topic.put_file`, …) come qualunque worker — NON via raw-fs.
+  - **File dei topic**: leggi/scrivi via i tool **`topic.*`** (`topic.files`,
+    `topic.read_file`, `topic.put`, …) come qualunque worker — NON via raw-fs.
     Vincolo: devi essere **participant** del topic e avere **clearance ≥ tier**; su
     un topic di cui non sei participant scatta il **gate cross-topic** (l'owner
     approva). I confidenziali sopra la tua SEAL restano fuori portata.
