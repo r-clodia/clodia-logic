@@ -29,6 +29,7 @@ from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
+from ..agents import seed_sync
 from ..agents.loader import registry
 from ..config import workspace_path
 from . import (catalog, gateway_pdp, pack_deprovision, pack_import,
@@ -295,6 +296,10 @@ def _list_packs() -> list[dict[str, Any]]:
             # stato registrato senza il campo upstream).
             "first_party": bool(manifest.get("first_party")),
             "has_upstream": bool(_pack_upstream(name)),
+            # Esiste una dichiarazione del pack con cui confrontare i seed
+            # installati (bundled o upstream)? Senza, il drift non è
+            # calcolabile e il bottone prometterebbe una risposta che non c'è.
+            "drift_checkable": bool(_bundle_catalog_dir(name) or _pack_upstream(name)),
             "source": str(manifest.get("source") or "").strip(),
             "agents": agents,
             "plugins": plugin_children,
@@ -554,6 +559,100 @@ async def update_pack(name: str, request: Request):
             pass
     return {"updated": name, "version": new_ver, "agents_restarted": len(stopped),
             **(result or {})}
+
+
+# ── Drift seed ↔ pack (clodia-platform#266) ──────────────────────────────────
+#
+# Dopo l'install il pack sorgente NON esiste più sull'istanza: i seed sono
+# copiati in `DATA/agents/<n>/` e il manifest installato ne elenca solo i nomi.
+# Quindi il drift non è una query su dati che abbiamo già — il termine di
+# paragone va RITROVATO al momento del controllo, in quest'ordine:
+#
+#   1. catalogo BUNDLED (`catalogs/packs/<n>/agents/`): letture locali, zero rete;
+#   2. UPSTREAM, lo stesso tarball che usa l'Update, qui in sola lettura — è
+#      l'unica strada che copre i pack non bundled, cioè quelli su cui il difetto
+#      della #211 è stato misurato;
+#   3. nessuno dei due → `unavailable`. Un pack senza riferimento non è un pack
+#      pulito, e dire «nessuna divergenza» perché non si è potuto guardare è
+#      esattamente la bugia che questa issue esiste per togliere.
+
+#: SHORTCUT: cache in-process del solo ramo upstream, per pack+ref. Regge finché
+#:           il processo è uno; con più repliche ognuna ha la sua, che per una
+#:           diagnostica a TTL breve è tollerabile. Serve a non far scaricare un
+#:           tarball a ogni click su una rotta che non muta niente.
+_DRIFT_TTL = 60.0
+_DRIFT_CACHE: dict[str, tuple[float, dict]] = {}
+
+
+def _drift_cache_clear() -> None:
+    _DRIFT_CACHE.clear()
+
+
+def _bundle_seed_dirs(name: str) -> list[Path] | None:
+    """Le directory seed del pack nel catalogo bundled, o None se non è bundled."""
+    d = _bundle_catalog_dir(name)
+    return pack_import._seed_dirs(d) if d else None
+
+
+def _drift_result(name: str, source: str, seed_dirs: list) -> dict:
+    agents = seed_sync.seed_drift(seed_dirs, registry.base_dir)
+    return {"name": name, "source": source, "checked": len(seed_dirs),
+            "agents": agents, "drifted": len(agents)}
+
+
+def _drift_from_upstream(name: str, up: dict) -> dict:
+    """Scarica il pack dall'upstream (temporaneo) e confronta. Sincrona: il
+    chiamante la mette in un thread, come fa `check-update`."""
+    import tempfile
+    with tempfile.TemporaryDirectory() as td:
+        root = _download_upstream_tarball(up, Path(td))
+        # Dentro il `with`: fuori la copia scaricata non esiste più.
+        return _drift_result(name, f"upstream:{up['repo']}@{up['ref']}",
+                             pack_import._seed_dirs(root))
+
+
+@router.post("/clodia/packs/{name}/drift")
+async def check_pack_drift(name: str, request: Request):
+    """Il seed installato corrisponde ancora a quello dichiarato dal pack?
+
+    Read-only, e FUORI dalla lista: risolvere il riferimento può costare un
+    download, e farlo per ogni pack a ogni apertura della vista Packs sarebbe il
+    modo di rendere lenta la pagina che questo controllo deve servire. Si attiva
+    da bottone, come il Check update.
+
+    Chiede `packs.drift`, il verbo che implementa. Le rotte read-only sorelle
+    qui accanto chiedono `packs.import_url` come sinonimo di «admin-only»: è il
+    prestito che la #297 ha appena corretto altrove (un rifiuto che nomina la
+    scusa sbagliata), e ripeterlo su una rotta nuova sarebbe rifare il difetto
+    appena chiuso. `packs.drift` non è gated — non muta niente e non esegue
+    codice di terzi, come `packs.list`/`show`/`check_command`.
+    """
+    await gateway_pdp.require_authz_async(request, "packs.drift")
+    if not catalog._NAME_RE.fullmatch(name):
+        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    bundled = _bundle_seed_dirs(name)
+    if bundled is not None:
+        return _drift_result(name, "bundled", bundled)
+    up = _pack_upstream(name)
+    if not up:
+        return {"name": name, "unavailable": True,
+                "reason": (f"'{name}' non è nel catalogo bundled e non dichiara "
+                           "un upstream: non esiste una dichiarazione del pack "
+                           "con cui confrontare i seed installati")}
+    chiave = f"{name}@{up['repo']}@{up['ref']}"
+    import time
+    cached = _DRIFT_CACHE.get(chiave)
+    if cached and (time.monotonic() - cached[0]) < _DRIFT_TTL:
+        return {**cached[1], "cached": True}
+    try:
+        res = await asyncio.to_thread(_drift_from_upstream, name, up)
+    except Exception as e:  # noqa: BLE001
+        # Un guasto della fonte NON è «nessuna divergenza»: si risponde errore,
+        # e chi guarda sa che la domanda è rimasta senza risposta.
+        return JSONResponse(status_code=502,
+                            content={"error": f"drift non calcolabile: {str(e)[:160]}"})
+    _DRIFT_CACHE[chiave] = (time.monotonic(), res)
+    return res
 
 
 @router.post("/clodia/packs/{name}/setup-done")
