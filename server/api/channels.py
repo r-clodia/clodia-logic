@@ -17,10 +17,12 @@ un agente, vedi `_maybe_delegate`).
 from __future__ import annotations
 
 import asyncio
+import hmac
 import json
 import logging
 import os
 import re
+from collections import OrderedDict
 from collections.abc import Iterable
 from datetime import datetime, timezone
 
@@ -424,6 +426,80 @@ async def _typing(tier: str, name: str, agent: str, state: str) -> None:
         LOG.debug("typing event non pubblicato: %s", e)
 
 
+# Finestra degli `id` già annunciati (clodia-platform#219). L'annuncio è passato
+# ad appartenere all'ATTO DI POSTARE — lo emette il gateway, dentro
+# `TopicService.post_message`, dove passano TUTTI gli scrittori — e nel
+# passaggio ci sono due annunciatori per lo stesso messaggio: il gateway e
+# questa porta, che continua ad annunciare finché il ramo ormai morto non viene
+# rimosso (diff separato, dopo il deploy). È questa finestra a rendere corretto
+# **qualunque** ordine di deploy fra i due repo: senza, il bus emetterebbe due
+# `channel_message` per lo stesso messaggio, e la webui dipingerebbe due bolle.
+#
+# SHORTCUT: finestra in memoria, per processo. Regge perché il bus è in-process
+#           (`core/events.py`) — chi ascolta è nello stesso processo che
+#           deduplica, quindi non esiste un doppione che possa sfuggirle. Se il
+#           bus diventasse distribuito (Redis, NATS), la dedup va dove va il
+#           bus, non qui.
+_ANNOUNCED_IDS: OrderedDict[str, None] = OrderedDict()
+_ANNOUNCED_MAX = 1024
+
+
+def _first_announcement(message_id: str) -> bool:
+    """True se questo `id` non era ancora stato annunciato (e lo registra).
+
+    Nessun lock: fra la lettura e la scrittura non c'è `await`, e le due porte
+    girano nello stesso event loop dell'agent-server.
+
+    Un messaggio **senza** `id` non è deduplicabile e passa sempre: sopprimerlo
+    sarebbe peggio del doppione — una bolla che non compare a nessuno.
+    """
+    if not message_id:
+        return True
+    if message_id in _ANNOUNCED_IDS:
+        return False
+    _ANNOUNCED_IDS[message_id] = None
+    while len(_ANNOUNCED_IDS) > _ANNOUNCED_MAX:
+        _ANNOUNCED_IDS.popitem(last=False)
+    return True
+
+
+async def publish_channel_message(
+    tier: str,
+    name: str,
+    author: str,
+    kind: str,
+    *,
+    message: dict | None = None,
+    topic_title: str | None = None,
+) -> bool:
+    """Pubblica `channel_message` sul bus SSE. False = soppresso (già annunciato).
+
+    Punto UNICO in cui l'evento nasce: ci passano sia la porta storica
+    (`_channel_message`, i turni degli agenti) sia l'annuncio del gateway
+    (`channel_announce_internal`). Il payload è quello che i consumatori già
+    leggono — `tier, name, author, kind, id, ts, text, mentions`, più
+    `topic_title` — perché cambiarlo qui li cambierebbe tutti insieme.
+    """
+    if not _first_announcement(str((message or {}).get("id") or "")):
+        return False
+    payload = {"tier": tier, "name": name, "author": author, "kind": kind}
+    if topic_title:
+        payload["topic_title"] = topic_title
+    if message:
+        payload.update({
+            "id": message.get("id"),
+            "ts": message.get("ts"),
+            "text": message.get("text") or "",
+            "mentions": [str(m).lower() for m in (message.get("mentions") or [])],
+        })
+    await bus.publish(Event(
+        type="channel_message",
+        payload=payload,
+        timestamp=datetime.now(timezone.utc),
+    ))
+    return True
+
+
 async def _channel_message(
     tier: str,
     name: str,
@@ -441,21 +517,15 @@ async def _channel_message(
     except Exception:  # noqa: BLE001
         pass
     try:
-        payload = {"tier": tier, "name": name, "author": author, "kind": kind}
-        if topic_title:
-            payload["topic_title"] = topic_title
-        if message:
-            payload.update({
-                "id": message.get("id"),
-                "ts": message.get("ts"),
-                "text": message.get("text") or "",
-                "mentions": [str(m).lower() for m in (message.get("mentions") or [])],
-            })
-        await bus.publish(Event(
-            type="channel_message",
-            payload=payload,
-            timestamp=datetime.now(timezone.utc),
-        ))
+        # RAMO ORMAI RIDONDANTE (clodia-platform#219): tutti i 9 call-site di
+        # questa funzione persistono il messaggio col gateway, che da parte sua
+        # annuncia già. La riga resta perché rimuoverla renderebbe
+        # `clodia-logic` dipendente dalla versione di `clodia-tools` deployata,
+        # e nella finestra fra i due deploy si perderebbe OGNI evento. Va via in
+        # un diff separato, dopo il deploy; fino ad allora la dedup per `id` la
+        # rende innocua.
+        await publish_channel_message(tier, name, author, kind,
+                                      message=message, topic_title=topic_title)
     except Exception as e:  # noqa: BLE001
         LOG.debug("channel_message event non pubblicato: %s", e)
 
@@ -5100,6 +5170,80 @@ async def channel_trigger_internal(tier: str, name: str, request: Request) -> di
                              trigger_author=_safe_name(by),
                              trigger_kind=kind, directive=avviso))
     return {"triggered": True, "by": by, "kind": kind}
+
+
+def _paired_gateway(request: Request) -> None:
+    """Il chiamante è il gateway con cui questo server è accoppiato?
+
+    Il secret orchestrator condiviso (`CLODIA_ORCHESTRATOR_SECRET`, header
+    `X-Orchestrator-Secret`) è già il modo in cui i due servizi si riconoscono
+    server-to-server — lo usano `logic_api`, `egress_api` e `mint_api` nella
+    direzione opposta. Qui distingue il gateway accoppiato da un client TERZO
+    che raggiunga la rete interna.
+
+    Quello che NON fa, e va scritto perché il nome «secret» promette di più:
+    misurato il 7 set 2026, quella variabile è presente anche nell'ambiente
+    degli **spawn** degli agenti, quindi non separa il gateway da un processo
+    della colonia. Contro quello la barriera resta la rete, come per
+    `trigger/internal` — che ha potere strettamente maggiore (fa partire un
+    turno) e non controlla nemmeno questo. Alzarla davvero significa restringere
+    e autenticare lo stream SSE, che è un altro lavoro, non questo diff.
+
+    **Fail-open se il server non ha un secret configurato**, e non il fail-closed
+    di `logic_api`: `docker-compose.yml` lo passa come `${...:-}`, quindi un
+    deployment può non averlo, e un fail-closed spegnerebbe l'annuncio *in
+    silenzio* — cioè rimetterebbe esattamente il difetto che questo diff chiude.
+    Con un secret configurato la verifica c'è ed è vincolante.
+    """
+    atteso = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+    if not atteso:
+        return
+    ricevuto = (request.headers.get("x-orchestrator-secret") or "").strip()
+    if not (ricevuto and hmac.compare_digest(ricevuto, atteso)):
+        raise HTTPException(403, "annuncio: chiamante non accoppiato a questo server")
+
+
+@router.post("/clodia/channels/{tier}/{name}/announce/internal")
+async def channel_announce_internal(tier: str, name: str, request: Request) -> dict:
+    """Annuncia sul bus SSE un messaggio **già persistito** dal gateway.
+
+    Body: il messaggio come lo restituisce `TopicService.post_message`
+    (`{id, author, kind, ts, text, mentions}`). Nessun turno, nessuna scrittura:
+    questa rotta dipinge una bolla per chi ascolta lo stream, e niente più.
+
+    Esiste perché il bus è **in-process** (`core/events.py`: code `asyncio` in
+    memoria, consumate da `api/agents.py`): il gateway non può pubblicare da sé,
+    e la sola strada è una chiamata verso questo server.
+
+    IDEMPOTENTE per `id`: nella finestra fra i due deploy annunciano entrambe le
+    porte, e il doppione va soppresso qui — dove il bus è, non dove sta lo
+    scrittore.
+
+    SHORTCUT: si crede al CONTENUTO del body, verificando il CHIAMANTE
+              (`_paired_gateway`). Il chiamante legittimo *è* lo store: rileggere
+              il messaggio significherebbe richiedere al gateway conferma di ciò
+              che il gateway ha appena detto, e `list_messages` rilegge TUTTI i
+              file dei messaggi del topic (O(n) letture per ogni post). Regge
+              finché la rete fra i due servizi resta privata. Per salire serve
+              una lettura PUNTUALE per `id` — il file è `.messages/{id}.json`,
+              quindi è una rotta da aggiungere al gateway, non una scansione — e
+              a quel punto il body può portare solo `{id}`.
+    """
+    _paired_gateway(request)
+    topic = await topics_client.async_open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    body = await request.json()
+    author = (body.get("author") or "").strip()
+    if not author:
+        raise HTTPException(400, "author richiesto")
+    kind = (body.get("kind") or "").strip() or "human"
+    # `topic_title` NON dal body: è una proprietà del topic, e questo server la
+    # ha già in mano — un campo in più creduto è un campo in più che può mentire.
+    annunciato = await publish_channel_message(
+        tier, name, author, kind, message=body,
+        topic_title=(topic.get("meta") or {}).get("title"))
+    return {"announced": annunciato, "id": body.get("id")}
 
 
 @router.post("/clodia/runtime/inspect-topic")
