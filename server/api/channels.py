@@ -3743,10 +3743,20 @@ async def channel_routing_overrule(tier: str, name: str, request: Request) -> di
             "responder": chosen if started else None, "learned": learned}
 
 
-@router.post("/clodia/channels/{tier}/{name}/remote")
-async def channel_remote(tier: str, name: str, request: Request) -> dict:
-    """Verbi Remote (git/drive) del topic dalla webui: status/enable/disable/
-    add/commit/push/pull. Solo partecipanti/owner. Proxy al gateway."""
+@router.post("/clodia/channels/{tier}/{name}/drive-folder")
+async def channel_drive_folder(tier: str, name: str, request: Request) -> dict:
+    """Cartelle Drive dichiarate per il canale dalla webui: add/remove/
+    set_credential. Solo partecipanti/owner. Proxy al gateway.
+
+    Decision-record #40: non è più un mount da navigare — la cartella
+    dichiarata è il perimetro di confine per le chiamate `gdrive.*` fatte da
+    dentro il canale (clodia-tools, `gdrive_root.roots_for_call`). Quindi
+    dichiararla, cambiarla o toglierla non è una preferenza del canale ma una
+    dichiarazione di autorità, e `_require_member` non è la guardia giusta: un
+    partecipante potrebbe puntare la dichiarazione a una cartella sorella —
+    `30-legale` accanto a `50-execution` — e allargarsi il perimetro da sé.
+    È la lezione di #80, applicata al campo che ora porta il confine.
+    """
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
@@ -3755,41 +3765,17 @@ async def channel_remote(tier: str, name: str, request: Request) -> dict:
     action = (body.get("action") or "").strip()
     if not action:
         raise HTTPException(400, "action richiesta")
-    # Il remote Drive di un topic È il suo perimetro di accesso: la cartella del
-    # remote è la radice del confine per le chiamate Drive che avvengono dentro
-    # quel canale (clodia-tools, gdrive_root.roots_for_call). Quindi impostarlo,
-    # cambiarlo o TOGLIERLO non è una preferenza del canale ma una dichiarazione
-    # di autorità, e `_require_member` non è la guardia giusta: un partecipante
-    # potrebbe puntare il remote a una cartella sorella — `30-legale` accanto a
-    # `50-execution` — e allargarsi il perimetro da sé. È la lezione di #80,
-    # applicata al campo che ora porta il confine.
-    #
-    # `status` e `pull` restano ai partecipanti: leggere lo stato e tirare dentro
-    # i contenuti non spostano il confine.
-    if action in ("add", "enable", "disable"):
-        await require_authz_async(request, f"topic.remote_{action}")
+    if action in ("add", "remove"):
+        await require_authz_async(request, f"topic.drive_folder_{action}")
     try:
-        return await topics_client.async_remote_action(
+        return await topics_client.async_drive_folder_action(
             tier, name, action, **{k: v for k, v in body.items() if k != "action"})
     except topics_client.TopicsClientError as e:
         # Un rifiuto del gateway (4xx) è una VALIDAZIONE con un messaggio
-        # azionabile — «collegare Drive nasconderebbe 18 file locali: popola
-        # prima la cartella» — e va consegnato come tale. Impacchettarlo in un
-        # 502 lo faceva sembrare un guasto del server e mandava a cercare il
-        # problema nel posto sbagliato; e il testo veniva troncato a metà.
+        # azionabile — «la cartella non è fra quelle approvate» — e va
+        # consegnato come tale, non impacchettato in un 502 che lo fa
+        # sembrare un guasto del server.
         if e.is_client_error:
-            # Rifiuto CONFERMABILE: il gateway marca i casi in cui la decisione
-            # spetta all'owner («collegando Drive i file già presenti non saranno
-            # più visibili»). 409 Conflict e non 400: la richiesta è in conflitto
-            # con lo stato attuale e si può ripetere confermando — un 400 direbbe
-            # «malformata», che non è. Il marcatore esce dal testo e diventa un
-            # campo: la UI non deve riconoscere il caso da una frase italiana.
-            marker = "confirmable:"
-            if e.detail.startswith(marker):
-                kind, _, human = e.detail[len(marker):].partition(":")
-                raise HTTPException(409, {"confirmable": kind.strip(),
-                                          "message": human.strip(),
-                                          "confirm_field": "confirm_hides_local"})
             raise HTTPException(e.status, e.detail)
         raise HTTPException(502, str(e)[:300])
 
