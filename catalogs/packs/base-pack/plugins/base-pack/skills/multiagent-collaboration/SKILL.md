@@ -4,7 +4,7 @@ description: |
   Come lavorare in squadra in un canale/topic multi-agente: orientarsi agli
   OBIETTIVI (non ai comandi), e quando mancano risorse/tool/skill cercare nel
   canale chi può aiutare e coinvolgerlo. Convenzione dei tag: @agente = richiesta
-  diretta (attiva), $agente = menzione soft (l'altro giudica se intervenire).
+  diretta, una per messaggio (apre un turno); $agente = citazione (non apre nulla).
 ---
 
 # multiagent-collaboration — gioco di squadra nei canali
@@ -26,21 +26,31 @@ conoscenza** che non hai:
    fuori dal tuo dominio. Meglio una squadra che un tuttofare.
 
 ## I due tag (convenzione del canale)
-- **`@agente` — richiesta DIRETTA**: gli chiedi di fare/rispondere → lo **attiva**.
-  Puoi mettere **più `@tag` nello stesso messaggio**, chiedendo cose diverse a
-  ciascuno (es. `@commercialista verifica il bilancio, @avvocato controlla la
-  clausola 4`). N tag → N agenti attivati (in parallelo).
-- **`$agente` — menzione SOFT**: lo citi o lo informi **senza** pretendere un
-  intervento. L'altro **giudica**: può rispondere se utile, o dare solo un cenno
-  breve. Usalo per tenere qualcuno nel giro, dare visibilità, chiedere un parere
-  facoltativo.
+- **`@agente` — richiesta DIRETTA**: gli chiedi di fare/rispondere → lo **attiva**,
+  cioè gli apre un turno completo che consuma il suo contesto e produce un messaggio
+  che tutti leggono. **UNA sola menzione per messaggio**: se ne metti due non parte
+  nessuno dei due, ti viene chiesto quale intendevi e quel turno lo paghi. Se ti
+  servono in due, chiama il primo adesso e il secondo quando ha finito — avrai anche
+  il suo esito da passargli.
+- **`$agente` — CITAZIONE**: lo nomini o lo informi. **Non gli apre nessun turno** e
+  non gli chiede nulla: legge il canale al suo prossimo intervento. Usalo per tenere
+  qualcuno nel giro, dare visibilità, ringraziare. Se ti serve una sua azione
+  **adesso**, l'unica strada è `@`.
+
+**Il caso in cui si sbaglia il sigillo: il resoconto.** Quando *racconti* un fatto
+che coinvolge un altro agente, scrivi `$`, non `@` — «`$sysadmin` ha aperto la
+issue», «`$fullstack-dev` è stato taggato ieri», «il piano approvato da `$clodia`».
+Un `@` in una frase di racconto convoca **davvero**: apre un turno a chi non ti aveva
+chiesto niente, e se nello stesso messaggio c'è anche una richiesta vera diventano
+due menzioni, quindi zero turni e una domanda. In dubbio, `$`: chi serve davvero lo
+si chiama al passaggio dopo, mentre un `@` di troppo non si ritira.
 
 ## Quando ti attivano
 - Ti arriva una **[RICHIESTA DIRETTA]** (@): esegui la tua parte; se ti blocchi,
   applica il punto "cerca chi può aiutarti" e delega con @/$.
-- Ti arriva una **[MENZIONE SOFT]** ($): intervieni **solo se hai qualcosa di utile**;
-  altrimenti un cenno di una riga (es. "👍 noto, nulla da aggiungere"). Non produrre
-  un intervento completo se non serve.
+- Una **citazione** (`$`) non ti attiva: non arriva nessun turno da istruire. La
+  leggi nella storia del canale al tuo prossimo intervento, quando puoi già reagire
+  sapendo com'è finita.
 
 ## Buone pratiche
 - **Chiedi in modo specifico e azionabile**: l'altro deve capire subito cosa fare.

@@ -9,6 +9,23 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.13.0] — 2026-09-07
+- **A report is not a summons** (clodia-logic#336). The
+  `multiagent-collaboration` skill promised «N tags → N agents activated (in
+  parallel)» while the runtime, with the fan-out off (the default), starts
+  **neither** of two mentions and opens a disambiguation question instead. Two
+  texts that contradict the runtime teach the defect rather than the rule: the
+  skill now states the one-mention-per-message rule and what a `@` costs (a full
+  turn of someone else's context).
+- The counterexample the issue handed us, now written down: when you **narrate**
+  something that involves another agent — «`$sysadmin` opened the issue»,
+  «`$fullstack-dev` was tagged yesterday» — the seal is `$`. A `@` inside a
+  sentence of reported speech summons for real, and next to an actual request in
+  the same message it makes two mentions, i.e. zero turns.
+- The stale promise about a soft mention is gone from here too: `$` opens no
+  turn, so there is no «answer only if you have something useful» to instruct
+  (R12) — the citation is read from channel history at the next natural turn.
+
 ## [7.12.0] — 2026-09-06
 - **The secretary's mandate learns to be convened** (agents-notebook A5,
   clodia-platform#196). The issue asked for «the two verbs to convene a team».
