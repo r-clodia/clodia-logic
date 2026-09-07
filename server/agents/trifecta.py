@@ -277,24 +277,23 @@ def egress_confinement(force: bool = False) -> dict:
     return out
 
 
-def remote_uri(meta: dict) -> Optional[str]:
-    """URI di destinazione del REMOTE del canale, o None se non ne ha.
+def drive_folder_uris(meta: dict) -> list[str]:
+    """URI `gdrive:folder/<id>` di ogni cartella Drive dichiarata dal canale.
 
-    Un remote non è un verbo: è un condotto **permanente** verso l'esterno. Un
-    topic collegato a una cartella Drive fa uscire i propri file da lì per
-    definizione, e se quella cartella non è fra le destinazioni vagliate l'uscita
-    è arbitraria — indipendentemente da quali verbi abbiano i partecipanti.
+    Dalla voce 40 (decision-record) non esiste più un mount permanente: la
+    cartella dichiarata in `meta["drive_folders"]` è solo il perimetro di
+    confinamento dei verbi `gdrive.*` (`gdrive_root.roots_for_call`), non un
+    condotto che scrive/legge da sola. Resta comunque una destinazione
+    dichiarata: se non è fra quelle vagliate, l'uscita di un agente verso quella
+    cartella è arbitraria a prescindere dai suoi verbi — da qui il perché conta
+    ancora per il punteggio.
     """
-    rem = (meta or {}).get("remote") or {}
-    rtype = str(rem.get("type") or "").strip()
-    cfg = rem.get("config") or {}
-    if rtype == "drive":
-        folder = str(cfg.get("folder") or "").strip()
-        return f"gdrive:folder/{folder}" if folder else None
-    if rtype == "git":
-        url = str(cfg.get("url") or "").strip()
-        return url or None
-    return None
+    out = []
+    for f in (meta or {}).get("drive_folders") or []:
+        folder = str((f or {}).get("folder") or "").strip()
+        if folder:
+            out.append(f"gdrive:folder/{folder}")
+    return out
 
 
 def uri_allowed(uri: Optional[str]) -> Optional[bool]:

@@ -2,7 +2,8 @@
 
 Definizione dell'owner, 17 ago 2026: «un file uploaded oppure un attachment di
 email, oppure un collegamento ad un remote». Tutte e tre sono già registrate nei
-dati — `provenance` per i file, `remote` nel meta — quindi non si indovina niente.
+dati — `provenance` per i file, `drive_folders` nel meta — quindi non si indovina
+niente.
 """
 from __future__ import annotations
 
@@ -40,15 +41,16 @@ class ChannelPrivateDataTests(unittest.TestCase):
         self.assertIs(True, self._con_file({"": [
             {"name": "misterioso.bin", "kind": "file"}]}))
 
-    def test_a_remote_lights_it_even_with_no_local_files(self) -> None:
+    def test_a_declared_folder_lights_it_even_with_no_local_files(self) -> None:
         """Dal canale si raggiunge un albero che nessun agente ha prodotto."""
         self.assertIs(True, self._con_file(
-            {"": []}, meta={"remote": {"type": "drive", "config": {"folder": "abc"}}}))
+            {"": []}, meta={"drive_folders": [{"name": "drive", "folder": "abc"}]}))
 
-    def test_a_vetted_remote_still_lights_it(self) -> None:
+    def test_a_vetted_folder_still_lights_it(self) -> None:
         """Il vaglio riguarda l'USCITA (terzo bit), non la presenza dei dati."""
         self.assertIs(True, self._con_file(
-            {"": []}, meta={"remote": {"type": "drive", "vetted": True}}))
+            {"": []}, meta={"drive_folders": [{"name": "drive", "folder": "abc",
+                                               "vetted": True}]}))
 
     def test_it_descends_into_directories(self) -> None:
         alberi = {
