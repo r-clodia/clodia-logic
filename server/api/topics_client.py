@@ -325,16 +325,18 @@ def set_participant(tier: str, name: str, agent: str, add: bool = True,
     return r.json()
 
 
-def remote_action(tier: str, name: str, action: str, **params) -> dict:
-    """Verbi Remote del topic (status/enable/disable/add/commit/push/pull) → gateway."""
-    url = f"{_base()}/{tier}/{name}/remote"
+def drive_folder_action(tier: str, name: str, action: str, **params) -> dict:
+    """Cartelle Drive dichiarate per un canale (add/remove/set_credential) →
+    gateway. Decision-record #40: nessun mount da navigare, solo la
+    dichiarazione di perimetro per gdrive.*."""
+    url = f"{_base()}/{tier}/{name}/drive-folder"
     try:
         r = _gw_http.post(url, headers=_headers(), json={"action": action, **params},
                           timeout=60)
     except requests.RequestException as e:
-        raise TopicsClientError(f"gateway remote irraggiungibile: {e}") from e
+        raise TopicsClientError(f"gateway drive-folder irraggiungibile: {e}") from e
     if r.status_code != 200:
-        raise _http_error("remote", r)
+        raise _http_error("drive-folder", r)
     return r.json()
 
 
@@ -480,7 +482,7 @@ async_get_agents_md = _async_of("get_agents_md")
 async_save_agents_md = _async_of("save_agents_md")
 async_list_messages = _async_of("list_messages")
 async_post_message = _async_of("post_message")
-async_remote_action = _async_of("remote_action")
+async_drive_folder_action = _async_of("drive_folder_action")
 async_list_files = _async_of("list_files")
 async_get_file = _async_of("get_file")
 async_read_file = _async_of("read_file")

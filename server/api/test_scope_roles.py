@@ -144,7 +144,7 @@ class EndpointAssignmentTests(unittest.TestCase):
 
     def test_moving_the_walls_is_an_act_of_ownership(self):
         g = self._guardie()
-        self.assertEqual(g.get(("post", "/clodia/channels/{tier}/{name}/remote")),
+        self.assertEqual(g.get(("post", "/clodia/channels/{tier}/{name}/drive-folder")),
                          "_require_scope_owner")
 
     def test_interrupting_a_turn_is_a_mutation(self):
