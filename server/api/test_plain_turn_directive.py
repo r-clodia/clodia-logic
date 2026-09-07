@@ -22,6 +22,8 @@ una direttiva assente.
 """
 from __future__ import annotations
 
+import ast
+import pathlib
 import unittest
 
 from .channels import _tag_directive
@@ -80,29 +82,85 @@ class GliAltriPercorsiRestanoComeErano(unittest.TestCase):
         self.assertIsNone(_tag_directive("kind-che-non-esiste", "davide", _TESTO))
 
 
+def _costanti(nodo: ast.AST | None, scope: ast.AST) -> set[str]:
+    """Le stringhe che `nodo` può valere, per quanto si vede staticamente."""
+    if isinstance(nodo, ast.Constant):
+        return {nodo.value} if isinstance(nodo.value, str) else set()
+    if isinstance(nodo, ast.IfExp):          # `"a" if cond else "b"`
+        return _costanti(nodo.body, scope) | _costanti(nodo.orelse, scope)
+    if isinstance(nodo, ast.Name):
+        # Le assegnazioni a quel nome dentro la funzione che contiene la call.
+        valori: set[str] = set()
+        for n in ast.walk(scope):
+            if isinstance(n, ast.Assign) and any(
+                    isinstance(t, ast.Name) and t.id == nodo.id for t in n.targets):
+                valori |= _costanti(n.value, scope)
+            elif (isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)
+                    and n.target.id == nodo.id):
+                valori |= _costanti(n.value, scope)
+        return valori
+    return set()                             # parametri, unpacking, chiamate: non risolvibili
+
+
+def _kind_dei_call_site() -> set[str]:
+    """I `kind` letterali che `channels.py` passa a `_start_turn`."""
+    sorgente = pathlib.Path(__file__).with_name("channels.py")
+    albero = ast.parse(sorgente.read_text(encoding="utf-8"))
+    kinds: set[str] = set()
+    for scope in ast.walk(albero):
+        if not isinstance(scope, (ast.FunctionDef, ast.AsyncFunctionDef)):
+            continue
+        for n in ast.walk(scope):
+            if not (isinstance(n, ast.Call)
+                    and getattr(n.func, "id", None) == "_start_turn"):
+                continue
+            # `kind` è il 7° posizionale nella firma di `_start_turn`.
+            arg = n.args[6] if len(n.args) > 6 else next(
+                (k.value for k in n.keywords if k.arg == "kind"), None)
+            kinds |= _costanti(arg, scope)
+    return kinds
+
+
 class NessunPercorsoDiTurnoRestaMuto(unittest.TestCase):
-    """Guard: i `turn_kind` che il codice può produrre devono avere un mandato.
+    """Guard: i `kind` che il codice può produrre devono avere un mandato.
 
     Il difetto non è nato da una direttiva sbagliata ma da una MANCANTE, e un
     kind nuovo aggiunto domani cadrebbe nello stesso modo — silenziosamente,
     perché `None` è un valore legittimo per il chiamante.
+
+    La lista NON si scrive più a mano: era la versione precedente di questa
+    guardia, e si è dimenticata `routed-choice` — il ramo che ha tenuto viva
+    metà della #360 dopo la #367. Qui i kind si leggono dai call-site reali di
+    `_start_turn` in `channels.py`, così aggiungerne uno senza direttiva
+    accende il test invece di aspettare la segnalazione di un utente.
     """
 
-    #: I valori che `_post_message` e i rami di delega passano come `kind` a
-    #: `_start_turn`. `disambigua` e `debug` sono esclusi: il primo ha la sua
-    #: direttiva, il secondo passa il testo così com'è di proposito.
-    KIND_DI_TURNO = ("plain", "routed", "coordinamento", "direct", "topic-bootstrap")
+    #: SHORTCUT: risoluzione statica a un passo — costanti, ternari e nomi
+    #: assegnati nella stessa funzione. Regge finché i `kind` restano letterali
+    #: vicini alla call (oggi lo sono tutti tranne quelli che arrivano come
+    #: parametro o da unpacking, e quei valori sono già coperti da altri
+    #: call-site). Se un domani un kind nascesse da una costante di modulo o da
+    #: una funzione, va risolto anche quello — o, meglio, i kind diventano un
+    #: enum e questa introspezione sparisce.
+    KIND_DI_TURNO = frozenset(_kind_dei_call_site())
+
+    def test_lestrazione_vede_davvero_i_call_site(self) -> None:
+        """Se l'estrazione degradasse a vuoto, i due test sotto passerebbero
+        senza controllare niente: questo è il controllo del controllo."""
+        self.assertLessEqual({"plain", "direct", "routed-choice"},
+                             self.KIND_DI_TURNO,
+                             f"estratti solo: {sorted(self.KIND_DI_TURNO)}")
 
     def test_ognuno_porta_un_mandato(self) -> None:
-        muti = [k for k in self.KIND_DI_TURNO
-                if not _tag_directive(k, "davide", _TESTO)]
+        muti = sorted(k for k in self.KIND_DI_TURNO
+                      if not _tag_directive(k, "davide", _TESTO))
         self.assertEqual([], muti,
                          f"turni senza mandato: {muti} — l'agente non sa che tocca a lui")
 
     def test_ognuno_porta_anche_il_messaggio(self) -> None:
         """Un mandato senza il testo manderebbe l'agente a cercarlo nella storia."""
-        senza = [k for k in self.KIND_DI_TURNO
-                 if _TESTO not in (_tag_directive(k, "davide", _TESTO) or "")]
+        senza = sorted(k for k in self.KIND_DI_TURNO
+                       if _TESTO not in (_tag_directive(k, "davide", _TESTO) or ""))
         self.assertEqual([], senza, f"mandato senza il messaggio: {senza}")
 
 
