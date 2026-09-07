@@ -52,6 +52,55 @@ class WhatWeTellTheAgentsTests(unittest.TestCase):
     def test_it_says_that_only_a_hard_mention_summons(self):
         self.assertIn("NON gli apre un turno", channels._CHANNEL_CAPS)
 
+    def test_the_framing_does_not_promise_a_fan_out_the_runtime_denies(self):
+        """clodia-logic#336. Qui c'era «Puoi taggare PIÙ agenti nello stesso
+        messaggio chiedendo cose diverse a ciascuno», mentre il runtime con
+        `CHANNEL_MULTI_RESPONDER` spento — il default — non avvia NESSUNO dei due
+        e apre una domanda di disambiguazione.
+
+        È la contraddizione che produce le doppie menzioni: la riga vera («UNA
+        SOLA MENZIONE PER MESSAGGIO») sta in `_tag_directive("direct")`, che
+        arriva solo ai turni da tag; questo preambolo arriva a TUTTI, quindi un
+        agente attivato per rilevanza o da un umano legge soltanto la promessa
+        sbagliata.
+        """
+        self.assertFalse(channels._multi_responder_enabled(),
+                         "questo controllo descrive il default; con il fan-out "
+                         "acceso la promessa sarebbe vera")
+        self.assertNotIn("PIÙ agenti nello stesso messaggio", channels._CHANNEL_CAPS)
+        self.assertIn("UNA sola menzione", channels._CHANNEL_CAPS)
+
+    def test_it_teaches_the_case_that_actually_goes_wrong(self):
+        """clodia-logic#336: il sigillo si sbaglia soprattutto NEI RESOCONTI («X
+        è stato taggato da Y»), dove l'intento è narrativo e il `@` convoca
+        davvero. Una regola senza il suo controesempio non si applica."""
+        self.assertIn("resoconto", channels._CHANNEL_CAPS.lower())
+
+
+class WhatWeTellThemInTheSkillTests(unittest.TestCase):
+    """La skill `multiagent-collaboration` è l'altra metà delle istruzioni, e
+    prometteva la stessa cosa del preambolo: «N tag → N agenti attivati (in
+    parallelo)». Due testi che dicono il contrario del runtime insegnano il
+    difetto, non la regola (clodia-logic#336).
+    """
+
+    def _skill(self) -> str:
+        from ..config import workspace_path
+        p = workspace_path("catalogs/packs/base-pack/plugins/base-pack/skills/"
+                           "multiagent-collaboration/SKILL.md")
+        self.assertTrue(p.is_file(), f"skill non trovata: {p}")
+        return p.read_text(encoding="utf-8")
+
+    def test_the_skill_does_not_promise_parallel_activation(self):
+        testo = self._skill()
+        self.assertNotIn("N agenti attivati", testo)
+        self.assertNotIn("più `@tag` nello stesso messaggio", testo)
+
+    def test_the_skill_states_the_one_mention_rule_and_the_report_case(self):
+        testo = self._skill().lower()
+        self.assertIn("una sola menzione", testo)
+        self.assertIn("resoconto", testo)
+
 
 class SoftDirectiveTests(unittest.TestCase):
     def test_there_is_no_citation_directive_left(self):

@@ -931,6 +931,37 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     # da `plan` dipendono anche la soglia dell'ambiguità e il ciclo che avvia i
     # turni: deduplicare solo il testo avrebbe lasciato la domanda inutile (#256).
     plan = _distinct_by(plan, lambda p: _target_identity(p[0]))
+    # RESOCONTO ≠ CONVOCAZIONE (#336), ma solo per SCIOGLIERE un'ambiguità.
+    #
+    # «@worker è stato taggato da X, ma la catena era al limite. @accountant
+    # riprendi tu» sono due menzioni per il router e una sola richiesta per chi
+    # l'ha scritta: oggi costa una domanda, un turno, e in coda a una catena
+    # lunga il vicolo cieco di #332. Se fra più menzioni ne resta esattamente
+    # UNA che non è un racconto, quella è la richiesta.
+    #
+    # Il confine è tutto qui: l'euristica non ha potere di VETO. Non si scende
+    # mai sotto un bersaglio, e con zero o due candidati veri non si indovina —
+    # la domanda all'autore resta il rimedio, perché l'autore è l'unico che sa
+    # cosa intendeva. Un falso negativo del riconoscimento riporta quindi al
+    # comportamento di oggi, mai a un turno che non parte in silenzio: è la
+    # famiglia di guasti che #332 ha appena chiuso, e non la si riapre di lato.
+    if len(plan) > 1:
+        veri = [p for p in plan if not _narrative_mention(reply_text or "", p[0])]
+        if len(veri) == 1:
+            raccontati = [_target_identity(t) for t, _k in plan if (t, _k) not in veri]
+            LOG.info("delega da %s su %s/%s: %s letti come resoconto, serve la "
+                     "richiesta vera (@%s)", from_agent, tier, name,
+                     ", ".join(raccontati), _target_identity(veri[0][0]))
+            plan = veri
+    elif len(plan) == 1 and _narrative_mention(reply_text or "", plan[0][0]):
+        # Menzione narrativa DA SOLA: il turno parte comunque (vedi sopra), e
+        # questa riga è l'unico modo per contare il pattern invece di dedurlo
+        # dai canali — il «warning distinto per audit» chiesto dalla issue.
+        LOG.warning("delega da %s su %s/%s: @%s convocato da una menzione che "
+                    "sembra narrativa (%r): turno avviato comunque, ma il "
+                    "sigillo giusto per un resoconto è $ (#336)",
+                    from_agent, tier, name, _target_identity(plan[0][0]),
+                    _mention_context(reply_text or "", plan[0][0]))
     for t in soft:
         if _seed_name(t) in participants:
             LOG.info("citazione $%s da %s su %s/%s: nessun turno (R12)",
@@ -1381,16 +1412,78 @@ def _mention_context(text: str, tag: str, limit: int = 160) -> str:
     Righe citate escluse, come in `_tags`: il `@` in un blockquote non è la
     convocazione di questo messaggio. Stringa vuota se non si trova nulla.
     """
+    frasi = _mention_sentences(text, tag)
+    if not frasi:
+        return ""
+    prima = frasi[0]
+    return prima[: limit - 1] + "…" if len(prima) > limit else prima
+
+
+def _mention_sentences(text: str, tag: str) -> list[str]:
+    """TUTTE le frasi in cui `@tag` compare, normalizzate, righe citate escluse.
+
+    Il ritaglio è lo stesso di `_mention_context` — che da qui prende la prima —
+    ma chi valuta l'INTENTO di una menzione ha bisogno di tutte: un messaggio
+    può raccontare un agente in apertura e chiamarlo in chiusura, e guardare
+    solo la prima frase leggerebbe come resoconto anche la richiesta (#336).
+    """
     own = [ln for ln in (text or "").splitlines() if not ln.lstrip().startswith(">")]
     ago = f"@{tag}".lower()
+    out: list[str] = []
     for riga in own:
         if ago not in riga.lower():
             continue
         for frase in _SENTENCE_END_RE.split(riga):
             if ago in frase.lower():
-                pulita = " ".join(frase.split())
-                return pulita[: limit - 1] + "…" if len(pulita) > limit else pulita
-    return ""
+                out.append(" ".join(frase.split()))
+    return out
+
+
+# RESOCONTO ≠ CONVOCAZIONE (#336). Un participio passato è il segnale: distingue
+# «il piano approvato da @clodia» (attribuzione di un atto già avvenuto) da
+# «fatti aiutare da @clodia» (richiesta), che usano la stessa preposizione.
+_PARTICIPIO = (r"(?:[a-zàèéìòóùü]+(?:at|it|ut)[oaie]|risposto|scritto|detto|"
+               r"chiuso|chiusi|aperto|aperti|preso|presi|fatto|fatti|messo|"
+               r"visto|rimasto|deciso)")
+#: `<participio> da @nome` — la menzione è l'AUTORE di un fatto, non il suo
+#: destinatario. L'infinito («aiutare da @nome») non entra: non è un participio.
+_ATTRIBUZIONE_FMT = _PARTICIPIO + r"\s+(?:da|dal|dalla|dagli|dalle)\s+{ago}\b"
+#: `@nome è stato …` — la menzione è il SOGGETTO di un fatto già avvenuto.
+_PASSIVO_FMT = r"{ago}\s+(?:è|e'|era|sono|erano)\s+stat[oaie]\b"
+#: `@nome ha risposto` — stesso soggetto, forma attiva al passato.
+_RESOCONTO_FMT = (r"{ago}\s+(?:ha|hanno|aveva|avevano)\s+"
+                  r"(?:già\s+|appena\s+|poi\s+|solo\s+|ancora\s+|mai\s+)*"
+                  + _PARTICIPIO + r"\b")
+
+
+def _narrative_mention(text: str, tag: str) -> bool:
+    """True se `@tag` è, in OGNI frase in cui compare, il racconto di un fatto.
+
+    Perché serve (clodia-logic#336): «@fullstack-dev è stato taggato da sysadmin,
+    ma la catena era al limite» non chiede niente a nessuno, e però convoca —
+    R12 non guarda l'intento, e il parser fa bene a non indovinare. Accanto a una
+    richiesta vera nello stesso messaggio diventano due menzioni: una domanda di
+    disambiguazione, un turno pagato, e in coda a una catena lunga il vicolo
+    cieco di #332.
+
+    Questa funzione NON declassa nulla da sola: chi la chiama la usa solo per
+    sciogliere un'ambiguità, e mai per togliere l'ultimo bersaglio. È la
+    proprietà che rende accettabile un'euristica sul linguaggio naturale — un
+    falso negativo riporta al comportamento di oggi, non a un turno che non
+    parte in silenzio.
+
+    SHORTCUT: pattern italiani, participio + ausiliare. Regge finché la colonia
+              scrive in italiano e il resoconto ha questa forma; sopra, si
+              allunga la lista dei pattern — non si dà a questa funzione il
+              potere di veto, che è ciò che la renderebbe pericolosa.
+    """
+    frasi = _mention_sentences(text, tag)
+    if not frasi:
+        return False
+    ago = re.escape(f"@{tag}")
+    forme = [re.compile(fmt.format(ago=ago), re.IGNORECASE)
+             for fmt in (_ATTRIBUZIONE_FMT, _PASSIVO_FMT, _RESOCONTO_FMT)]
+    return all(any(f.search(frase) for f in forme) for frase in frasi)
 
 
 def _humans_tagged(content: str, participants: list[str]) -> list[str]:
@@ -2718,8 +2811,17 @@ _CHANNEL_CAPS = (
     "grant o una skill per completare la tua parte, NON fermarti: guarda i partecipanti "
     "del canale (runtime.agents mostra dominio, skill e grant di ciascuno), trova chi "
     "può aiutarti e coinvolgilo. Due tipi di menzione:\n"
-    "- `@agente` = RICHIESTA DIRETTA: gli chiedi di fare/rispondere (lo attiva). Puoi "
-    "  taggare PIÙ agenti nello stesso messaggio chiedendo cose diverse a ciascuno.\n"
+    # R3 · #336 · qui c'era «Puoi taggare PIÙ agenti nello stesso messaggio
+    # chiedendo cose diverse a ciascuno», e il runtime dice l'opposto: con il
+    # fan-out spento (default) due menzioni non avviano NESSUNO dei due e aprono
+    # una domanda. La riga vera stava in `_tag_directive("direct")`, che arriva
+    # solo ai turni da tag; questo preambolo arriva a TUTTI — così l'unica
+    # istruzione che un agente attivato per rilevanza leggeva era quella
+    # sbagliata, e le doppie menzioni le stavamo insegnando noi.
+    "- `@agente` = RICHIESTA DIRETTA: gli chiedi di fare/rispondere (lo attiva). "
+    "  UNA sola menzione per messaggio: se ne metti due non parte nessuno dei due e "
+    "  ti viene chiesto quale intendevi. Se ti servono in due, chiama il primo ora e "
+    "  il secondo quando ha finito.\n"
     # R12 · questa riga prometteva un potere che il runtime non concede: «decide
     # lui se rispondere» — non decide niente, perché la citazione non gli apre
     # nessun turno in cui decidere. È il testo su cui l'agente sceglie il
@@ -2728,6 +2830,12 @@ _CHANNEL_CAPS = (
     "- `$agente` = CITAZIONE: lo nomini o lo informi. NON gli apre un turno e non "
     "  gli chiede nulla: legge il canale al suo prossimo intervento. Se ti serve "
     "  una sua azione ADESSO, l'unica strada è `@`.\n"
+    # #336 · il controesempio, che è il caso in cui il sigillo si sbaglia
+    # davvero: il `@` in un RESOCONTO convoca come qualunque altro, e chi
+    # scriveva stava solo raccontando.
+    "Quando NOMINI un agente in un resoconto — «$nome è stato taggato», «$nome ha "
+    "risposto», «il piano approvato da $nome» — usa `$`: il `@` in una frase di "
+    "racconto apre un turno vero a chi non ti aveva chiesto niente.\n"
     "Non accentrare: se un altro agente è più competente per una parte, passagliela "
     "con @; usa $ per tenere qualcuno nel giro senza obbligarlo.\n"
     "\n"
