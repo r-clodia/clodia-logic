@@ -18,6 +18,7 @@ Future estensioni (D in roadmap): tool_use, message_chunk, thinking_chunk.
 """
 from __future__ import annotations
 import asyncio
+import hashlib
 import json
 import logging
 from datetime import datetime, timezone
@@ -147,7 +148,13 @@ def _usage_totals(usage: dict | None) -> tuple[int, int]:
 
 
 def _run_done_fingerprint(agent: str, event: dict) -> str:
-    """Stable key per ignorare doppie scritture dello stesso completamento."""
+    """Stable key per ignorare doppie scritture dello stesso completamento.
+
+    Hashata, non letterale: da clodia-platform#208 la `reply` arriva fino a 4000
+    caratteri invece di 160, e queste chiavi stanno in un `set` per tutta la
+    scansione della leaderboard — la chiave serve a confrontare, non a essere
+    letta, quindi tenerla intera sarebbe stato ~25 volte più memoria per niente.
+    """
     payload = event.get("payload") or {}
     usage = payload.get("usage") or {}
     raw = {
@@ -159,7 +166,8 @@ def _run_done_fingerprint(agent: str, event: dict) -> str:
         "usage_semantics": payload.get("usage_semantics"),
         "usage_source": payload.get("usage_source"),
     }
-    return json.dumps(raw, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    testo = json.dumps(raw, sort_keys=True, ensure_ascii=False, separators=(",", ":"))
+    return hashlib.sha1(testo.encode("utf-8")).hexdigest()
 
 
 def summary(agent_names: list[str] | None = None) -> list[dict]:
