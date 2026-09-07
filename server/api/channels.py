@@ -1590,6 +1590,30 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "scope l'agente che serve (l'owner può farlo). Non inventare una "
             "risposta pur di darne una, e non restare in silenzio.\n\n"
             f"Messaggio di {author}:\n" + text)
+    if kind == "routed-choice":
+        # L'ULTIMO RAMO MUTO di #360, e quello che costa di più: ci si arriva
+        # dal dialogo di disambiguazione (l'utente clicca l'agente) e dallo
+        # scavalcamento del router. In entrambi una persona ha appena scelto
+        # QUESTO agente — e l'agente riceveva `None`, cioè un primo turno con la
+        # sola storia del canale, e rispondeva di non vedere nessuna richiesta.
+        # Il sintomo era identico a `plain` (chiuso dalla #367), la strada no:
+        # qui il mandato non viene dal router ma da chi l'ha corretto, e dirlo
+        # è ciò che evita il rimbalzo «non credo di essere io il destinatario».
+        return (
+            f"[SCELTA DI {author.upper()}] Il router semantico non aveva deciso, o "
+            f"aveva deciso male: {author} ha scelto TE, a mano, per questa "
+            "richiesta. Il turno è tuo e nessun altro sta rispondendo — chi era "
+            "partito per sbaglio è già stato fermato.\n\n"
+            "Lavora per OBIETTIVI, non per comandi: capisci il fine e portalo a casa "
+            "con i tuoi strumenti. Se ti manca un tool, un grant o una skill, non "
+            "fermarti — guarda i partecipanti del canale (`runtime.agents` mostra "
+            "skill, grant e dominio di ciascuno), trova chi può aiutarti e "
+            "coinvolgilo con UNA menzione `@nome`, che apre il suo turno.\n\n"
+            "Se la richiesta è davvero fuori dal tuo dominio dillo in una riga e "
+            "passala a chi è competente con `@nome`: resta un esito legittimo. Ma "
+            "qui non ha scelto un algoritmo — prima di rimandarla indietro, "
+            "verifica di non poterla servire.\n\n"
+            f"Messaggio di {author}:\n" + text)
     if kind == "topic-bootstrap":
         return (
             "[BOOTSTRAP DEL TOPIC] Sei il coordinatore introduttivo di riserva. "
