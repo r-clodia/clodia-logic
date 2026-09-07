@@ -26,12 +26,36 @@ from claude_agent_sdk.types import (
 )
 
 from ..config import WORKSPACE_ROOT as _BUNDLE_ROOT, data_path
-from ..agents import activity_log
+from ..agents import activity_log, transcripts
 from ..colony import pki
 
 
 def _snippet(text: str, n: int = 160) -> str:
     s = " ".join((text or "").split())
+    return s[:n] + ("…" if len(s) > n else "")
+
+
+#: Tetto della risposta nel log di attività. 160 caratteri erano il taglio che
+#: la #208 ha misurato: 161 persistiti contro 1370 token di output, con i
+#: puntini esattamente dove iniziava la spiegazione. Un tetto serve comunque —
+#: questo JSONL si rilegge tutto per la leaderboard — ma 4k è la differenza fra
+#: un rifiuto leggibile e un rifiuto troncato: un rifiuto è corto ed È la
+#: diagnosi.
+_REPLY_MAX = 4000
+
+
+def _reply_text(text: str, n: int = _REPLY_MAX) -> str:
+    """La risposta per il log di attività: tagliata alta, e con le sue righe.
+
+    Diverso da `_snippet` in due modi, entrambi voluti. Il tetto è 4000 invece
+    di 160, e i newline NON si appiattiscono: `_snippet` fa
+    `" ".join(text.split())`, quindi anche i 160 caratteri che sopravvivevano
+    arrivavano schiacciati su una riga — e una spiegazione strutturata («il mio
+    ruolo qui è…», poi l'elenco di ciò che non fa) si legge per le sue righe.
+    `_snippet` resta com'è dov'è un'ANTEPRIMA (il prompt, un errore): quelle non
+    sono diagnosi, e allargarle gonfierebbe il file senza aggiungere niente.
+    """
+    s = (text or "").strip()
     return s[:n] + ("…" if len(s) > n else "")
 from ..core.events import bus
 from ..core.models import Event, ClodiaStatus
@@ -1451,7 +1475,7 @@ class ChatSession:
                         generation.update(**update_kwargs)
                         await self._record({"role": "assistant", "content": full})
                         activity_log.append(self.kind, "run_done",
-                                            {"reply": _snippet(full), "chat_id": self.chat_id,
+                                            {"reply": _reply_text(full), "chat_id": self.chat_id,
                                              "usage": self._last_usage or None,
                              "provider": _runtime_provider(self.kind, self._runtime_override)})
                         await self._set_status(ClodiaStatus.IDLE)
@@ -1494,10 +1518,22 @@ class ChatSession:
                     finally:
                         _watchdog.cancel()
                         self._current_turn_task = None
+                        # Il transcript esce dallo spawn PRIMA che il reaper se
+                        # lo porti via (clodia-platform#208). Qui e non nel ramo
+                        # che emette `run_done`: agganciato al successo,
+                        # resterebbero fuori i turni cancellati, scaduti o
+                        # uccisi dal watchdog — e nella #208 due dei tre casi
+                        # osservati sono proprio turni appesi, cioè quelli per
+                        # cui il racconto serve di più. In un thread: è I/O di
+                        # file su un JSONL che può pesare MB, e questo è
+                        # l'event loop di tutto il processo. E DOPO la recovery
+                        # qui sotto, non prima: rimettere in piedi la sessione
+                        # viene prima di una copia diagnostica.
                         # se il watchdog ha ucciso il client, rimetti su una
                         # sessione PRONTA (altrimenti il turno dopo trova _client=None)
                         if self._watchdog_fired and self._client is None:
                             await self._recover_session()
+                        await asyncio.to_thread(transcripts.persist_for, self)
 
     async def send_user_message_async(self, content: str) -> dict:
         """Fire-and-forget: enqueue il messaggio e ritorna subito. Il turno
@@ -2166,7 +2202,7 @@ class CodexChatSession:
                 "usage_cumulative": self._last_usage or None,
             }
         activity_log.append(self.kind, "run_done",
-                            {"reply": _snippet(full), "chat_id": self.chat_id,
+                            {"reply": _reply_text(full), "chat_id": self.chat_id,
                              **(usage_payload or {}),
                              "provider": _runtime_provider(self.kind, self._runtime_override)})
         return full
@@ -2961,7 +2997,7 @@ class OpenCodeChatSession:
                 f"(modello {self._model} non convergente) — turno interrotto")
         full = await self._handle_parts(data)
         activity_log.append(self.kind, "run_done",
-                            {"reply": _snippet(full), "chat_id": self.chat_id,
+                            {"reply": _reply_text(full), "chat_id": self.chat_id,
                              "usage": self._last_usage or None,
                              "provider": _runtime_provider(self.kind, self._runtime_override)})
         return full

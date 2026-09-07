@@ -68,6 +68,36 @@ class ActivityLogSummaryTest(TestCase):
         self.assertEqual(providers["codex"]["tokens_in"], 100)
 
 
+class RunDoneFingerprintTest(TestCase):
+    """La chiave di dedup non porta più la risposta INTERA (#208).
+
+    `reply` passa da 160 caratteri a 4000: la chiave finiva in un `set` tenuto
+    per tutta la scansione della leaderboard, quindi crescerebbe ~25 volte per
+    un beneficio nullo — la chiave serve a confrontare, non a essere letta. È il
+    costo del cambio della #208, sistemato dove nasce.
+    """
+
+    def _payload(self, reply: str) -> dict:
+        return {"chat_id": "chan:dev", "provider": "codex", "reply": reply,
+                "usage": {"input_tokens": 1, "output_tokens": 2},
+                "usage_semantics": "delta"}
+
+    def test_the_key_does_not_grow_with_the_reply(self):
+        lunga = self._payload("z" * 4000)
+        chiave = activity_log._run_done_fingerprint("clodia", {"payload": lunga})
+        self.assertLess(len(chiave), 400)
+        self.assertNotIn("zzzz", chiave)
+
+    def test_identical_events_still_collide_and_different_ones_do_not(self):
+        a = {"payload": self._payload("stessa risposta")}
+        b = {"payload": self._payload("stessa risposta")}
+        c = {"payload": self._payload("un'altra risposta")}
+        fp = activity_log._run_done_fingerprint
+        self.assertEqual(fp("clodia", a), fp("clodia", b))
+        self.assertNotEqual(fp("clodia", a), fp("clodia", c))
+        self.assertNotEqual(fp("clodia", a), fp("ophelia", a))
+
+
 class ProviderSummaryTest(TestCase):
     def test_provider_from_event_and_unknown_bucket_no_guessing(self):
         """Il provider viene dal payload; gli eventi SENZA provider finiscono in
