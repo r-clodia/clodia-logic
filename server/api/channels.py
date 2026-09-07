@@ -1426,14 +1426,34 @@ def _effective_clearance(spec) -> str:
     return _norm(ps) if ps else _norm(getattr(spec, "clearance", None))
 
 
-def _topic_provider(spec, tier: str | None) -> str | None:
+def _topic_runtime_field(spec, tier: str | None, field: str) -> str | None:
+    """Un campo del runtime override di QUESTA stanza, o None se non si risolve.
+
+    Provider e modello escono dalla stessa scelta (`topic_runtime_override`
+    prende il provider min-cost idoneo al tier e il modello ABBINATO a quel
+    provider), quindi si leggono dalla stessa risposta e con lo stesso
+    trattamento dell'errore: un provider non connesso non è un guasto — è un
+    agente che in questa stanza non può lavorare, e lo dice `None`."""
     try:
-        return topic_runtime_override(spec.name, tier).get("provider")
+        return topic_runtime_override(spec.name, tier).get(field)
     except ProviderNotConnected:
         return None
     except Exception as e:  # noqa: BLE001
-        LOG.warning("topic provider non risolto per %s/%s: %s", spec.name, tier, e)
+        LOG.warning("topic %s non risolto per %s/%s: %s", field, spec.name, tier, e)
         return None
+
+
+def _topic_provider(spec, tier: str | None) -> str | None:
+    return _topic_runtime_field(spec, tier, "provider")
+
+
+def _topic_provider_model(spec, tier: str | None) -> str | None:
+    """Il MODELLO in uso in questa stanza (clodia-platform#315).
+
+    Non è un campo indipendente dal provider: è il modello dello stack scelto
+    per QUESTO tier. Mostrare quello di uno stack diverso — il difetto che
+    `effective_model` ha ancora sulla card agente — è peggio che non mostrarlo."""
+    return _topic_runtime_field(spec, tier, "model")
 
 
 def _can_access(clearance: str | None, tier: str | None) -> bool:
@@ -2370,11 +2390,16 @@ def _eligibility(spec, tier: str | None) -> dict:
     - bot: idoneo SOLO se la SEAL EFFETTIVA (= quella del provider) ≥ tier.
       Nessuno tratta dati SEAL-3+ su un provider SEAL-2-. Stessa regola per tutti.
     `provider` è quello EFFETTIVO in questa stanza (clodia-platform#310, A14):
-    lo stesso agente può girare su provider diversi da un topic all'altro (A13)."""
+    lo stesso agente può girare su provider diversi da un topic all'altro (A13).
+    `model` è il modello ABBINATO a quel provider (#315): cambia con lui, e per
+    gli umani è `None` come il provider — ma la chiave c'è sempre, così la UI
+    legge sempre lo stesso oggetto."""
     if not spec or spec.type != "bot":
-        return {"eligible": True, "warn": False, "provider": None}
+        return {"eligible": True, "warn": False, "provider": None, "model": None}
     ok = _provider_seal_ok(spec, tier)
-    return {"eligible": bool(ok), "warn": False, "provider": _topic_provider(spec, tier)}
+    return {"eligible": bool(ok), "warn": False,
+            "provider": _topic_provider(spec, tier),
+            "model": _topic_provider_model(spec, tier)}
 
 
 # --- Composizione squadra alla creazione di un topic ----------------------
