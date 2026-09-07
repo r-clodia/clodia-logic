@@ -60,12 +60,12 @@ class NewDataAfterTheBaselineTests(unittest.TestCase):
         self.assertEqual(["local/nota.md#5000"],
                          tr.new_private_data(voce, ["local/nota.md#5000"]))
 
-    def test_a_remote_connected_afterwards_lights_it(self) -> None:
+    def test_a_drive_folder_declared_afterwards_lights_it(self) -> None:
         """«oppure un collegamento ad un remote»: vale come dato portato dentro,
         anche se al momento del reset non c'era."""
         voce = tr.set_reset("SEAL-1", "ops", "davide", ["clodia"], data_paths=[])
-        self.assertEqual(["remote:drive:cartella-x"],
-                         tr.new_private_data(voce, ["remote:drive:cartella-x"]))
+        self.assertEqual(["drive_folder:drive:cartella-x"],
+                         tr.new_private_data(voce, ["drive_folder:drive:cartella-x"]))
 
     def test_removing_data_does_not_light_anything(self) -> None:
         """Togliere non è un rischio nuovo: il bit resta spento."""

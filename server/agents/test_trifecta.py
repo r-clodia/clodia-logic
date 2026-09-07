@@ -557,22 +557,21 @@ class RemoteEgressTests(unittest.TestCase):
         self.assertFalse(self._p(False)["remote_egress"])
 
 
-class RemoteUriTests(unittest.TestCase):
-    def test_a_drive_remote_becomes_a_folder_uri(self):
+class DriveFolderUrisTests(unittest.TestCase):
+    def test_a_declared_folder_becomes_a_uri(self):
         self.assertEqual(
-            trifecta.remote_uri({"remote": {"type": "drive",
-                                            "config": {"folder": "1AbC"}}}),
-            "gdrive:folder/1AbC")
+            trifecta.drive_folder_uris({"drive_folders": [{"name": "drive", "folder": "1AbC"}]}),
+            ["gdrive:folder/1AbC"])
 
-    def test_a_git_remote_is_its_url(self):
+    def test_many_folders_are_all_named(self):
         self.assertEqual(
-            trifecta.remote_uri({"remote": {"type": "git",
-                                            "config": {"url": "https://github.com/a/b"}}}),
-            "https://github.com/a/b")
+            trifecta.drive_folder_uris({"drive_folders": [{"name": "a", "folder": "1"},
+                                                           {"name": "b", "folder": "2"}]}),
+            ["gdrive:folder/1", "gdrive:folder/2"])
 
-    def test_no_remote_no_uri(self):
-        for meta in ({}, {"remote": {}}, {"remote": {"type": "drive", "config": {}}}):
-            self.assertIsNone(trifecta.remote_uri(meta))
+    def test_no_folder_no_uri(self):
+        for meta in ({}, {"drive_folders": []}, {"drive_folders": [{"name": "x"}]}):
+            self.assertEqual(trifecta.drive_folder_uris(meta), [])
 
     def test_membership_is_unknown_without_the_orchestrator_secret(self):
         """Non si inventa né sì né no: il chiamante tratta `None` come non

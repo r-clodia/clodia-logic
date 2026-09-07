@@ -2671,60 +2671,19 @@ def _fmt_msg(m: dict) -> str:
     return line
 
 
-def _mounts_of(tier: str, name: str) -> list[str]:
-    """I mount dell'albero dati dello scope: `local` più i `remote/<n>`.
-
-    Best-effort: se il gateway non risponde si torna al solo `local`, che è
-    l'unico mount che esiste sempre. Una lista incompleta fa nominare un path in
-    meno; una lista inventata fa nominare un path sbagliato.
-    """
-    # Un mount è una cartella di PRIMO livello col proprio nome: `comms/`, non
-    # `remote/comms/`. Lo schema è deciso dal gateway (`_resolve_data_path`):
-    # qui si compone, non si decide.
-    fuori = ["local"]
-    try:
-        meta = (topics_client.open_topic(tier, name) or {}).get("meta") or {}
-        for m in (meta.get("mounts") or []):
-            n = str(m.get("name") or "").strip()
-            # Solo i remote che sono davvero un altro filesystem si montano: un
-            # remote git sono gli stessi file in un altro momento, e annunciarlo
-            # come cartella produceva un path che non si apre.
-            if n and str(m.get("type") or "").strip().lower() == "drive":
-                fuori.append(n)
-    except Exception:  # noqa: BLE001
-        pass
-    return fuori
-
-
 def _channel_files_hint(tier: str, name: str) -> str:
-    """Come si nominano i file di questo scope, con i mount VERI.
+    """Come si nominano i file di questo scope.
 
-    Diceva «i file stanno in files/», e lo diceva a ogni turno. `files/` è una
-    forma LEGACY che il gateway accetta ancora, ma risolve al backend
-    *effettivo*: su uno scope con un remote Drive punta a Drive, altrove al
-    locale. Due conseguenze, entrambe viste in esercizio:
-
-    - un file caricato nel canale PRIMA che il remote fosse montato sta in
-      `local/`, e da quel momento `files/<nome>` lo cerca su Drive, dove non è
-      mai stato. Misurato su venere: `files/8.png` caricato alle 14:44, mount
-      creato alle 14:47, e da allora quel path non trova più niente;
-    - un agente che riferisce «files/x» a una persona la manda a cercare un path
-      che nella sidebar non esiste: là si vede `local/x` o `remote/drive/x`.
-
-    Quindi il preambolo smette di insegnarlo. Accettarlo resta giusto — i
-    riferimenti già scritti devono continuare a funzionare — ma un testo iniettato
-    a ogni turno è un maestro, e questo insegnava la forma ambigua.
+    Dalla voce 40 (decision-record) l'albero dati di uno scope è sempre e solo
+    `local/`: il mount Drive/git navigabile è stato ritirato, l'accesso a
+    Drive e ai repository passa dai verbi `gdrive.*`/`github.*` verso lo
+    scratch, mai da un secondo mount nel file tree.
     """
-    mounts = _mounts_of(tier, name)
-    elenco = ", ".join(f"`{m}/`" for m in mounts)
-    return (f"I file di questo scope stanno in un albero unico con questi mount: "
-            f"{elenco}. Usa topic.files per vederlo e topic.read_file per leggere, "
-            f'con tier="{tier}", name="{name}". '
+    return (f'I file di questo scope stanno in local/. Usa topic.files per vederlo '
+            f'e topic.read_file per leggere, con tier="{tier}", name="{name}". '
             f"Cita SEMPRE i path come te li restituisce topic.files (es. "
-            f'"{mounts[-1]}/nomefile"): è la forma che una persona ritrova nella '
-            f"sidebar. NON usare il prefisso `files/`: è una forma legacy ancora "
-            f"accettata in lettura, ma risolve a un mount che può non essere quello "
-            f"in cui il file si trova.")
+            f'"local/nomefile"). NON usare il prefisso `files/`: è una forma '
+            f"legacy ancora accettata in lettura ma da non citare.")
 
 
 # Capacità UI del canale: l'interfaccia trasforma marcatori-commento invisibili
@@ -4279,9 +4238,9 @@ def _channel_private_data(tier: str, name: str, meta: dict) -> bool | None:
       file da Drive, download di un verbo) sono ciò che è stato PORTATO DENTRO.
       Un file senza provenienza conta come portato dentro: è la direzione che il
       taint usa già per le etichette assenti.
-    · un **remote collegato**. Dal canale si raggiunge un albero di documenti che
+    · una **cartella Drive dichiarata**. Segnala un albero di documenti che
       nessun agente ha prodotto, quindi il bit è acceso a prescindere dai file
-      locali — e a prescindere dal fatto che il remote sia vagliato, perché il
+      locali — e a prescindere dal fatto che la cartella sia vagliata, perché il
       vaglio riguarda l'USCITA (terzo bit), non la presenza dei dati.
 
     `True` · `False` · `None` = non stabilito (gateway muto, albero troppo
@@ -4301,12 +4260,10 @@ def _private_data_paths(tier: str, name: str, meta: dict) -> list[str] | None:
     diventerebbe il silenziamento che non deve essere.
     """
     fuori: list[str] = []
-    remoto = str((meta.get("remote") or {}).get("type") or "").strip()
-    if remoto:
-        # Il remote è UNA voce: se cambia (o viene ricollegato altrove) il path
-        # cambia con lui, e il bit si riaccende.
-        cfg = (meta.get("remote") or {}).get("config") or {}
-        fuori.append(f"remote:{remoto}:{cfg.get('folder') or cfg.get('id') or ''}")
+    for f in meta.get("drive_folders") or []:
+        # Ogni cartella dichiarata è UNA voce: se cambia (o se ne dichiara
+        # un'altra al suo posto) il path cambia con lei, e il bit si riaccende.
+        fuori.append(f"drive_folder:{f.get('name') or ''}:{f.get('folder') or ''}")
     da_visitare = [""]
     visitate = 0
     try:
@@ -4389,12 +4346,13 @@ def _channel_trifecta(meta: dict, tainted: bool | None = None,
     Un errore qui non deve impedire di aprire il canale: si degrada a None e
     la UI semplicemente non mostra il badge."""
     try:
-        # Un remote è un condotto PERMANENTE verso l'esterno: se punta a una
-        # destinazione non vagliata, il terzo bit è acceso a prescindere dai verbi
-        # dei partecipanti. `None` (gateway muto) si tratta come non vagliato: un
-        # condotto di cui non sappiamo se è approvato va mostrato, non nascosto.
-        uri = trifecta.remote_uri(meta)
-        remote_egress = (uri is not None) and (trifecta.uri_allowed(uri) is not True)
+        # Una cartella Drive dichiarata è una destinazione PERMANENTE: se non è
+        # fra quelle vagliate, il terzo bit è acceso a prescindere dai verbi dei
+        # partecipanti. `None` (gateway muto) si tratta come non vagliato: una
+        # destinazione di cui non sappiamo se è approvata va mostrata, non
+        # nascosta.
+        uris = trifecta.drive_folder_uris(meta)
+        remote_egress = any(trifecta.uri_allowed(u) is not True for u in uris)
         riservati = (_channel_private_data(tier, name, meta)
                      if tier and name else None)
         prof = trifecta.context_profile(meta.get("participants") or [],
