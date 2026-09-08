@@ -2883,19 +2883,75 @@ def _fmt_msg(m: dict) -> str:
     return line
 
 
+#: Quanti path mostrare per nome nel preambolo, e quante directory visitare
+#: per trovarli. Un elenco serve a far SAPERE che un file esiste — non a farlo
+#: leggere qui: un tetto basso tiene il costo di ogni turno vicino a zero,
+#: un elenco incompleto fa dimenticare un file in meno, un elenco inventato ne
+#: farebbe cercare uno che non c'è.
+_FILES_HINT_MAX_ENTRIES = 25
+
+
+def _channel_file_listing(tier: str, name: str) -> list[str] | None:
+    """I path dei file dello scope, per nominarli nel preambolo.
+
+    Stessa BFS limitata di `_private_data_paths` (`_MAX_DIR_SCAN`), qui senza
+    filtro di provenienza: un file scritto da un agente in una sessione
+    precedente risponde a un dubbio tanto quanto uno caricato da una persona.
+    `None` se il gateway non risponde o l'albero è troppo grande per starci
+    dentro il tetto: un elenco a metà si legge come completo, quindi qui non
+    se ne mostra nessuno piuttosto che uno parziale spacciato per intero.
+    """
+    fuori: list[str] = []
+    da_visitare = [""]
+    visitate = 0
+    try:
+        while da_visitare and visitate < _MAX_DIR_SCAN and len(fuori) <= _FILES_HINT_MAX_ENTRIES:
+            sub = da_visitare.pop(0)
+            visitate += 1
+            for voce in topics_client.list_files(tier, name, sub) or []:
+                nome = voce.get("name") or ""
+                pieno = f"{sub}/{nome}" if sub else nome
+                if voce.get("kind") == "dir":
+                    da_visitare.append(pieno)
+                    continue
+                fuori.append(pieno)
+        if da_visitare or len(fuori) > _FILES_HINT_MAX_ENTRIES:
+            return None
+        return sorted(fuori)
+    except Exception as e:  # noqa: BLE001 — un dubbio non è una rassicurazione
+        LOG.info("preambolo: elenco file di %s/%s non disponibile (%s)", tier, name, e)
+        return None
+
+
 def _channel_files_hint(tier: str, name: str) -> str:
-    """Come si nominano i file di questo scope.
+    """Come si nominano i file di questo scope, e QUALI ci sono già.
 
     Dalla voce 40 (decision-record) l'albero dati di uno scope è sempre e solo
     `local/`: il mount Drive/git navigabile è stato ritirato, l'accesso a
     Drive e ai repository passa dai verbi `gdrive.*`/`github.*` verso lo
     scratch, mai da un secondo mount nel file tree.
+
+    L'elenco dei file esiste perché il preambolo prima diceva solo COME
+    cercare (`topic.files`), mai COSA c'è: un agente vede i documenti solo se
+    pensa a chiamare `topic.files` da sé, e su una domanda qualunque spesso non
+    ci pensa — risponde senza sapere che il canale ha già la risposta. Un
+    elenco di nomi, non di contenuti: il costo resta quasi zero a ogni turno,
+    e chi vede un nome pertinente sa già quale file aprire con
+    `topic.read_file` invece di rispondere alla cieca o rifare da capo un
+    lavoro già fatto.
     """
-    return (f'I file di questo scope stanno in local/. Usa topic.files per vederlo '
+    base = (f'I file di questo scope stanno in local/. Usa topic.files per vederlo '
             f'e topic.read_file per leggere, con tier="{tier}", name="{name}". '
             f"Cita SEMPRE i path come te li restituisce topic.files (es. "
             f'"local/nomefile"). NON usare il prefisso `files/`: è una forma '
             f"legacy ancora accettata in lettura ma da non citare.")
+    elenco = _channel_file_listing(tier, name)
+    if not elenco:
+        return base
+    righe = "\n".join(f"- {p}" for p in elenco)
+    return (f"{base}\n\nFile GIÀ presenti in questo scope (controlla se uno di "
+            f"questi risponde già al dubbio, PRIMA di rispondere alla cieca o "
+            f"di rifare un lavoro già fatto):\n{righe}")
 
 
 # Capacità UI del canale: l'interfaccia trasforma marcatori-commento invisibili
