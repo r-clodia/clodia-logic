@@ -948,21 +948,30 @@ def agent_effective_model(kind: str) -> Optional[str]:
     """Modello che l'agent userà EFFETTIVAMENTE, coerente col provider effettivo:
     override per-provider (`provider_models[provider]`) se presente, altrimenti il
     `model` dichiarato; poi tradotto in inference-profile se il provider è Bedrock.
-    Usato dai runtime (claude/opencode) per passare il model id giusto."""
-    model = _resolve_model(kind)
-    prov = agent_effective_provider(kind)
-    spec = _kind_spec(kind)
-    pm = getattr(spec, "provider_models", None) or {} if spec else {}
-    if prov and prov in pm:
-        model = pm[prov]
-    try:
-        from ..api.providers import bedrock_model_id
-        bid = bedrock_model_id(prov, model)
-        if bid:
-            model = bid
-    except Exception:  # noqa: BLE001
-        pass
-    return model
+    Usato dai runtime (claude/opencode) per passare il model id giusto.
+
+    Il «modello del provider X» lo calcola `_runtime_model`, che è la stessa
+    regola con cui nascono le sessioni: qui c'era una seconda copia, e una
+    regola scritta due volte è il posto in cui provider e modello tornano a
+    divergere (clodia-platform#325). Questa risponde per il provider
+    PREFERITO, cioè fuori da una stanza; dentro un topic vale la gemella
+    `agent_effective_model_for_tier`.
+    """
+    return _runtime_model(kind, {"provider": agent_effective_provider(kind)})
+
+
+def agent_effective_model_for_tier(kind: str, tier: str | None) -> Optional[str]:
+    """Modello dello stack che gira nel tier di un topic — gemella per-tier di
+    `agent_effective_model`, come `agent_effective_provider_for_tier` lo è di
+    `agent_effective_provider`.
+
+    Nessun provider idoneo → nessun modello: ripiegare sul preferito
+    rimetterebbe in circolo il valore fuori-stanza che #325 toglie dalla card.
+    """
+    prov = agent_effective_provider_for_tier(kind, tier)
+    if not prov:
+        return None
+    return _runtime_model(kind, {"provider": prov})
 
 
 def agent_runtime_sdk(kind: str) -> str:

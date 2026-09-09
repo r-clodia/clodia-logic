@@ -2438,11 +2438,30 @@ TEAM_THRESHOLD = float(os.environ.get("TEAM_SUGGEST_THRESHOLD", "0.34"))
 TEAM_MAX_SPECIALISTS = int(os.environ.get("TEAM_MAX_SPECIALISTS", "3"))
 
 
-def _agent_cost(spec) -> dict:
+def _agent_cost(spec, tier: str | None = None) -> dict:
     """Proxy di costo di un agente: fascia di prezzo del modello effettivo +
-    numero di skill (peso del system prompt per turno)."""
-    from ..sdk_runtime.session import agent_effective_model, agent_effective_provider
-    model = (agent_effective_model(spec.name) or getattr(spec, "model", None) or "").lower()
+    numero di skill (peso del system prompt per turno).
+
+    Col `tier` si prezza lo stack DI QUELLA STANZA (clodia-platform#325): un
+    agente con più stack costa diversamente in un canale SEAL-2 e in uno SEAL-0,
+    perché il provider idoneo al tier serve un altro modello. Senza `tier` resta
+    il preferito fuori-stanza, che è la sola risposta possibile quando la
+    domanda non nomina un canale.
+    """
+    from ..sdk_runtime.session import (agent_effective_model,
+                                       agent_effective_model_for_tier,
+                                       agent_effective_provider,
+                                       agent_effective_provider_for_tier)
+    if tier:
+        provider = agent_effective_provider_for_tier(spec.name, tier)
+        modello = agent_effective_model_for_tier(spec.name, tier)
+    else:
+        provider = agent_effective_provider(spec.name)
+        modello = agent_effective_model(spec.name)
+    # Fallback al modello DICHIARATO dal seed quando lo stack non risolve (tier
+    # precluso o provider giù): serve a dare una fascia di prezzo, non a
+    # promettere quell'esecuzione — l'idoneità la stabilisce `_eligibility`.
+    model = (modello or getattr(spec, "model", None) or "").lower()
     price, label = 2, "standard"
     for key, p, lab in _MODEL_PRICE:
         if key in model:
@@ -2451,7 +2470,10 @@ def _agent_cost(spec) -> dict:
     return {
         "price": price, "label": label,
         "skills": len(getattr(spec, "skills", []) or []),
-        "provider": agent_effective_provider(spec.name),
+        # Provider e modello dalla STESSA lettura: sono la coppia di uno stack,
+        # non due campi indipendenti (#315). `None` quando nel tier nessuno
+        # regge — dirlo è più utile che nominare uno stack che lì non gira.
+        "provider": provider,
         "model": model or None,
     }
 
@@ -2468,7 +2490,9 @@ def suggest_team(tier: str, description: str) -> dict:
     score_of = {s.name: sc for s, sc in scored}
 
     def _cost_of(s):
-        return _agent_cost(s)
+        # Il tier è l'argomento di questa funzione: la squadra si prezza sulla
+        # stanza per cui la si propone, non sullo stack preferito (#325).
+        return _agent_cost(s, tier)
 
     rows = []
     for s in specs:
