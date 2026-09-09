@@ -207,12 +207,25 @@ def _provider_fields(spec: AgentSpec, connected: set[str]) -> dict:
         # tier → provider, `None` dove nessun provider dell'agent regge il tier
         # (e in quel tier l'agente non può prendere turni).
         "provider_by_tier": per_tier,
+        # Il MODELLO segue il provider, non la preferenza (clodia-platform#325).
+        # `provider_models` abbina un modello a ciascun provider, quindi appena
+        # `provider_by_tier` cambia da un tier all'altro cambia anche il modello
+        # che gira in quella stanza — e `effective_model` qui sotto ne nominava
+        # un altro, chiamandolo «stack in uso». Derivato dal `per_tier` appena
+        # calcolato: nessuna seconda risoluzione, nessuna scelta in più.
+        # `None` dove nessun provider regge il tier: un modello dichiarato in un
+        # tier in cui l'agente non prende turni è la stessa bugia, spostata.
+        "model_by_tier": {t: (_stack_model(p) if p else None)
+                          for t, p in per_tier.items()},
         # SEAL del provider PREFERITO. Per il SEAL che conta in una stanza si
         # guarda `provider_by_tier`.
         "provider_seal": provider_seal(pid),
-        # modello dello stack EFFETTIVO: può differire dal `model` top-level
-        # quando il provider effettivo ha un override per-provider. La card
-        # mostra questo, non il top-level (issue#93).
+        # Modello dello stack PREFERITO, cioè fuori da una stanza — stesso
+        # trattamento che #306 ha dato a `provider`. Può differire dal `model`
+        # top-level quando quel provider ha un override per-provider
+        # (issue#93). Per il modello che gira DENTRO un topic si guarda
+        # `model_by_tier`: il campo resta perché fuori da un canale è la sola
+        # risposta possibile, e per un agente a stack unico è anche l'unica.
         "effective_model": _stack_model(pid) if pid else None,
         # stack dichiarati/normalizzati (tuple model+provider, ordine = preferenza).
         "stacks": [{"model": s.model, "provider": s.provider}

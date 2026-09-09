@@ -10,7 +10,7 @@ import unittest
 
 from ..agents.models import AgentSpec
 from . import providers as P
-from .agent_registry import _provider_fields
+from .agent_registry import _CLR_VALID, _provider_fields
 
 
 def _spec(**kw) -> AgentSpec:
@@ -284,3 +284,60 @@ class StacksTests(unittest.TestCase):
     def test_effective_model_falls_back_to_top_level(self) -> None:
         f = _provider_fields(_spec(agent_sdk="claude"), {"claude-pro-max"})
         self.assertEqual(f["effective_model"], "claude-sonnet-4-5")
+
+
+class ModelloPerTierTests(unittest.TestCase):
+    """clodia-platform#325 — `effective_model` è il modello del provider
+    PREFERITO, che #306 ha già declassato a «fuori da una stanza». Dentro un
+    topic la sessione nasce col provider meno costoso idoneo al tier, e con più
+    stack quel provider serve un ALTRO modello: la card mostrava il modello
+    dello stack sbagliato etichettandolo «stack in uso».
+
+    Spec cross-stack: `anthropic-api` (SEAL-1, costo 10) preferito con
+    `claude-sonnet-4-5`, `aws-region-eu` (SEAL-2) con `claude-opus-5`. Fino a
+    SEAL-1 vince il preferito; da SEAL-2 il preferito non regge il tier e il
+    modello in uso cambia.
+    """
+
+    def _cross(self) -> AgentSpec:
+        return _spec(agent_sdk="claude", model="claude-sonnet-4-5",
+                     providers=["anthropic-api", "aws-region-eu"],
+                     provider_models={"aws-region-eu": "claude-opus-5"})
+
+    def _fields(self) -> dict:
+        return _provider_fields(self._cross(), {"anthropic-api", "aws-region-eu"})
+
+    def test_model_by_tier_covers_every_tier(self) -> None:
+        m = self._fields()["model_by_tier"]
+        self.assertEqual(sorted(m), sorted(_CLR_VALID))
+
+    def test_model_by_tier_follows_provider_by_tier(self) -> None:
+        f = self._fields()
+        pm = {"aws-region-eu": "claude-opus-5"}
+        for t, prov in f["provider_by_tier"].items():
+            atteso = pm.get(prov or "", "claude-sonnet-4-5") if prov else None
+            self.assertEqual(f["model_by_tier"][t], atteso, t)
+
+    def test_high_tier_model_differs_from_preferred(self) -> None:
+        # Il difetto dell'issue, in una riga: in SEAL-2 gira un modello che la
+        # card non nominava da nessuna parte.
+        f = self._fields()
+        self.assertEqual(f["effective_model"], "claude-sonnet-4-5")
+        self.assertEqual(f["model_by_tier"]["SEAL-2"], "claude-opus-5")
+        self.assertNotEqual(f["model_by_tier"]["SEAL-2"], f["effective_model"])
+
+    def test_no_model_where_no_provider_holds_the_tier(self) -> None:
+        # SEAL-3/4: nessuno dei due provider regge → nessun modello, non il
+        # preferito «per riempire». Un modello dichiarato in un tier dove
+        # l'agente non prende turni è la stessa bugia, spostata.
+        f = self._fields()
+        for t in ("SEAL-3", "SEAL-4"):
+            self.assertIsNone(f["provider_by_tier"][t], t)
+            self.assertIsNone(f["model_by_tier"][t], t)
+
+    def test_single_stack_agent_repeats_the_same_model(self) -> None:
+        # Un solo stack: la mappa esiste comunque (la webui decide se mostrarla
+        # in base al fatto che vari), e dice sempre il preferito dove regge.
+        f = _provider_fields(_spec(agent_sdk="claude"), {"anthropic-api"})
+        self.assertEqual(f["model_by_tier"]["SEAL-1"], f["effective_model"])
+        self.assertIsNone(f["model_by_tier"]["SEAL-2"])
