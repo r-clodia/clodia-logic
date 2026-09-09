@@ -2764,8 +2764,15 @@ class OpenCodeChatSession:
         # Gli strumenti nativi dichiarati dal seed. Su claude la sottrazione va in
         # `disallowed_tools`; qui nella sezione `permission`, che è il solo posto
         # dove opencode la sa leggere. Stessa lista, stessa direzione: si nega.
+        # Insieme a loro il `deny_shell_patterns` del sandbox, che finiva sulla
+        # stessa chiave `bash` e fino alla #296 non ci arrivava affatto: era una
+        # dichiarazione inerte sui seed opencode. Lo scratch è quello di QUESTO
+        # spawn — `cwd` è la sua directory — o un `{scratch}` letterale resterebbe
+        # un divieto che non combacia mai.
         from . import native_tools as _nt
-        perm = _nt.opencode_permission(_resolve_native_allowed(self.kind))
+        sandbox = _nt.normalize_sandbox(
+            getattr(_kind_spec(self.kind), "sandbox", None), cwd / "scratch")
+        perm = _nt.opencode_permission(_resolve_native_allowed(self.kind), sandbox)
         if perm:
             cfg["permission"] = perm
             LOG.info("opencode: %s — permessi negati: %s", self.kind,

@@ -217,13 +217,23 @@ SANDBOX_FIELDS: tuple[str, ...] = (
 #:   (clodia-platform#204, #359). Dopo la #359 il confinamento di codex esiste,
 #:   ma è di grana grossa (`read-only`/`workspace-write`/`danger-full-access`):
 #:   non è questa granularità.
-#: - **opencode**: nessuno, oggi. Ha una configurazione di permessi documentata,
-#:   quindi è il primo candidato quando l'enforcement si porterà davvero
-#:   (clodia-platform#296 punto 2) — ma finché non lo si porta, dirlo qui è la
-#:   sola cosa che non mente.
+#: - **opencode**: `deny_shell_patterns`, e solo quello (clodia-platform#296
+#:   punto 2). Esce in `permission.bash` via `opencode_permission`, ed è l'unico
+#:   dei cinque campi che là dentro cambia cosa l'agente può fare. Perché non gli
+#:   altri quattro, misurato su opencode 1.15.13:
+#:   - `allow_shell_cmds`: la lista di regole di un agente comincia con
+#:     `{permission: "*", pattern: "*", action: "allow"}`, quindi ciò che nessuna
+#:     regola nomina è già concesso — un elenco di permessi non restringe. Farne
+#:     una porta richiederebbe un `{"*": "deny"}` che il seed non chiede e che
+#:     toglierebbe la shell ai tre seed non-claude che oggi la usano;
+#:   - `allow_read`/`deny_read`/`allow_write`: i permessi `read`/`edit` ricevono
+#:     il path **relativo al worktree** (`patterns: [relative(worktree, file)]`),
+#:     mentre questi campi sono assoluti col `{scratch}` risolto: un
+#:     `/datadir/spawns/x/**` non combacerebbe mai. Tradurli vuol dire decidere
+#:     cosa fare dei path fuori dal worktree — un'altra decisione, non questa.
 SANDBOX_ENFORCED: dict[str, frozenset[str] | None] = {
     "claude": None,
-    "opencode": frozenset(),
+    "opencode": frozenset({"deny_shell_patterns"}),
     "codex": frozenset(),
 }
 
@@ -492,8 +502,14 @@ def redundant_declarations(allowed: list[str] | set[str] | None) -> list[str]:
     return fuori
 
 
-def opencode_permission(allowed: list[str] | set[str] | None) -> dict:
+def opencode_permission(allowed: list[str] | set[str] | None,
+                        sandbox: "NormalizedSandbox | None" = None) -> dict:
     """La stessa dichiarazione, tradotta nella sezione `permission` di opencode.
+
+    Due assi entrano qui, e sono gli stessi due di questo file: `allowed` dice
+    *quali strumenti* il seed concede, `sandbox` *come si stringe la shell che il
+    seed ha già* (clodia-platform#296 punto 2). Escono in una sezione sola perché
+    su opencode la shell ha una chiave sola.
 
     Si emettono **solo i dinieghi**, come su claude: la sottrazione è l'unico
     canale, e ciò che il seed concede resta al default del runtime invece di
@@ -504,22 +520,57 @@ def opencode_permission(allowed: list[str] | set[str] | None) -> dict:
     container, quindi la tabella è a mano e `OPENCODE_UNMAPPED` tiene in vista
     quel che si è deciso di non tradurre.
     """
-    if allowed is None:
-        return {}
-    esatti, prefissi, pattern, nudi = _granted(allowed)
+    esatti, prefissi, pattern, nudi = _granted(allowed or [])
 
     def concesso(nomi: tuple[str, ...]) -> bool:
         return any(n in esatti or n.startswith(prefissi or ("\0",)) for n in nomi)
 
     perm: dict = {}
-    for chiave, nomi in OPENCODE_KEYS.items():
-        if not concesso(nomi):
-            perm[chiave] = "deny"
+    if allowed is not None:
+        for chiave, nomi in OPENCODE_KEYS.items():
+            if not concesso(nomi):
+                perm[chiave] = "deny"
+    if perm.get("bash") == "deny":
+        # `Bash` non concesso: la shell non c'è, e una mappa di regole la
+        # riaprirebbe. Un diniego secco è più forte di qualunque ritaglio, e il
+        # sandbox non ha niente da stringere.
+        return perm
+    regole = _opencode_bash(pattern, nudi, sandbox)
+    if regole:
+        perm["bash"] = regole
+    return perm
+
+
+def _opencode_bash(pattern: dict[str, list[str]], nudi: set[str],
+                   sandbox: "NormalizedSandbox | None") -> dict:
+    """Le regole `permission.bash` di opencode, **nell'ordine che le applica**.
+
+    Su opencode una regola si risolve con `findLast`: vince l'ULTIMA che
+    combacia, e in mancanza di regole si ricade sulla base dell'agente, che
+    comincia con `{permission: "*", pattern: "*", action: "allow"}`. Misurato sul
+    binario 1.15.13 dentro il container. Due conseguenze, ed è tutto ciò che
+    decide questa funzione:
+
+    1. il tappo `{"*": "deny"}` va scritto **prima** delle eccezioni che lo
+       ritagliano, o le vince tutte. Scritto per ultimo — com'era — un
+       `Bash(git:*)` chiudeva la shell anche a `git`;
+    2. i dinieghi del sandbox vanno **in coda**, così hanno la precedenza sui
+       permessi: è la stessa regola di claude, dove `permissions.deny` batte
+       `permissions.allow`.
+
+    `allow_shell_cmds` non entra: là dentro un permesso non restringe niente
+    (ciò che nessuna regola nomina è già concesso) e non può nemmeno ritagliare
+    un diniego, perché la precedenza è dei dinieghi. Per farne una porta
+    servirebbe un `{"*": "deny"}` che il seed non ha chiesto e che toglierebbe la
+    shell ai seed non-claude che oggi la usano: è una decisione, non una
+    traduzione, e `SANDBOX_ENFORCED` continua a dire che quel campo è inerte.
+    """
+    regole: dict[str, str] = {}
     # `Bash(git:*)` → una mappa pattern→azione, che è la forma che opencode
     # accetta per `bash`. `X:*` nella sintassi della CLI di Claude vuol dire «un
     # comando che comincia per X»; qui diventa il comando nudo più il glob.
     if "Bash" in pattern and "Bash" not in nudi:
-        regole: dict[str, str] = {}
+        regole["*"] = "deny"
         for p in pattern["Bash"]:
             testa, sep, coda = p.partition(":")
             if sep and coda.strip() == "*":
@@ -527,9 +578,9 @@ def opencode_permission(allowed: list[str] | set[str] | None) -> dict:
                 regole[f"{testa.strip()} *"] = "allow"
             else:
                 regole[p] = "allow"
-        regole["*"] = "deny"
-        perm["bash"] = regole
-    return perm
+    for p in getattr(sandbox, "deny_shell_patterns", ()) or ():
+        regole[p] = "deny"
+    return regole
 
 
 #: Le tre modalità che codex accetta, dalla più larga alla più stretta. Sono i
