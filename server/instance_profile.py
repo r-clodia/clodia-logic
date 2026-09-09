@@ -49,6 +49,7 @@ class Features(BaseModel):
     channels: bool = True          # channel adapter Telegram (NON la webchat)
     packs_ui: bool = True
     providers_ui: bool = True
+    databases_ui: bool = True
     activity: bool = True
     # Sezione/pairing PWA (Settings): spenta nelle edizioni senza PWA (§4b.6).
     pwa: bool = True
