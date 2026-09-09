@@ -57,6 +57,7 @@ def _reply_text(text: str, n: int = _REPLY_MAX) -> str:
     """
     s = (text or "").strip()
     return s[:n] + ("…" if len(s) > n else "")
+from ..core import turn_timing
 from ..core.events import bus
 from ..core.models import Event, ClodiaStatus
 from ..observability import langfuse_attributes, langfuse_observation, trace_io
@@ -1130,6 +1131,12 @@ class ChatSession:
     #: dimostra il contrario, mai il viceversa.
     unattended: bool = False
 
+    #: Il cronometro delle fasi del turno in corso (clodia-platform#330), o None
+    #: fuori da un turno e sui turni che non passano da un dispatcher. Attributo
+    #: di classe con default: le tre classi di sessione lo dichiarano ognuna, e
+    #: così nessun percorso di costruzione può dimenticarlo.
+    _timing: "turn_timing.TurnTiming | None" = None
+
     def __init__(self, chat_id: str, kind: str = DEFAULT_KIND, title: str = "",
                  runtime_override: Optional[dict] = None) -> None:
         if not known_kind(kind):
@@ -1466,6 +1473,13 @@ class ChatSession:
         if self._opts_kwargs is None:
             raise RuntimeError("session not started")
         async with self._lock:
+            # Il cronometro del turno, consegnato dal dispatcher (#330). Si
+            # ritira DENTRO il lock: così appartiene al turno che sta per
+            # partire e non a quello che sta ancora finendo, e la prima fase
+            # misurata qui è proprio l'attesa in coda — che per chi guarda è
+            # indistinguibile dal modello che pensa.
+            self._timing = turn_timing.claim(self.chat_id)
+            turn_timing.mark(self._timing, "queue_wait")
             # Token OAuth long-lived: se è in scadenza, provider_env lo rinnova;
             # se è cambiato riapro il client col token fresco PRIMA del turno —
             # così un subprocess di vecchia data non dà 401 a metà sessione.
@@ -1508,6 +1522,10 @@ class ChatSession:
                         async with asyncio.timeout(QUERY_TIMEOUT):
                             await self._client.query(content)
                         LOG.info("turno %s: query inviata, raccolgo la risposta", self.chat_id)
+                        # Ultima fase misurata: ciò che resta fino al primo
+                        # token è il modello, cioè la rilettura del contesto che
+                        # la #228 ipotizza dominante. Ora è un numero.
+                        turn_timing.mark(self._timing, "query_sent")
                     except Exception as e:
                         LOG.error("turno %s: query fallita/timeout: %s", self.chat_id, e)
                         activity_log.append(self.kind, "error",
@@ -1573,6 +1591,11 @@ class ChatSession:
                         raise
                     finally:
                         _watchdog.cancel()
+                        # Il cronometro vale per QUESTO turno. Un turno finito
+                        # senza mai un token (errore, timeout, watchdog) non
+                        # scrive nessuna riga: un TTFT che non è mai arrivato
+                        # non è una misura.
+                        self._timing = None
                         self._current_turn_task = None
                         # Il transcript esce dallo spawn PRIMA che il reaper se
                         # lo porti via (clodia-platform#208). Qui e non nel ramo
@@ -1743,6 +1766,14 @@ class ChatSession:
                     # chiamare un tool.
                     await _emit_blocks()
                 if ev.get("type") == "content_block_delta":
+                    # Qui finisce il silenzio: è il primo byte che arriva dal
+                    # modello, e chiude il cronometro delle fasi (#330). Vale
+                    # per QUALUNQUE delta — testo, pensiero, argomenti di un
+                    # tool — perché la misura è «quanto è durata l'attesa prima
+                    # che il modello dicesse qualcosa», non «di che tipo era la
+                    # prima cosa». `first_token` è idempotente: i delta
+                    # successivi non trovano più il turno.
+                    turn_timing.first_token(self._timing)
                     delta = ev.get("delta") or {}
                     dtype = delta.get("type")
                     if dtype == "text_delta" and delta.get("text"):
@@ -2016,6 +2047,9 @@ class CodexChatSession:
     JSONL di codex sono tradotti negli stessi Event del Claude SDK.
     """
 
+    #: Vedi `ChatSession._timing` (clodia-platform#330).
+    _timing: "turn_timing.TurnTiming | None" = None
+
     def __init__(self, chat_id: str, kind: str = "ophelia", title: str = "",
                  runtime_override: Optional[dict] = None) -> None:
         if not known_kind(kind):
@@ -2156,6 +2190,10 @@ class CodexChatSession:
         if self._client is None:
             raise RuntimeError("session not started")
         async with self._lock:
+            # Il cronometro del turno, come nel runtime claude (#330): ritirato
+            # dentro il lock, così la prima fase misurata è l'attesa in coda.
+            self._timing = turn_timing.claim(self.chat_id)
+            turn_timing.mark(self._timing, "queue_wait")
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
             self._last_usage = {}
@@ -2182,6 +2220,7 @@ class CodexChatSession:
                 await self._publish_error(str(e))
                 raise
             finally:
+                self._timing = None  # il cronometro vale per QUESTO turno
                 self._current_turn_task = None
                 self._proc = None
 
@@ -2407,6 +2446,11 @@ class CodexChatSession:
         # passano gli eventi dei runtime a subprocess (codex, opencode), quindi
         # è l'unico punto che li vede tutti.
         self.last_activity = datetime.now(timezone.utc)
+        # E per lo stesso motivo è il punto in cui finisce il silenzio iniziale
+        # (#330): il primo evento del turno è il primo segno di vita del
+        # runtime. `first_token` scrive una riga sola, quindi gli eventi
+        # successivi non aggiungono nulla.
+        turn_timing.first_token(self._timing)
         t = ev.get("type")
         if t == "thread.started":
             tid = ev.get("thread_id")
@@ -2577,6 +2621,9 @@ class OpenCodeChatSession:
     `opencode.json` scritto nella cwd dello spawn; le credenziali passano via env
     (`{env:…}`) così non finiscono su disco. Vedi project_opencode_runtime_spike.
     """
+
+    #: Vedi `ChatSession._timing` (clodia-platform#330).
+    _timing: "turn_timing.TurnTiming | None" = None
 
     def __init__(self, chat_id: str, kind: str = "messaggero", title: str = "",
                  runtime_override: Optional[dict] = None) -> None:
@@ -2953,6 +3000,10 @@ class OpenCodeChatSession:
         if self._client is None:
             raise RuntimeError("session not started")
         async with self._lock:
+            # Il cronometro del turno, come nel runtime claude (#330): ritirato
+            # dentro il lock, così la prima fase misurata è l'attesa in coda.
+            self._timing = turn_timing.claim(self.chat_id)
+            turn_timing.mark(self._timing, "queue_wait")
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
             self._last_usage = {}
@@ -2977,6 +3028,7 @@ class OpenCodeChatSession:
                 await self._publish_error(str(e))
                 raise
             finally:
+                self._timing = None  # il cronometro vale per QUESTO turno
                 self._current_turn_task = None
 
     async def send_user_message_async(self, content: str) -> dict:
@@ -3065,6 +3117,11 @@ class OpenCodeChatSession:
         # runtime. Senza, `last_activity` si muoverebbe solo a messaggio
         # registrato e un turno lungo verrebbe dichiarato piantato mentre lavora.
         self.last_activity = datetime.now(timezone.utc)
+        # E, come negli altri due runtime, qui finisce il silenzio iniziale
+        # (#330): opencode consegna le parti a turno concluso, quindi per questo
+        # runtime il TTFT misura l'intero turno — è la verità di come risponde,
+        # non un difetto della misura.
+        turn_timing.first_token(self._timing)
         parts_out: list[str] = []
         for p in data.get("parts", []) or []:
             t = p.get("type")
