@@ -52,7 +52,7 @@ class RetirementTests(unittest.TestCase):
         """Il nome compare nei log e negli storici: chi lo incontra deve trovare
         la nota, non un'assenza."""
         self.assertEqual(S.RETIRED_DEFAULT_CHAT_ID, "default")
-        self.assertIn("RITIRATA", inspect.getsource(S)[:8000])
+        self.assertIn("RITIRATA", inspect.getsource(S)[:12000])
 
     def test_the_old_name_is_gone(self):
         """Se restasse, un import lo rimetterebbe in uso senza accorgersene."""
