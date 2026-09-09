@@ -104,11 +104,19 @@ class SoloIProxyTests(unittest.TestCase):
                       "il battito dello stream non è più condizionato al proxy: "
                       "per un umano `background` diventa irraggiungibile")
 
-    def test_the_beat_is_cancelled_when_the_stream_ends(self) -> None:
-        """Senza il cancel, un ponte terminato resterebbe «presente» per sempre —
-        che è il difetto che #218 descrive, al contrario."""
+    def test_the_stream_end_is_handed_to_the_presence_bookkeeping(self) -> None:
+        """La fine dello stream va DICHIARATA, non solo interrotta.
+
+        Prima qui si chiedeva `battito.cancel()`: cancellare il task fermava il
+        battito e lasciava l'ultima voce a scadere col TTL — fino a 150 s in cui
+        un ponte morto risultava «sta leggendo questa conversazione». Ora la
+        chiusura passa da `_presenza_stream_chiuso`, che cancella E cancella la
+        presenza; il comportamento (conteggio degli stream sovrapposti, assenza
+        immediata) è misurato in `test_218_proxy_presence_connection`, e questo
+        resta il solo controllo che il `finally` non perda l'aggancio.
+        """
         src = inspect.getsource(agents.events)
-        self.assertIn("battito.cancel()", src)
+        self.assertIn("_presenza_stream_chiuso", src)
         self.assertIn("finally:", src)
 
 

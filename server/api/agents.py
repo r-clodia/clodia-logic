@@ -230,6 +230,49 @@ async def _batti_finche_ascolta(chi: str, tier: str, name: str) -> None:
                     chi, tier, name, e)
 
 
+#: Quanti stream un proxy tiene aperti, per stanza. Un CONTEGGIO e non un
+#: booleano: una riconnessione si sovrappone alla connessione che sta cadendo —
+#: il ponte riapre lo stream e solo dopo il vecchio si chiude — e con un
+#: booleano quella chiusura cancellerebbe la presenza appena riaperta. Il
+#: pallino lampeggerebbe fra presente e assente, che sembra un guasto del ponte:
+#: è la stessa ragione per cui `_PROXY_BEAT_EVERY_S` sta sotto il TTL.
+#:
+#: SHORTCUT: il conteggio vive in memoria, quindi regge finché l'agent-server è
+#:           UN processo (com'è oggi: un container, un uvicorn). Con due replica
+#:           una chiusura qui non vede lo stream aperto là e cancellerebbe una
+#:           presenza viva. Per salire: contare per stream (un id per
+#:           connessione) dentro `presence.json`, che è il solo posto che i due
+#:           processi già condividono.
+_stream_di_proxy: dict[tuple[str, str, str], int] = {}
+
+
+def _presenza_stream_aperto(chi: str, tier: str, name: str) -> asyncio.Task:
+    """Registra la connessione e avvia il battito che la racconta."""
+    _stream_di_proxy[(chi, tier, name)] = _stream_di_proxy.get((chi, tier, name), 0) + 1
+    return asyncio.create_task(_batti_finche_ascolta(chi, tier, name))
+
+
+def _presenza_stream_chiuso(chi: str, tier: str, name: str,
+                            battito: asyncio.Task | None) -> None:
+    """Ferma il battito e, se era l'ultimo stream, dichiara l'assenza.
+
+    L'ordine conta: prima si cancella il battito, poi si cancella la presenza.
+    Al contrario, il task potrebbe ribattere fra il `drop` e la sua cancellazione
+    e riscrivere la voce appena tolta — un proxy morto tornerebbe presente per un
+    TTL intero, cioè il difetto di #218 con un passaggio in più.
+    """
+    if battito is not None:
+        battito.cancel()
+    chiave = (chi, tier, name)
+    restano = _stream_di_proxy.get(chiave, 0) - 1
+    if restano > 0:
+        _stream_di_proxy[chiave] = restano
+        return
+    _stream_di_proxy.pop(chiave, None)
+    altrove = any(k[0] == chi for k in _stream_di_proxy)
+    presence.drop(chi, tier, name, anche_ovunque=not altrove)
+
+
 def _stream_principal(request: Request):
     """Chi sta ascoltando, se è un proxy, e per quale stanza.
 
@@ -310,9 +353,11 @@ async def events(request: Request):
 
     async def event_stream():
         # PRESENZA DI UN PROXY (clodia-platform#218): tenere questo stream È
-        # essere presente. Il battito parte con la connessione e muore con lei,
-        # quindi un ponte che termina fa cadere il pallino senza che nessuno
-        # debba ricordarsi di dirlo.
+        # essere presente. Il battito parte con la connessione e muore con lei, e
+        # la sua fine SCRIVE l'assenza (`_presenza_stream_chiuso`) invece di
+        # lasciarla scadere: la socket chiusa è un fatto noto, e aspettare il TTL
+        # significherebbe raccontare per due minuti e mezzo che un ponte morto sta
+        # leggendo la stanza.
         #
         # Solo per i PROXY, e non è una scorciatoia: uno stream resta aperto
         # anche con la scheda in secondo piano, quindi battere da qui per un
@@ -321,7 +366,7 @@ async def events(request: Request):
         # Per una persona il battito esplicito della webui resta l'unica fonte.
         battito = None
         if is_proxy and stanza:
-            battito = asyncio.create_task(_batti_finche_ascolta(chi, *stanza))
+            battito = _presenza_stream_aperto(chi, *stanza)
         try:
             async for ev in bus.subscribe():
                 try:
@@ -331,6 +376,6 @@ async def events(request: Request):
                     continue
                 yield {"data": json.dumps(ev.model_dump(), default=str)}
         finally:
-            if battito is not None:
-                battito.cancel()
+            if is_proxy and stanza:
+                _presenza_stream_chiuso(chi, *stanza, battito)
     return EventSourceResponse(event_stream())
