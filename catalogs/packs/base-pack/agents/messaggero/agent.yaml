@@ -51,12 +51,36 @@ rules: []
 #
 # ANTENATO. `archseed` dà i verbi base per ereditarietà (specification §1.3):
 # leggere nella stanza, parlarci, e la propria memoria. A2 restringe Messaggero:
-# trasporta riferimenti e allegati, ma non legge né scrive il filesystem del
-# topic. I verbi ereditati incompatibili sono sottratti in `denied_tools`.
+# trasporta riferimenti e allegati, ma non LEGGE il filesystem del topic. I verbi
+# ereditati incompatibili sono sottratti in `denied_tools`.
+#
+# SCRITTURA — decisione dell'owner del 2026-09-09 (clodia-platform#331), che
+# SUPERA la metà «non scrive» di A2/#193. Il caso: nel topic
+# SEAL-2/intellijam-partnership il messaggero doveva persistere nel canale la
+# trascrizione integrale di un thread email — testo, non un allegato — e non
+# aveva il verbo per farlo. La strada degli allegati server-side
+# (`email.topic_files`, `telegram.send_file`) non copre quel caso: materializza
+# un file che ESISTE già come allegato, non un testo che il messaggero compone.
+#
+# Perché la metà «non legge» resta e questa cade — non sono la stessa clausola.
+# È la LETTURA a rendere pericolosa la posizione: un corriere che può leggere i
+# documenti della stanza è una via di esfiltrazione con il mezzo di consegna già
+# attaccato, perché tiene le credenziali per spedire fuori. Depositare un testo
+# che ha prodotto lui non apre quella via — nulla di ciò che scrive gli era
+# ignoto un istante prima. `gdrive.*` (i *remote*, l'altra esclusione del
+# mandato) resta fuori, e `denied_tools` qui sotto non si tocca.
+#
+# I due verbi stanno QUI e non solo nel grant d'istanza perché un grant non
+# persiste: un Update del pack riscrive il seed e la registrazione, e la
+# concessione sparirebbe in silenzio (stesso schema di #298/#304). Non arrivano
+# dall'antenato: il pavimento dell'archseed è di sola lettura, quindi vanno
+# aggiunti, non de-negati.
 tool_permissions:
   - email.*
   - telegram.*
   - jobs.propose
+  - topic.write_file
+  - topic.put
 
 # Omettere non restringe un antenato: questi verbi arrivano dall'archseed e
 # vanno negati esplicitamente. `topic.open/search/list` restano metadati e stato

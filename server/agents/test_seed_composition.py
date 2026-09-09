@@ -164,7 +164,10 @@ class GrantHygieneTests(unittest.TestCase):
         """
         seeds = _seeds()
         # messaggero è il postino: comunica e pianifica il polling. Gli allegati
-        # sono materializzati server-side, quindi non richiedono verbi file.
+        # restano materializzati server-side (`email.topic_files`,
+        # `telegram.send_file`): i verbi di scrittura che ha dal 9 set 2026
+        # servono a DEPOSITARE nel topic ciò che trasporta, non a spedirlo, e
+        # stanno nel test dedicato qui sotto.
         for verb in ("email.*", "telegram.*", "jobs.propose"):
             with self.subTest(seed="messaggero", verb=verb):
                 self.assertIn(verb, seeds["messaggero"].tool_permissions)
@@ -174,13 +177,43 @@ class GrantHygieneTests(unittest.TestCase):
             with self.subTest(seed="sysadmin", verb=verb):
                 self.assertIn(verb, _grants(seeds["sysadmin"]))
 
-    def test_messaggero_cannot_read_or_write_scope_files_or_remotes(self) -> None:
+    def test_messaggero_writes_into_the_scope_but_still_cannot_read_it(self) -> None:
+        """La porta deposita, e continua a non leggere la stanza.
+
+        Fino al 9 set 2026 questo test asseriva l'opposto sulla scrittura
+        (`assertFalse({"topic.put", "topic.write_file"} & own)`), che era la
+        remediation A2/#193 per intero: né lettura né scrittura del fs dello
+        scope. **Decisione dell'owner del 2026-09-09** (clodia-platform#331):
+        messaggero deve poter persistere nel topic ciò che trasporta — il testo
+        integrale di un thread email — e i due verbi di scrittura tornano, in
+        modo permanente e non come grant d'istanza.
+
+        La riscrittura è deliberatamente PARZIALE, ed è il punto di questo test:
+        della clausola 2 di A2 cade la metà «non scrive», resta intera la metà
+        «non legge». Sono separabili perché è la LETTURA a rendere pericolosa la
+        posizione — un corriere che può leggere i documenti della stanza è una
+        via di esfiltrazione con il mezzo di consegna già attaccato, visto che
+        tiene le credenziali per spedire fuori. Depositare un testo che ha
+        prodotto lui non apre quella via: nulla di ciò che il messaggero scrive
+        gli era ignoto un istante prima.
+
+        Perciò `denied_tools` non si tocca, e `gdrive.*` — che raggiungerebbe i
+        *remote*, l'altra esclusione del mandato — resta fuori. Se un domani una
+        di queste due righe cadesse, non sarebbe un'estensione di #331: sarebbe
+        la clausola che #331 non ha superato.
+        """
         spec = _seeds()["messaggero"]
         own = set(spec.tool_permissions)
         denied = set(spec.denied_tools or [])
+        # Ciò che la decisione del 2026-09-09 concede.
+        self.assertTrue(
+            {"topic.write_file", "topic.put"} <= own,
+            "clodia-platform#331: la scrittura nel topic è una decisione "
+            "dell'owner, e deve stare nel SEED — un grant d'istanza sparisce "
+            "silenziosamente al primo Update del pack")
+        # Ciò che di A2/#193 sopravvive, invariato.
         self.assertTrue({"topic.files", "topic.read_file", "topic.read_document",
                          "topic.fetch"} <= denied)
-        self.assertFalse({"topic.put", "topic.write_file"} & own)
         self.assertFalse(any(v.startswith("gdrive.") for v in own))
 
     def test_the_postman_declares_the_retired_gate_empty(self) -> None:
