@@ -1,11 +1,12 @@
-"""I campi `sandbox` sono applicati SOLO su claude, e il seed non lo diceva.
+"""Chi porta quali campi `sandbox`, e il seed non lo diceva.
 
 `workspace._build_settings_json` traduce `allow_read`/`deny_read`/`allow_write`/
 `allow_shell_cmds`/`deny_shell_patterns` in `.claude/settings.local.json`, ed è
-chiamato solo dal layout claude. Su codex e opencode nessuno li porta: `ophelia`
-dichiara cinque comandi ammessi e tre pattern negati, `messaggero` e
-`segretario` un pattern negato ciascuno, e nessuno dei tre elenchi arriva al
-runtime (clodia-platform#296).
+chiamato solo dal layout claude. Su codex nessuno li porta; su opencode, dal
+punto 2 della #296, ne arriva **uno** — `deny_shell_patterns`, in
+`permission.bash` via `native_tools.opencode_permission`. Gli altri quattro
+restano dichiarazioni inerti su quel runtime, e le ragioni per campo stanno
+accanto a `SANDBOX_ENFORCED` (clodia-platform#296).
 
 La lettura di quei campi però c'è, ed è lettura per RACCONTARE: la scheda
 dell'agente li mostra e il punteggio trifecta li interroga. Un campo dichiarato e
@@ -75,6 +76,22 @@ sandbox:
   deny_shell_patterns: ["sudo *"]
 """
 
+#: Come `messaggero` se dichiarasse anche i path: su opencode il pattern negato
+#: arriva, `allow_write` no. Serve a misurare che l'avviso resti PARZIALE invece
+#: di spegnersi tutto insieme.
+OPENCODE_PATH_LIKE = """\
+name: opencodepath
+display_name: Opencodepath
+description: d
+model: gpt-oss-120b
+agent_sdk: opencode
+system_prompt: system-prompt.md
+native_tools: ["Bash", "Read"]
+sandbox:
+  allow_write: ["{scratch}/**"]
+  deny_shell_patterns: ["sudo *"]
+"""
+
 #: Un seed codex che NON dichiara niente nel sandbox: non c'è incoerenza da
 #: segnalare, e un avviso qui sarebbe rumore su ogni load.
 CODEX_MUTO = """\
@@ -100,10 +117,21 @@ class TheTableSaysWhatEachRuntimeApplies(unittest.TestCase):
             deny_shell_patterns=["rm -rf *", "curl *", "sudo *"]))
         self.assertEqual(residuo, ["allow_shell_cmds", "deny_shell_patterns"])
 
-    def test_opencode_carries_none_either(self):
+    def test_opencode_carries_the_denied_patterns(self):
+        """Il punto 2 della #296: su opencode il diniego sulla shell arriva. Era
+        `["deny_shell_patterns"]`, ed è il solo campo che ha cambiato lato."""
         residuo = nt.sandbox_unenforced("opencode",
                                         _sandbox(deny_shell_patterns=["sudo *"]))
-        self.assertEqual(residuo, ["deny_shell_patterns"])
+        self.assertEqual(residuo, [])
+
+    def test_opencode_carries_only_that_one(self):
+        """Gli altri quattro restano inerti là, e vanno detti: un enforcement
+        parziale raccontato come totale è la bugia opposta dell'issue."""
+        residuo = nt.sandbox_unenforced("opencode", _sandbox(
+            allow_read=["/x/**"], deny_read=["/y/**"], allow_write=["{scratch}/**"],
+            allow_shell_cmds=["git"], deny_shell_patterns=["sudo *"]))
+        self.assertEqual(residuo,
+                         ["allow_read", "deny_read", "allow_write", "allow_shell_cmds"])
 
     def test_claude_carries_them_all(self):
         residuo = nt.sandbox_unenforced("claude", _sandbox(
@@ -139,8 +167,12 @@ class TheTableSaysWhatEachRuntimeApplies(unittest.TestCase):
         for campo in nt.SANDBOX_FIELDS:
             self.assertTrue(nt.sandbox_applies("claude", campo), campo)
             self.assertFalse(nt.sandbox_applies("codex", campo), campo)
-            self.assertFalse(nt.sandbox_applies("opencode", campo), campo)
             self.assertFalse(nt.sandbox_applies("qualcosa-di-nuovo", campo), campo)
+            # opencode risponde per campo, e da qui in poi non risponde uguale
+            # su tutti: è la ragione per cui la tabella è per campo e non per
+            # runtime (#296 punto 2).
+            self.assertEqual(nt.sandbox_applies("opencode", campo),
+                             campo == "deny_shell_patterns", campo)
         # `None` = il seed non dichiara un runtime → è claude, come nel loader.
         self.assertTrue(nt.sandbox_applies(None, "allow_shell_cmds"))
         # E la maiuscola non è un runtime diverso.
@@ -155,7 +187,9 @@ class TheSeedSaysItWhereItIsRead(unittest.TestCase):
         self._tmp = tempfile.TemporaryDirectory()
         base = Path(self._tmp.name)
         for nome, testo in (("codexseed", OPHELIA_LIKE), ("claudeseed", CLAUDE_LIKE),
-                            ("opencodeseed", MESSAGGERO_LIKE), ("codexmuto", CODEX_MUTO)):
+                            ("opencodeseed", MESSAGGERO_LIKE),
+                            ("opencodepath", OPENCODE_PATH_LIKE),
+                            ("codexmuto", CODEX_MUTO)):
             d = base / nome
             d.mkdir()
             (d / "agent.yaml").write_text(testo)
@@ -180,10 +214,19 @@ class TheSeedSaysItWhereItIsRead(unittest.TestCase):
         self.assertIn("deny_shell_patterns", avvisi)
         self.assertIn("allow_write", avvisi)
 
-    def test_an_opencode_seed_too(self):
-        avvisi = self._avvisi("opencodeseed")
-        self.assertTrue(any("deny_shell_patterns" in a and "opencode" in a
-                            for a in avvisi), avvisi)
+    def test_an_opencode_seed_is_no_longer_told_its_deny_is_inert(self):
+        """`messaggero` dichiara un solo pattern negato, e da opencode quel
+        pattern arriva: l'avviso che c'era qui sarebbe diventato la bugia
+        opposta — «non applicato» su una restrizione reale (#296 punto 2)."""
+        self.assertNotIn("opencodeseed", self.reg.warnings())
+
+    def test_an_opencode_seed_is_still_told_about_the_fields_that_stay_out(self):
+        """L'enforcement è parziale, e la parte che manca deve continuare a
+        vedersi: `allow_write` su opencode non lo porta nessuno."""
+        avvisi = " · ".join(self._avvisi("opencodepath"))
+        self.assertIn("allow_write", avvisi)
+        self.assertIn("opencode", avvisi)
+        self.assertNotIn("deny_shell_patterns", avvisi)
 
     def test_the_same_seed_on_claude_says_nothing(self):
         """Il controllo deve dipendere dal RUNTIME, non dai campi: su claude gli
@@ -310,8 +353,19 @@ class TheShellFlagTellsTheTruth(unittest.TestCase):
             reg.load()
             return has_shell(reg.get_by_name(nome))
 
-    def test_a_universal_deny_that_nobody_carries_does_not_close_the_shell(self):
-        self.assertTrue(self._shell(OPENCODE_DENY_TUTTO))
+    def test_a_universal_deny_now_closes_the_shell_on_opencode_too(self):
+        """Girato dal punto 2 della #296: quel `deny: ["*"]` ora esce in
+        `permission.bash` come `{"*": "deny"}`, quindi la shell è chiusa davvero
+        e il flag deve dirlo. Prima il test misurava il contrario, ed era giusto:
+        misura ciò che il runtime PORTA, e quel che porta è cambiato."""
+        self.assertFalse(self._shell(OPENCODE_DENY_TUTTO))
+
+    def test_a_universal_deny_still_does_not_close_it_on_codex(self):
+        """La stessa dichiarazione sull'altro runtime: là non la porta nessuno,
+        e rispondere «niente shell» sarebbe l'errore nella direzione pericolosa
+        — che è la ragione per cui questa classe esiste."""
+        self.assertTrue(self._shell(
+            OPENCODE_DENY_TUTTO.replace("agent_sdk: opencode", "agent_sdk: codex")))
 
     def test_an_empty_allow_list_does_not_close_it_either(self):
         """`allow_shell_cmds` vuoto significa «nessun comando ammesso» solo dove

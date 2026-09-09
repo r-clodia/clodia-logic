@@ -432,12 +432,21 @@ def has_shell(spec) -> bool:
     di `unenforced_denied` — negarlo non lo toglie — quindi la shell c'è
     comunque; su opencode i native tools contano, e un seed senza `Bash` non ha
     la shell (dire il contrario sarebbe la bugia opposta, uguale difetto).
+
+    Le due domande sul sandbox sono separate perché `SANDBOX_ENFORCED` risponde
+    per CAMPO, e da opencode (#296 punto 2) i due campi non vanno più insieme:
+    là un `deny: ["*"]` chiude la shell davvero, mentre un elenco di comandi
+    vuoto non la chiude. Chiederlo con un `if` solo rimetterebbe qui la lettura
+    che l'issue ha spostato nella tabella.
     """
     from ..sdk_runtime import native_tools as nt
     sandbox = getattr(spec, "sandbox", None)
     allow = list(getattr(sandbox, "allow_shell_cmds", None) or [])
     deny = list(getattr(sandbox, "deny_shell_patterns", None) or [])
     sdk = (getattr(spec, "agent_sdk", None) or "claude").strip().lower()
+    if (nt.sandbox_applies(sdk, "deny_shell_patterns")
+            and any(d.strip() in ("*", "**") for d in deny)):
+        return False
     if nt.sandbox_applies(sdk, "allow_shell_cmds"):
         if not allow:
             return False
