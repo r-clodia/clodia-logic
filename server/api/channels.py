@@ -2706,6 +2706,15 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
             _record_unserved_tag(f"@{tagged} non è partecipante del canale")
         elif tagged_spec is None:
             _record_unserved_tag(f"@{tagged} non è un agente registrato")
+        elif getattr(tagged_spec, "type", None) == "proxy":
+            # La ragione generica («non è un agente AI instradabile») è vera per
+            # il router e fuorviante per la stanza: un proxy È chi deve
+            # rispondere a quella menzione, solo che il turno non lo prende la
+            # piattaforma (A11). Chi legge la traccia deve poter distinguere
+            # «non risponde nessuno» da «risponde qualcun altro, non da qui».
+            _record_unserved_tag(
+                f"@{tagged} è un proxy: la piattaforma non gli apre un turno, "
+                "risponde il sistema dietro di lui quando è connesso")
         elif getattr(tagged_spec, "type", None) != "bot":
             _record_unserved_tag(f"@{tagged} non è un agente AI instradabile")
         elif not _provider_seal_ok(tagged_spec, tier):
@@ -3430,6 +3439,67 @@ async def _announce_refusal(tier: str, name: str, label: str) -> None:
         LOG.warning("nota di rifiuto non pubblicata su %s/%s: %s", tier, name, e)
 
 
+def _proxy_partecipante(nome: str, participants: list[str]) -> bool:
+    """`nome` è un proxy con un posto in questa stanza.
+
+    Il tipo si chiede al registry e non si deduce dal nome: chi il registry non
+    conosce non ha un tipo, e senza tipo non si inventa né una presenza né una
+    riga nella stanza (stessa regola di `_partecipanti_con_presenza`).
+    """
+    if not nome or nome not in participants:
+        return False
+    spec = registry.get_by_name(nome)
+    return spec is not None and getattr(spec, "type", None) == "proxy"
+
+
+async def _annuncia_proxy_assente(tier: str, name: str, tagged: str | None,
+                                  participants: list[str]) -> bool:
+    """Dice nella stanza che il proxy convocato non ha nessuno in ascolto.
+
+    Stessa famiglia di `_announce_refusal` e `_announce_provider_inadeguato`, e
+    per la stessa ragione: un turno che non parte in silenzio è indistinguibile
+    da un agente rotto. Qui il turno non parte perché la piattaforma non ne apre
+    mai uno su un proxy (A11) e dall'altra parte non c'è nessuno: senza questa
+    riga chi ha scritto resta ad aspettare senza modo di sapere che sta
+    aspettando — la ragione del routing torna nella risposta HTTP, che la webui
+    non legge (clodia-platform#218).
+
+    Tre condizioni strette, e le tre stanno qui in un punto solo:
+
+    - il tag non è stato servito da nessuno (lo decide il chiamante: se un altro
+      agente ha preso il turno, la stanza ha già una risposta);
+    - il taggato è un proxy **partecipante**;
+    - non è connesso a QUESTA stanza. `here` è l'unico stato che significa «c'è
+      un ponte in ascolto qui»: il token di un proxy è coniato per una stanza
+      sola, quindi `elsewhere` vuol dire che ascolta un'altra conversazione e
+      questa menzione non gli arriva.
+
+    Ritorna True se la riga è stata scritta. Best-effort: dirlo non deve rompere
+    il messaggio che è già stato registrato.
+    """
+    if not _proxy_partecipante(tagged, participants):
+        return False
+    if presence.stato(tagged, tier, name) == "here":
+        return False
+    try:
+        testo = (
+            f"🔌 **@{tagged} non è connesso a questo canale.** È un proxy: "
+            "risponde il sistema dietro di lui, che ascolta tenendo aperto uno "
+            "stream — e adesso non ne ha nessuno aperto qui, quindi nessuno ha "
+            "preso il turno.\n\n"
+            "Il messaggio non è perso: resta nella storia del canale e il ponte "
+            "lo ritrova al rientro. Se serve una risposta subito, chiedila a un "
+            "agente della stanza.")
+        msg = await topics_client.async_post_message(tier, name, "system", testo,
+                                                     kind="system")
+        await _channel_message(tier, name, "system", "system", message=msg)
+        return True
+    except Exception as e:  # noqa: BLE001 — dirlo non deve rompere altro
+        LOG.warning("nota proxy-non-connesso non pubblicata su %s/%s: %s",
+                    tier, name, e)
+        return False
+
+
 def _responder_busy(tier: str, name: str, agent: str) -> bool:
     """True se il responder ha già un turno IN CORSO su questo canale (lock della
     ChatSession tenuto). Usato dai topic trigger per NON accodare un nuovo turno
@@ -3647,7 +3717,12 @@ async def post_channel_message(
                 timestamp=datetime.now(timezone.utc)))
         except Exception as e:  # noqa: BLE001
             LOG.debug("routing_decision tag non servibile non pubblicato: %s", e)
+        # Nessuno ha preso il turno: se il taggato era un proxy senza ponte in
+        # ascolto, la stanza lo sa da una riga invece di dedurlo dal silenzio.
+        assente = await _annuncia_proxy_assente(
+            tier, name, hard_unserved.get("tagged"), participants)
         return {"posted": True, "responder": None,
+                "proxy_assente": assente,
                 "note": hard_unserved.get("reason")
                         or "la menzione diretta non può essere servita"}
 

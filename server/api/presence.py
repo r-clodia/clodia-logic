@@ -14,7 +14,9 @@ fatto invece di tre inferenze che lo approssimano.
 Resta la regola che teneva insieme il disegno di prima: **un solo scrittore**.
 `beat` scrive, `touch` traduce il polling dei client che non sanno battere (la
 PWA). Due scrittori con forme diverse sullo stesso file raccontano storie
-diverse appena una rete cade a metà.
+diverse appena una rete cade a metà. `drop` (clodia-platform#218) non è un
+secondo scrittore: non produce una voce, ne toglie una — l'unica forma della
+voce nasce ancora in `beat`.
 
 **A cosa serve.** A non mandare su Telegram una menzione a chi era davanti allo
 schermo quando è arrivata. La notifica è per chi non c'era.
@@ -96,6 +98,39 @@ def beat(principal: str, chat: str | None, visible: bool) -> None:
             _scrivi(d)
     except Exception as e:  # noqa: BLE001
         LOG.debug("battito non registrato (%s): %s", principal, e)
+
+
+def drop(principal: str, tier: str, name: str, anche_ovunque: bool = False) -> None:
+    """Cancella la presenza: la connessione è caduta e lo sappiamo ADESSO.
+
+    È l'altra metà di «uno stream aperto è presente, uno stream caduto è
+    assente» (clodia-platform#218). Senza questa riga la caduta si scopriva solo
+    per SCADENZA del TTL: con un battito ogni 50s e un TTL di 150s, un ponte
+    morto teneva il posto fino a due minuti e mezzo — misurato — dicendo «sta
+    leggendo questa conversazione» a chi guardava la stanza. La scadenza non sa
+    niente; qui il fatto è noto, e va scritto.
+
+    `anche_ovunque` tocca la chiave condivisa `principal|-`, che risponde a
+    un'altra domanda («è collegato da qualche parte?»): va tolta solo quando al
+    principal non resta NESSUNA connessione aperta, altrimenti si
+    dichiarerebbe assente chi sta ascoltando un'altra stanza. Chi chiama lo sa e
+    lo dice; qui non si indovina.
+
+    Non solleva: la chiusura di uno stream è un `finally`, e un `finally` che
+    lancia si porta dietro l'errore vero di chi lo stava eseguendo.
+    """
+    if not (principal and tier and name):
+        return
+    try:
+        with _LOCK:
+            d = _load()
+            partite = d.pop(_key(principal, tier, name), None) is not None
+            if anche_ovunque:
+                partite = d.pop(f"{principal}|{OVUNQUE}", None) is not None or partite
+            if partite:
+                _scrivi(d)
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("presenza non cancellata (%s): %s", principal, e)
 
 
 def _potatura(d: dict) -> None:
