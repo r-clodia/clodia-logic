@@ -87,6 +87,53 @@ COLLECT_CHUNK_TIMEOUT = 5 * 60    # 5 min silenzio SDK → stallo reale
 _INJECTION_SENTINELS = ("Base directory for this skill:",)
 _SENTINEL_MAXLEN = max(len(x) for x in _INJECTION_SENTINELS)
 
+# Segni di ragionamento non separato dal provider (principio 5,
+# platform-core.md: «igiene dell'output — solo la risposta, mai il
+# ragionamento»). Un modello reasoning senza canale `reasoning` dedicato in
+# opencode (es. gemma via Scaleway) può emettere il proprio pensiero come
+# testo libero nello stesso campo che diventa il messaggio di chat — segnalato
+# da Davide il 9 set 2026: il segretario postava in canale l'intero
+# ragionamento, fino a includere un frammento della regola 5 stessa. Non si
+# separa pensiero da risposta dentro un blocco misto: qui si riconosce il
+# blocco INTERO come pensiero (un turno vero non apre così, e un ragionamento
+# leaked non arriva mai a una risposta pulita nello stesso blocco) e lo si
+# dirotta al canale di reasoning invece di pubblicarlo in chat.
+_REASONING_LEAK_OPENERS = (
+    "the user wants", "the user is asking", "let's answer", "let me think",
+    "let me check", "let me refine", "i need to", "i'll now", "so the user",
+    "looking at the", "this is a strange context", "wait, i", "okay, so",
+    "actually, let me", "dobbiamo rispondere", "l'utente vuole",
+    "quindi rispondo",
+)
+# Frammenti letterali delle regole di piattaforma: se ricompaiono nel testo, il
+# modello sta ragionando sulle proprie istruzioni invece di eseguirle — non
+# c'è ambiguità, è un match quasi esatto contro un file che l'agente non
+# scriverebbe mai di sua iniziativa in una risposta.
+_REASONING_LEAK_FRAGMENTS = (
+    "esclusivamente la risposta finale",
+    "igiene dell'output",
+)
+# Un tetto di lunghezza tiene basso il rischio di falsi positivi: un "let me
+# check" isolato in una risposta corta è normale conversazione, un blocco di
+# centinaia di caratteri che comincia così è un pensiero ad alta voce.
+_REASONING_LEAK_MIN_LEN = 300
+
+
+def _e_ragionamento_non_filtrato(testo: str) -> bool:
+    """Vero se il blocco INTERO sembra pensiero del modello, non la risposta.
+
+    Vedi il commento su `_REASONING_LEAK_OPENERS` per il perché e per il caso
+    che ha fatto scrivere questo controllo.
+    """
+    t = (testo or "").strip()
+    if len(t) < _REASONING_LEAK_MIN_LEN:
+        return False
+    inizio = t[:200].lower()
+    if any(inizio.startswith(s) or f" {s}" in inizio for s in _REASONING_LEAK_OPENERS):
+        return True
+    basso = t.lower()
+    return any(f in basso for f in _REASONING_LEAK_FRAGMENTS)
+
 
 class _BlockFilter:
     """Classifica i text-block dello stream: trattiene i primi byte di ogni
@@ -3013,11 +3060,28 @@ class OpenCodeChatSession:
         for p in data.get("parts", []) or []:
             t = p.get("type")
             if t == "text" and p.get("text"):
-                parts_out.append(p["text"])
-                await bus.publish(Event(type="message_chunk",
-                                        payload={"chat_id": self.chat_id, "role": "assistant",
-                                                 "delta": p["text"]},
-                                        timestamp=datetime.now(timezone.utc)))
+                testo = p["text"]
+                if _e_ragionamento_non_filtrato(testo):
+                    # Il provider non ha separato il pensiero in una `part`
+                    # `reasoning` dedicata (vedi commento su
+                    # `_REASONING_LEAK_OPENERS`): lo dirotto sullo stesso canale
+                    # della `reasoning` vera, invece di lasciarlo entrare in chat.
+                    LOG.warning("agent-server: ragionamento non separato dal "
+                               "provider intercettato prima della chat "
+                               "(kind=%s, chat_id=%s, %d char)",
+                               self.kind, self.chat_id, len(testo))
+                    self._think_n += 1
+                    await bus.publish(Event(type="thinking_chunk",
+                                            payload={"chat_id": self.chat_id,
+                                                     "delta": self._thinkseam.feed(
+                                                         self._think_n, testo)},
+                                            timestamp=datetime.now(timezone.utc)))
+                else:
+                    parts_out.append(testo)
+                    await bus.publish(Event(type="message_chunk",
+                                            payload={"chat_id": self.chat_id, "role": "assistant",
+                                                     "delta": testo},
+                                            timestamp=datetime.now(timezone.utc)))
             elif t == "reasoning" and p.get("text"):
                 # Stesso caso di codex: una part `reasoning` è un blocco intero.
                 self._think_n += 1

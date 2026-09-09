@@ -111,9 +111,12 @@ class ComeIlTestoVisibile(unittest.TestCase):
 class IPuntiDiEmissioneLaUsano(unittest.TestCase):
     """Una classe corretta che nessuno chiama non ripara niente.
 
-    I tre punti che pubblicano `thinking_chunk` sono in tre runtime diversi
-    (SDK Claude, codex, opencode) e si sono già scordati questa cosa una volta:
-    il ramo `text_delta` aveva il filtro, quello `thinking_delta` accanto no.
+    I punti che pubblicano `thinking_chunk` sono in tre runtime diversi (SDK
+    Claude, codex, opencode) e si sono già scordati questa cosa una volta: il
+    ramo `text_delta` aveva il filtro, quello `thinking_delta` accanto no. Il
+    quarto punto (opencode) è il dirottamento del ramo `text` quando il
+    provider non separa il pensiero in una `part reasoning` dedicata (9 set
+    2026, il segretario che postava il proprio ragionamento in chat).
     """
 
     def test_nessun_thinking_chunk_pubblica_il_delta_grezzo(self) -> None:
@@ -130,12 +133,13 @@ class IPuntiDiEmissioneLaUsano(unittest.TestCase):
         self.assertEqual([], grezzi,
                          f"thinking_chunk pubblicato senza cucitura alle righe {grezzi}")
 
-    def test_tutti_e_tre_i_runtime_cuciono(self) -> None:
+    def test_tutti_i_punti_di_emissione_cuciono(self) -> None:
         from pathlib import Path
         src = (Path(__file__).parent / "session.py").read_text()
-        self.assertEqual(3, src.count("seam.feed("),
-                         "i punti che pubblicano thinking_chunk sono tre: "
-                         "SDK Claude, codex, opencode")
+        self.assertEqual(4, src.count("seam.feed("),
+                         "i punti che pubblicano thinking_chunk sono quattro: "
+                         "SDK Claude, codex, opencode (reasoning), opencode "
+                         "(text non filtrato dal provider)")
 
 
 if __name__ == "__main__":
