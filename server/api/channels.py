@@ -33,6 +33,7 @@ from ..agents import coordinator as coordinator_mod
 from ..agents import feedback as agent_feedback
 from ..agents import trifecta, trifecta_reset
 from .. import debug_watch
+from ..core import turn_timing
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
@@ -648,7 +649,8 @@ def _topic_title(tier: str, name: str) -> str | None:
 
 
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
-                                 principal: str | None = None, hop: int = 0) -> str | None:
+                                 principal: str | None = None, hop: int = 0,
+                                 timing=None) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
 
     La ChatSession serializza gia' i turni con il suo lock: se lo stesso agent
@@ -657,13 +659,24 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     Se la risposta TAGGA un altro agente AI partecipante (delega/ordine), si
     innesca il turno dell'incaricato (catena capitano→incaricato), fino a
     `CLODIA_MAX_DELEGATION_HOPS` salti per evitare loop.
+
+    `timing`: il cronometro delle fasi aperto dal dispatcher (#330). Opzionale e
+    tollerato assente, così questa funzione resta chiamabile senza — la misura
+    non è una precondizione del turno.
     """
+    # PRIMA di qualunque I/O (clodia-platform#330). `channel_typing` è l'unico
+    # segnale che dice «il turno è partito», e stava dopo la fetch qui sotto —
+    # fino a 500 messaggi dal gateway: finché quella chiamata era in volo il
+    # canale restava muto e chi guardava non distingueva un turno partito da una
+    # menzione caduta nel vuoto. Il segnale è la ragione per cui questa funzione
+    # comincia, quindi comincia lui.
+    await _typing(tier, name, responder, "start")
+
     try:
         before_messages = await topics_client.async_list_messages(tier, name, limit=500)
     except Exception:  # noqa: BLE001
         before_messages = []
-
-    await _typing(tier, name, responder, "start")
+    turn_timing.mark(timing, "history_fetch")
 
     # Una bolla per blocco (#243): il post non aspetta la fine del turno. Il
     # label si calcola PRIMA, perché serve a ogni bolla e non solo all'ultima.
@@ -694,6 +707,11 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             chat.on_visible_block = _post_block
         except Exception:  # noqa: BLE001 — sessione che non accetta attributi
             LOG.debug("sessione %s: on_visible_block non registrabile", responder)
+    # Consegna del cronometro alla sessione, il più tardi possibile: da qui
+    # all'invio non resta che l'attesa del lock, cioè la prima fase che la
+    # sessione misura da sé (#330).
+    if timing is not None:
+        timing.bind(getattr(chat, "chat_id", None))
     try:
         reply = await chat.send_user_message(prompt)
     except Exception as e:  # noqa: BLE001
@@ -713,6 +731,12 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         return None
     finally:
         await _typing(tier, name, responder, "stop")
+        # Come la callback qui sotto, la consegna del cronometro vale per QUESTO
+        # turno: se l'invio è fallito prima che la sessione lo ritirasse, la
+        # voce va tolta di mezzo — o il turno successivo la ritirerebbe e
+        # scriverebbe un TTFT partito da un altro turno. No-op nel caso normale,
+        # in cui la sessione l'ha già ritirata.
+        turn_timing.drop(timing)
         # La callback vale per QUESTO turno. La sessione è di lunga vita: un
         # riferimento lasciato attaccato posterebbe le bolle del turno
         # successivo con il label di questo.
@@ -2111,6 +2135,11 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     Ritorna False se il provider non è connesso, o se il seed dichiara
     `activation: refuse` ed è già occupato.
     """
+    # Il cronometro delle fasi che precedono il primo token (#330): nasce qui,
+    # perché qui il turno comincia per chi lo ha chiesto. Tutto ciò che sta
+    # sotto — allocazione dello spawn, sessione, prompt — è attesa che finora
+    # non era né misurata né visibile.
+    timing = turn_timing.begin("start_turn")
     label = spec.name
     base_id = f"chan:{tier}:{name}:{spec.name}"
     chat_id = base_id
@@ -2138,6 +2167,10 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         # proprio questo, con l'ordine di arrivo garantito dal lock stesso:
         # nessuna attesa esplicita da introdurre, e nessuna equità da perdere.
         pass
+    # L'allocazione è finita: `_await_free_session` può avere aspettato fino a
+    # 900s che uno spawn si liberasse, e quell'attesa è tutta dentro il silenzio
+    # che la #330 misura.
+    timing.mark("spawn_wait")
     # ATTIVAZIONE DICHIARATA DAL SEED (R15, issue clodia-platform#191). Il
     # rifiuto esisteva già, ma come decisione di chi POSTA (`skip_if_busy`, usato
     # dal solo topic trigger): un seed non poteva sceglierlo, e infatti su una
@@ -2202,6 +2235,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                 f"{tier_real}: il turno non è mai partito.",
                 tier=tier_real))
             return False
+    timing.mark("session_ready")
     chat.principal = principal
     # CATENA D'ORIGINE. Chi ha causato il turno, in ordine: l'umano che ha
     # scritto, gli agenti che si sono delegati, e infine l'esecutore. Il gateway
@@ -2267,13 +2301,17 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                     f"({files_hint})")
         prompt = await asyncio.to_thread(_reused_turn_prompt, tier, name, label,
                                          principal, directive or fallback)
+    # Il prompt è pronto: la storia dal gateway e AGENTS.md del topic sono già
+    # state lette, e nessuno le ha viste passare.
+    timing.mark("prompt_build")
     # La prenotazione si scioglie a turno FINITO, non appena il task è schedulato:
     # fra `_spawn_bg` e il momento in cui il turno prende il lock della sessione
     # c'è una finestra in cui la sessione risulterebbe di nuovo libera, e un
     # secondo waiter la assegnerebbe a sé. Mentre il turno gira la sessione è
     # occupata comunque, quindi tenerla prenotata fino alla fine non toglie nulla.
     _spawn_bg(_run_then_unclaim(chat_id, _run_and_post_response(
-        tier, name, label, chat, prompt, principal=principal, hop=hop)))
+        tier, name, label, chat, prompt, principal=principal, hop=hop,
+        timing=timing)))
     return True
 
 
@@ -4097,6 +4135,11 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     filtra i messaggi il cui autore coincide col principal (il kickoff è authored
     "workflow" == principal_hint), quindi senza questo l'agente non vedrebbe mai
     l'istruzione dello stadio e resterebbe in attesa."""
+    # Secondo dispatcher, stesso cronometro (#330): questo percorso non passa da
+    # `_start_turn`, e strumentarne uno solo avrebbe dato numeri per la webui e
+    # nessuno per Telegram, trigger e workflow — che sono proprio i turni che
+    # nessuno guarda partire.
+    timing = turn_timing.begin("topic_turn")
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
     if responder_hint:
@@ -4150,6 +4193,10 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
                 pass
     if responder is None:
         return None, None
+    # Il routing è finito: qui dentro c'è la lettura dei messaggi recenti dal
+    # gateway e la classificazione per embedding, che è una chiamata di rete per
+    # turno.
+    timing.mark("routing")
     chat_id = f"chan:{tier}:{name}:{responder.name}"
     if not await _provider_della_stanza_ancora_valido(tier, name, tier_real,
                                                      responder, chat_id):
@@ -4174,6 +4221,7 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
             created = True
         except ProviderNotConnected:
             return None, None
+    timing.mark("session_ready")
     chat.principal = principal_hint or "channel"  # proxy: nessuna autorità
     if created:
         _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
@@ -4189,7 +4237,9 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
                                          chat.principal, fallback)
     if directive:
         prompt = prompt + "\n\n─────\n[Istruzione operativa di questo turno]\n" + directive
-    reply = await _run_and_post_response(tier, name, responder.name, chat, prompt)
+    timing.mark("prompt_build")
+    reply = await _run_and_post_response(tier, name, responder.name, chat, prompt,
+                                        timing=timing)
     return responder.name, reply
 
 
