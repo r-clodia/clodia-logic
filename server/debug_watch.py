@@ -27,6 +27,18 @@ partecipante dove la clearance lo consente, e altrove il monitor gira comunque �
 non serve stare nella stanza per contarne i fallimenti. I segnali portano
 METADATI (nome del verbo, nome dell'agente, tipo di errore), non contenuto: la
 stessa regola della telemetria dei verbi, per la stessa ragione.
+
+## Due modi di accenderla
+
+`enabled()` (questo modulo) è l'interruttore GLOBALE: acceso, il guardiano
+guarda ogni topic la cui clearance lo consenta. Da Davide (9 set 2026) esiste
+anche un secondo modo, per topic: se sysadmin è già fra i `participants` di
+UN topic, la diagnostica è attiva LÌ anche col flag globale spento — chi
+compone il team di quel canale e ci mette sysadmin sta scegliendo la
+diagnostica per quel canale, senza dover accendere l'osservabilità ovunque.
+Questo secondo controllo vive in `channels._watch_report` (legge i
+`participants` del topic), non qui: `debug_watch.enabled()` resta il solo
+flag globale, invariato.
 """
 from __future__ import annotations
 

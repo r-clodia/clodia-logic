@@ -913,13 +913,32 @@ async def _announce_failure(tier: str, name: str, responder: str, err: Exception
 
 async def _watch_report(tier: str, name: str, kind: str, subject: str,
                         detail: str, **evidence) -> None:
-    """Rileva un'anomalia e, in modalità debug, sveglia il guardiano.
+    """Rileva un'anomalia e, in modalità debug O quando il guardiano è già
+    partecipante di QUESTO topic, sveglia il guardiano.
+
+    Davide, 9 set 2026: la presenza di sysadmin fra i `participants` di un
+    topic vale come opt-in alla diagnostica anche a modalità globale spenta —
+    prima l'unico modo di accendere la diagnostica era il flag globale
+    `CLODIA_DEBUG_MODE`, che la espone ovunque; aggiungerlo a un topic
+    specifico non aveva alcun effetto sull'osservabilità di QUEL topic. Chi
+    compone il team di un canale e ci mette sysadmin sta già scegliendo la
+    diagnostica per quel canale — non serve un secondo interruttore globale.
+
+    Il topic si apre comunque una volta sola: se il flag globale è già acceso
+    il fetch serve solo per `tier_real` come prima; se è spento, lo stesso
+    fetch decide anche se il guardiano è partecipante.
 
     Best-effort per disegno: la diagnostica non deve poter rompere il turno che
     stava già andando male. Un monitor che propaga la propria eccezione
     trasforma un'anomalia in due.
     """
-    if not debug_watch.enabled():
+    globale = debug_watch.enabled()
+    try:
+        topic = await topics_client.async_open_topic(tier, name)
+    except Exception:  # noqa: BLE001 — la diagnostica non rompe il turno
+        return
+    meta = (topic or {}).get("meta", {})
+    if not globale and debug_watch.WATCHER not in (meta.get("participants") or []):
         return
     a = debug_watch.Anomaly(kind=kind, channel=f"{tier}/{name}", subject=subject,
                             detail=detail, evidence=evidence)
@@ -927,8 +946,6 @@ async def _watch_report(tier: str, name: str, kind: str, subject: str,
         return
     LOG.warning("debug-watch · %s su %s/%s (%s): %s", kind, tier, name, subject, detail)
     try:
-        topic = await topics_client.async_open_topic(tier, name)
-        meta = (topic or {}).get("meta", {})
         tier_real = meta.get("tier", tier)
         watcher = registry.get_by_name(debug_watch.WATCHER)
         if watcher is None:
