@@ -9,6 +9,15 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.14.0] — 2026-09-10
+- `clodia` gains `web.download` (clodia-tools 2.12.0): a colony agent hit a real
+  wall trying to read a PDF — `web.fetch` refuses non-text content-types on
+  purpose (the body would decode to replacement characters, no value to a
+  model), and nothing else could write a binary from an external URL. This
+  verb is the binary twin: bytes land on the agent's scratch, never in the
+  tool-call response, same pattern as `gdrive.download`. PDF/PNG/JPEG/GIF/WebP
+  only, 25 MB cap.
+
 ## [7.13.0] — 2026-09-07
 - **A report is not a summons** (clodia-logic#336). The
   `multiagent-collaboration` skill promised «N tags → N agents activated (in

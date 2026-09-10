@@ -117,7 +117,13 @@ tool_permissions:
 # La catena si chiude da sé: fonte vagliata → niente taint → l'invio esce; fonte
 # sconosciuta → canale contaminato → l'uscita CHIEDE, dicendo da dove è entrato
 # il contenuto non fidato.
+#
+# `web.download` (10 set 2026) è il gemello binario di `web.fetch`: un PDF letto
+# come testo da `web.fetch` arriverebbe come caratteri di sostituzione (rifiutato
+# a monte, non è un limite dimenticato) — questo verbo scrive invece i byte sullo
+# scratch, mai nel contesto, stesso pattern di `gdrive.download`.
   - web.fetch
+  - web.download
   - email.send
   - topic.remote_status
   - topic.add_minute
