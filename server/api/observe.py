@@ -15,7 +15,7 @@ import logging
 import os
 
 import requests
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 LOG = logging.getLogger("agent-server.api.observe")
@@ -123,3 +123,41 @@ async def whitelist(request: Request):
     except Exception as e:  # noqa: BLE001
         LOG.warning("observe: whitelist non leggibile (%s)", str(e)[:120])
         return JSONResponse({"mode": "unknown", "agents": {}, "types": []})
+
+
+@router.get("/api/observe/whitelist/scope/{tier}/{name}")
+async def whitelist_scope(tier: str, name: str, request: Request):
+    """Egress/ingress LOCALI di un topic (sidebar del topic, non Settings).
+
+    A differenza di `whitelist` sopra, qui il lettore legittimo non è "un
+    umano autenticato qualunque": è chi PARTECIPA a questo topic — è la sua
+    stanza, non una vista d'istanza. Stessa guardia di lettura dei canali
+    (`channels._require_member`): qualunque ruolo, owner compreso, la
+    lettura non si gradua.
+
+    Best-effort come la gemella: un gateway irraggiungibile degrada a liste
+    vuote invece di rompere la sidebar — il resto del topic resta usabile.
+    """
+    from . import channels, topics_client
+    principal = _principal(request)
+    if not principal:
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
+    try:
+        topic = await topics_client.async_open_topic(tier, name)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("observe: topic %s/%s non apribile (%s)", tier, name, str(e)[:120])
+        return JSONResponse({"error": "topic non raggiungibile"}, status_code=503)
+    if not topic:
+        return JSONResponse({"error": "topic non trovato"}, status_code=404)
+    try:
+        channels._require_member(request, topic.get("meta") or {})
+    except HTTPException as e:
+        return JSONResponse({"error": e.detail}, status_code=e.status_code)
+    try:
+        r = _gw(f"/internal/egress/whitelist/scope/{tier}/{name}")
+        r.raise_for_status()
+        return JSONResponse(r.json())
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("observe: whitelist locale di %s/%s non leggibile (%s)",
+                   tier, name, str(e)[:120])
+        return JSONResponse({"egress": [], "ingress": []})
