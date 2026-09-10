@@ -191,11 +191,28 @@ def _discover_rule_files(plugin_root: Path) -> list[Path]:
     )
 
 
+#: Tier SEAL validi per `clearance` — stessa scala usata ovunque in
+#: piattaforma (topic, collection RAG). Un valore fuori lista è scartato, non
+#: forzato a un default: un typo silenzioso che allarga l'accesso è peggio di
+#: un campo assente (che è già il default più restrittivo).
+_SEAL_TIERS = {"SEAL-0", "SEAL-1", "SEAL-2", "SEAL-3", "SEAL-4"}
+
+
 def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
     """Dichiarazioni datastore del plugin (pack ops): lista di
-    {path, purpose?, pii?, backup?}. Path SOLO relativi alla datadir del
-    plugin (niente assoluti, niente traversal) — il db resta confinato in
-    plugins/<nome>/. Entry malformate vengono scartate, non bloccano l'import."""
+    {path, name?, purpose?, pii?, backup?, clearance?, seeds?}. Path SOLO
+    relativi alla datadir del plugin (niente assoluti, niente traversal) — il
+    db resta confinato in plugins/<nome>/. Entry malformate vengono scartate,
+    non bloccano l'import.
+
+    `name` è lo slug usato dai verbi `datastore.read`/`datastore.write` del
+    gateway (`<pack>/<name>`) e dal token `<DATASTORE:name>` nelle skill;
+    default = stem del path (`data/contacts.db` → `contacts`). `clearance`
+    (tier SEAL minimo) e `seeds` (elenco di nomi seed autorizzati) sono
+    l'allowlist a due assi dei nuovi verbi — introdotti il 10 set 2026,
+    ASSENTI di proposito finché non dichiarati: un datastore vecchio non
+    concede nulla via quei verbi (fail-closed), l'inventario/backup restano
+    invariati."""
     out: list[dict[str, Any]] = []
     if not isinstance(raw, list):
         return out
@@ -205,12 +222,24 @@ def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
         path = str(ds.get("path") or "").strip()
         if not path or path.startswith(("/", "~")) or ".." in Path(path).parts:
             continue
-        out.append({
+        entry = {
             "path": path,
             "purpose": str(ds.get("purpose") or ""),
             "pii": bool(ds.get("pii", False)),
             "backup": bool(ds.get("backup", True)),
-        })
+        }
+        name = str(ds.get("name") or "").strip()
+        if name:
+            entry["name"] = name
+        clearance = str(ds.get("clearance") or "").strip().upper()
+        if clearance in _SEAL_TIERS:
+            entry["clearance"] = clearance
+        seeds = ds.get("seeds")
+        if isinstance(seeds, list):
+            clean_seeds = [str(s).strip() for s in seeds if str(s).strip()]
+            if clean_seeds:
+                entry["seeds"] = clean_seeds
+        out.append(entry)
     return out
 
 

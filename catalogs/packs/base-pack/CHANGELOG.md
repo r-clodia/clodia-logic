@@ -9,6 +9,20 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.15.0] — 2026-09-10
+- New datastore `contacts`, detached from the `tomato` pack: a contacts CRM
+  is a platform resource, not a company one. Declared with `clearance:
+  SEAL-1` and `seeds: [messaggero, clodia]` — the new access-control schema
+  on datastore manifests (clodia-logic `_sanitize_datastores`), enforced by
+  the new gateway verbs `datastore.read`/`datastore.write` (clodia-tools
+  2.13.0, same two-axis model as topic access: clearance AND an explicit
+  allowlist). `leads` stays in `tomato`, ungated for now — Davide asked for
+  `contacts` specifically.
+- `skill_sync._datastore_map` now resolves `<DATASTORE:key>` tokens across
+  ALL installed packs, not just the skill's own: `osint-lead`/
+  `linkedin-reactions` (still in `tomato`) reference `<DATASTORE:contacts>`,
+  which now lives here. Own pack still wins on a name collision.
+
 ## [7.14.0] — 2026-09-10
 - `clodia` gains `web.download` (clodia-tools 2.12.0): a colony agent hit a real
   wall trying to read a PDF — `web.fetch` refuses non-text content-types on

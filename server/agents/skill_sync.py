@@ -59,13 +59,12 @@ def _logic_catalog_is_bundled() -> bool:
         return False
 
 
-def _datastore_map(pack: str) -> dict[str, str]:
-    """{key → path assoluto} dei datastore dichiarati nel plugin.yaml del pack.
-    key = basename del path dichiarato senza estensione (es. `data/leads.db` →
+def _pack_datastore_map(pack: str) -> dict[str, str]:
+    """{key → path assoluto} dei datastore dichiarati nel plugin.yaml di UN
+    pack. key = basename del path dichiarato senza estensione, o il campo
+    `name` se il pack lo dichiara esplicitamente (es. `data/leads.db` →
     `leads`). Il path assoluto è risolto nel runtime corrente:
-    `{CLODIA_DATA}/plugins/<pack>/<path dichiarato>`. Così una skill che scrive
-    `<DATASTORE:leads>` è portabile: ogni istanza lo risolve al proprio datadir.
-    """
+    `{CLODIA_DATA}/plugins/<pack>/<path dichiarato>`."""
     import yaml
     manifest = data_path("plugins") / pack / "plugin.yaml"
     if not manifest.is_file():
@@ -77,12 +76,51 @@ def _datastore_map(pack: str) -> dict[str, str]:
     out: dict[str, str] = {}
     base = data_path("plugins") / pack
     for ds in (meta.get("datastores") or []):
-        rel = (ds or {}).get("path")
+        if not isinstance(ds, dict):
+            continue
+        rel = ds.get("path")
         if not rel or not isinstance(rel, str):
             continue
-        key = Path(rel).stem  # 'data/leads.db' → 'leads'
+        key = str(ds.get("name") or "").strip() or Path(rel).stem
         out[key] = str((base / rel).resolve())
     return out
+
+
+def _datastore_map(pack: str) -> dict[str, str]:
+    """{key → path assoluto} risolto CROSS-PACK: prima il pack della skill
+    (vince sempre, com'era prima), poi tutti gli altri pack installati per le
+    chiavi ancora mancanti.
+
+    Perché cross-pack (10 set 2026): un datastore può essere dichiarato in un
+    pack diverso da quello della skill che lo usa — es. `contacts` vive nel
+    base-pack (indipendente da azienda, usato da `messaggero`/`clodia`) ma
+    `osint-lead`/`linkedin-reactions` restano nel pack `tomato` e scrivono
+    `<DATASTORE:contacts>`. Senza questa estensione il token smetterebbe di
+    risolversi silenziosamente (warning, non crash) al primo pack diverso da
+    quello dichiarante.
+
+    Collisioni: il pack proprio vince sempre; fra gli ALTRI pack vince il
+    primo trovato in ordine alfabetico (`sorted`, deterministico) e viene
+    loggato un warning — un nome duplicato fra due pack di terze parti è
+    un'ambiguità da segnalare, non da arbitrare in silenzio.
+    """
+    own = _pack_datastore_map(pack)
+    others_seen: dict[str, str] = {}
+    for pdir in sorted((data_path("plugins")).glob("*")):
+        other_pack = pdir.name
+        if other_pack == pack:
+            continue
+        for key, path in _pack_datastore_map(other_pack).items():
+            if key in own:
+                continue  # il pack proprio ha sempre precedenza
+            if key in others_seen and others_seen[key] != path:
+                LOG.warning(
+                    "datastore '%s' dichiarato in più pack (almeno %s): "
+                    "risoluzione cross-pack ambigua per le skill esterne",
+                    key, other_pack)
+                continue
+            others_seen[key] = path
+    return {**others_seen, **own}
 
 
 def _substitute_datastore_tokens(skill_dir: Path, pack: str) -> None:
