@@ -602,6 +602,42 @@ def effective_provider_for_tier(providers: list[str] | None, provider: str | Non
     return min(eligible, key=lambda p: (provider_cost_rank(p), _seal_rank(p), cands.index(p)))
 
 
+def declares_provider_for_tier(providers: list[str] | None, provider: str | None,
+                               agent_sdk: str | None, tier: str | None,
+                               model: str | None = None,
+                               provider_models: dict | None = None) -> bool:
+    """Idoneità DUREVOLE di un agent a un tier: fra i provider che DICHIARA ne
+    esiste almeno uno con SEAL >= tier.
+
+    Gemella di `effective_provider_for_tier` meno lo stato: non guarda né
+    `connected` né `_load_paused()`. Le due funzioni rispondono a due domande
+    diverse e vanno tenute separate (clodia-platform#190):
+
+      - questa → «questo agente può STARE in questa stanza?» (appartenenza);
+      - `effective_provider_for_tier` / `provider_seal_ok` → «può prendere un
+        turno ADESSO?» (stato).
+
+    Sovrapporle significa che mettere in pausa un provider toglie
+    l'appartenenza, cioè svuota le stanze; distinguerle rende quel caso
+    impossibile per costruzione, non per una guardia aggiunta dopo.
+    """
+    return any(provider_meets_tier(p, tier)
+               for p in candidate_providers(providers, provider, agent_sdk,
+                                            model, provider_models))
+
+
+def declared_seal_ceiling(providers: list[str] | None, provider: str | None,
+                          agent_sdk: str | None, model: str | None = None,
+                          provider_models: dict | None = None) -> str | None:
+    """La SEAL più alta fra i provider DICHIARATI, o None se non ne dichiara di
+    noti. Serve a dire PERCHÉ un agente non è idoneo («massimo dichiarato:
+    SEAL-1») invece del solo fatto che non lo è."""
+    cands = candidate_providers(providers, provider, agent_sdk, model, provider_models)
+    if not cands:
+        return None
+    return provider_seal(max(cands, key=_seal_rank))
+
+
 def resolve_provider(provider: str | None, agent_sdk: str | None) -> str | None:
     """DEPRECATO (pre-lista): primo candidato compatibile, senza guardare lo
     stato di connessione. Mantenuto per i chiamanti non ancora migrati."""

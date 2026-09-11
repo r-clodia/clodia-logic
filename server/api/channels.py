@@ -2336,18 +2336,34 @@ async def _run_then_unclaim(chat_id: str, coro):
         _claimed.discard(chat_id)
 
 
-def _channel_meta(body: dict, principal: str, name: str) -> dict:
+def _channel_meta(body: dict, principal: str, name: str, tier: str | None = None) -> dict:
     # Default del contact agent per EDIZIONE (topics_defaults.contact_agent):
     # nelle edizioni verticali il referente delle pratiche è l'agente di
     # dominio (es. commercialista), non clodia (feedback Davide 7 lug).
     from .. import instance_profile
     _edition_ca = (instance_profile.load().topics_defaults or {}).get("contact_agent") or "clodia"
     contact_agent = (body.get("contact_agent") or _edition_ca).strip().lower()
+    # Terzo ingresso dell'appartenenza, e il meno evidente: qui il contact agent
+    # si SEDEVA senza che nessuno guardasse il tier (clodia-platform#190). Chi
+    # non è idoneo non entra — meglio una stanza senza referente, che
+    # `_select_topic_intro_agent` prova comunque a colmare col fallback, di un
+    # membro che quella stanza non può trattare.
+    # Un contact agent SCONOSCIUTO al registro resta seduto come prima: qui si
+    # misura l'idoneità di chi esiste, non si aggiunge un secondo controllo di
+    # esistenza che oggi non c'è. E si applica la regola delle azioni
+    # automatiche: non si siede solo chi si SA essere sotto il tier.
+    _ca_spec = registry.get_by_name(contact_agent)
+    seduti = [principal]
+    if _ca_spec is None or not _declared_below_tier(_ca_spec, tier):
+        seduti.append(contact_agent)
+    else:
+        LOG.warning("contact agent %s non idoneo a %s: non entra fra i "
+                    "partecipanti di %s", contact_agent, _norm(tier), name)
     meta = {
         "title": (body.get("title") or name),
         "type": body.get("type") or "progetto",
         "owner": principal,
-        "participants": list(dict.fromkeys([principal, contact_agent])),
+        "participants": list(dict.fromkeys(seduti)),
         "contact_agent": contact_agent,
     }
     # Storage backend dei FILE (scelto in UI): local (default) o drive.
@@ -2453,20 +2469,195 @@ def _provider_seal_ok(spec, tier: str | None) -> bool:
     return _CLEAR.get(_norm(ps), 0) >= _CLEAR.get(_norm(tier), 0)
 
 
+def _declared_seal_ok(spec, tier: str | None) -> bool:
+    """True se lo stack DICHIARATO dall'agent regge il tier — l'idoneità
+    DUREVOLE, cioè il titolo a stare nella stanza (clodia-platform#190).
+
+    Non è `_provider_seal_ok` con altre parole: quella guarda il provider
+    EFFETTIVO (collegato, non in pausa) e risponde «può rispondere adesso?».
+    Questa ignora lo stato e risponde «è un membro?». Un `pause_provider` non
+    deve poter cambiare la composizione di un canale: se le due domande
+    condividessero il predicato, lo cambierebbe — è il sintomo dell'11 ago 2026,
+    la stanza che sembra vuota."""
+    from .providers import declares_provider_for_tier
+    return declares_provider_for_tier(
+        getattr(spec, "providers", None), getattr(spec, "provider", None),
+        getattr(spec, "agent_sdk", None), tier, getattr(spec, "model", None),
+        getattr(spec, "provider_models", None))
+
+
+def _declared_seal(spec) -> str | None:
+    """La SEAL più alta che lo stack dichiarato dell'agent raggiunge, per DIRE la
+    ragione di un rifiuto invece di limitarsi a rifiutare."""
+    from .providers import declared_seal_ceiling
+    return declared_seal_ceiling(
+        getattr(spec, "providers", None), getattr(spec, "provider", None),
+        getattr(spec, "agent_sdk", None), getattr(spec, "model", None),
+        getattr(spec, "provider_models", None))
+
+
+def _member_eligible(spec, tier: str | None) -> bool:
+    """Titolo di APPARTENENZA a un topic di questo tier.
+
+    Due assi, perché le due identità sono fatte in modo diverso: un bot tratta i
+    dati attraverso un provider (conta la SEAL dello stack dichiarato), una
+    persona no (conta la sua clearance, lo stesso asse di `runtime_inspect_topic`).
+
+    I `proxy` restano fuori dal cancello, ed è deliberato: non sono eseguiti e
+    non portano clearance (`clearance` è `None` per disegno, cfr. AgentSpec), per
+    cui misurarli su quell'asse li escluderebbe da ogni stanza sopra SEAL-0 —
+    un cambio di policy che #190 non chiede."""
+    if not spec:
+        return False
+    tipo = getattr(spec, "type", "")
+    if tipo == "human":
+        return _can_access(getattr(spec, "clearance", None), tier)
+    if tipo != "bot":
+        return True
+    return _declared_seal_ok(spec, tier)
+
+
+def _declared_below_tier(spec, tier: str | None) -> bool:
+    """True solo quando si SA che lo stack dichiarato del bot resta sotto il tier.
+
+    Distinzione che conta per le azioni AUTOMATICHE (espellere un partecipante,
+    non far sedere il contact agent alla creazione): «non ho trovato un provider
+    adeguato» e «ho trovato il tetto ed è troppo basso» non sono la stessa cosa.
+    Un seed con un modello fuori dai pattern del catalogo non ha candidati noti —
+    è un difetto di configurazione, non la prova che quell'agente non regga il
+    tier — e su quella incertezza non si sfratta nessuno.
+
+    L'invito ESPLICITO resta invece severo (`_assert_member_eligible`): lì c'è
+    una persona che riceve il messaggio d'errore e può correggere il seed."""
+    if getattr(spec, "type", "") != "bot":
+        return False
+    if _declared_seal_ok(spec, tier):
+        return False
+    return _declared_seal(spec) is not None
+
+
+def _ineligibility_reason(spec, tier: str | None) -> str:
+    """Perché quell'agente non può stare in questa stanza, in una riga leggibile
+    da chi la legge nel canale o nel messaggio d'errore dell'API."""
+    nome = getattr(spec, "name", "?")
+    if getattr(spec, "type", "") != "bot":
+        return (f"la clearance di {nome} ({_norm(getattr(spec, 'clearance', None)) or 'ignota'}) "
+                f"non arriva a {_norm(tier)}")
+    massimo = _declared_seal(spec) or "nessun provider noto"
+    return (f"lo stack dichiarato di @{nome} non arriva a {_norm(tier)} "
+            f"(massimo dichiarato: {massimo})")
+
+
+def _assert_member_eligible(spec, tier: str | None) -> None:
+    """Cancello unico dell'AGGIUNTA a un canale (clodia-platform#190).
+
+    Una funzione sola per tutti gli ingressi — invito dell'owner dalla webui,
+    aggiunta di un agente via gateway, contact agent alla creazione del topic —
+    perché una regola di appartenenza scritta in tre punti è una regola che fra
+    tre mesi vale in due. 409 e non 403: non è «non ti è permesso», è «lo stato
+    di quell'agente è in conflitto con questa stanza», e il messaggio dice quale
+    stato, così chi lo legge sa cosa cambiare."""
+    if _member_eligible(spec, tier):
+        return
+    raise HTTPException(409, f"idoneità: {_ineligibility_reason(spec, tier)}. "
+                             f"Non può entrare in un canale {_norm(tier)}.")
+
+
+def _announce_membership_removal(tier: str, name: str, agent: str, motivo: str) -> None:
+    """La riga nella stanza che dice CHI esce e PERCHÉ.
+
+    Stesso pattern di `_announce_failure`: un evento che cambia la stanza si
+    scrive nella stanza, sempre. Una rimozione silenziosa è indistinguibile da
+    un agente che tace — cioè esattamente l'ambiguità che #190 chiude.
+
+    Best-effort dal principio alla fine: annunciare una rimozione non deve poter
+    rompere l'apertura del canale. Il messaggio persiste sul gateway, che lo
+    annuncia già sul bus (cfr. la nota #219 in `_channel_message`): qui non
+    serve una seconda pubblicazione, e non ce ne sarebbe modo — questo cammino
+    è sincrono."""
+    try:
+        topics_client.post_message(
+            tier, name, "system",
+            f"👥 **@{agent}** non è più partecipante di questo canale: {motivo}.\n\n"
+            f"Non è una pausa: è l'idoneità DICHIARATA dal seed a non reggere il "
+            f"tier della stanza. Torna partecipante quando il suo stack dichiara "
+            f"un provider adeguato — e può essere reinvitato allora.",
+            kind="system")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("rimozione di %s da %s/%s non annunciata: %s", agent, tier, name, e)
+
+
+def reconcile_membership(tier: str, name: str, meta: dict) -> list[str]:
+    """Fa uscire dai partecipanti i BOT che non reggono più il tier della stanza.
+    Ritorna i nomi rimossi; muta `meta["participants"]` di conseguenza.
+
+    È l'unico punto di questo diff che TOGLIE qualcosa, e per questo poggia su
+    `_declared_seal_ok`, che non dipende né da connessione né da pausa: un
+    provider giù non è una perdita di titolo, quindi qui non rimuove nessuno. La
+    perdita durevole è un'altra cosa — il seed cambia stack, o il catalogo
+    declassa un provider — e allora sì, si esce, con la riga che lo dice.
+
+    Umani e proxy NON vengono mai rimossi in automatico: la clearance di una
+    persona la cambia una persona, e sfrattarla senza che nessuno l'abbia
+    deciso sarebbe autorità silenziosa su un utente. L'owner non si tocca mai:
+    il canale è suo.
+    """
+    tier_real = meta.get("tier", tier)
+    owner = meta.get("owner")
+    rimossi: list[str] = []
+    for agent in list(meta.get("participants") or []):
+        if agent == owner:
+            continue
+        spec = registry.get_by_name(agent)
+        if spec is None or not _declared_below_tier(spec, tier_real):
+            continue
+        motivo = _ineligibility_reason(spec, tier_real)
+        try:
+            topics_client.set_participant(tier, name, agent, add=False)
+        except Exception as e:  # noqa: BLE001 — un gateway muto non è un'espulsione
+            LOG.warning("riconciliazione di %s/%s: %s non rimosso (%s)",
+                        tier, name, agent, e)
+            continue
+        # La forma di `participants` (lista legacy o mappa dei ruoli) è quella
+        # che il chiamante ha già in mano: si toglie la voce, non si sostituisce
+        # la struttura.
+        parti = meta.get("participants")
+        if isinstance(parti, dict):
+            parti.pop(agent, None)
+        elif isinstance(parti, list):
+            meta["participants"] = [p for p in parti if p != agent]
+        rimossi.append(agent)
+        LOG.warning("idoneità: %s rimosso da %s/%s — %s", agent, tier, name, motivo)
+        _announce_membership_removal(tier, name, agent, motivo)
+    return rimossi
+
+
 def _eligibility(spec, tier: str | None) -> dict:
-    """Idoneità di un AeI al tier del topic, per la UI.
-    - umani: sempre idonei (non trattano dati via provider), nessun provider.
-    - bot: idoneo SOLO se la SEAL EFFETTIVA (= quella del provider) ≥ tier.
-      Nessuno tratta dati SEAL-3+ su un provider SEAL-2-. Stessa regola per tutti.
-    `provider` è quello EFFETTIVO in questa stanza (clodia-platform#310, A14):
-    lo stesso agente può girare su provider diversi da un topic all'altro (A13).
-    `model` è il modello ABBINATO a quel provider (#315): cambia con lui, e per
-    gli umani è `None` come il provider — ma la chiave c'è sempre, così la UI
-    legge sempre lo stesso oggetto."""
+    """Idoneità di un AeI al tier del topic, per la UI. Due campi, due domande
+    (clodia-platform#190):
+
+    - `eligible` — DUREVOLE: il titolo a stare nella stanza. Per un bot lo dà lo
+      stack DICHIARATO, non quello acceso adesso; è il bit che governa
+      l'appartenenza e il dropdown «aggiungi agente».
+    - `available` — TRANSITORIO: può prendere un turno adesso (provider
+      collegato, non in pausa, SEAL ≥ tier). Un `false` qui è un badge, non
+      un'espulsione.
+
+    Prima erano lo stesso bit, e la UI ci filtrava la lista dei partecipanti:
+    bastava mettere in pausa un provider perché la stanza sembrasse vuota.
+
+    - umani: nessun provider, quindi sempre `available`; `eligible` è la loro
+      clearance, così il dropdown d'invito non propone qualcuno che il cancello
+      poi rifiuterebbe.
+    - bot: `provider` è quello EFFETTIVO in questa stanza (clodia-platform#310,
+      A14) e `model` è il modello ABBINATO a quel provider (#315). Per gli umani
+      sono `None` — ma le chiavi ci sono sempre, così la UI legge sempre lo
+      stesso oggetto."""
     if not spec or spec.type != "bot":
-        return {"eligible": True, "warn": False, "provider": None, "model": None}
-    ok = _provider_seal_ok(spec, tier)
-    return {"eligible": bool(ok), "warn": False,
+        return {"eligible": _member_eligible(spec, tier), "available": True,
+                "warn": False, "provider": None, "model": None}
+    return {"eligible": _declared_seal_ok(spec, tier),
+            "available": _provider_seal_ok(spec, tier), "warn": False,
             "provider": _topic_provider(spec, tier),
             "model": _topic_provider_model(spec, tier)}
 
@@ -4380,7 +4571,7 @@ async def channel_create(request: Request) -> dict:
     tier = _norm(body.get("tier"))
     if not name:
         raise HTTPException(400, "nome richiesto")
-    meta = _channel_meta(body, principal, name)
+    meta = _channel_meta(body, principal, name, tier)
     intro_agent = _select_topic_intro_agent(meta, tier)
     try:
         created = await topics_client.async_create_topic(tier, name, meta)
@@ -4880,6 +5071,11 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(404, "canale non trovato")
     _require_member(request, topic.get("meta", {}))
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
+    # L'appartenenza si riconcilia quando si guarda la stanza: costo nullo nel
+    # caso normale (nessuna chiamata di rete finché non c'è davvero qualcuno da
+    # far uscire) e la stanza che conta è quella che si sta aprendo.
+    topic["membership_removed"] = reconcile_membership(tier, name,
+                                                       topic.get("meta", {}))
     _partecipanti = topic.get("meta", {}).get("participants", [])
     # `active_responders` resta una lista di SEED (contratto invariato per la UI
     # esistente); `participant_instances` è il dettaglio per il super-nodo.
@@ -5203,8 +5399,15 @@ async def channel_feedback_lesson_delete(tier: str, name: str, lesson_id: str,
 @router.get("/clodia/channels/{tier}/{name}/eligibility")
 def channel_eligibility(tier: str, name: str, request: Request) -> dict:
     """Idoneità di ogni AeI registrato rispetto al tier del topic.
-    Usato dalla UI per (a) nascondere i partecipanti non idonei,
-    mostrati con ⚠️ — e (b) filtrare il dropdown «aggiungi agente»."""
+
+    Due bit per agente (clodia-platform#190): `eligible` = può STARE nella
+    stanza (durevole, filtra il dropdown «aggiungi agente»), `available` = può
+    rispondere ADESSO (transitorio, è un badge accanto al partecipante).
+
+    La UI non deve più usare nessuno dei due per NASCONDERE un partecipante: chi
+    è nella stanza si vede. Un non idoneo non ci finisce (il cancello è in
+    aggiunta) e se ci finisce esce (`reconcile_membership`); filtrarlo a display
+    lasciava la stanza apparentemente vuota, che è il difetto che #190 chiude."""
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
@@ -5383,8 +5586,11 @@ async def channel_add_participant(tier: str, name: str, request: Request) -> dic
     if not agent:
         raise HTTPException(400, "agent richiesto")
     # No partecipanti inesistenti: dev'essere un agent/umano registrato.
-    if registry.get_by_name(agent) is None:
+    spec = registry.get_by_name(agent)
+    if spec is None:
         raise HTTPException(404, f"'{agent}' non esiste: invita un agent/utente registrato")
+    meta = topic.get("meta", {})
+    _assert_member_eligible(spec, meta.get("tier", tier))
     ruolo = (body.get("role") or "").strip().lower() or None
     if ruolo and ruolo not in ("contributor", "reader"):
         raise HTTPException(
@@ -5416,9 +5622,16 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     """Aggiunge/rimuove un partecipante su richiesta di un AGENTE (via gateway).
     Body: {agent, by, add}. Autorizzazione: `by` (il chiamante) deve essere
     l'owner o un partecipante del canale — chi è "nella stanza"
-    può gestire la squadra (come invitare in un canale Slack). L'idoneità SEAL
-    dell'agente aggiunto resta enforced al momento della risposta (un agente
-    sotto-tier può entrare ma non risponde). Nessun principal: endpoint interno."""
+    può gestire la squadra (come invitare in un canale Slack).
+
+    L'idoneità SEAL dell'agente aggiunto è enforced QUI, allo stesso cancello
+    dell'invito dell'owner (`_assert_member_eligible`). Fino a #190 questa
+    docstring diceva il contrario — «un agente sotto-tier può entrare ma non
+    risponde» — ed era la decisione sbagliata: un membro che non può mai
+    rispondere è indistinguibile, per chi guarda la stanza, da un membro che
+    tace. La rimozione resta libera: si esce sempre.
+
+    Nessun principal: endpoint interno."""
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
@@ -5433,8 +5646,11 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     if not (by == meta.get("owner") or by in (meta.get("participants") or [])):
         raise HTTPException(403, f"'{by}' non è owner/partecipante di questo canale")
     # l'agente aggiunto dev'essere registrato
-    if registry.get_by_name(agent) is None:
+    spec = registry.get_by_name(agent)
+    if spec is None:
         raise HTTPException(404, f"'{agent}' non esiste: aggiungi un agent/utente registrato")
+    if add:
+        _assert_member_eligible(spec, meta.get("tier", tier))
     result = await topics_client.async_set_participant(tier, name, agent, add=add)
     result["introduction_queued"] = (
         _queue_join_introduction(tier, name, meta, agent, result) if add else False
