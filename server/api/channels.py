@@ -1011,9 +1011,11 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     # senza questo, l'unica via d'uscita di un agente bloccato è chiedere
     # all'umano — che è il comportamento che abbiamo visto tutto il giorno, e la
     # ragione per cui esiste questa modalità.
-    if debug_watch.enabled() and debug_watch.WATCHER in hard \
-            and debug_watch.WATCHER not in participants \
-            and _seed_name(from_agent) != debug_watch.WATCHER:
+    guardiano_svegliato = (
+        debug_watch.enabled() and debug_watch.WATCHER in hard
+        and debug_watch.WATCHER not in participants
+        and _seed_name(from_agent) != debug_watch.WATCHER)
+    if guardiano_svegliato:
         _spawn_bg(_watch_report(
             tier, name, "help_requested", _seed_name(from_agent),
             f"{from_agent} ha chiesto aiuto taggando @{debug_watch.WATCHER}: "
@@ -1078,6 +1080,83 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             LOG.info("citazione $%s da %s su %s/%s: nessun turno (R12)",
                      t, from_agent, tier, name)
     if not plan:
+        # HANDOFF FUORI STANZA, e lo si DICE (#192). Il filtro qui sopra scarta i
+        # `@` verso chi non partecipa al canale, e l'uscita era muta: né un
+        # messaggio né una riga di log. Delle tre strade per cui un handoff si
+        # ferma — il turno del delegato crasha (`_announce_failure`), il delegato
+        # rifiuta l'attivazione (guardia di `_start_turn`), il bersaglio non è
+        # nella stanza — solo questa taceva, e per chi guarda il canale «l'ho
+        # chiamato e non risponde» è indistinguibile da un guasto.
+        #
+        # Colpisce soprattutto il coordinatore: è l'unico che arriva qui sapendo
+        # che nella stanza non c'è nessuno di pertinente, e con in mano l'output
+        # di `topic.suggest_team` — che è una lista di nomi della COLONIA, non
+        # della stanza. Prendere un nome da lì e scriverlo con `@` invece che
+        # dentro `<!-- invite= -->` produce l'esito peggiore: la persona legge
+        # «questa è di @X» e poi non succede più niente.
+        #
+        # La decisione resta STOP dopo un handoff: niente seconda cascata, che
+        # rimetterebbe il router a decidere dopo che un modello ha già deciso.
+        # Quello che mancava non è un meccanismo, è una riga che dice cosa è
+        # successo — con la pill che rende il rimedio cliccabile (#332: «serve un
+        # messaggio con una sola menzione» era vero e inerte).
+        #
+        # SOLO nomi REGISTRATI, e il confine è quello che
+        # `test_delegation_limit_visible` fissa già per il limite catena: `@nessuno`
+        # non era un bersaglio, e una nota su un nome che non esiste è rumore su
+        # una menzione che non c'era. Un nome inventato non ha nemmeno un rimedio
+        # da offrire — invitarlo non si può — quindi resta una riga di log, che è
+        # dove si conta un'allucinazione senza pagarla in canale.
+        fuori = _distinct_by(
+            [t for t in hard
+             if not _is_self_tag(t, from_agent, _spec_of(from_agent))
+             and _seed_name(t) not in participants
+             # Il guardiano chiamato in debug un turno lo apre davvero (sopra):
+             # annunciarlo come menzione morta sarebbe falso.
+             and not (guardiano_svegliato
+                      and _seed_name(t) == debug_watch.WATCHER)],
+            _target_identity)
+        noti = [t for t in fuori if _is_known_seed(_seed_name(t) or "")]
+        if len(noti) < len(fuori):
+            LOG.info("delega da %s su %s/%s: %d menzioni verso nomi che non "
+                     "esistono nella colonia, nessuna nota in canale",
+                     from_agent, tier, name, len(fuori) - len(noti))
+        if not noti:
+            return          # niente da servire e niente da dire: nessun rumore
+        nomi = [_target_identity(t) for t in noti]
+        # La pill porta il SEED, che è ciò che si invita: `@worker-3` chiede
+        # un'istanza, ma in stanza entra `worker`.
+        invitabili = _distinct_by([_seed_name(t) for t in noti], lambda s: s)
+        uno = len(nomi) == 1
+        testo = (
+            f"{_elenco_or(nomi)} {'è stato taggato' if uno else 'sono stati taggati'} "
+            f"da {_seed_name(from_agent)}, ma {'non partecipa' if uno else 'non partecipano'} "
+            f"a questo canale: nessun turno è partito, e la catena si ferma qui.\n\n"
+            f"Due strade: riformulare la richiesta per chi è già nella stanza, "
+            f"oppure {'invitarlo' if uno else 'invitarli'} — l'invito lo esegue "
+            f"l'owner.\n\n<!-- invite={','.join(invitabili)} -->"
+        )
+        nota = await topics_client.async_post_message(
+            tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
+        await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
+                               message=nota, topic_title=meta.get("title"))
+        LOG.info("delega da %s su %s/%s: %s taggati ma fuori dal canale, nessun "
+                 "turno avviato", from_agent, tier, name, ", ".join(nomi))
+        # SEGNALE, non solo messaggio: come per il limite catena, chi non sta
+        # guardando la chat deve poter sapere che una menzione è morta lì.
+        try:
+            await bus.publish(Event(
+                type="routing_decision",
+                payload={"tier": tier, "name": name, "mode": "delega-fuori-stanza",
+                         "reason": (f"{', '.join(nomi)} non "
+                                    f"{'partecipa' if uno else 'partecipano'} a "
+                                    f"{tier}/{name}: nessun turno avviato"),
+                         "from_agent": _seed_name(from_agent), "negati": nomi,
+                         "invitabili": invitabili, "hop": hop,
+                         "chosen": None, "candidates": [], "eligible": []},
+                timestamp=datetime.now(timezone.utc)))
+        except Exception as e:  # noqa: BLE001 — un segnale non rompe un turno
+            LOG.debug("routing_decision fuori stanza non pubblicato: %s", e)
         return
     # LIMITE DELLA CATENA, e lo si DICE. Il controllo stava nei due chiamanti, che
     # saltavano questa funzione: nessun log, nessun messaggio, e per chi guardava
