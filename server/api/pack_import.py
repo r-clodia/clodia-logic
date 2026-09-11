@@ -309,6 +309,26 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
     return {"name": name, "status": "installed"}
 
 
+#: File di documentazione a livello RADICE del pack (sibling di `pack.yaml`),
+#: mai parte del manifest strutturato — clodia-platform#339: `install_pack_from_root`
+#: scriveva solo un `pack.yaml` curato coi campi noti, e un file come `SETUP.md`
+#: (il runbook che Sysadmin legge per il protocollo di setup) restava sul
+#: sorgente e non arrivava MAI nel datadir, a un fresh install come a un
+#: Update — non era un problema di sync/re-import, come si sospettava
+#: inizialmente, ma un file semplicemente escluso dal contratto di copia.
+_PACK_DOC_FILES = ("SETUP.md", "CHANGELOG.md")
+
+
+def _copy_pack_docs(pack_root: Path, meta_dir: Path) -> None:
+    """Copia i doc noti dalla radice del pack sorgente al suo `meta_dir`
+    installato. Assenti = skip silenzioso: non ogni pack ha un runbook di
+    setup (es. `base-pack`/`bandi-pack`, setup banale — issue #339)."""
+    for name in _PACK_DOC_FILES:
+        src = pack_root / name
+        if src.is_file():
+            shutil.copy2(src, meta_dir / name)
+
+
 def install_pack_from_root(root: Path, *, source: str,
                            allow_reserved: bool = False,
                            force: bool = False) -> dict[str, Any]:
@@ -411,6 +431,7 @@ def install_pack_from_root(root: Path, *, source: str,
         yaml.safe_dump(_meta, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
     )
+    _copy_pack_docs(pack_root, meta_dir)
     LOG.info("pack '%s' importato: %d agent, %d plugin", pack, len(agents), len(plugins))
     out = {
         "kind": "pack",
