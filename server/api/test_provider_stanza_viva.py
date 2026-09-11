@@ -85,8 +85,12 @@ class _Mondo:
             self.annunci.append((tier, name, spec.name, pid))
         self._p = [
             patch.object(channels, "manager", self.mgr),
+            # `*_` : dalla #399 il giudizio riceve anche il modello dell'agent.
+            # Questi test misurano cosa fa il chiamante quando la risposta è no,
+            # non come la risposta si forma — quindi restano indifferenti a
+            # quante condizioni la compongano.
             patch.object(providers, "provider_usable_for_tier",
-                         lambda pid, tier: self._idoneo),
+                         lambda pid, tier, *_a, **_k: self._idoneo),
             patch.object(channels, "_topic_provider", lambda spec, tier: self._sost),
             patch.object(channels, "_chat_busy", lambda cid: self._busy),
             patch.object(channels, "_announce_provider_inadeguato", _annuncia),
