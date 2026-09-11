@@ -1,6 +1,17 @@
 {
   "name": "base-pack",
   "description": "Primitive native della piattaforma Clodia (first-party, in git).",
-  "version": "7.0.0",
-  "license": "AGPL-3.0-or-later"
+  "version": "7.1.0",
+  "license": "AGPL-3.0-or-later",
+  "datastores": [
+    {
+      "path": "data/contacts.db",
+      "name": "contacts",
+      "purpose": "CRM contatti — anagrafiche persone/aziende (arricchimento OSINT), indipendente da azienda",
+      "pii": true,
+      "backup": true,
+      "clearance": "SEAL-1",
+      "seeds": ["messaggero", "clodia"]
+    }
+  ]
 }
