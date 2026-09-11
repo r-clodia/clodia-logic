@@ -120,6 +120,15 @@ def _load_catalog() -> tuple[dict, dict]:
                 # (back-compat). Usato per filtrare i candidati per il modello
                 # NON sindacabile dell'agent.
                 "models": [str(m) for m in (d.get("models") or [])],
+                # ECCEZIONI a `models` (glob), che VINCONO sulle inclusioni. Un
+                # provider serve quasi sempre una famiglia intera meno qualche
+                # variante, e con i soli glob positivi quel «meno» non era
+                # scrivibile: `codex` dichiarava `gpt-*` e il catalogo affermava
+                # che l'abbonamento ChatGPT serve `gpt-5-codex`, che invece
+                # rifiuta con un 400 (clodia-platform#333). L'alternativa era
+                # enumerare a mano ogni modello ammesso, cioè rompere il
+                # catalogo a ogni modello nuovo.
+                "models_excluded": [str(m) for m in (d.get("models_excluded") or [])],
                 # Traduzione modello-del-seed → id che il provider pretende
                 # (Bedrock: inference profile della regione). Esplicita perché i
                 # nomi dei profili non sono regolari, e per-versione perché
@@ -442,13 +451,37 @@ def bedrock_model_id(pid: str | None, model: str | None) -> str | None:
 def provider_supports_model(pid: str | None, model: str | None) -> bool:
     """True se il provider può servire `model` (glob match su `models` del
     catalogo). Provider senza `models` dichiarati → serve qualunque modello del
-    suo SDK (back-compat). model None → nessun vincolo."""
+    suo SDK (back-compat). model None → nessun vincolo.
+
+    `models_excluded` è consultato PRIMA e vince: è l'eccezione dentro una
+    famiglia altrimenti servita, e la si applica anche quando non c'è lista
+    positiva (insieme aperto meno qualcosa). Senza questo ramo «`gpt-*` tranne i
+    `-codex`» non era esprimibile e il catalogo diceva il falso su `codex`
+    (clodia-platform#333).
+    """
     if not model:
         return True
-    pats = (_CATALOG.get(_normalize(pid) or "") or {}).get("models") or []
+    d = _CATALOG.get(_normalize(pid) or "") or {}
+    if any(fnmatch.fnmatch(model, pat) for pat in d.get("models_excluded") or []):
+        return False
+    pats = d.get("models") or []
     if not pats:
         return True
     return any(fnmatch.fnmatch(model, pat) for pat in pats)
+
+
+def provider_effective_model(pid: str | None, model: str | None,
+                             provider_models: dict | None = None) -> str | None:
+    """Il modello che QUESTO provider servirà: l'override per-provider se c'è,
+    altrimenti il `model` top-level dell'agent.
+
+    Una riga sola, ma estratta di proposito: è la regola con cui
+    `candidate_providers` sceglie e con cui `provider_usable_for_tier` ri-giudica,
+    e scritta due volte è il punto in cui provider e modello tornano a divergere
+    — la lezione di clodia-platform#325, che aveva trovato la stessa regola
+    duplicata fra `agent_effective_model` e `_runtime_model`.
+    """
+    return (provider_models or {}).get(pid or "") or model
 
 
 def candidate_providers(providers: list[str] | None, provider: str | None,
@@ -468,12 +501,11 @@ def candidate_providers(providers: list[str] | None, provider: str | None,
         cands = [_normalize(provider)]
     else:
         cands = default_providers_for_sdk(agent_sdk)
-    pm = provider_models or {}
     # dedup preservando l'ordine, solo id noti al catalogo + che servono il modello
     seen: set[str] = set()
     out: list[str] = []
     for p in cands:
-        eff_model = pm.get(p) or model  # modello che QUESTO provider userà
+        eff_model = provider_effective_model(p, model, provider_models)
         if p and p in _CATALOG and p not in seen and provider_supports_model(p, eff_model):
             seen.add(p)
             out.append(p)
@@ -511,14 +543,28 @@ def effective_provider(providers: list[str] | None, provider: str | None,
     return None
 
 
-def provider_usable_for_tier(pid: str | None, tier: str | None) -> bool:
+def provider_usable_for_tier(pid: str | None, tier: str | None,
+                             model: str | None = None,
+                             provider_models: dict | None = None) -> bool:
     """Questo provider è ancora spendibile in una stanza di questo tier?
 
-    Le tre condizioni che `effective_provider_for_tier` applica quando SCEGLIE,
-    qui poste su un provider GIÀ scelto: connesso, non in pausa, SEAL >= tier.
-    Serve perché la scelta si fa alla nascita della sessione e la stanza dura
-    molto di più (clodia-platform#305): fra il primo turno e il decimo un
-    provider può essere stato messo in pausa, o il tier del topic alzato.
+    Le condizioni che `effective_provider_for_tier` applica quando SCEGLIE, qui
+    poste su un provider GIÀ scelto: connesso, non in pausa, SEAL >= tier, e —
+    da clodia-logic#399 — **serve ancora il modello dell'agent**. Serve perché la
+    scelta si fa alla nascita della sessione e la stanza dura molto di più
+    (clodia-platform#305): fra il primo turno e il decimo un provider può essere
+    stato messo in pausa, il tier del topic alzato, o il catalogo corretto.
+
+    La quarta condizione mancava, e la sua assenza si è vista in produzione: una
+    sessione di `ophelia` legata a `codex` (abbonamento ChatGPT) con
+    `gpt-5-codex` passava il ricontrollo — connesso, non in pausa, SEAL
+    sufficiente — e continuava a sbattere sullo stesso 400 a ogni turno, finché
+    qualcuno non eseguiva `restart_agent` A MANO. Correggere il catalogo
+    (#333) sistema le sessioni NUOVE; senza questa riga le sessioni VIVE
+    restano legate al provider con cui sono nate.
+
+    `model=None` = «non si sta chiedendo di un modello» → condizione neutra,
+    così un chiamante che non lo passa vede il giudizio di prima.
 
     Un provider ignoto è `False`: se non si sa cosa serve, non lo si usa per
     dati di un tier. È la stessa direzione del `return None` di
@@ -529,7 +575,9 @@ def provider_usable_for_tier(pid: str | None, tier: str | None) -> bool:
     try:
         return (pid in connected_provider_ids()
                 and pid not in _load_paused()
-                and provider_meets_tier(pid, tier))
+                and provider_meets_tier(pid, tier)
+                and provider_supports_model(
+                    pid, provider_effective_model(pid, model, provider_models)))
     except Exception:  # noqa: BLE001 — infra muta: non è una licenza a proseguire
         return False
 

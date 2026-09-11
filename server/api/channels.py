@@ -3367,6 +3367,30 @@ async def _announce_provider_inadeguato(tier: str, name: str, spec, pid) -> None
                             w["message"], tier=tier, kind="system"))
 
 
+def _motivo_decadenza(pid: str, tier_real: str, spec) -> str:
+    """Perché questo provider non è più spendibile, in chiaro e per il log.
+
+    `provider_usable_for_tier` risponde sì/no: qui si ri-pongono le sue
+    condizioni una per una SOLO quando la risposta è già «no», per dire quale.
+    Nessun giudizio nuovo — se una condizione cambiasse solo qui, il log
+    racconterebbe una decisione che nessuno ha preso.
+    """
+    from .providers import (provider_effective_model, provider_meets_tier,
+                            provider_supports_model, provider_paused)
+    try:
+        if provider_paused(pid):
+            return "in pausa"
+        if not provider_meets_tier(pid, tier_real):
+            return f"SEAL insufficiente per il tier {tier_real}"
+        modello = provider_effective_model(pid, getattr(spec, "model", None),
+                                           getattr(spec, "provider_models", None))
+        if not provider_supports_model(pid, modello):
+            return f"non serve il modello {modello}"
+        return "non più collegato"
+    except Exception:  # noqa: BLE001 — un log non fa fallire un turno
+        return "non più valido"
+
+
 async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: str,
                                                spec, chat_id: str) -> bool:
     """Il provider della sessione VIVA regge ancora il tier? Altrimenti la rifà.
@@ -3399,23 +3423,34 @@ async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: 
     except KeyError:
         return True                      # non esiste: la create farà la scelta
     in_uso = session_provider(chat)
-    if not in_uso or provider_usable_for_tier(in_uso, tier_real):
+    # Il modello va passato, non dedotto qui: un provider può essere connesso,
+    # non in pausa e idoneo al tier, e comunque RIFIUTARE il modello di questo
+    # agente — è il caso di clodia-logic#399, dove la sessione sopravviveva al
+    # 400 che la rendeva inutile.
+    if not in_uso or provider_usable_for_tier(in_uso, tier_real,
+                                              getattr(spec, "model", None),
+                                              getattr(spec, "provider_models", None)):
         return True
+    # Le ragioni per cui un provider decade sono ora due, e dirne una sola quando
+    # vale l'altra manda la diagnosi dalla parte sbagliata: clodia-logic#399 è
+    # costata un turno in più proprio perché i metadati dicevano «provider
+    # corretto» mentre a rifiutare era l'accoppiata provider↔modello.
+    motivo = _motivo_decadenza(in_uso, tier_real, spec)
     if _chat_busy(chat_id):
         # Un turno è in corso proprio ora su quel provider: interromperlo non lo
         # rende retroattivamente idoneo e ucciderebbe un lavoro a metà. Si lascia
         # finire, e il ricalcolo tocca al turno dopo.
-        LOG.warning("provider %s non più idoneo al tier %s su %s/%s ma la sessione "
-                    "è occupata: ricalcolo rimandato", in_uso, tier_real, tier, name)
+        LOG.warning("provider %s non più valido su %s/%s (%s) ma la sessione "
+                    "è occupata: ricalcolo rimandato", in_uso, tier, name, motivo)
         return True
     sostituto = _topic_provider(spec, tier_real)
     if not sostituto:
-        LOG.warning("nessun provider idoneo al tier %s per %s su %s/%s: turno non "
-                    "avviato", tier_real, spec.name, tier, name)
+        LOG.warning("nessun provider valido per %s su %s/%s (%s): turno non "
+                    "avviato", spec.name, tier, name, motivo)
         await _announce_provider_inadeguato(tier, name, spec, in_uso)
         return False
-    LOG.info("provider di %s su %s/%s: %s → %s (non più idoneo al tier %s)",
-             spec.name, tier, name, in_uso, sostituto, tier_real)
+    LOG.info("provider di %s su %s/%s: %s → %s (%s)",
+             spec.name, tier, name, in_uso, sostituto, motivo)
     await manager.delete(chat_id)
     return True
 
