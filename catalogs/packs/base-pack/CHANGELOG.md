@@ -9,6 +9,17 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.15.1] — 2026-09-11
+- Fix: 7.15.0 declared the `contacts` datastore in `pack.yaml` but forgot the
+  actual source `install_plugin_from_root` reads, `plugins/base-pack/
+  .claude-plugin/plugin.json` — still `7.0.0`, no `datastores`. Clicking
+  Update on an installed instance therefore re-wrote `pack.yaml` (already
+  correct) and left the enforced manifest, `plugins/base-pack/plugin.yaml`,
+  untouched: `contacts` stayed invisible to `datastore.read`/`write` even
+  after Update. Measured on `personal`, 11 Sep 2026. `plugin.json` now
+  carries the same `datastores` block; bumped to `7.1.0` (its own, separate
+  version track from the pack's).
+
 ## [7.15.0] — 2026-09-10
 - New datastore `contacts`, detached from the `tomato` pack: a contacts CRM
   is a platform resource, not a company one. Declared with `clearance:
