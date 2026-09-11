@@ -1467,6 +1467,26 @@ def _effective_clearance(spec) -> str:
     return _norm(ps) if ps else _norm(getattr(spec, "clearance", None))
 
 
+def _topic_runtime(spec, tier: str | None) -> dict:
+    """Il runtime override di QUESTA stanza, letto UNA volta. `{}` se non si
+    risolve: un provider non connesso non è un guasto — è un agente che in
+    questa stanza non può lavorare.
+
+    Esiste perché la promessa qui sotto fosse vera e non solo scritta: provider
+    e modello escono dalla stessa scelta, ma `_topic_runtime_field` risolveva da
+    capo a ogni campo, e due risoluzioni indipendenti sono il posto in cui i due
+    valori possono divergere — la lezione di clodia-platform#315, applicata alla
+    funzione che la enunciava.
+    """
+    try:
+        return topic_runtime_override(spec.name, tier) or {}
+    except ProviderNotConnected:
+        return {}
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("runtime di stanza non risolto per %s/%s: %s", spec.name, tier, e)
+        return {}
+
+
 def _topic_runtime_field(spec, tier: str | None, field: str) -> str | None:
     """Un campo del runtime override di QUESTA stanza, o None se non si risolve.
 
@@ -1475,13 +1495,7 @@ def _topic_runtime_field(spec, tier: str | None, field: str) -> str | None:
     provider), quindi si leggono dalla stessa risposta e con lo stesso
     trattamento dell'errore: un provider non connesso non è un guasto — è un
     agente che in questa stanza non può lavorare, e lo dice `None`."""
-    try:
-        return topic_runtime_override(spec.name, tier).get(field)
-    except ProviderNotConnected:
-        return None
-    except Exception as e:  # noqa: BLE001
-        LOG.warning("topic %s non risolto per %s/%s: %s", field, spec.name, tier, e)
-        return None
+    return _topic_runtime(spec, tier).get(field)
 
 
 def _topic_provider(spec, tier: str | None) -> str | None:
@@ -5201,17 +5215,45 @@ def channel_eligibility(tier: str, name: str, request: Request) -> dict:
     for spec in registry.list():
         e = _eligibility(spec, tier_real)
         agents.append({"name": spec.name, "type": spec.type,
-                       "context": _agent_context(tier, name, spec), **e})
+                       "context": _agent_context(tier, name, spec, tier_real), **e})
     return {"tier": tier_real, "agents": agents}
 
 
-def _agent_context(tier: str, name: str, spec) -> dict | None:
+def _agent_context(tier: str, name: str, spec, tier_real: str | None = None) -> dict | None:
     """Occupazione ATTUALE della finestra di contesto dell'agente in QUESTO canale:
     token dell'ultimo turno (input + cache) / finestra del modello. None se non c'è
-    ancora una sessione o se la finestra del modello è ignota (la UI nasconde la barra)."""
+    ancora una sessione o se la finestra del modello è ignota (la UI nasconde la barra).
+
+    La finestra è quella dello stack DI QUESTA STANZA, non di quello dichiarato
+    (clodia-logic#398). `model_context_window` risolve la coppia (harness,
+    modello) proprio perché lo stesso modello ha finestre diverse secondo la CLI
+    che lo comanda, e riceveva la coppia dichiarata — fuori da qualunque stanza —
+    mentre la sessione gira sul provider scelto per il tier, col modello abbinato
+    a quel provider e sotto l'harness di quel provider (`agent_runtime_sdk` segue
+    il provider effettivo, per permettere i ripieghi cross-SDK).
+
+    È il difetto di clodia-platform#322 in un punto che #390 non ha raggiunto, e
+    qui non si vede come un nome sbagliato ma come un RIGHELLO sbagliato: un
+    agente dichiarato su `claude-opus-5` (1M sotto claude) che in stanza gira su
+    `scaleway`/`glm-5.1` (200k sotto opencode) mostrava l'occupazione contro una
+    finestra cinque volte troppo lunga — un contesto quasi pieno si legge come
+    vuoto, cioè la barra mente proprio quando servirebbe.
+    """
     from ..agents.model_context import model_context_window
-    window = model_context_window(getattr(spec, "model", None),
-                                  getattr(spec, "agent_sdk", None))
+    from .providers import provider_sdk
+    # Modello e harness dalla STESSA risoluzione: leggerli da due chiamate
+    # separate è come tornerebbero a divergere (#315).
+    rt = _topic_runtime(spec, tier_real or tier)
+    if not rt.get("provider"):
+        # Nessun provider idoneo al tier → nessun righello da mostrare. Ripiegare
+        # sul dichiarato rimetterebbe in circolo il valore fuori-stanza che questa
+        # correzione toglie: è la stessa scelta di `agent_effective_model_for_tier`
+        # (#390). In quel tier l'agente non prende turni, e `_eligibility` accanto
+        # lo dice già.
+        return None
+    window = model_context_window(rt.get("model") or getattr(spec, "model", None),
+                                  provider_sdk(rt["provider"])
+                                  or getattr(spec, "agent_sdk", None))
     if not window:
         return None
     try:
