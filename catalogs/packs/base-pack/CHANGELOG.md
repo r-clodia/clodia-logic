@@ -9,6 +9,17 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.15.2] — 2026-09-12
+- Added `SETUP.md`: missing even upstream, not just on installed instances
+  (clodia-platform#339). Trivial by construction — no `requires`, no MCP
+  server, no `rag_collections` — but the gap was real: `sysadmin`'s setup
+  protocol reads `SETUP.md` as its runbook, and a pack silently exempt from
+  having one is indistinguishable from a pack nobody documented.
+- Depends on the matching `clodia-logic` server fix (`install_pack_from_root`
+  now copies `SETUP.md`/`CHANGELOG.md` from the pack root — it never did,
+  for any pack): without it this file would sit in the source and never
+  reach a datadir, on install or on Update.
+
 ## [7.15.1] — 2026-09-11
 - Fix: 7.15.0 declared the `contacts` datastore in `pack.yaml` but forgot the
   actual source `install_plugin_from_root` reads, `plugins/base-pack/
