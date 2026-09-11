@@ -2862,6 +2862,12 @@ def _routing_plan(participants: list[str], tier: str, message: str,
             if agent not in eligible:
                 eligible.append(agent)
 
+    #: Chi, in questo piano, è stato convocato PER RIPIEGO e non per dominio —
+    #: cioè va istruito con `[COORDINAMENTO]` e non con `[ROUTING AUTOMATICO]`.
+    #: Senza questo nome il turno parte dicendogli il contrario della verità
+    #: (clodia-platform#192): il `mode` del trace qui resta `multi-intent`, e a
+    #: valle non resta niente da cui distinguere i due casi.
+    coordinamento_per: str | None = None
     if unmatched:
         # Il batch di ciò che non ha matchato va a CHI COORDINA la stanza. Era la
         # stessa domanda del ripiego con una seconda risposta: qui arrivava un
@@ -2872,7 +2878,17 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         coordinator = _pick_responder(participants, tier, None,
                                       coordinator_only=True, trace=coord_trace)
         if coordinator is not None:
+            # Si legge PRIMA dell'extend: dopo, «aveva già roba sua» non è più
+            # distinguibile da «gli è appena arrivato il batch».
+            solo_ripiego = coordinator.name not in grouped
             grouped.setdefault(coordinator.name, (coordinator, []))[1].extend(unmatched)
+            # Se il coordinatore aveva ANCHE intent suoi per rilevanza, resta un
+            # responder normale: `[COORDINAMENTO]` gli direbbe «il router non ha
+            # trovato nessuno di pertinente», che è falso per metà del suo
+            # incarico — e i tre esiti di quella direttiva gli farebbero passare
+            # ad altri anche il lavoro che era davvero suo.
+            if solo_ripiego:
+                coordinamento_per = coordinator.name
             for route in routes:
                 if route["chosen"] is None:
                     route["chosen"] = coordinator.name
@@ -2889,6 +2905,7 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         trace.update({
             "tier": tier,
             "mode": "multi-intent",
+            "coordinator": coordinamento_per,
             "reason": f"{len(intents)} sotto-task instradati",
             "chosen": ", ".join(spec.name for spec, _prompt in plan),
             "chosen_agents": [spec.name for spec, _prompt in plan],
@@ -3814,12 +3831,25 @@ async def post_channel_message(
     # arrivo (`human`/`ai`), e riusarlo per il tipo del TURNO metterebbe due cose
     # diverse sotto la stessa parola, in un punto dove sbagliarle si vede solo in
     # produzione.
-    turn_kind = "coordinamento" if routing.get("mode") == "coordinator" else (
+    #
+    # Il kind è PER RISPONDITORE, non per piano (clodia-platform#192). Il
+    # coordinatore si raggiunge da due strade: il ripiego semplice, che marca
+    # tutto il trace con `mode: "coordinator"`, e il batch multi-intento, dove
+    # gli altri responder del piano hanno matchato per davvero e lui no. Con un
+    # solo kind per piano la seconda strada consegnava `[ROUTING AUTOMATICO] …
+    # perché attinente al tuo dominio` proprio a chi è lì perché NIENTE ha
+    # matchato — e al segretario, il cui mandato rimanda al capitano quando è
+    # fuori dominio, faceva rimandare alla stanza il suo stesso coordinatore.
+    base_kind = "coordinamento" if routing.get("mode") == "coordinator" else (
         "routed" if routed else "plain")
+    coordinamento_per = routing.get("coordinator")
     for responder, assigned in plan:
         if skip_if_busy and _responder_busy(tier, name, responder.name):
             skipped.append(responder.name)
             continue
+        turn_kind = ("coordinamento"
+                     if coordinamento_per and responder.name == coordinamento_per
+                     else base_kind)
         if await _start_turn(
             tier, name, tier_real, responder, principal, assigned, turn_kind,
         ):
