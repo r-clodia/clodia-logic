@@ -4429,9 +4429,9 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     messaggio arrivato dal canale non eredita autorità (barriera azioni, spec §5).
     Il responder è comunque scelto con le stesse regole SEAL/clearance della webui.
 
-    `responder_hint`: FORZA uno specifico agente come responder (usato dal motore
-    dei workflow, dove l'agente di ogni stadio è deciso dall'engine, non
-    dall'auto-picker). L'agente deve comunque avere clearance ≥ tier.
+    `responder_hint`: FORZA uno specifico agente come responder, quando a
+    sceglierlo è il chiamante e non l'auto-picker (es. il saluto di un agente
+    appena aggiunto al topic). L'agente deve comunque avere clearance ≥ tier.
 
     `trigger_author`: CHI ha innescato, quando lo si sa (es. il proxy che ha
     chiamato `trigger/internal`). Non tocca l'autorità — quella resta
@@ -4446,14 +4446,15 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     (percorsi interni, dove il nome lo mette il codice), sempre fail-closed.
 
     `directive`: istruzione operativa del turno iniettata ESPLICITAMENTE nel
-    prompt. Necessaria per i workflow: su sessione riusata il reused-turn prompt
-    filtra i messaggi il cui autore coincide col principal (il kickoff è authored
-    "workflow" == principal_hint), quindi senza questo l'agente non vedrebbe mai
-    l'istruzione dello stadio e resterebbe in attesa."""
+    prompt. Necessaria ogni volta che a innescare è il canale e non una persona:
+    su sessione riusata il reused-turn prompt filtra i messaggi il cui autore
+    coincide col principal (il kickoff è authored "channel" == principal_hint),
+    quindi senza questo l'agente non vedrebbe mai l'istruzione del turno e
+    resterebbe in attesa."""
     # Secondo dispatcher, stesso cronometro (#330): questo percorso non passa da
     # `_start_turn`, e strumentarne uno solo avrebbe dato numeri per la webui e
-    # nessuno per Telegram, trigger e workflow — che sono proprio i turni che
-    # nessuno guarda partire.
+    # nessuno per Telegram e i trigger — che sono proprio i turni che nessuno
+    # guarda partire.
     timing = turn_timing.begin("topic_turn")
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])

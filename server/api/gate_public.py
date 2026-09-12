@@ -4,15 +4,13 @@ Il token (gate_sign) autorizza la sola decisione di UN gate specifico ed è
 one-time (il nonce deve combaciare con quello salvato sulla proposta; risolto
 il gate il nonce sparisce → link morto). Nessun'altra operazione è possibile.
 
-Rimozione dei workflow (9 ago 2026). Questo modulo serviva DUE cose con una
-pagina sola: i gate di un run di workflow e le proposte di JOB. Era montato
-solo se `features.workflows` — cioè l'approvazione via link di un job, che è
-viva, dipendeva da una feature spenta ovunque l'abbia misurata. Restava
-raggiungibile per caso, dove qualcuno avesse acceso i workflow.
+Questo modulo serviva DUE cose con una pagina sola, finché l'engine rimosso il
+9 ago 2026 è stato l'altra: l'approvazione via link di un job, che è viva,
+dipendeva così da un flag di feature spento ovunque l'abbia misurato, e la
+pagina restava raggiungibile solo per caso.
 
-Ora è montato sempre e parla solo di job. Il ramo workflow è sparito col
-motore; se un token vecchio arriva, la risposta è «non valido», che è la
-verità: il run cui si riferiva non esiste più.
+Ora è montata sempre e parla solo di job. Se arriva un token di quelli vecchi
+la risposta è «non valido», che è la verità: ciò cui si riferiva non esiste più.
 """
 from __future__ import annotations
 
@@ -47,7 +45,13 @@ def _resolve_job(token: str) -> dict:
 
 
 def _job_view(prop: dict) -> dict:
-    """Stessa shape del gate workflow → la pagina /gate la rende senza modifiche."""
+    """Shape attesa dalla pagina /gate, che la rende senza modifiche.
+
+    I nomi dei campi (`run_id`, `"workflow"`, `lane`) sono ereditati e restano:
+    sono il CONTRATTO verso un consumatore che da qui non si vede, e rinominarli
+    romperebbe la pagina per guadagnare solo un lessico più pulito. Il valore,
+    quello sì, dice la cosa vera — «Proposta di job».
+    """
     sched = prop.get("cron_expr") or "—"
     summary = (f"Agente al fire: {prop.get('agent')}\n"
                f"Schedule (cron): {sched}\n"
