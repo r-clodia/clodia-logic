@@ -20,13 +20,14 @@ Tre stati per una riga:
 """
 from __future__ import annotations
 
+import asyncio
 import logging
 import re
 import shutil
 from pathlib import Path
 from typing import Any
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse
 
 from . import gateway_pdp, plugin_import, rag_store
@@ -130,6 +131,124 @@ async def list_datastores() -> dict[str, Any]:
         "datastores": _active_datastores() + _archived_datastores(),
         "rag_collections": _active_rag_collections() + await _orphaned_rag_collections(),
     }
+
+
+# ── Dentro una riga: tabelle, pagine di righe, documenti (#342) ──────────────
+#
+# L'inventario sopra dice che un dato ESISTE; queste rotte lo fanno vedere.
+#
+# Nessun SQLite aperto qui, e non per pigrizia: il gateway ha già la
+# connessione `mode=ro`, la whitelist per tipo di istruzione, il tetto in byte
+# e l'audit (`clodia-tools/server/tools/datastore_sql.py`), e sopra di essi il
+# PDP che decide se QUESTA persona può leggere QUEL datastore
+# (`_datastore_authorize`, ramo umano — clodia-tools#275). Riaprire il file da
+# questo lato significherebbe riscrivere quelle quattro cose e tenerle
+# allineate a mano: la seconda copia diverge, ed è la copia senza audit.
+#
+# `forward` NON è `require_authz`: non chiede solo il permesso, inoltra
+# l'esecuzione. L'autorizzazione qui non è un controllo in più da ricordarsi —
+# è la stessa chiamata che porta i dati.
+
+#: Righe per pagina: tetto, non default del client. Il gateway ha già un tetto
+#: in BYTE (32 KiB) che taglia a metà elenco; questo è il tetto in RIGHE, che è
+#: l'unità in cui ragiona una tabella in UI.
+_MAX_ROWS = 200
+_DEFAULT_ROWS = 50
+
+#: Le tabelle vere del datastore. `sqlite_master` e non `PRAGMA table_list`:
+#: è una SELECT (quindi passa la whitelist del gateway senza eccezioni), esiste
+#: in ogni versione di SQLite, e il filtro sugli oggetti interni lo fa il
+#: motore invece del chiamante.
+_TABLES_SQL = ("SELECT name, type FROM sqlite_master "
+               "WHERE type IN ('table','view') AND name NOT LIKE 'sqlite_%' "
+               "ORDER BY name")
+
+
+def _read(request: Request, key: str, query: str, params: list) -> dict:
+    """Una lettura sul datastore `<pack>/<nome>`, eseguita dal gateway."""
+    return gateway_pdp.forward(request, "datastore.read",
+                               {"datastore": key, "query": query, "params": params})
+
+
+async def _read_async(request: Request, key: str, query: str, params: list) -> dict:
+    """`_read` per gli handler async: la POST al gateway è bloccante e chiamarla
+    dritta fermerebbe l'event loop di tutto il processo (stessa ragione di
+    `require_authz_async`)."""
+    return await asyncio.to_thread(_read, request, key, query, params)
+
+
+async def _table_names(request: Request, key: str) -> list[str]:
+    res = await _read_async(request, key, _TABLES_SQL, [])
+    return [r.get("name") for r in (res or {}).get("rows", []) if r.get("name")]
+
+
+@router.get("/clodia/datastores/{pack}/{name}/tables")
+async def datastore_tables(pack: str, name: str, request: Request) -> dict[str, Any]:
+    key = f"{pack}/{name}"
+    return {"datastore": key, "tables": await _table_names(request, key)}
+
+
+@router.get("/clodia/datastores/{pack}/{name}/rows")
+async def datastore_rows(pack: str, name: str, request: Request, table: str,
+                         limit: int = _DEFAULT_ROWS, offset: int = 0) -> dict[str, Any]:
+    """Una pagina di righe di UNA tabella del datastore.
+
+    `table` è un IDENTIFICATORE: in SQL non è parametrizzabile, quindi l'unica
+    difesa possibile è non costruire l'istruzione affatto se il nome non è fra
+    quelli che il datastore dichiara. La lista arriva da `sqlite_master` del
+    datastore stesso, non dal client, e il confronto è di uguaglianza — niente
+    normalizzazioni che riaprirebbero la porta appena chiusa.
+    """
+    key = f"{pack}/{name}"
+    tabelle = await _table_names(request, key)
+    if table not in tabelle:
+        raise HTTPException(
+            400, f"tabella '{table}' non presente in '{key}'. "
+                 f"Tabelle disponibili: {', '.join(tabelle) or 'nessuna'}")
+    limit = max(1, min(int(limit), _MAX_ROWS))
+    offset = max(0, int(offset))
+    # UNA riga in più di quelle che si mostrano: dice se esiste una pagina
+    # successiva senza un `count(*)` su una tabella che può essere grande. La
+    # riga in più serve a sapere, non a essere mostrata.
+    res = await _read_async(
+        request, key,
+        f'SELECT * FROM "{table.replace(chr(34), chr(34) * 2)}" LIMIT ? OFFSET ?',
+        [limit + 1, offset])
+    righe = (res or {}).get("rows", [])
+    return {"datastore": key, "table": table,
+            "columns": (res or {}).get("columns", []),
+            "rows": righe[:limit], "limit": limit, "offset": offset,
+            "has_more": len(righe) > limit,
+            # Il taglio in BYTE del gateway è una cosa diversa dalla fine della
+            # pagina: se la riga è enorme, la pagina può finire prima del limite
+            # richiesto. Chi mostra la tabella deve poterlo dire.
+            "truncated": bool((res or {}).get("truncated"))}
+
+
+@router.get("/clodia/datastores/rag/{collection}/documents")
+async def rag_collection_documents(collection: str, request: Request) -> dict[str, Any]:
+    """I documenti INIETTATI in una collection: l'inventario ne dava il
+    conteggio, non i nomi — «12 documenti» non si amministra.
+
+    `require_authz` e non `forward`: la lettura non è un verbo eseguibile dal
+    gateway per conto di questa persona (`rag.list` passa dai grant dell'AGENTE
+    chiamante), ed è lo stesso motivo per cui l'inventario delle collection
+    vive su una rotta interna privilegiata. La decisione resta del PDP, la
+    lettura la fa il runner — come già fa `_orphaned_rag_collections`.
+    """
+    await gateway_pdp.require_authz_async(request, "rag.list")
+    try:
+        documenti = await rag_store.list_documents_async(collection)
+    except rag_store.RagStoreError as e:
+        # 503 e non una lista vuota: «non ho potuto sapere» e «non c'è niente»
+        # sono due affermazioni diverse, e la seconda qui sarebbe falsa.
+        # L'inventario può degradare (là il resto della pagina resta leggibile);
+        # il contenuto di UNA collection chiesto apposta, no.
+        LOG.warning("datastores: documenti di '%s' non disponibili (%s)", collection, e)
+        raise HTTPException(
+            503, f"documenti della collection '{collection}' non disponibili: {e}. "
+                 "Non è un problema di permessi — riprova fra qualche secondo.") from e
+    return {"collection": collection, "documents": documenti}
 
 
 def _safe_archive_dir(name: str) -> Path | None:

@@ -32,15 +32,30 @@ class RagStoreError(RuntimeError):
     """Il gateway o il servizio eu-rag-search non sono raggiungibili."""
 
 
-def _base_url() -> str:
-    explicit = os.environ.get("CLODIA_TOOLS_RAG_URL")
+def _rag_url(risorsa: str = "collections") -> str:
+    """L'URL di una rotta `/internal/rag/*` del gateway.
+
+    `CLODIA_TOOLS_RAG_URL` ha sempre indicato l'endpoint delle COLLECTION (era
+    l'unico): resta quello il suo contratto, e da lì si ricava la base per le
+    altre risorse. Reinterpretarlo come «base» romperebbe le istanze che lo
+    configurano già.
+    """
+    explicit = (os.environ.get("CLODIA_TOOLS_RAG_URL") or "").rstrip("/")
     if explicit:
-        return explicit.rstrip("/")
+        base = (explicit[: -len("/collections")]
+                if explicit.endswith("/collections") else explicit)
+        return f"{base}/{risorsa}"
     mcp = os.environ.get("CLODIA_TOOLS_MCP_URL", "http://clodia-tools:7849/mcp/")
     base = mcp.rstrip("/")
     if base.endswith("/mcp"):
         base = base[: -len("/mcp")]
-    return f"{base}/internal/rag/collections"
+    return f"{base}/internal/rag/{risorsa}"
+
+
+def _base_url() -> str:
+    """L'endpoint delle collection. Resta come nome perché è ciò che i
+    chiamanti storici cercano."""
+    return _rag_url("collections")
 
 
 def _headers() -> dict[str, str]:
@@ -72,6 +87,36 @@ def list_collections() -> list[dict]:
         raise RagStoreError("gateway GET collections: risposta non JSON") from e
     coll = data.get("collections") if isinstance(data, dict) else None
     return coll if isinstance(coll, list) else []
+
+
+def list_documents(collection: str) -> list[dict]:
+    """I documenti iniettati in UNA collection (nome, versione, status, chunk).
+
+    A differenza di `list_collections`, un 502 qui NON degrada a lista vuota:
+    l'inventario incompleto lascia il resto della pagina leggibile, mentre
+    «questa collection non ha documenti» detto a chi li ha chiesti è una
+    risposta diversa da «non ho potuto sapere», ed è falsa. Il chiamante la
+    traduce in 503.
+    """
+    try:
+        r = requests.get(_rag_url("documents"), headers=_headers(),
+                         params={"collection": collection}, timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise RagStoreError(f"gateway irraggiungibile per GET documents: {e}") from e
+    if r.status_code != 200:
+        raise RagStoreError(f"gateway GET documents → HTTP {r.status_code}")
+    try:
+        data = r.json()
+    except ValueError as e:
+        raise RagStoreError("gateway GET documents: risposta non JSON") from e
+    docs = data.get("documents") if isinstance(data, dict) else None
+    return docs if isinstance(docs, list) else []
+
+
+async def list_documents_async(collection: str) -> list[dict]:
+    """`list_documents` per gli handler `async def` — stessa ragione di
+    `list_collections_async`."""
+    return await asyncio.to_thread(list_documents, collection)
 
 
 async def list_collections_async() -> list[dict]:
