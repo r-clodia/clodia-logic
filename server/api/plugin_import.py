@@ -197,6 +197,22 @@ def _discover_rule_files(plugin_root: Path) -> list[Path]:
 #: un campo assente (che è già il default più restrittivo).
 _SEAL_TIERS = {"SEAL-0", "SEAL-1", "SEAL-2", "SEAL-3", "SEAL-4"}
 
+#: La vecchia scala, tradotta ovunque in piattaforma (`channels._norm`,
+#: `agent_registry._norm_clearance`): un pack scritto allora dichiara `P1`, e
+#: senza traduzione finirebbe fra i valori ignoti.
+_SEAL_LEGACY = {"P0": "SEAL-0", "P1": "SEAL-1", "P2": "SEAL-2", "P3": "SEAL-3"}
+
+#: Il gradino più alto: dove finisce un `tier` che non si riconosce. Vedi
+#: `_sanitize_rag_collections` per il perché qui si chiude invece di scartare.
+_SEAL_MAX = "SEAL-4"
+
+
+def _norm_seal(raw: Any) -> str | None:
+    """`raw` → tier canonico, o `None` se non è un gradino della scala."""
+    t = str(raw or "").strip().upper()
+    t = _SEAL_LEGACY.get(t, t)
+    return t if t in _SEAL_TIERS else None
+
 
 def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
     """Dichiarazioni datastore del plugin (pack ops): lista di
@@ -231,8 +247,8 @@ def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
         name = str(ds.get("name") or "").strip()
         if name:
             entry["name"] = name
-        clearance = str(ds.get("clearance") or "").strip().upper()
-        if clearance in _SEAL_TIERS:
+        clearance = _norm_seal(ds.get("clearance"))
+        if clearance:
             entry["clearance"] = clearance
         seeds = ds.get("seeds")
         if isinstance(seeds, list):
@@ -252,7 +268,19 @@ def _sanitize_rag_collections(raw: Any) -> list[dict[str, Any]]:
     rag.ingest — idempotente). Entry malformate scartate, non bloccano l'import.
 
     `path` = file relativo confinato al pack (no assoluti/traversal); `url` = fonte
-    da scaricare. Almeno uno dei due per risorsa."""
+    da scaricare. Almeno uno dei due per risorsa.
+
+    `tier` è il clearance della collection e non resta la stringa scritta nel
+    manifest: finisce nel manifest REGISTRATO, di lì al provisioner
+    (`rag.create_collection`) e alla pagina Databases, quindi un `seal-1`
+    minuscolo o un `SEAL-9` inventato non combacerebbero con nessun gradino
+    della scala. Si normalizza come il `clearance` di un datastore
+    (`_norm_seal`), con una differenza nel finale: lì un valore ignoto si
+    SCARTA, perché il campo assente è già il default più restrittivo; qui il
+    default è `SEAL-0`, cioè il gradino più BASSO, e scartare allargherebbe
+    l'accesso invece di chiuderlo. Un tier che non si riconosce finisce quindi
+    su `SEAL-4` — visibile in UI e correggibile, mai un corpus aperto a tutti
+    per una lettera sbagliata."""
     out: list[dict[str, Any]] = []
     if not isinstance(raw, list):
         return out
@@ -276,10 +304,17 @@ def _sanitize_rag_collections(raw: Any) -> list[dict[str, Any]]:
                 "type": str(r.get("type") or "pdf").strip(),
                 "meta": r.get("meta") if isinstance(r.get("meta"), dict) else {},
             })
+        dichiarato = str(col.get("tier") or "").strip()
+        tier = _norm_seal(dichiarato)
+        if tier is None:
+            tier = _SEAL_MAX if dichiarato else "SEAL-0"
+            if dichiarato:
+                LOG.warning("rag_collections: tier '%s' non riconosciuto su '%s' → %s",
+                            dichiarato, col["name"], _SEAL_MAX)
         out.append({
             "name": str(col["name"]).strip(),
             "description": str(col.get("description") or ""),
-            "tier": str(col.get("tier") or "SEAL-0").strip(),
+            "tier": tier,
             "resources": resources,
         })
     return out
