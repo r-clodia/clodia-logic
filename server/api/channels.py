@@ -2205,6 +2205,11 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                  label, tier, name)
         await _announce_refusal(tier, name, label)
         return False
+    # Il tier della stanza può essere cambiato dall'ultimo turno: il provider
+    # della sessione viva lo sa già (sotto), il coordinamento passava di mano in
+    # silenzio (clodia-platform#345). L'annuncio precede l'avvio: chi legge la
+    # chat deve sapere chi coordina PRIMA di leggere la risposta di un altro.
+    await _annuncia_cambio_coordinatore(tier, name, tier_real)
     if not await _provider_della_stanza_ancora_valido(tier, name, tier_real, spec, chat_id):
         return False
     created = False
@@ -3660,6 +3665,108 @@ async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: 
     return True
 
 
+#: L'ultimo tier con cui si è visto partire un turno, per stanza. Risponde a una
+#: domanda sola — «il tier è cambiato da quando siamo passati di qui?» — e quella
+#: è la sola condizione che può spostare il coordinatore.
+#:
+#: SHORTCUT: mappa in memoria, per processo. Regge perché serve a confrontare due
+#:           turni CONSECUTIVI della stessa stanza, che girano nello stesso
+#:           agent-server; al riavvio la prima transizione dopo il restart non ha
+#:           un «prima» osservato e resta muta. Sale a metadato del topic quando
+#:           il gateway esporrà una scrittura di meta generica: oggi
+#:           `topics_client` ha solo `create_topic`/`set_status`/`set_deadline`.
+_TIER_VISTO: dict[tuple[str, str], str] = {}
+
+
+def _tier_visto_reset() -> None:
+    """Dimentica i tier osservati (test, e riconfigurazioni che rifanno il mondo)."""
+    _TIER_VISTO.clear()
+
+
+def _coordinatore_al_tier(participants: list[str], tier: str) -> str | None:
+    """Chi coordinerebbe questa stanza a quel tier.
+
+    Non riapplica la regola del coordinatore: la CHIEDE a `_pick_responder`, che
+    la chiede a `coordinator_mod.pick`. Una seconda copia della precedenza
+    diverge al primo cambiamento, ed è esattamente il difetto che il docstring di
+    `agents/coordinator.py` denuncia — la ruling sta in una riga, e in una sola.
+    """
+    return getattr(_pick_responder(participants, tier, None,
+                                   coordinator_only=True), "name", None)
+
+
+async def _annuncia_cambio_coordinatore(tier: str, name: str, tier_real: str,
+                                        participants: list[str] | None = None) -> None:
+    """Il tier della stanza è cambiato e con esso chi coordina: lo dice in chat.
+
+    L'idoneità si ricalcola a ogni turno, quindi una stanza promossa oltre il
+    tier di clodia passa a `segretario` dal turno dopo — corretto, e finora
+    silenzioso: l'unica traccia era la `reason` del singolo messaggio
+    (`fallback-coordinatore dichiarato (segretario)`), che vede chi apre la
+    trace e non chi legge la chat. È il residuo A4 di clodia-platform#195
+    (clodia-platform#345), lo stesso «silence is the one option that must go»
+    sopravvissuto sul percorso del cambio di tier a stanza aperta.
+
+    Sta qui, accanto al ricalcolo del provider, e non nel router: il router vede
+    un turno per volta e non sa che il precedente aveva un coordinatore diverso.
+    Il confronto è fra il tier di PRIMA e quello di ADESSO, quindi il verso
+    opposto — tier abbassato, clodia torna a coordinare — è la stessa
+    transizione letta al contrario e non ha bisogno di un ramo suo.
+
+    `participants` lo passa chi ce l'ha già in mano; chi non ce l'ha lo fa
+    chiedere qui, e solo alla transizione: a tier invariato questa funzione
+    ritorna prima di qualunque await, cioè non costa una chiamata di rete per
+    turno.
+    """
+    chiave = (tier, name)
+    precedente = _TIER_VISTO.get(chiave)
+    if precedente == tier_real:
+        return
+    # Il claim sta PRIMA di ogni await, come per `_ANNOUNCED_IDS`: due spawn che
+    # partono insieme sulla stessa transizione la vedono in uno solo, e la stanza
+    # non riceve l'annuncio due volte.
+    _TIER_VISTO[chiave] = tier_real
+    if precedente is None:
+        # Prima volta che si passa di qui: non abbiamo osservato nessuna
+        # transizione, e raccontarne una sarebbe rumore a ogni riavvio.
+        return
+    annunciato = False
+    try:
+        if participants is None:
+            topic = await topics_client.async_open_topic(tier, name)
+            participants = list(((topic or {}).get("meta") or {}).get("participants") or [])
+        prima = _coordinatore_al_tier(participants, precedente)
+        dopo = _coordinatore_al_tier(participants, tier_real)
+        # `None` da una delle due parti vuol dire «nessun agente idoneo a quel
+        # tier»: è una stanza senza coordinatore, che ha già la sua voce in
+        # `_announce_provider_inadeguato` quando un turno non parte. Qui si
+        # racconta un passaggio di mano, e senza due mani non c'è passaggio.
+        if prima is None or dopo is None or prima == dopo:
+            return
+        testo = (f"🔁 **Il coordinamento di questa stanza passa da @{prima} a "
+                 f"@{dopo}.** Il tier è cambiato ({precedente} → {tier_real}) e con "
+                 f"esso chi è idoneo a coordinare: da ora i messaggi che non sono "
+                 f"per nessuno in particolare li prende @{dopo}.")
+        msg = await topics_client.async_post_message(tier, name, "system", testo,
+                                                     kind="system")
+        annunciato = True
+        await _channel_message(tier, name, "system", "system", message=msg)
+        activity_log.append(dopo, "coordinator_changed", {
+            "channel": f"{tier}/{name}",
+            "tier": tier_real,
+            "previous_tier": precedente,
+            "previous": prima,
+            "reason": "tier_changed",
+        })
+    except Exception as e:  # noqa: BLE001 — dirlo non deve rompere un turno
+        if not annunciato:
+            # La transizione non è stata raccontata: si rimette il tier di prima,
+            # così il turno successivo riprova invece di perderla per sempre.
+            _TIER_VISTO[chiave] = precedente
+        LOG.warning("cambio di coordinatore non annunciato su %s/%s (%s → %s): %s",
+                    tier, name, precedente, tier_real, e)
+
+
 async def _announce_refusal(tier: str, name: str, label: str) -> None:
     """Dice nel topic che il turno non parte, e perché.
 
@@ -4513,6 +4620,11 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     # turno.
     timing.mark("routing")
     chat_id = f"chan:{tier}:{name}:{responder.name}"
+    # Secondo dispatcher, stesso annuncio (clodia-platform#345): questo percorso
+    # non passa da `_start_turn`, e coprirne uno solo lascerebbe muti i turni di
+    # Telegram, trigger e workflow. Qui i partecipanti sono già in mano: si
+    # passano, così la transizione non costa una lettura in più al gateway.
+    await _annuncia_cambio_coordinatore(tier, name, tier_real, participants)
     if not await _provider_della_stanza_ancora_valido(tier, name, tier_real,
                                                      responder, chat_id):
         return None, None
