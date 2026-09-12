@@ -17,6 +17,12 @@ Tre stati per una riga:
 - `orphaned` — SOLO le collection RAG: il pack che le dichiarava non è più
   installato, ma la collection resta viva in pgvector (nessuna azione da qui:
   il servizio `eu-rag-search` non espone un endpoint di cancellazione).
+
+Ogni riga porta anche la propria MEMBER LIST (clodia-platform#341: «clearance e
+lista di seed autorizzati»), e le due primitive la tengono in due posti diversi:
+un datastore la dichiara nel manifest (`seeds`, proiettato da `plugins.py`), una
+collection RAG no — lì la lista esiste girata, nei grant `rag_read`/`rag_write`
+dei seed, e la si legge per collection con `agents/rag_members.py`.
 """
 from __future__ import annotations
 
@@ -29,6 +35,7 @@ from typing import Any
 from fastapi import APIRouter, Request
 from fastapi.responses import JSONResponse
 
+from ..agents import rag_members
 from . import gateway_pdp, plugin_import, rag_store
 from .plugins import list_plugins
 
@@ -58,13 +65,13 @@ def _active_rag_names() -> set[str]:
     return names
 
 
-def _active_rag_collections() -> list[dict[str, Any]]:
+def _active_rag_collections(membri: rag_members.RagMembership) -> list[dict[str, Any]]:
     out = []
     for pack in list_plugins():
         for rc in pack.get("rag_collections") or []:
             out.append({"name": rc.get("name"), "description": rc.get("description", ""),
                         "tier": rc.get("tier", "SEAL-0"), "pack": pack["name"],
-                        "status": "active"})
+                        "status": "active", **membri.of(rc.get("name"))})
     return out
 
 
@@ -111,7 +118,7 @@ def _archived_datastores() -> list[dict[str, Any]]:
     return out
 
 
-async def _orphaned_rag_collections() -> list[dict[str, Any]]:
+async def _orphaned_rag_collections(membri: rag_members.RagMembership) -> list[dict[str, Any]]:
     dichiarate = _active_rag_names()
     try:
         tutte = await rag_store.list_collections_async()
@@ -120,15 +127,20 @@ async def _orphaned_rag_collections() -> list[dict[str, Any]]:
         return []
     return [{"name": c.get("collection"), "tier": c.get("tier", "SEAL-0"),
             "documents": c.get("documents", 0), "chunks": c.get("chunks", 0),
-            "pack": None, "status": "orphaned"}
+            "pack": None, "status": "orphaned", **membri.of(c.get("collection"))}
            for c in tutte if c.get("collection") not in dichiarate]
 
 
 @router.get("/clodia/datastores")
 async def list_datastores() -> dict[str, Any]:
+    # Member list girata UNA volta per richiesta e passata alle due metà: è una
+    # scansione della registry dei seed, e attive e orfane devono comunque
+    # rispondere con lo stesso indice.
+    membri = rag_members.build()
     return {
         "datastores": _active_datastores() + _archived_datastores(),
-        "rag_collections": _active_rag_collections() + await _orphaned_rag_collections(),
+        "rag_collections": _active_rag_collections(membri)
+                           + await _orphaned_rag_collections(membri),
     }
 
 
