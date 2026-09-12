@@ -9,6 +9,20 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.16.0] — 2026-09-12
+- `editorial-pack` rimosso da questo repo: fuso in `business-pack`
+  (clodia-packs), che consolida anche il precedente `media-agency-pack` e
+  aggiunge tre seed derivati (`articolista`, `titolista`, `fact-checker` da
+  `content-creator`/standalone) più `sales-rep` (lead-gen/outreach). Non è
+  più bundlato nell'immagine: da questa versione richiede un import esplicito
+  del pack, come qualunque altro pack di dominio.
+- `clodia`/`ophelia`: `editorial-pack/*` sostituito da
+  `business-pack/article-spec`, `business-pack/editorial-review`,
+  `business-pack/fact-check` — stesse tre skill di prima, minimo cambiamento
+  per non introdurre una decisione di scope non richiesta (se convenga
+  delegare fact-check/editorial-review al nuovo seed `fact-checker` invece di
+  tenerle è una domanda aperta, non risolta qui).
+
 ## [7.15.2] — 2026-09-12
 - Added `SETUP.md`: missing even upstream, not just on installed instances
   (clodia-platform#339). Trivial by construction — no `requires`, no MCP

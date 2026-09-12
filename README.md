@@ -43,7 +43,7 @@ what it monitors is a convention rather than a boundary.
 | `server/` | the API, the spawn runtime, the colony PKI, the scheduler |
 | `server/agents/` | seeds: loading, inheritance, synchronisation to the datadir, the boot-time boundary assertion |
 | `server/sdk_runtime/` | the session that drives an agent SDK (`claude`, `codex`, `opencode`) |
-| `catalogs/packs/` | the bundled packs — `base-pack`, `comms-pack`, `editorial-pack` |
+| `catalogs/packs/` | the bundled packs — `base-pack`, `comms-pack` (editorial/media skills moved to `business-pack` in clodia-packs) |
 | `catalogs/PACKS.md` | what a pack is, and what a plugin is |
 | `providers/`, `routing/` | inference providers, routing |
 | `docker/` | the image |
