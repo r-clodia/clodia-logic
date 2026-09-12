@@ -44,7 +44,7 @@ class AgentSdkRuntimeTests(unittest.TestCase):
                         "allow_read": ["{scratch}/**"],
                         "allow_write": ["{scratch}/**"],
                     },
-                    "capabilities": ["article-spec"],
+                    "capabilities": ["topic-management"],
                     "memory": {"dir": "memory/"},
                     "system_prompt": "system-prompt.md",
                 })
@@ -53,7 +53,7 @@ class AgentSdkRuntimeTests(unittest.TestCase):
                 ws = workspace_mod.EphemeralWorkspace(spec, task_id="test")
                 ws.create()
                 try:
-                    self.assertTrue((ws.dir / ".agent" / "skills" / "article-spec" / "SKILL.md").is_file())
+                    self.assertTrue((ws.dir / ".agent" / "skills" / "topic-management" / "SKILL.md").is_file())
                     self.assertTrue((ws.dir / "AGENTS.md").is_file())
                     self.assertFalse((ws.dir / ".claude").exists())
                 finally:
