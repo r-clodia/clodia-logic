@@ -5,9 +5,9 @@ Due segnali con gerarchia esplicita, calcolati SERVER-SIDE per la coppia
 
 - **actionable** (badge numerico): mention non lette rivolte al principal
   (campo strutturato `mentions` del messaggio, scritto dal gateway al
-  write-time — D1) + gate di workflow pendenti assegnati a lui (D2:
-  `wf_owner`/`requested_by`, stessa regola di notify.py). Conta gli item,
-  non i messaggi.
+  write-time — D1) + gate pendenti nella stanza che toccano a lui (D2: la
+  fonte è il gateway, vedi `_pending_gates_for`). Conta gli item, non i
+  messaggi.
 - **activity** (pallino booleano): esiste almeno un messaggio successivo
   all'ultima visita non scritto dal principal. Nessuna gradazione.
 
@@ -182,11 +182,11 @@ def _edge_ids(tier: str, name: str, upto: datetime) -> list[str]:
 def _pending_gates_for(principal: str) -> dict[str, int]:
     """Mappa 'tier/name' → gate pendenti in quella stanza che TOCCA a `principal`.
 
-    La fonte è cambiata il 9 ago 2026. Prima era lo store dei workflow: il
-    badge contava i gate di un run. Rimossi i workflow, quel conteggio sarebbe
-    rimasto a zero per sempre — un badge dichiarato che nessuno alimenta, cioè
-    il difetto che questa settimana ho trovato sette volte. Ora la fonte è il
-    GATEWAY, che è dove i gate vivono davvero.
+    La fonte è cambiata il 9 ago 2026. Prima era lo store dell'engine rimosso
+    quel giorno: il badge contava i gate di un run. Caduto l'engine, quel
+    conteggio sarebbe rimasto a zero per sempre — un badge dichiarato che
+    nessuno alimenta, cioè il difetto che questa settimana ho trovato sette
+    volte. Ora la fonte è il GATEWAY, che è dove i gate vivono davvero.
 
     Chi decide viene dalla stessa regola dei gate (voce 24): walls e outward li
     sblocca l'owner dello scope, gli altri un admin. Qui basta la stanza: il

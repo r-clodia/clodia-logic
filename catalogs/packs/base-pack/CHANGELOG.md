@@ -9,6 +9,14 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.17.0] — 2026-09-12
+- **`sysadmin` non promette più il lifecycle dei run.** Il seed elencava
+  «**Workflow** (`workflows.*`): osservi + lifecycle run» fra i namespace
+  operativi e `/workflows` nella mappa della WebUI: verbi e rotta non esistono
+  dal 9 ago 2026 (engine rimosso, cfr. 7.6.0). Un mandato che l'agente rilegge
+  a ogni turno e non può eseguire è peggio di un mandato mancante — ci prova,
+  poi spiega all'utente perché non riesce. Rimossi anche dalla `description`.
+
 ## [7.16.0] — 2026-09-12
 - `editorial-pack` rimosso da questo repo: fuso in `business-pack`
   (clodia-packs), che consolida anche il precedente `media-agency-pack` e

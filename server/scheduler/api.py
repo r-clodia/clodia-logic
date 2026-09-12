@@ -319,7 +319,7 @@ async def api_propose_job(req: JobPropose):
     job nasce solo all'approvazione dell'owner. Gate SINCRONO: la conferma avviene
     con un popup in chat (l'owner è presente) via POST /clodia/jobs/proposals/{id}/
     decide. Sicurezza: un job è esecuzione autonoma ricorrente → deve passare
-    dall'owner (Prima Legge). Il link firmato asincrono resta per i workflow."""
+    dall'owner (Prima Legge)."""
     from . import proposals
     from ..api import gate_sign
     cron = _resolve_cron(req.cron_expr, req.schedule_text)

@@ -98,10 +98,10 @@ class TopicSignalTests(unittest.TestCase):
 class PendingGatesTests(unittest.TestCase):
     """`_pending_gates_for`: da dove viene il conteggio dei gate.
 
-    La fonte è cambiata il 9 ago 2026. Era lo store dei workflow — il badge
-    contava i gate di un run — e coi workflow rimossi sarebbe rimasto a zero per
-    sempre: un badge dichiarato che nessuno alimenta. Ora la fonte è il gateway,
-    che è dove i gate vivono.
+    La fonte è cambiata il 9 ago 2026. Era lo store dell'engine rimosso quel
+    giorno — il badge contava i gate di un run — e senza engine sarebbe rimasto
+    a zero per sempre: un badge dichiarato che nessuno alimenta. Ora la fonte è
+    il gateway, che è dove i gate vivono.
 
     Cosa i test tengono fermo, oltre al conteggio: il badge **non deve poter
     rompere la pagina**. Se il gateway non risponde, la lista dei topic si vede

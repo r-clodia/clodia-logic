@@ -3,7 +3,7 @@
 Modello speculare a `skill_sync` ma per i rule file Clodia-neutral
 (`.agent/rules/<name>.md`). Le rules sono knowledge passivo che il runtime
 adapter espone al CLI/SDK agentico selezionato — diverse dalle skill
-(workflow attivi invocati per nome) e dal system prompt.
+(procedure attive invocate per nome) e dal system prompt.
 
 Convenzione file:
 - File singoli `.md` (non cartelle come le skill, che hanno asset)
