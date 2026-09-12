@@ -136,8 +136,12 @@ def _routing_request_marker(owner: str, source_id: str) -> str:
     return f"<!-- routing-request={payload} -->"
 
 
-def _elenco_or(nomi: list[str]) -> str:
+def _elenco_or(nomi: list[str], cong: str = "o") -> str:
     """`[a]` → `@a` · `[a, b]` → `@a o @b` · `[a, b, c]` → `@a, @b o @c`.
+
+    `cong` cambia la congiunzione finale senza duplicare la cintura del dedup:
+    «scegli fra questi» vuole *o*, «questi sono stati taggati» vuole *e*, e sono
+    la stessa frase stampata due volte in modi diversi.
 
     Deduplica, in ordine di prima apparizione: questa è la funzione che STAMPA,
     e «scegli fra @worker e @worker» non è una scelta (#256). I chiamanti passano
@@ -152,7 +156,7 @@ def _elenco_or(nomi: list[str]) -> str:
             tag.append(f"@{n}")
     if len(tag) <= 1:
         return "".join(tag)
-    return ", ".join(tag[:-1]) + " o " + tag[-1]
+    return ", ".join(tag[:-1]) + f" {cong} " + tag[-1]
 
 
 _AMBIGUITY_ASK_RE = re.compile(r"<!-- routing-ask=(\{.*?\}) -->")
@@ -988,6 +992,89 @@ async def _watch_report(tier: str, name: str, kind: str, subject: str,
         LOG.warning("debug-watch · escalation non riuscita: %r", e)
 
 
+async def _nota_tag_fuori_stanza(tier: str, name: str, meta: dict, from_agent: str,
+                                 hard: list[str], participants: list) -> None:
+    """`@X` verso chi NON partecipa al canale: nessun turno, ma il canale lo sa.
+
+    Emessa SOLO quando c'erano tag `@` e nessuno di essi era servibile perché
+    fuori dalla stanza. Un reply senza tag non produce nulla: è la stessa
+    guardia del limite catena, e per la stessa ragione — un avviso su menzioni
+    che non c'erano riempirebbe il canale di rumore.
+
+    Il rimedio è CLICCABILE: la nota porta `<!-- invite=nome -->`, così l'owner
+    invita con un click. È la lezione di #332, dove «serve un messaggio con una
+    sola menzione» era vero e inerte — restava a una persona rifare a mano ciò
+    che l'agente aveva già scritto, e finché non lo faceva il canale era fermo.
+
+    Il perimetro è **i soli nomi che il registro conosce**, ed è il confine che
+    tiene fuori il rumore. `@nessuno`, `@tutti`, un nome storpiato non sono
+    bersagli — non lo erano nemmeno per il limite catena, che su di essi tace di
+    proposito (`test_delegation_limit_visible`) — e una nota che dice «invitalo»
+    su un nome che non esiste non è un rimedio: è un secondo vicolo cieco al
+    posto del primo. Resta una riga di log, che è dove si cerca un refuso.
+
+    Il caso misto — un tag servibile e uno fuori stanza — NON passa di qui: il
+    `plan` non è vuoto, un turno parte, e il canale ha già una risposta da
+    leggere. Resta un buco più stretto di quello che si chiude, e va misurato
+    per conto suo se si presenta.
+    """
+    spec_autore = _spec_of(from_agent)
+    fuori = _distinct_by(
+        [t for t in hard
+         if _seed_name(t) not in participants
+         and not _is_self_tag(t, from_agent, spec_autore)
+         # `@sysadmin` in modalità debug sveglia il guardiano anche da fuori
+         # stanza (vedi sopra): quel caso NON è muto, e annunciarlo come non
+         # servito direbbe il falso.
+         and not (debug_watch.enabled() and _seed_name(t) == debug_watch.WATCHER)],
+        _target_identity)
+    if not fuori:
+        return
+    ignoti = [t for t in fuori if not _is_known_seed(_seed_name(t) or "")]
+    if ignoti:
+        LOG.info("delega da %s su %s/%s: %s non sono nomi noti, nessuna nota",
+                 from_agent, tier, name,
+                 ", ".join(_target_identity(t) for t in ignoti))
+    fuori = [t for t in fuori if t not in ignoti]
+    if not fuori:
+        return
+    nomi = [_target_identity(t) for t in fuori]
+    invitabili = _distinct_by([_seed_name(t) for t in fuori], lambda n: n)
+    uno = len(nomi) == 1
+    testo = (
+        f"{_elenco_or(nomi, 'e')} "
+        f"{'è stato taggato' if uno else 'sono stati taggati'} da "
+        f"{_seed_name(from_agent)}, ma non "
+        f"{'partecipa' if uno else 'partecipano'} a questo canale: nessun turno "
+        f"è partito. Due strade: riformulare la richiesta per chi è già nella "
+        f"stanza, oppure {'invitarlo' if uno else 'invitarli'} — l'invito lo "
+        f"esegue l'owner."
+    )
+    testo += f"\n\n<!-- invite={','.join(invitabili)} -->"
+    avviso = await topics_client.async_post_message(
+        tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
+    await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
+                           message=avviso, topic_title=meta.get("title"))
+    LOG.info("delega da %s su %s/%s: %s taggati ma fuori dal canale, nessun "
+             "turno avviato", from_agent, tier, name, ", ".join(nomi))
+    # SEGNALE, non solo messaggio: chi non sta guardando la chat (il monitor, e
+    # chiunque legga il bus per sapere se un lavoro è già in carico a qualcuno)
+    # deve poter sapere che qui una menzione è morta.
+    try:
+        await bus.publish(Event(
+            type="routing_decision",
+            payload={"tier": tier, "name": name, "mode": "delega-fuori-stanza",
+                     "reason": (f"{', '.join(nomi)} non "
+                                f"{'partecipa' if uno else 'partecipano'} a "
+                                f"{tier}/{name}: nessun turno avviato"),
+                     "from_agent": _seed_name(from_agent), "negati": nomi,
+                     "invitabili": invitabili,
+                     "chosen": None, "candidates": [], "eligible": []},
+            timestamp=datetime.now(timezone.utc)))
+    except Exception as e:  # noqa: BLE001 — un segnale non rompe un turno
+        LOG.debug("routing_decision fuori stanza non pubblicato: %s", e)
+
+
 async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str,
                           principal: str | None, hop: int,
                           origin_chain: list | None = None) -> None:
@@ -1078,6 +1165,18 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             LOG.info("citazione $%s da %s su %s/%s: nessun turno (R12)",
                      t, from_agent, tier, name)
     if not plan:
+        # HANDOFF FUORI STANZA, e lo si DICE (#192). Il filtro qui sopra scarta i
+        # tag verso chi non partecipa al canale, e fin qui è giusto: un turno non
+        # si apre a chi non è nella stanza. Quello che mancava è la riga che lo
+        # dice — l'uscita era muta, nemmeno un log, quindi «questa è di @X» e poi
+        # più niente, indistinguibile da un guasto.
+        #
+        # Colpisce soprattutto il coordinatore: è l'unico che arriva qui sapendo
+        # che nella stanza non c'è nessuno di pertinente, con in mano una lista di
+        # `topic.suggest_team` che elenca nomi della COLONIA, non del canale. Il
+        # passo falso probabile è scriverne uno con `@` invece che dentro
+        # `<!-- invite= -->`, e l'esito peggiore è proprio il silenzio.
+        await _nota_tag_fuori_stanza(tier, name, meta, from_agent, hard, participants)
         return
     # LIMITE DELLA CATENA, e lo si DICE. Il controllo stava nei due chiamanti, che
     # saltavano questa funzione: nessun log, nessun messaggio, e per chi guardava
