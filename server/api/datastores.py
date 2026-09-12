@@ -20,7 +20,6 @@ Tre stati per una riga:
 """
 from __future__ import annotations
 
-import asyncio
 import logging
 import re
 import shutil
@@ -164,21 +163,15 @@ _TABLES_SQL = ("SELECT name, type FROM sqlite_master "
                "ORDER BY name")
 
 
-def _read(request: Request, key: str, query: str, params: list) -> dict:
+async def _read(request: Request, key: str, query: str, params: list) -> dict:
     """Una lettura sul datastore `<pack>/<nome>`, eseguita dal gateway."""
-    return gateway_pdp.forward(request, "datastore.read",
-                               {"datastore": key, "query": query, "params": params})
-
-
-async def _read_async(request: Request, key: str, query: str, params: list) -> dict:
-    """`_read` per gli handler async: la POST al gateway è bloccante e chiamarla
-    dritta fermerebbe l'event loop di tutto il processo (stessa ragione di
-    `require_authz_async`)."""
-    return await asyncio.to_thread(_read, request, key, query, params)
+    return await gateway_pdp.forward_async(
+        request, "datastore.read",
+        {"datastore": key, "query": query, "params": params})
 
 
 async def _table_names(request: Request, key: str) -> list[str]:
-    res = await _read_async(request, key, _TABLES_SQL, [])
+    res = await _read(request, key, _TABLES_SQL, [])
     return [r.get("name") for r in (res or {}).get("rows", []) if r.get("name")]
 
 
@@ -210,7 +203,7 @@ async def datastore_rows(pack: str, name: str, request: Request, table: str,
     # UNA riga in più di quelle che si mostrano: dice se esiste una pagina
     # successiva senza un `count(*)` su una tabella che può essere grande. La
     # riga in più serve a sapere, non a essere mostrata.
-    res = await _read_async(
+    res = await _read(
         request, key,
         f'SELECT * FROM "{table.replace(chr(34), chr(34) * 2)}" LIMIT ? OFFSET ?',
         [limit + 1, offset])

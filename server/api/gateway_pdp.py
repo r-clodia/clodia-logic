@@ -233,3 +233,10 @@ def forward(request: Request, tool: str, arguments: dict):
         raise HTTPException(403, data.get("detail") or "azione non consentita")
     raise HTTPException(status if status >= 400 else 502,
                         data.get("detail") or data.get("error") or "errore gateway")
+
+
+async def forward_async(request: Request, tool: str, arguments: dict):
+    """`forward` per gli endpoint `async def`, per la ragione di
+    `require_authz_async`: qui l'attesa è anche più lunga, perché il gateway
+    non decide soltanto — esegue."""
+    return await asyncio.to_thread(forward, request, tool, arguments)
