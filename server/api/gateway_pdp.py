@@ -51,10 +51,36 @@ def human_role(principal: str | None) -> str:
     return "admin" if admin.is_admin(principal) else "user"
 
 
+def human_clearance(principal: str | None) -> str | None:
+    """La clearance DICHIARATA della persona (`SEAL-N`), o `None` se ignota.
+
+    Il ruolo dice cosa può fare, la clearance fin dove può arrivare: sono i due
+    assi con cui il gateway autorizza gli agenti, e per una persona il secondo
+    non veniva mai coniato. Il gateway leggeva il claim assente e lo trattava
+    come SEAL-0 (`_rank(None)`), quindi l'asse esisteva e rispondeva sempre «il
+    minimo» — un datastore SEAL-1 restava invisibile anche all'owner
+    (clodia-platform#342).
+
+    Nessun default inventato: chi non è nella registry non porta un livello, e
+    il gateway continua a trattarlo come il minimo. Un default qui sarebbe una
+    clearance concessa da chi non ha l'autorità per concederla — la sceglie un
+    admin alla creazione dell'umano, ed è l'unico posto dove è scritta.
+
+    Niente tetto di provider come per gli agenti (`session._effective_clearance`,
+    dove la SEAL del modello abbassa quella del seed): una persona non gira su
+    un provider, e non c'è un secondo termine da minimizzare.
+    """
+    if not principal:
+        return None
+    spec = registry.get_by_name(principal)
+    return getattr(spec, "clearance", None) if spec else None
+
+
 def _token(principal: str) -> str:
     return pki.mint_session_token(
         _CARRIER, ttl_seconds=_TOKEN_TTL, principal=principal,
         on_behalf=True, human_role=human_role(principal),
+        clearance=human_clearance(principal),
         # Anche un'azione dalla UI passa dalla stessa regola: la catena è di un
         # solo anello — l'umano — perché non c'è delega. Il carrier tecnico NON
         # entra: è un dettaglio di trasporto, e includerlo farebbe intersecare
@@ -207,3 +233,10 @@ def forward(request: Request, tool: str, arguments: dict):
         raise HTTPException(403, data.get("detail") or "azione non consentita")
     raise HTTPException(status if status >= 400 else 502,
                         data.get("detail") or data.get("error") or "errore gateway")
+
+
+async def forward_async(request: Request, tool: str, arguments: dict):
+    """`forward` per gli endpoint `async def`, per la ragione di
+    `require_authz_async`: qui l'attesa è anche più lunga, perché il gateway
+    non decide soltanto — esegue."""
+    return await asyncio.to_thread(forward, request, tool, arguments)
