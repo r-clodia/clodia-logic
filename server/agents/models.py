@@ -593,6 +593,16 @@ class AgentSpec(BaseModel):
     # Grant dichiarativi sulle collection RAG della capacità di piattaforma
     # (es. ["eu-normativa"]). Enforcement nel gateway, come tool_permissions.
     # Usati dai seed dei pack (es. aitiero in clodia-packs).
+    #
+    # `"*"` vale TUTTE le collection, come in `allowed_tools` — non è il nome di
+    # una collection. La semantica è UNA e si decide nel gate (clodia-tools
+    # `main._rag_covers`, clodia-platform#354); qui si dichiara e basta. Fino
+    # ad allora era letterale su un asse e wildcard sull'altro, quindi
+    # `rag_read: ["*"]` prometteva tutto e concedeva zero.
+    #
+    # Allarga UN asse solo, l'appartenenza: la clearance resta quella dello
+    # spawn e le collection di tier superiore restano chiuse anche a chi
+    # dichiara `*`.
     rag_read: list[str] = Field(default_factory=list)
     rag_write: list[str] = Field(default_factory=list)
     # Volume montabili dichiarati (id da CLODIA_DATA/volumes.yaml, spec §3.4).
