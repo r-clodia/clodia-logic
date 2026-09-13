@@ -1,6 +1,6 @@
 """Client verso il gateway per leggere credenziali git (PAT) dal vault.
 
-Usato dai workflow (engine) per clonare/pushare repo privati. Auth ckt1
+Usato da `packs.py` per leggere l'upstream di un pack su repo privato. Auth ckt1
 principal trusted-core, come provider_store. Il PAT non transita mai da un
 modello e non viene loggato.
 """
