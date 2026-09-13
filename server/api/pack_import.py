@@ -64,7 +64,13 @@ LOG = logging.getLogger("agent-server.api.pack_import")
 
 PACKS_META_DIR = data_path("packs")
 
-_AGENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,30}")
+# Il gruppo opzionale (`.shortname`) è il nome LUNGO `namespace.shortname`
+# (Davide, 12 set 2026): un seed derivato con `parents:` prende lo stesso
+# shortname del genitore, e il namespace lo distingue quando più business ne
+# derivano uno ciascuno (`tomato.fullstack-dev`). Un solo livello di punto —
+# stessa forma di `mentions.py::_NAME`, che deve riconoscere il tag di questo
+# stesso nome come UNA mention, non due.
+_AGENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,30}(?:\.[a-z0-9][a-z0-9_-]{0,30})?")
 # Nomi nativi non installabili da pack (allineato ad agent_registry._NATIVE_AGENTS).
 _NATIVE_AGENTS = {"clodia", "ophelia", "messaggero"}
 

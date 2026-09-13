@@ -412,8 +412,11 @@ class ExternalReachesThePromptTests(unittest.IsolatedAsyncioTestCase):
              patch.object(ch.topics_client, "list_messages", return_value=[]), \
              patch.object(ch, "_pick_responder", return_value=None) as picker:
             # `compose_routing_context` NON è mockata: è il punto del test.
+            # `@clodia` (router-notebook R21): senza mention, un trigger non
+            # umano non arriva più a `_pick_responder` — qui si verifica
+            # l'etichettatura del contesto quando il turno PARTE, non se parte.
             await ch.run_topic_turn("SEAL-1", "ch", meta,
-                                    trigger_text="fai una cosa",
+                                    trigger_text="@clodia fai una cosa",
                                     principal_hint="channel",
                                     trigger_author=trigger_author,
                                     trigger_kind=trigger_kind)

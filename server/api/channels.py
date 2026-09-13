@@ -2308,7 +2308,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         directive = (f"[Sei lo spawn {spawn_nome} di {spec.name}: i tuoi messaggi "
                      f"appaiono come {spawn_nome}.]\n" + (directive or ""))
     if created:
-        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name, spec.name)
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         base = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),
@@ -3329,9 +3329,40 @@ _CHANNEL_CAPS = (
 # prompt-bloat / token-cost DoS da un file gonfiato ad arte.
 _AGENTS_MD_MAX_CHARS = 6000
 
+# Riga indirizzata a un solo agente: `@nome testo...` (fine riga = fine
+# direttiva, non un blocco multi-riga). Stesso nome di `@mention`
+# (`mentions._NAME`, comprensivo di `namespace.shortname` R18) per coerenza —
+# un agente che risponde a `@tomato.officer` nel canale riconosce la stessa
+# forma qui.
+_AGENTS_MD_DIRECTIVE_RE = re.compile(rf"^@(?P<agent>{mentions._NAME})\s+(?P<text>.+)$")
 
-def _topic_agents_md(tier: str, name: str) -> tuple[str | None, bool]:
-    """`(testo, autorevole)` delle istruzioni di scope.
+
+def _filter_agents_md_for_agent(text: str, agent_name: str | None) -> str:
+    """Righe generali → sempre incluse. Righe `@nome ...` → solo per `nome`.
+
+    È un filtro di IGIENE del contesto (non isolare rumore altrui), non un
+    confine di riservatezza: chi ha accesso allo scope può comunque leggere
+    l'AGENTS.md grezzo con `topic.read_file`/`topic.open`. Un `@nome` che non
+    corrisponde a un agente noto non è trattato come direttiva (resta riga
+    generale) — un refuso o una menzione a scopo diverso non deve far
+    sparire la riga per tutti.
+    """
+    if agent_name is None:
+        return text
+    out: list[str] = []
+    for line in text.splitlines():
+        m = _AGENTS_MD_DIRECTIVE_RE.match(line)
+        if not m or registry.get_by_name(m.group("agent")) is None:
+            out.append(line)
+        elif m.group("agent") == agent_name:
+            out.append(m.group("text"))
+        # else: direttiva per un altro agente — non entra nel suo prompt.
+    return "\n".join(out)
+
+
+def _topic_agents_md(tier: str, name: str,
+                     agent_name: str | None = None) -> tuple[str | None, bool]:
+    """`(testo, autorevole)` delle istruzioni di scope, filtrate per `agent_name`.
 
     Il secondo valore decide come il testo entra nel prompt, e la distinzione è
     sostanziale, non cosmetica:
@@ -3348,12 +3379,20 @@ def _topic_agents_md(tier: str, name: str) -> tuple[str | None, bool]:
     Finché la migrazione non è passata su tutti i topic i due casi coesistono, e
     trattarli allo stesso modo significherebbe sbagliare su uno dei due: o si
     dichiara fidato ciò che non lo è, o si ignora un'istruzione legittima.
+
+    `agent_name` filtra le righe `@nome ...` non indirizzate a chi legge (vedi
+    `_filter_agents_md_for_agent`) PRIMA del troncamento: un blocco per un
+    altro agente non deve consumare budget di caratteri a scapito del testo
+    generale.
     """
     try:
         text, _version, authoritative = topics_client.get_agents_md(tier, name)
     except topics_client.TopicsClientError:
         return None, False
     text = (text or "").strip()
+    if not text:
+        return None, False
+    text = _filter_agents_md_for_agent(text, agent_name).strip()
     if not text:
         return None, False
     if len(text) > _AGENTS_MD_MAX_CHARS:
@@ -4085,6 +4124,22 @@ async def post_channel_message(
             "bootstrap": True,
         }
 
+    # NESSUNA mention → la rilevanza è un canale per un messaggio UMANO (o un
+    # trigger di sistema fidato, cioè lo scheduler), non per la chiacchiera
+    # spontanea di un bot (router-notebook R21, Davide 13 set 2026). Un bot che
+    # posta "ok, resto in attesa" senza taggare nessuno non deve far scattare
+    # nessun altro bot — è il rumore che la voce esiste per chiudere. `kind`
+    # "system" + `trusted_internal` resta escluso da questo gate: è lo
+    # scheduler che innesca deliberatamente un turno routed, non un bot che
+    # chiacchiera fra sé — comportamento invariato per quel percorso.
+    _msg_umano = _from_human({"kind": kind, "author": principal})
+    _msg_sistema_fidato = kind == "system" and trusted_internal
+    if not (_msg_umano or _msg_sistema_fidato):
+        return {"posted": True, "responder": None,
+                "note": ("nessuna mention diretta e il messaggio non è di un "
+                         "umano (né un trigger di sistema fidato): nessun "
+                         "turno per rilevanza (router-notebook R21)")}
+
     # nessun tag → routing per rilevanza, anche multi-intento
     routing: dict = {}
     # La finestra degli N messaggi (#185) e il dialogo di ambiguità (#186) si
@@ -4600,9 +4655,22 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         semantic_message = responder_routing.compose_routing_context(
             recent, config=route_cfg
         ) or (trigger_text or "")
-        responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""),
-                                    trigger_text or "", trace=routing,
-                                    routing_message=semantic_message)
+        _tag = _tagged(trigger_text or "")
+        _autore_eff = _safe_name(trigger_author or principal_hint or "channel")
+        _kind_eff = trigger_kind or _inbound_kind(_autore_eff)
+        if _tag is None and _kind_eff != "human":
+            # Stesso gate di `post_channel_message` (router-notebook R21): senza
+            # mention, la rilevanza risponde solo a un umano. Un trigger `ai`/
+            # `external` (bot, Telegram non firmato) che arriva qui senza tag
+            # non deve svegliare nessuno — a monte (relay, trigger/internal) la
+            # mention è già stata la condizione per arrivare fin qui in teoria,
+            # ma questo resta il punto che lo garantisce anche se un chiamante
+            # futuro se ne dimenticasse.
+            responder = None
+        else:
+            responder = _pick_responder(participants, tier_real, _tag,
+                                        trigger_text or "", trace=routing,
+                                        routing_message=semantic_message)
         if routing.get("chosen"):
             try:
                 payload = {"tier": tier, "name": name, **routing}
@@ -4651,7 +4719,7 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     timing.mark("session_ready")
     chat.principal = principal_hint or "channel"  # proxy: nessuna autorità
     if created:
-        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name, responder.name)
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         prompt = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),

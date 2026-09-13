@@ -38,7 +38,7 @@ sandbox:
 # wildcard, e nessuna riga del system-prompt di clodia le nomina. Non è una
 # perdita di capacità: `email.send` è un VERBO (vedi `tool_permissions`), non
 # viene dal pack, quindi la relazione quotidiana continua a partire.
-capabilities: ["base-pack/*", "editorial-pack/*", "anthropic-pack/*"]
+capabilities: ["base-pack/*", "business-pack/article-spec", "business-pack/editorial-review", "business-pack/fact-check", "anthropic-pack/*"]
 # NON `["*"]`. Il catalogo contiene UNA rule, `topic-state-boundary`, ed è del
 # segretario: circoscrive chi mantiene lo stato scritto di un topic e dichiara
 # fuori dominio «usare strumenti diversi dai tool di stato del topic»,
