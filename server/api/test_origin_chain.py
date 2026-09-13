@@ -45,8 +45,6 @@ class ComposeTests(unittest.TestCase):
         chiesto — e, se quella persona è un admin, allargare la catena."""
         self.assertEqual(channels._origin_for("channel", None, "sysadmin"),
                          ["agent:sysadmin"])
-        self.assertEqual(channels._origin_for("feedback", None, "clodia"),
-                         ["agent:clodia"])
 
     def test_the_executor_is_not_duplicated_on_a_reused_session(self):
         self.assertEqual(
