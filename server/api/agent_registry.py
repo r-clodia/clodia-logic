@@ -608,8 +608,19 @@ def _set_yaml_list(text: str, key: str, items: list[str]) -> str:
         if m and not replaced:
             rest = m.group(1).strip()
             i += 1
-            if rest == "":  # block style: consuma le righe figlie "  - ..."
-                while i < n and re.match(r"^\s+-\s", lines[i]):
+            if rest == "":  # block style: consuma le righe figlie "- ..." / "  - ..."
+                # `\s*` (zero o più), non `\s+`: la convenzione dominante in
+                # questo repo per una lista sotto una chiave è indentazione
+                # ZERO (`tool_permissions:` seguita da `- x` allo stesso
+                # livello della chiave, non `  - x`) — es. ogni `agent.yaml`
+                # generato da `_yaml_list_block` stesso. Con `\s+` la riga
+                # esistente non veniva consumata: restava in coda al file,
+                # DOPO il blocco nuovo appena scritto, con indentazioni
+                # diverse per la stessa lista → YAML non più parsabile.
+                # Misurato il 13 set 2026 su `tomato.fullstack-dev`:
+                # `agents.grant_tool` l'ha corrotto al primo utilizzo reale
+                # (clodia-platform#TBD).
+                while i < n and re.match(r"^\s*-\s", lines[i]):
                     i += 1
             out.append(_yaml_list_block(key, items).rstrip("\n"))
             replaced = True
