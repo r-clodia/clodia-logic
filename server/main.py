@@ -376,9 +376,9 @@ def create_app() -> FastAPI:
         app.include_router(topic_signals.router)
     # Pagina di decisione dei gate via link firmato (no login, token-auth):
     # deve essere raggiungibile senza sessione (arrivi da mail/Telegram).
-    # Montata SEMPRE: serve le proposte di job, ed era dietro il flag dei
-    # workflow solo perché una volta serviva anche quelli. Un link che arriva
-    # per mail e trova 404 perché una feature spenta non c'entra nulla con lui
+    # Montata SEMPRE: serve le proposte di job, ed era dietro il flag di una
+    # feature rimossa solo perché una volta serviva anche quella. Un link che
+    # arriva per mail e trova 404 perché una feature spenta non c'entra con lui
     # è indistinguibile da un link scaduto.
     from .api import gate_public
     app.include_router(gate_public.router)

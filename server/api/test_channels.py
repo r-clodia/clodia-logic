@@ -1435,6 +1435,84 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             channels._maybe_delegate = original_delegate
             channels._channel_message = original_channel_message
 
+    async def test_report_back_turn_does_not_chain_into_another_report_back(self) -> None:
+        """router-notebook R22: una notifica di cortesia non ne genera un'altra.
+
+        Misurato il 13 set 2026 su `tomato-blogging`: senza questo, un turno
+        aperto da `_report_back` che finisce senza taggare nessuno faceva
+        scattare un ALTRO `_report_back` verso il SUO chiamante, che a sua
+        volta... — un rimbalzo di notifiche vuote fermato solo da
+        `_MAX_DELEGATION_HOPS`, non dal fatto che non ci fosse nulla da dire.
+        """
+        class PlainChat:
+            principal = ""
+
+            async def send_user_message(chat_self, _prompt: str) -> str:
+                return "Nessuna novità. In attesa di $davide."
+
+        called: list[tuple] = []
+
+        async def spy_report_back(*args, **_kw):
+            called.append(args)
+
+        original_list = channels.topics_client.list_messages
+        original_report_back = channels._report_back
+        try:
+            channels.topics_client.list_messages = lambda *_a, **_k: []
+            channels._report_back = spy_report_back
+
+            await channels._run_and_post_response(
+                "P0", "ops", "clodia", PlainChat(), "prompt", report_back=True,
+            )
+            # Non basta controllare subito (`_report_back` parte via
+            # `_spawn_bg`): si dà all'event loop il tempo di schedularlo, per
+            # essere sicuri che l'assenza sia perché non è mai stato chiamato,
+            # non perché non ha ancora girato.
+            await asyncio.sleep(0.05)
+
+            self.assertEqual(called, [], "un turno di report-back non deve "
+                                        "innescarne un altro")
+        finally:
+            channels.topics_client.list_messages = original_list
+            channels._report_back = original_report_back
+
+    async def test_a_normal_turn_still_reports_back_to_its_caller(self) -> None:
+        """Il contrario dello stesso controllo: una delega VERA (non una
+        notifica di cortesia) deve continuare a chiamare `_report_back` come
+        sempre — non è un fix a senso unico."""
+        class PlainChat:
+            principal = ""
+
+            async def send_user_message(chat_self, _prompt: str) -> str:
+                return "fatto"
+
+        called: list[tuple] = []
+
+        async def spy_report_back(*args, **_kw):
+            called.append(args)
+
+        original_list = channels.topics_client.list_messages
+        original_report_back = channels._report_back
+        try:
+            channels.topics_client.list_messages = lambda *_a, **_k: []
+            channels._report_back = spy_report_back
+
+            await channels._run_and_post_response(
+                "P0", "ops", "clodia", PlainChat(), "prompt",
+            )  # report_back default: False
+
+            # `_report_back` parte via `_spawn_bg` (fire-and-forget): si dà
+            # all'event loop la chance di eseguirlo prima di controllare.
+            for _ in range(20):
+                if called:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(len(called), 1, "una delega vera deve ancora "
+                                              "riportare l'esito al chiamante")
+        finally:
+            channels.topics_client.list_messages = original_list
+            channels._report_back = original_report_back
+
     async def test_unserved_direct_mention_does_not_fall_through_to_routing(self) -> None:
         agents = {
             "clodia": _a("clodia", "super", "P3"),
