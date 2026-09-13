@@ -334,5 +334,33 @@ class RoutingContextTest(unittest.TestCase):
         self.assertIn("ULTIMO", text)
 
 
+class AgentCollectionsTest(unittest.TestCase):
+    """`*` in `rag_read` è la wildcard dell'asse RAG, non il nome di una
+    collection (clodia-platform#354): il profilo di routing non deve andarla a
+    cercare in pgvector."""
+
+    class _Spec:
+        def __init__(self, rag_read, tool_permissions=()):
+            self.rag_read = list(rag_read)
+            self.tool_permissions = list(tool_permissions)
+
+    def test_wildcard_is_not_queried_as_a_collection_name(self):
+        colls = responder_routing._agent_collections(self._Spec(["*"]))
+
+        self.assertNotIn("*", colls)
+
+    def test_declared_collections_survive_next_to_the_wildcard(self):
+        colls = responder_routing._agent_collections(
+            self._Spec(["*", " studio-legale-kb "]))
+
+        self.assertEqual(colls, ["studio-legale-kb"])
+
+    def test_wildcard_does_not_erase_the_corpus_derived_from_the_tools(self):
+        colls = responder_routing._agent_collections(
+            self._Spec(["*"], tool_permissions=["rag.search"]))
+
+        self.assertEqual(colls, ["eu-normativa"])
+
+
 if __name__ == "__main__":
     unittest.main()

@@ -9,6 +9,36 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.18.0] — 2026-09-12
+- **`sysadmin` non promette più il lifecycle dei run.** Il seed elencava
+  «**Workflow** (`workflows.*`): osservi + lifecycle run» fra i namespace
+  operativi e `/workflows` nella mappa della WebUI: verbi e rotta non esistono
+  dal 9 ago 2026 (engine rimosso, cfr. 7.6.0). Un mandato che l'agente rilegge
+  a ogni turno e non può eseguire è peggio di un mandato mancante — ci prova,
+  poi spiega all'utente perché non riesce. Rimossi anche dalla `description`.
+
+## [7.17.0] — 2026-09-13
+- `messaggero`: il mandato distingue l'ordine di **leggere** dal mandato di
+  **spedire** (clodia-logic#415). Nuova sottosezione «Leggere non è rispondere»
+  dentro «Policy outbound (rigida)», scritta sull'incidente dell'11 set 2026
+  (SEAL-2 `titul-brightnode`): chiesto di leggere un'email che sollecitava
+  conferme contrattuali, l'agente ha risposto al mittente impegnando lo studio,
+  senza che il testo fosse mai stato mostrato né approvato.
+- Tre vincoli, e il terzo è il punto: un ordine di leggere/controllare non
+  autorizza a rispondere o confermare; il testo spedito è `verbatim` e, se lo
+  compone l'agente, va mostrato in chat PRIMA dell'invio; **l'approvazione sulla
+  destinazione non copre il contenuto**. Il `verbatim` esisteva già nel mandato
+  ma solo per Telegram — cioè non sul canale dove l'incidente è avvenuto.
+- Il vincolo sta nel system prompt e non nella `MEMORY.md` dell'istanza (che è
+  per-agente, non verificabile e non sopravvive a un Update), né in una rule:
+  `gated_tools`/`gated_in_channel` del seed sono vuoti per decisione dell'owner
+  del 7 ago 2026 — il presidio è sulla destinazione «finché la catena `origin`
+  non è in enforcement». Sul contenuto, oggi, il testo del mandato è l'unica
+  barriera, e deve stare dove il modello lo legge sempre.
+- Copertura: `server/agents/test_messaggero_read_is_not_reply.py`, con le
+  asserzioni ritagliate sulla sola sezione «Policy outbound» — sul file intero
+  sarebbero state verdi prima del fix.
+
 ## [7.16.0] — 2026-09-12
 - `editorial-pack` rimosso da questo repo: fuso in `business-pack`
   (clodia-packs), che consolida anche il precedente `media-agency-pack` e
