@@ -183,10 +183,13 @@ class MemoryReadonlyTests(unittest.TestCase):
             (mem / "nuovo.md").write_text("x", encoding="utf-8")
         ws.cleanup()
         self.assertFalse(d.exists())
-        # la memory del SEED è intatta (il create appende solo il blocco
-        # feedback-lessons standard) e resta scrivibile
+        # la memory del SEED è intatta e resta scrivibile. Uguaglianza esatta e
+        # non `startswith`: prima il create ci appendeva il blocco
+        # feedback-lessons, quindi il file tornava indietro modificato da una
+        # lettura. Tolto il feedback (#416), creare uno spawn non tocca più
+        # MEMORY.md.
         src = agent_dir / "memory" / "MEMORY.md"
-        self.assertTrue(src.read_text(encoding="utf-8").startswith("ricordi"))
+        self.assertEqual(src.read_text(encoding="utf-8"), "ricordi")
         src.write_text("aggiornata", encoding="utf-8")
 
     def test_default_symlink_rw(self) -> None:

@@ -342,9 +342,13 @@ class EphemeralWorkspace:
         # così l'agente parla i termini del cliente (es. topic → pratica).
         from ..instance_profile import vocabulary_prompt_section
         vocab_section = vocabulary_prompt_section()
-        from .feedback import prompt_section_for_spec
-        lessons_section = prompt_section_for_spec(self.spec)
-        parts = [p.strip() for p in (constitution, prompt_body, vocab_section, lessons_section)
+        # La memoria del seed (`MEMORY.md`: note dell'agente e documenti di
+        # `memory.put_document`). Viveva in `agents/feedback.py` e se n'è andata
+        # da lì col #416 — il nome diceva «lesson dal feedback», il codice
+        # iniettava tutta la memoria.
+        from .seed_memory import prompt_section_for_spec
+        memory_section = prompt_section_for_spec(self.spec)
+        parts = [p.strip() for p in (constitution, prompt_body, vocab_section, memory_section)
                  if p and p.strip()]
         fused = ("\n\n---\n\n".join(parts) + "\n") if parts else ""
         (self.dir / "system-prompt.md").write_text(fused, encoding="utf-8")
