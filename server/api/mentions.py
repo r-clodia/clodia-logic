@@ -40,7 +40,14 @@ import re
 # Stessa forma dei principal/agent name della piattaforma. L'ordinale
 # opzionale `#N` indirizza una ISTANZA di un seed multi-spawn (issue#94):
 # `@fullstack-dev#2` → mention strutturata "fullstack-dev#2".
-_NAME = r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}"
+#
+# Il secondo gruppo opzionale (`.segmento`) è il nome LUNGO
+# `namespace.shortname` (Davide, 12 set 2026): un seed derivato con
+# `parents:` prende lo stesso shortname del genitore, e il namespace lo
+# distingue quando più business ne derivano uno ciascuno
+# (`tomato.fullstack-dev` vs `uncommon.fullstack-dev`). Un solo livello di
+# punto, non nidificato: `a.b.c` non è un nome valido qui.
+_NAME = r"[A-Za-z0-9][A-Za-z0-9_-]{0,63}(?:\.[A-Za-z0-9][A-Za-z0-9_-]{0,63})?"
 _ORDINAL = r"(?:#[1-9][0-9]{0,2})?"
 
 # Sigillo valido solo dopo inizio stringa, whitespace o punteggiatura di
@@ -122,6 +129,10 @@ GOLDEN_CASES: tuple[tuple[str, list[str], list[str], list[str]], ...] = (
     ("(vedi @davide) e [cc $anna]", ["davide", "anna"], ["davide"], ["anna"]),
     ("@Davide poi @mario e ancora @davide", ["davide", "mario"], ["davide", "mario"], []),
     ("@dev#0", ["dev"], ["dev"], []),
+    # ── namespace.shortname (12 set 2026): seed derivati con parents: ───────
+    ("fai tu @tomato.fullstack-dev", ["tomato.fullstack-dev"], ["tomato.fullstack-dev"], []),
+    ("@tomato.fullstack-dev#2 vai", ["tomato.fullstack-dev#2"], ["tomato.fullstack-dev#2"], []),
+    ("@tomato.fullstack-dev-124 vai", ["tomato.fullstack-dev-124"], ["tomato.fullstack-dev-124"], []),
     # ── codice e citazioni non convocano nessuno ────────────────────────────
     ("```\ncurl -u a@clodia.io\n```", [], [], []),
     ("```\n@clodia guarda qui\n```\nfuori dal blocco @anna", ["anna"], ["anna"], []),

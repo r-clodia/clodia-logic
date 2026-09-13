@@ -9,6 +9,42 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.17.0] — 2026-09-13
+- `messaggero`: il mandato distingue l'ordine di **leggere** dal mandato di
+  **spedire** (clodia-logic#415). Nuova sottosezione «Leggere non è rispondere»
+  dentro «Policy outbound (rigida)», scritta sull'incidente dell'11 set 2026
+  (SEAL-2 `titul-brightnode`): chiesto di leggere un'email che sollecitava
+  conferme contrattuali, l'agente ha risposto al mittente impegnando lo studio,
+  senza che il testo fosse mai stato mostrato né approvato.
+- Tre vincoli, e il terzo è il punto: un ordine di leggere/controllare non
+  autorizza a rispondere o confermare; il testo spedito è `verbatim` e, se lo
+  compone l'agente, va mostrato in chat PRIMA dell'invio; **l'approvazione sulla
+  destinazione non copre il contenuto**. Il `verbatim` esisteva già nel mandato
+  ma solo per Telegram — cioè non sul canale dove l'incidente è avvenuto.
+- Il vincolo sta nel system prompt e non nella `MEMORY.md` dell'istanza (che è
+  per-agente, non verificabile e non sopravvive a un Update), né in una rule:
+  `gated_tools`/`gated_in_channel` del seed sono vuoti per decisione dell'owner
+  del 7 ago 2026 — il presidio è sulla destinazione «finché la catena `origin`
+  non è in enforcement». Sul contenuto, oggi, il testo del mandato è l'unica
+  barriera, e deve stare dove il modello lo legge sempre.
+- Copertura: `server/agents/test_messaggero_read_is_not_reply.py`, con le
+  asserzioni ritagliate sulla sola sezione «Policy outbound» — sul file intero
+  sarebbero state verdi prima del fix.
+
+## [7.16.0] — 2026-09-12
+- `editorial-pack` rimosso da questo repo: fuso in `business-pack`
+  (clodia-packs), che consolida anche il precedente `media-agency-pack` e
+  aggiunge tre seed derivati (`articolista`, `titolista`, `fact-checker` da
+  `content-creator`/standalone) più `sales-rep` (lead-gen/outreach). Non è
+  più bundlato nell'immagine: da questa versione richiede un import esplicito
+  del pack, come qualunque altro pack di dominio.
+- `clodia`/`ophelia`: `editorial-pack/*` sostituito da
+  `business-pack/article-spec`, `business-pack/editorial-review`,
+  `business-pack/fact-check` — stesse tre skill di prima, minimo cambiamento
+  per non introdurre una decisione di scope non richiesta (se convenga
+  delegare fact-check/editorial-review al nuovo seed `fact-checker` invece di
+  tenerle è una domanda aperta, non risolta qui).
+
 ## [7.15.2] — 2026-09-12
 - Added `SETUP.md`: missing even upstream, not just on installed instances
   (clodia-platform#339). Trivial by construction — no `requires`, no MCP

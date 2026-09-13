@@ -271,16 +271,17 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
     skills = _dedupe(bucket["skills"])
     rules = _dedupe(bucket["rules"])
     # I datastore dichiarati dal plugin: esposti così il pack si auto-descrive
-    # nella UI accanto a skill/rule/mcp. La sezione `workflows` del manifest non
-    # si legge più — il motore non c'è — e un manifest che la dichiara non è un
-    # errore: resta ignorata, perché rifiutare il pack per una chiave che non
-    # serve più romperebbe i pack di terzi senza guadagnarci nulla.
-    ds_raw = manifest.get("datastores") or []
-    datastores = [
-        {"path": d.get("path"), "purpose": d.get("purpose", ""),
-         "pii": bool(d.get("pii")), "backup": bool(d.get("backup", True))}
-        for d in ds_raw if isinstance(d, dict) and d.get("path")
-    ] if isinstance(ds_raw, list) else []
+    # nella UI accanto a skill/rule/mcp. Si proietta con la stessa sanificazione
+    # dell'import (`_sanitize_datastores`), non con una copia a mano: quella
+    # copia perdeva `name`, `clearance` e `seeds` — cioè proprio l'allowlist a
+    # due assi dei verbi `datastore.read/write` — e la webui non aveva modo di
+    # mostrarli (#341). In più una riga attiva esce ora con la stessa forma di
+    # una archiviata, che da `datastores.py` passa già di qui.
+    # La sezione `workflows` del manifest non si legge più — il motore non c'è —
+    # e un manifest che la dichiara non è un errore: resta ignorata, perché
+    # rifiutare il pack per una chiave che non serve più romperebbe i pack di
+    # terzi senza guadagnarci nulla.
+    datastores = plugin_import._sanitize_datastores(manifest.get("datastores"))
     # Collection RAG dichiarate dal plugin (provisioning al setup via pack_ops):
     # esposte in UI così il pack mostra il corpus base + le risorse.
     rc_raw = manifest.get("rag_collections") or []
