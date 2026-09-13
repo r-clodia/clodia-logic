@@ -1,10 +1,11 @@
-"""Token firmati one-time per la decisione dei gate dei workflow.
+"""Token firmati one-time per la decisione di un gate: oggi le proposte di job.
 
 La notifica (Telegram/email) all'owner porta un link a una pagina SENZA login
 (`/gate/{token}`): il token stesso autorizza la decisione. HMAC con chiave
-per-istanza (mai esposta). Il token codifica run_id + stage + un NONCE che
-deve combaciare con quello salvato sul run → **one-time**: risolto il gate il
-nonce viene azzerato e il link muore. TTL lungo (le decisioni possono attendere).
+per-istanza (mai esposta). Il token codifica l'id della proposta + un NONCE che
+deve combaciare con quello salvato sulla proposta → **one-time**: risolto il
+gate il nonce viene azzerato e il link muore. TTL lungo (le decisioni possono
+attendere).
 """
 from __future__ import annotations
 
@@ -48,15 +49,9 @@ def _b64d(t: str) -> bytes:
     return base64.urlsafe_b64decode(t + "=" * (-len(t) % 4))
 
 
-def make(run_id: str, stage_idx: int, nonce: str, ttl: int = _TTL_DEFAULT) -> str:
-    """Token workflow = b64(payload).sig. payload = {run, stage, nonce, exp}."""
-    return _seal({"run": run_id, "stage": int(stage_idx), "nonce": nonce,
-                  "exp": int(time.time()) + ttl})
-
-
 def make_job(proposal_id: int, nonce: str, ttl: int = _TTL_DEFAULT) -> str:
-    """Token per una PROPOSTA DI JOB. payload = {job, nonce, exp}. Stessa firma
-    del gate workflow; il `kind` è dato dalla chiave `job` nel payload."""
+    """Token per una PROPOSTA DI JOB: b64(payload).sig, con
+    payload = {job, nonce, exp}."""
     return _seal({"job": int(proposal_id), "nonce": nonce,
                   "exp": int(time.time()) + ttl})
 
@@ -85,32 +80,12 @@ def _open(token: str) -> dict | None:
     return payload
 
 
-def verify(token: str) -> dict | None:
-    """Ritorna il payload {run, stage, nonce} se firma valida e non scaduto,
-    altrimenti None. (Il controllo one-time — nonce == run.gate_nonce — lo fa
-    il chiamante contro lo stato del run.)"""
-    payload = _open(token)
-    if not payload or "run" not in payload:
-        return None
-    return {"run": str(payload.get("run")), "stage": int(payload.get("stage", -1)),
-            "nonce": str(payload.get("nonce"))}
-
-
 def verify_job(token: str) -> dict | None:
-    """Ritorna {job, nonce} se token di proposta job valido, altrimenti None."""
+    """Ritorna {job, nonce} se token di proposta job valido, altrimenti None.
+
+    (Il controllo one-time — nonce == proposta.nonce — lo fa il chiamante
+    contro lo stato della proposta.)"""
     payload = _open(token)
     if not payload or "job" not in payload:
         return None
     return {"job": int(payload.get("job")), "nonce": str(payload.get("nonce"))}
-
-
-def token_kind(token: str) -> str | None:
-    """'workflow' | 'job' | None — per il routing in gate_public."""
-    payload = _open(token)
-    if not payload:
-        return None
-    if "job" in payload:
-        return "job"
-    if "run" in payload:
-        return "workflow"
-    return None
