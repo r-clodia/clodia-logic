@@ -4017,6 +4017,22 @@ async def post_channel_message(
             "bootstrap": True,
         }
 
+    # NESSUNA mention → la rilevanza è un canale per un messaggio UMANO (o un
+    # trigger di sistema fidato, cioè lo scheduler), non per la chiacchiera
+    # spontanea di un bot (router-notebook R21, Davide 13 set 2026). Un bot che
+    # posta "ok, resto in attesa" senza taggare nessuno non deve far scattare
+    # nessun altro bot — è il rumore che la voce esiste per chiudere. `kind`
+    # "system" + `trusted_internal` resta escluso da questo gate: è lo
+    # scheduler che innesca deliberatamente un turno routed, non un bot che
+    # chiacchiera fra sé — comportamento invariato per quel percorso.
+    _msg_umano = _from_human({"kind": kind, "author": principal})
+    _msg_sistema_fidato = kind == "system" and trusted_internal
+    if not (_msg_umano or _msg_sistema_fidato):
+        return {"posted": True, "responder": None,
+                "note": ("nessuna mention diretta e il messaggio non è di un "
+                         "umano (né un trigger di sistema fidato): nessun "
+                         "turno per rilevanza (router-notebook R21)")}
+
     # nessun tag → routing per rilevanza, anche multi-intento
     routing: dict = {}
     # La finestra degli N messaggi (#185) e il dialogo di ambiguità (#186) si
@@ -4532,9 +4548,22 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         semantic_message = responder_routing.compose_routing_context(
             recent, config=route_cfg
         ) or (trigger_text or "")
-        responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""),
-                                    trigger_text or "", trace=routing,
-                                    routing_message=semantic_message)
+        _tag = _tagged(trigger_text or "")
+        _autore_eff = _safe_name(trigger_author or principal_hint or "channel")
+        _kind_eff = trigger_kind or _inbound_kind(_autore_eff)
+        if _tag is None and _kind_eff != "human":
+            # Stesso gate di `post_channel_message` (router-notebook R21): senza
+            # mention, la rilevanza risponde solo a un umano. Un trigger `ai`/
+            # `external` (bot, Telegram non firmato) che arriva qui senza tag
+            # non deve svegliare nessuno — a monte (relay, trigger/internal) la
+            # mention è già stata la condizione per arrivare fin qui in teoria,
+            # ma questo resta il punto che lo garantisce anche se un chiamante
+            # futuro se ne dimenticasse.
+            responder = None
+        else:
+            responder = _pick_responder(participants, tier_real, _tag,
+                                        trigger_text or "", trace=routing,
+                                        routing_message=semantic_message)
         if routing.get("chosen"):
             try:
                 payload = {"tier": tier, "name": name, **routing}

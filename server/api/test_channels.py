@@ -1211,6 +1211,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         self._orig_typing = channels._typing
         self._orig_topic_runtime_override = channels.topic_runtime_override
         self._orig_track_routing = channels._track_routing_decision
+        self._orig_registry_get_by_name = channels.registry.get_by_name
 
         class FakeChat:
             principal = ""
@@ -1254,6 +1255,14 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             "topic_tier": tier,
         }
         channels._track_routing_decision = lambda _payload: None
+        # `owner` (router-notebook R21): senza mention la rilevanza gira solo
+        # per un principal umano VERO — `_from_human` lo verifica sul
+        # registry, non solo sul `kind` dichiarato. "owner" qui è la persona
+        # che posta nei test di questa classe, quindi va registrata come tale.
+        _owner_spec = _a("owner", "human", role="superadmin")
+        channels.registry.get_by_name = (
+            lambda n: self.agent if n == "clodia"
+            else _owner_spec if n == "owner" else None)
 
     async def asyncTearDown(self) -> None:
         channels._principal_from_request = self._orig_principal
@@ -1271,6 +1280,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         channels._typing = self._orig_typing
         channels.topic_runtime_override = self._orig_topic_runtime_override
         channels._track_routing_decision = self._orig_track_routing
+        channels.registry.get_by_name = self._orig_registry_get_by_name
 
     async def test_channel_post_queues_responder_without_waiting_for_reply(self) -> None:
         res = await channels.channel_post("P0", "ops", MessageRequest(content="@clodia vai"), object())
