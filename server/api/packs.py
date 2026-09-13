@@ -243,23 +243,61 @@ def _setup_marker_path(name: str):
     return pack_import.PACKS_META_DIR / name / ".setup_pending"
 
 
-def set_setup_pending(name: str, pending: bool) -> None:
-    """Marca/smarca il setup del pack come pendente (marker file nel meta)."""
+def set_setup_pending(name: str, pending: bool) -> bool:
+    """Marca/smarca il setup del pack come pendente (marker file nel meta).
+
+    Ritorna lo stato **osservato** dopo l'operazione — cioè se il marker c'è
+    ancora — non quello richiesto. La differenza è tutta la clodia-platform#347:
+    l'`OSError` era ingoiato in silenzio e il chiamante annunciava comunque il
+    successo, quindi un `unlink` fallito (permessi, meta dir di un altro uid,
+    filesystem in sola lettura) usciva come «setup completato» mentre il flag
+    restava su, e tornava a farsi vedere al primo `packs.show` — senza che da
+    nessuna parte fosse rimasta una riga a dire cos'era andato storto.
+
+    Il fallimento non solleva: marcare il setup non è il lavoro del chiamante
+    (un import non deve abortire perché un marker non si scrive). Ma ora è
+    **detto** — un WARNING con il motivo — e il valore di ritorno lascia a chi
+    chiama la scelta di riportarlo a chi ha chiesto l'operazione.
+    """
     p = _setup_marker_path(name)
+    prima = p.is_file()
     try:
         if pending:
             p.parent.mkdir(parents=True, exist_ok=True)
             p.write_text("", encoding="utf-8")
-        elif p.exists():
+        elif prima:
             p.unlink()
-    except OSError:
-        pass
+    except OSError as e:
+        LOG.warning("marker setup '%s' non %s: %s", name,
+                    "scritto" if pending else "rimosso", e)
+    dopo = p.is_file()
+    if dopo != prima:
+        # Chi ha mosso il marker, e quando. Senza questa riga, una ricomparsa del
+        # flag non ha un colpevole: gli scrittori sono tre (import, update,
+        # setup-done) e nessuno lasciava traccia.
+        LOG.info("marker setup '%s': %s → %s", name,
+                 "pending" if prima else "clear", "pending" if dopo else "clear")
+    return dopo
 
 
 def _setup_pending(name: str, plugin_children: list) -> bool:
     """Setup pendente = il pack ha needs di setup E il marker è presente (setup
     non ancora completato). Marker assente = setup fatto (o non necessario)."""
     return _pack_needs_setup(plugin_children) and _setup_marker_path(name).is_file()
+
+
+def _observed_setup_pending(name: str) -> bool:
+    """Quello che `packs.show(name)` dirà, letto da chi lo calcola davvero.
+
+    Non una seconda implementazione della stessa regola: `_pack_needs_setup` e
+    il marker sono già combinati in `_list_packs`, e questo file porta scritto in
+    due punti «deve restare allineato». Un pack sconosciuto non è un pack: si
+    ricade sul marker nudo, che è tutto ciò che esiste per lui.
+    """
+    for pack in _list_packs():
+        if pack["name"] == name:
+            return bool(pack["setup_pending"])
+    return _setup_marker_path(name).is_file()
 
 
 def _list_packs() -> list[dict[str, Any]]:
@@ -666,11 +704,34 @@ async def mark_pack_setup_done(name: str, request: Request):
     finché l'unico chiamante è un umano admin, e nega a chi ha il grant giusto —
     `sysadmin` ha `packs.*` e riceveva un 403 (clodia-platform#297). Il verbo
     esiste come tool del gateway: `packs.setup_done`.
+
+    La risposta è una LETTURA, non una promessa (clodia-platform#347). Prima
+    tornava `{"setup_pending": False}` letterale: un valore costante, scritto
+    nel codice, che nessuno aveva verificato. Se la rimozione del marker
+    falliva — e `set_setup_pending` ingoiava l'`OSError` — l'agente leggeva
+    «fatto», e il flag si ripresentava al `packs.show` successivo senza che
+    niente, in mezzo, avesse detto di no. Un turno intero speso a cercare un
+    job fantasma che rimetteva il marker, quando il marker non se n'era mai
+    andato.
     """
     await gateway_pdp.require_authz_async(request, "packs.setup_done")
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
-    set_setup_pending(name, False)
+    # Marker via = `_setup_pending` è False per costruzione (è un AND col
+    # marker): il `False` che segue è una conseguenza di una lettura, non una
+    # costante. Solo se il marker è rimasto serve sapere cosa vedrà la UI, e lì
+    # si paga la lettura completa.
+    if set_setup_pending(name, False):
+        pending = _observed_setup_pending(name)
+        meta_dir = _setup_marker_path(name).parent
+        LOG.error("packs.setup_done('%s'): marker ancora presente dopo la "
+                  "rimozione — il flag tornerà su. Controllare permessi e owner "
+                  "di %s", name, meta_dir)
+        return JSONResponse(status_code=500, content={
+            "name": name, "setup_pending": pending, "marker": True,
+            "error": (f"marker '.setup_pending' di '{name}' non rimosso: il "
+                      f"flag continuerà a ripresentarsi. Verificare permessi e "
+                      f"owner di {meta_dir}")})
     return {"name": name, "setup_pending": False}
 
 
