@@ -78,6 +78,9 @@ _STREAM_LIMIT = 32 * 1024 * 1024  # 32MB
 #: Righe di stderr di `opencode serve` tenute in memoria per la diagnosi. Poche:
 #: servono a spiegare l'ULTIMO errore, non a fare da log — quello è il logger.
 _OC_STDERR_TAIL = 40
+#: Idem per il CLI del ramo Claude (clodia-logic#420). Stessa misura: è la
+#: stessa domanda — «cosa ha scritto prima di rompersi» — non un secondo log.
+_CLI_STDERR_TAIL = 40
 
 COLLECT_CHUNK_TIMEOUT = 5 * 60    # 5 min silenzio SDK → stallo reale
 
@@ -1122,6 +1125,54 @@ def _ensure_provider_connected(kind: str) -> None:
         raise ProviderNotConnected(kind, ", ".join(cands))
 
 
+def _stderr_hint_from(tail) -> str:
+    """Le ultime righe di stderr, per accompagnare un errore.
+
+    Una coda che nessuno legge è un secondo log che nessuno guarda: l'hint è il
+    punto in cui quelle righe raggiungono chi vede l'errore. Nata per opencode,
+    serve identica il ramo Claude (clodia-logic#420) — un solo posto in cui è
+    deciso quante righe e quanto lunghe.
+    """
+    righe = list(tail or [])[-8:]
+    return (" · stderr: " + " | ".join(r[:200] for r in righe)) if righe else ""
+
+
+def _cli_stderr_sink(kind: str, chat_id: str, tail):
+    """Callback per `ClaudeAgentOptions.stderr`: instrada lo stderr del CLI.
+
+    Senza questo callback il Python SDK non pipa affatto lo stderr del
+    sottoprocesso (`subprocess_cli.py`: la destinazione è `PIPE` **solo se**
+    `options.stderr` non è None): il CLI eredita il file descriptor del
+    container e le righe di tutte le sessioni di tutti gli agenti finiscono
+    mescolate e anonime. Registrandolo, ogni riga porta il nome dell'agente e
+    la chat — che è tutto ciò che la #420 chiede.
+
+    Livello `INFO`, non `DEBUG` come per opencode: lì la pipe va comunque
+    svuotata (è il logger a essere secondario), qui invece il callback è l'unica
+    ragione per cui la pipe esiste. Scriverle a un livello spento di default le
+    farebbe sparire, cioè toglierebbe informazione rispetto a oggi.
+
+    Cattura `tail` e le due stringhe, mai `self`: una sessione chiusa non deve
+    restare viva appesa alle proprie opzioni, che il recovery conserva.
+    """
+    etichetta = f"{kind}/{chat_id}"
+
+    def sink(line: str) -> None:
+        # Il transport isola già le eccezioni del callback riga per riga, ma la
+        # sessione non deve dipendere dalla cortesia di una libreria di terze
+        # parti: leggere i log non rompe un turno.
+        try:
+            riga = (line or "").rstrip()
+            if not riga:
+                return
+            tail.append(riga)
+            LOG.info("claude[%s] %s", etichetta, riga[:400])
+        except Exception:  # noqa: BLE001
+            pass
+
+    return sink
+
+
 class ChatSession:
     """Una singola chat con un agente (Clodia o Ada): subprocess claude
     + history dedicata sotto la cartella sessions/ del kind."""
@@ -1163,6 +1214,10 @@ class ChatSession:
         from cryptography.hazmat.primitives.asymmetric.x25519 import X25519PrivateKey
         self._transfer_private = X25519PrivateKey.generate()
         self._sandbox_uid: Optional[int] = None  # uid per-spawn allocato (sandbox)
+        # Ultime righe di stderr del CLI di QUESTA sessione (clodia-logic#420).
+        # Il nome non è `_stderr_tail`: quello è di OpenCodeChatSession e un
+        # test statico ne sorveglia l'esclusività.
+        self._cli_stderr_tail: deque = deque(maxlen=_CLI_STDERR_TAIL)
         # Opzioni del client SDK calcolate in start(): riusate dal recovery per
         # ricreare il subprocess dopo un fallimento senza ricalcolare env/spawn.
         self._opts_kwargs: Optional[dict] = None
@@ -1240,6 +1295,10 @@ class ChatSession:
         cwd = str(spawn_dir) if spawn_dir else str(self.cwd)
         opts_kwargs = {"cwd": cwd, "env": child_env, "include_partial_messages": True,
                        "max_buffer_size": _STREAM_LIMIT}
+        # Lo stderr del CLI diventa nostro e porta un'identità: senza questo
+        # callback l'SDK non apre nemmeno la pipe (clodia-logic#420).
+        opts_kwargs["stderr"] = _cli_stderr_sink(self.kind, self.chat_id,
+                                                 self._cli_stderr_tail)
         if spawn_dir is not None:
             sp = spawn_dir / "system-prompt.md"
             if sp.is_file():
@@ -1901,7 +1960,11 @@ class ChatSession:
         ))
 
     async def _publish_error(self, message: str, reason: str = "") -> None:
-        payload = {"chat_id": self.chat_id, "message": message}
+        # Ciò che il CLI ha scritto su stderr prima di rompersi accompagna
+        # l'errore: è la stessa scelta già fatta per opencode, e senza di essa
+        # la coda della #420 sarebbe un secondo log che nessuno apre.
+        payload = {"chat_id": self.chat_id,
+                   "message": message + _stderr_hint_from(self._cli_stderr_tail)}
         if reason:
             payload["reason"] = reason
         await bus.publish(Event(
@@ -2922,8 +2985,7 @@ class OpenCodeChatSession:
 
     def _stderr_hint(self) -> str:
         """Le ultime righe di stderr, per accompagnare un errore."""
-        righe = list(self._stderr_tail)[-8:]
-        return (" · stderr: " + " | ".join(r[:200] for r in righe)) if righe else ""
+        return _stderr_hint_from(self._stderr_tail)
 
     async def _wait_ready(self) -> None:
         import httpx
