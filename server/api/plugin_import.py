@@ -280,7 +280,21 @@ def _sanitize_rag_collections(raw: Any) -> list[dict[str, Any]]:
     default è `SEAL-0`, cioè il gradino più BASSO, e scartare allargherebbe
     l'accesso invece di chiuderlo. Un tier che non si riconosce finisce quindi
     su `SEAL-4` — visibile in UI e correggibile, mai un corpus aperto a tutti
-    per una lettera sbagliata."""
+    per una lettera sbagliata.
+
+    `seeds` (elenco di nomi seed autorizzati) è la member list della collection,
+    stesse regole di `_sanitize_datastores` qui sopra: lista di stringhe non
+    vuote, campo ASSENTE se non dichiarato o malformato, mai un default
+    permissivo. Il tier è l'asse clearance; questo è l'asse membri
+    (clodia-platform#343, 13 set 2026).
+
+    Attenzione a come lo legge il gateway, perché è DIVERSO dai datastore: qui
+    dichiarato = vincolante (restringe: serve `seeds` E il grant del seed), NON
+    dichiarato = regime attuale dei soli grant `rag_read`/`rag_write`. Un
+    fail-closed sull'ASSENZA sarebbe stato fail-closed su tutto: oggi nessun
+    manifest dichiara `seeds:` su una collection, e le collection vive si
+    raggiungono per grant — negarle tutte avrebbe spento il RAG di ogni agente
+    al deploy. Una dichiarazione qui può solo togliere accesso, mai darne."""
     out: list[dict[str, Any]] = []
     if not isinstance(raw, list):
         return out
@@ -311,12 +325,18 @@ def _sanitize_rag_collections(raw: Any) -> list[dict[str, Any]]:
             if dichiarato:
                 LOG.warning("rag_collections: tier '%s' non riconosciuto su '%s' → %s",
                             dichiarato, col["name"], _SEAL_MAX)
-        out.append({
+        entry = {
             "name": str(col["name"]).strip(),
             "description": str(col.get("description") or ""),
             "tier": tier,
             "resources": resources,
-        })
+        }
+        seeds = col.get("seeds")
+        if isinstance(seeds, list):
+            clean_seeds = [str(s).strip() for s in seeds if str(s).strip()]
+            if clean_seeds:
+                entry["seeds"] = clean_seeds
+        out.append(entry)
     return out
 
 
