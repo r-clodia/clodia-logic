@@ -650,7 +650,7 @@ def _topic_title(tier: str, name: str) -> str | None:
 
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
                                  principal: str | None = None, hop: int = 0,
-                                 timing=None) -> str | None:
+                                 timing=None, report_back: bool = False) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
 
     La ChatSession serializza gia' i turni con il suo lock: se lo stesso agent
@@ -663,6 +663,14 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     `timing`: il cronometro delle fasi aperto dal dispatcher (#330). Opzionale e
     tollerato assente, così questa funzione resta chiamabile senza — la misura
     non è una precondizione del turno.
+
+    `report_back` (router-notebook R22): QUESTO turno è stato aperto da
+    `_report_back` (notifica di cortesia «il tuo delegato ha finito»), non da
+    una delega vera. Se True, la reazione del chiamante NON genera un suo
+    proprio `_report_back` a fine turno — una notifica di cortesia non deve
+    poterne generare un'altra. La catena di delega VERA (`@mention` esplicita
+    dentro la risposta, gestita da `_maybe_delegate`) resta intatta: si tronca
+    solo il rimbalzo automatico della notifica su se stessa.
     """
     # PRIMA di qualunque I/O (clodia-platform#330). `channel_typing` è l'unico
     # segnale che dice «il turno è partito», e stava dopo la fetch qui sotto —
@@ -783,7 +791,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             except Exception as e:  # noqa: BLE001
                 LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
         _ultimo = posted_during_turn[-1].get("text") or reply
-        _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
+        if not report_back:
+            _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
         return _ultimo
 
     # `autore` è calcolato prima del turno (serve alle bolle per blocco).
@@ -813,7 +822,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                               origin_chain=getattr(chat, "origin", None))
     except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
         LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
-    _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
+    if not report_back:
+        _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
     return reply
 
 
@@ -876,8 +886,16 @@ async def _report_back(tier: str, name: str, responder: str, chat,
             return
         testo = (f"[turno concluso] @{responder} ha terminato il compito che gli "
                  f"avevi assegnato. Esito riportato:\n\n{(esito or '').strip()[:2000]}")
+        # `report_back=True` (router-notebook R22): QUESTO turno è una notifica
+        # di cortesia, non una nuova delega. Se la reazione del chiamante non
+        # tagga nessuno esplicitamente, il suo proprio `_report_back` non deve
+        # rimbalzare più su — altrimenti due agenti senza nulla da dirsi si
+        # svegliano a vicenda finché non esauriscono `_MAX_DELEGATION_HOPS`
+        # (misurato il 13 set 2026, `tomato-blogging`: ~70 turni di "nessuna
+        # novità" in 7 minuti, fino al limite di sessione del provider).
         await _start_turn(tier, name, tier_real, spec, "channel", testo, "direct",
-                          hop=hop + 1, origin=list(getattr(chat, "origin", None) or []))
+                          hop=hop + 1, origin=list(getattr(chat, "origin", None) or []),
+                          report_back=True)
     except Exception as e:  # noqa: BLE001 — il ritorno non deve rompere il turno
         LOG.warning("ritorno al chiamante non riuscito su %s/%s da %s: %s",
                     tier, name, responder, e)
@@ -2123,7 +2141,8 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                       user_text: str, kind: str, hop: int = 0,
                       ordinal: int | None = None,
                       spawn: str | None = None,
-                      origin: list | None = None) -> bool:
+                      origin: list | None = None,
+                      report_back: bool = False) -> bool:
     """Avvia (fire-and-forget) un turno del responder `spec`.
 
     ALLOCAZIONE DELLA MENZIONE (regola di Davide, 18 ago 2026):
@@ -2325,7 +2344,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     # occupata comunque, quindi tenerla prenotata fino alla fine non toglie nulla.
     _spawn_bg(_run_then_unclaim(chat_id, _run_and_post_response(
         tier, name, label, chat, prompt, principal=principal, hop=hop,
-        timing=timing)))
+        timing=timing, report_back=report_back)))
     return True
 
 
