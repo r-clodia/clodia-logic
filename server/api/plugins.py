@@ -284,8 +284,9 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
     # Collection RAG dichiarate dal plugin (provisioning al setup via pack_ops):
     # esposte in UI così il pack mostra il corpus base + le risorse.
     rc_raw = manifest.get("rag_collections") or []
-    rag_collections = [
-        {
+
+    def _rag_collection(c: dict[str, Any]) -> dict[str, Any]:
+        row = {
             "name": c.get("name"),
             "description": c.get("description", ""),
             "tier": c.get("tier", "SEAL-0"),
@@ -296,6 +297,19 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
                 for r in (c.get("resources") or []) if isinstance(r, dict)
             ],
         }
+        # `seeds` (member list dichiarata, clodia-platform#343) SOLO se c'è: il
+        # campo assente vuol dire «il manifest non si è pronunciato», e un `[]`
+        # messo qui per comodità di serializzazione si leggerebbe a schermo — e
+        # nel gate — come «nessuno è autorizzato». È lo stesso errore che #412
+        # ha corretto per i datastore, all'incontrario: lì il campo si perdeva,
+        # qui si inventerebbe.
+        seeds = c.get("seeds")
+        if isinstance(seeds, list) and seeds:
+            row["seeds"] = [str(s) for s in seeds]
+        return row
+
+    rag_collections = [
+        _rag_collection(c)
         for c in rc_raw if isinstance(c, dict) and c.get("name")
     ] if isinstance(rc_raw, list) else []
     return {
