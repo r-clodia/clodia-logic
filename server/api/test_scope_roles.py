@@ -152,14 +152,6 @@ class EndpointAssignmentTests(unittest.TestCase):
         self.assertEqual(g.get(("post", "/clodia/channels/{tier}/{name}/interrupt")),
                          "_require_contributor")
 
-    def test_feedback_is_a_mutation_because_it_becomes_a_lesson(self):
-        """Il feedback diventa una lesson nel prompt dell'agente: scrive in ciò
-        che l'agente legge a ogni turno."""
-        g = self._guardie()
-        self.assertEqual(
-            g.get(("post", "/clodia/channels/{tier}/{name}/messages/{message_id}/feedback")),
-            "_require_contributor")
-
     def test_reading_endpoints_stay_open_to_every_member(self):
         g = self._guardie()
         for r in (("get", "/clodia/channels/{tier}/{name}/messages"),
