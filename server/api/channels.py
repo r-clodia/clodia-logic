@@ -650,7 +650,7 @@ def _topic_title(tier: str, name: str) -> str | None:
 
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
                                  principal: str | None = None, hop: int = 0,
-                                 timing=None) -> str | None:
+                                 timing=None, report_back: bool = False) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
 
     La ChatSession serializza gia' i turni con il suo lock: se lo stesso agent
@@ -663,6 +663,14 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     `timing`: il cronometro delle fasi aperto dal dispatcher (#330). Opzionale e
     tollerato assente, così questa funzione resta chiamabile senza — la misura
     non è una precondizione del turno.
+
+    `report_back` (router-notebook R22): QUESTO turno è stato aperto da
+    `_report_back` (notifica di cortesia «il tuo delegato ha finito»), non da
+    una delega vera. Se True, la reazione del chiamante NON genera un suo
+    proprio `_report_back` a fine turno — una notifica di cortesia non deve
+    poterne generare un'altra. La catena di delega VERA (`@mention` esplicita
+    dentro la risposta, gestita da `_maybe_delegate`) resta intatta: si tronca
+    solo il rimbalzo automatico della notifica su se stessa.
     """
     # PRIMA di qualunque I/O (clodia-platform#330). `channel_typing` è l'unico
     # segnale che dice «il turno è partito», e stava dopo la fetch qui sotto —
@@ -783,7 +791,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             except Exception as e:  # noqa: BLE001
                 LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
         _ultimo = posted_during_turn[-1].get("text") or reply
-        _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
+        if not report_back:
+            _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
         return _ultimo
 
     # `autore` è calcolato prima del turno (serve alle bolle per blocco).
@@ -813,7 +822,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                               origin_chain=getattr(chat, "origin", None))
     except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
         LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
-    _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
+    if not report_back:
+        _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
     return reply
 
 
@@ -876,8 +886,16 @@ async def _report_back(tier: str, name: str, responder: str, chat,
             return
         testo = (f"[turno concluso] @{responder} ha terminato il compito che gli "
                  f"avevi assegnato. Esito riportato:\n\n{(esito or '').strip()[:2000]}")
+        # `report_back=True` (router-notebook R22): QUESTO turno è una notifica
+        # di cortesia, non una nuova delega. Se la reazione del chiamante non
+        # tagga nessuno esplicitamente, il suo proprio `_report_back` non deve
+        # rimbalzare più su — altrimenti due agenti senza nulla da dirsi si
+        # svegliano a vicenda finché non esauriscono `_MAX_DELEGATION_HOPS`
+        # (misurato il 13 set 2026, `tomato-blogging`: ~70 turni di "nessuna
+        # novità" in 7 minuti, fino al limite di sessione del provider).
         await _start_turn(tier, name, tier_real, spec, "channel", testo, "direct",
-                          hop=hop + 1, origin=list(getattr(chat, "origin", None) or []))
+                          hop=hop + 1, origin=list(getattr(chat, "origin", None) or []),
+                          report_back=True)
     except Exception as e:  # noqa: BLE001 — il ritorno non deve rompere il turno
         LOG.warning("ritorno al chiamante non riuscito su %s/%s da %s: %s",
                     tier, name, responder, e)
@@ -2202,7 +2220,8 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                       user_text: str, kind: str, hop: int = 0,
                       ordinal: int | None = None,
                       spawn: str | None = None,
-                      origin: list | None = None) -> bool:
+                      origin: list | None = None,
+                      report_back: bool = False) -> bool:
     """Avvia (fire-and-forget) un turno del responder `spec`.
 
     ALLOCAZIONE DELLA MENZIONE (regola di Davide, 18 ago 2026):
@@ -2382,7 +2401,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         directive = (f"[Sei lo spawn {spawn_nome} di {spec.name}: i tuoi messaggi "
                      f"appaiono come {spawn_nome}.]\n" + (directive or ""))
     if created:
-        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name, spec.name)
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         base = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),
@@ -2404,7 +2423,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     # occupata comunque, quindi tenerla prenotata fino alla fine non toglie nulla.
     _spawn_bg(_run_then_unclaim(chat_id, _run_and_post_response(
         tier, name, label, chat, prompt, principal=principal, hop=hop,
-        timing=timing)))
+        timing=timing, report_back=report_back)))
     return True
 
 
@@ -3146,6 +3165,12 @@ def _routing_plan(participants: list[str], tier: str, message: str,
             if agent not in eligible:
                 eligible.append(agent)
 
+    #: Chi, in questo piano, è stato convocato PER RIPIEGO e non per dominio —
+    #: cioè va istruito con `[COORDINAMENTO]` e non con `[ROUTING AUTOMATICO]`.
+    #: Senza questo nome il turno parte dicendogli il contrario della verità
+    #: (clodia-platform#192): il `mode` del trace qui resta `multi-intent`, e a
+    #: valle non resta niente da cui distinguere i due casi.
+    coordinamento_per: str | None = None
     if unmatched:
         # Il batch di ciò che non ha matchato va a CHI COORDINA la stanza. Era la
         # stessa domanda del ripiego con una seconda risposta: qui arrivava un
@@ -3156,7 +3181,17 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         coordinator = _pick_responder(participants, tier, None,
                                       coordinator_only=True, trace=coord_trace)
         if coordinator is not None:
+            # Si legge PRIMA dell'extend: dopo, «aveva già roba sua» non è più
+            # distinguibile da «gli è appena arrivato il batch».
+            solo_ripiego = coordinator.name not in grouped
             grouped.setdefault(coordinator.name, (coordinator, []))[1].extend(unmatched)
+            # Se il coordinatore aveva ANCHE intent suoi per rilevanza, resta un
+            # responder normale: `[COORDINAMENTO]` gli direbbe «il router non ha
+            # trovato nessuno di pertinente», che è falso per metà del suo
+            # incarico — e i tre esiti di quella direttiva gli farebbero passare
+            # ad altri anche il lavoro che era davvero suo.
+            if solo_ripiego:
+                coordinamento_per = coordinator.name
             for route in routes:
                 if route["chosen"] is None:
                     route["chosen"] = coordinator.name
@@ -3173,6 +3208,7 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         trace.update({
             "tier": tier,
             "mode": "multi-intent",
+            "coordinator": coordinamento_per,
             "reason": f"{len(intents)} sotto-task instradati",
             "chosen": ", ".join(spec.name for spec, _prompt in plan),
             "chosen_agents": [spec.name for spec, _prompt in plan],
@@ -3403,9 +3439,40 @@ _CHANNEL_CAPS = (
 # prompt-bloat / token-cost DoS da un file gonfiato ad arte.
 _AGENTS_MD_MAX_CHARS = 6000
 
+# Riga indirizzata a un solo agente: `@nome testo...` (fine riga = fine
+# direttiva, non un blocco multi-riga). Stesso nome di `@mention`
+# (`mentions._NAME`, comprensivo di `namespace.shortname` R18) per coerenza —
+# un agente che risponde a `@tomato.officer` nel canale riconosce la stessa
+# forma qui.
+_AGENTS_MD_DIRECTIVE_RE = re.compile(rf"^@(?P<agent>{mentions._NAME})\s+(?P<text>.+)$")
 
-def _topic_agents_md(tier: str, name: str) -> tuple[str | None, bool]:
-    """`(testo, autorevole)` delle istruzioni di scope.
+
+def _filter_agents_md_for_agent(text: str, agent_name: str | None) -> str:
+    """Righe generali → sempre incluse. Righe `@nome ...` → solo per `nome`.
+
+    È un filtro di IGIENE del contesto (non isolare rumore altrui), non un
+    confine di riservatezza: chi ha accesso allo scope può comunque leggere
+    l'AGENTS.md grezzo con `topic.read_file`/`topic.open`. Un `@nome` che non
+    corrisponde a un agente noto non è trattato come direttiva (resta riga
+    generale) — un refuso o una menzione a scopo diverso non deve far
+    sparire la riga per tutti.
+    """
+    if agent_name is None:
+        return text
+    out: list[str] = []
+    for line in text.splitlines():
+        m = _AGENTS_MD_DIRECTIVE_RE.match(line)
+        if not m or registry.get_by_name(m.group("agent")) is None:
+            out.append(line)
+        elif m.group("agent") == agent_name:
+            out.append(m.group("text"))
+        # else: direttiva per un altro agente — non entra nel suo prompt.
+    return "\n".join(out)
+
+
+def _topic_agents_md(tier: str, name: str,
+                     agent_name: str | None = None) -> tuple[str | None, bool]:
+    """`(testo, autorevole)` delle istruzioni di scope, filtrate per `agent_name`.
 
     Il secondo valore decide come il testo entra nel prompt, e la distinzione è
     sostanziale, non cosmetica:
@@ -3422,12 +3489,20 @@ def _topic_agents_md(tier: str, name: str) -> tuple[str | None, bool]:
     Finché la migrazione non è passata su tutti i topic i due casi coesistono, e
     trattarli allo stesso modo significherebbe sbagliare su uno dei due: o si
     dichiara fidato ciò che non lo è, o si ignora un'istruzione legittima.
+
+    `agent_name` filtra le righe `@nome ...` non indirizzate a chi legge (vedi
+    `_filter_agents_md_for_agent`) PRIMA del troncamento: un blocco per un
+    altro agente non deve consumare budget di caratteri a scapito del testo
+    generale.
     """
     try:
         text, _version, authoritative = topics_client.get_agents_md(tier, name)
     except topics_client.TopicsClientError:
         return None, False
     text = (text or "").strip()
+    if not text:
+        return None, False
+    text = _filter_agents_md_for_agent(text, agent_name).strip()
     if not text:
         return None, False
     if len(text) > _AGENTS_MD_MAX_CHARS:
@@ -4057,6 +4132,22 @@ async def post_channel_message(
             "bootstrap": True,
         }
 
+    # NESSUNA mention → la rilevanza è un canale per un messaggio UMANO (o un
+    # trigger di sistema fidato, cioè lo scheduler), non per la chiacchiera
+    # spontanea di un bot (router-notebook R21, Davide 13 set 2026). Un bot che
+    # posta "ok, resto in attesa" senza taggare nessuno non deve far scattare
+    # nessun altro bot — è il rumore che la voce esiste per chiudere. `kind`
+    # "system" + `trusted_internal` resta escluso da questo gate: è lo
+    # scheduler che innesca deliberatamente un turno routed, non un bot che
+    # chiacchiera fra sé — comportamento invariato per quel percorso.
+    _msg_umano = _from_human({"kind": kind, "author": principal})
+    _msg_sistema_fidato = kind == "system" and trusted_internal
+    if not (_msg_umano or _msg_sistema_fidato):
+        return {"posted": True, "responder": None,
+                "note": ("nessuna mention diretta e il messaggio non è di un "
+                         "umano (né un trigger di sistema fidato): nessun "
+                         "turno per rilevanza (router-notebook R21)")}
+
     # nessun tag → routing per rilevanza, anche multi-intento
     routing: dict = {}
     # La finestra degli N messaggi (#185) e il dialogo di ambiguità (#186) si
@@ -4133,12 +4224,25 @@ async def post_channel_message(
     # arrivo (`human`/`ai`), e riusarlo per il tipo del TURNO metterebbe due cose
     # diverse sotto la stessa parola, in un punto dove sbagliarle si vede solo in
     # produzione.
-    turn_kind = "coordinamento" if routing.get("mode") == "coordinator" else (
+    #
+    # Il kind è PER RISPONDITORE, non per piano (clodia-platform#192). Il
+    # coordinatore si raggiunge da due strade: il ripiego semplice, che marca
+    # tutto il trace con `mode: "coordinator"`, e il batch multi-intento, dove
+    # gli altri responder del piano hanno matchato per davvero e lui no. Con un
+    # solo kind per piano la seconda strada consegnava `[ROUTING AUTOMATICO] …
+    # perché attinente al tuo dominio` proprio a chi è lì perché NIENTE ha
+    # matchato — e al segretario, il cui mandato rimanda al capitano quando è
+    # fuori dominio, faceva rimandare alla stanza il suo stesso coordinatore.
+    base_kind = "coordinamento" if routing.get("mode") == "coordinator" else (
         "routed" if routed else "plain")
+    coordinamento_per = routing.get("coordinator")
     for responder, assigned in plan:
         if skip_if_busy and _responder_busy(tier, name, responder.name):
             skipped.append(responder.name)
             continue
+        turn_kind = ("coordinamento"
+                     if coordinamento_per and responder.name == coordinamento_per
+                     else base_kind)
         if await _start_turn(
             tier, name, tier_real, responder, principal, assigned, turn_kind,
         ):
@@ -4572,9 +4676,22 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         semantic_message = responder_routing.compose_routing_context(
             recent, config=route_cfg
         ) or (trigger_text or "")
-        responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""),
-                                    trigger_text or "", trace=routing,
-                                    routing_message=semantic_message)
+        _tag = _tagged(trigger_text or "")
+        _autore_eff = _safe_name(trigger_author or principal_hint or "channel")
+        _kind_eff = trigger_kind or _inbound_kind(_autore_eff)
+        if _tag is None and _kind_eff != "human":
+            # Stesso gate di `post_channel_message` (router-notebook R21): senza
+            # mention, la rilevanza risponde solo a un umano. Un trigger `ai`/
+            # `external` (bot, Telegram non firmato) che arriva qui senza tag
+            # non deve svegliare nessuno — a monte (relay, trigger/internal) la
+            # mention è già stata la condizione per arrivare fin qui in teoria,
+            # ma questo resta il punto che lo garantisce anche se un chiamante
+            # futuro se ne dimenticasse.
+            responder = None
+        else:
+            responder = _pick_responder(participants, tier_real, _tag,
+                                        trigger_text or "", trace=routing,
+                                        routing_message=semantic_message)
         if routing.get("chosen"):
             try:
                 payload = {"tier": tier, "name": name, **routing}
@@ -4618,7 +4735,7 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     timing.mark("session_ready")
     chat.principal = principal_hint or "channel"  # proxy: nessuna autorità
     if created:
-        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name, responder.name)
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         prompt = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),

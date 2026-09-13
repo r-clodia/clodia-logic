@@ -778,6 +778,50 @@ class ResponderTests(unittest.TestCase):
         self.assertLessEqual(len(out), channels._AGENTS_MD_MAX_CHARS + len("\n[…troncato]"))
         self.assertTrue(out.endswith("[…troncato]"))
 
+    def test_agents_md_directive_line_reaches_only_its_agent(self) -> None:
+        # Proposta di Davide (13 set 2026): righe generali per tutti, righe
+        # `@nome ...` solo per quell'agente — igiene del contesto, non un
+        # confine di riservatezza (v. docstring di `_filter_agents_md_for_agent`).
+        text = ("Regola generale per tutti.\n"
+                "@worker Usa il tono informale con questo cliente.\n"
+                "@accountant Chiudi il mese entro il 5.\n"
+                "Altra regola generale.")
+        out = channels._filter_agents_md_for_agent(text, "worker")
+        self.assertIn("Regola generale per tutti.", out)
+        self.assertIn("Usa il tono informale con questo cliente.", out)
+        self.assertIn("Altra regola generale.", out)
+        self.assertNotIn("accountant", out)
+        self.assertNotIn("Chiudi il mese entro il 5.", out)
+
+    def test_agents_md_directive_for_unknown_agent_stays_general(self) -> None:
+        # `@nome` che non risolve a un agente noto (refuso, o non è una
+        # direttiva) non deve far sparire la riga per nessuno.
+        text = "@non-esiste Fai qualcosa."
+        out = channels._filter_agents_md_for_agent(text, "worker")
+        self.assertIn("@non-esiste Fai qualcosa.", out)
+
+    def test_agents_md_no_agent_name_skips_filtering(self) -> None:
+        # `agent_name=None` (retrocompatibilità: chiamanti che non lo passano
+        # ancora) → nessun filtro, testo invariato.
+        text = "@worker Solo per te.\nGenerale."
+        out = channels._filter_agents_md_for_agent(text, None)
+        self.assertEqual(out, text)
+
+    def test_topic_agents_md_filters_before_truncating(self) -> None:
+        # Il filtro corre PRIMA del troncamento: una direttiva per un altro
+        # agente non deve consumare budget di caratteri a scapito del testo
+        # generale di chi legge.
+        text = ("Generale.\n@accountant " + ("x" * (channels._AGENTS_MD_MAX_CHARS))
+                + "\nAltra riga generale.")
+        with patch.object(channels.topics_client, "get_agents_md",
+                          return_value=(text, 1, True)):
+            out, autorevole = channels._topic_agents_md("SEAL-1", "ops", "worker")
+        self.assertTrue(autorevole)
+        self.assertIn("Generale.", out)
+        self.assertIn("Altra riga generale.", out)
+        self.assertNotIn("x", out)
+        self.assertNotIn("[…troncato]", out)
+
     def test_channel_meta_defaults_to_clodia(self) -> None:
         meta = channels._channel_meta({"title": "Aiuto"}, "owner", "support")
         self.assertEqual(meta["contact_agent"], "clodia")
@@ -1167,6 +1211,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         self._orig_typing = channels._typing
         self._orig_topic_runtime_override = channels.topic_runtime_override
         self._orig_track_routing = channels._track_routing_decision
+        self._orig_registry_get_by_name = channels.registry.get_by_name
 
         class FakeChat:
             principal = ""
@@ -1210,6 +1255,14 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             "topic_tier": tier,
         }
         channels._track_routing_decision = lambda _payload: None
+        # `owner` (router-notebook R21): senza mention la rilevanza gira solo
+        # per un principal umano VERO — `_from_human` lo verifica sul
+        # registry, non solo sul `kind` dichiarato. "owner" qui è la persona
+        # che posta nei test di questa classe, quindi va registrata come tale.
+        _owner_spec = _a("owner", "human", role="superadmin")
+        channels.registry.get_by_name = (
+            lambda n: self.agent if n == "clodia"
+            else _owner_spec if n == "owner" else None)
 
     async def asyncTearDown(self) -> None:
         channels._principal_from_request = self._orig_principal
@@ -1227,6 +1280,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         channels._typing = self._orig_typing
         channels.topic_runtime_override = self._orig_topic_runtime_override
         channels._track_routing_decision = self._orig_track_routing
+        channels.registry.get_by_name = self._orig_registry_get_by_name
 
     async def test_channel_post_queues_responder_without_waiting_for_reply(self) -> None:
         res = await channels.channel_post("P0", "ops", MessageRequest(content="@clodia vai"), object())
@@ -1380,6 +1434,84 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
             channels.topics_client.list_messages = original_list
             channels._maybe_delegate = original_delegate
             channels._channel_message = original_channel_message
+
+    async def test_report_back_turn_does_not_chain_into_another_report_back(self) -> None:
+        """router-notebook R22: una notifica di cortesia non ne genera un'altra.
+
+        Misurato il 13 set 2026 su `tomato-blogging`: senza questo, un turno
+        aperto da `_report_back` che finisce senza taggare nessuno faceva
+        scattare un ALTRO `_report_back` verso il SUO chiamante, che a sua
+        volta... — un rimbalzo di notifiche vuote fermato solo da
+        `_MAX_DELEGATION_HOPS`, non dal fatto che non ci fosse nulla da dire.
+        """
+        class PlainChat:
+            principal = ""
+
+            async def send_user_message(chat_self, _prompt: str) -> str:
+                return "Nessuna novità. In attesa di $davide."
+
+        called: list[tuple] = []
+
+        async def spy_report_back(*args, **_kw):
+            called.append(args)
+
+        original_list = channels.topics_client.list_messages
+        original_report_back = channels._report_back
+        try:
+            channels.topics_client.list_messages = lambda *_a, **_k: []
+            channels._report_back = spy_report_back
+
+            await channels._run_and_post_response(
+                "P0", "ops", "clodia", PlainChat(), "prompt", report_back=True,
+            )
+            # Non basta controllare subito (`_report_back` parte via
+            # `_spawn_bg`): si dà all'event loop il tempo di schedularlo, per
+            # essere sicuri che l'assenza sia perché non è mai stato chiamato,
+            # non perché non ha ancora girato.
+            await asyncio.sleep(0.05)
+
+            self.assertEqual(called, [], "un turno di report-back non deve "
+                                        "innescarne un altro")
+        finally:
+            channels.topics_client.list_messages = original_list
+            channels._report_back = original_report_back
+
+    async def test_a_normal_turn_still_reports_back_to_its_caller(self) -> None:
+        """Il contrario dello stesso controllo: una delega VERA (non una
+        notifica di cortesia) deve continuare a chiamare `_report_back` come
+        sempre — non è un fix a senso unico."""
+        class PlainChat:
+            principal = ""
+
+            async def send_user_message(chat_self, _prompt: str) -> str:
+                return "fatto"
+
+        called: list[tuple] = []
+
+        async def spy_report_back(*args, **_kw):
+            called.append(args)
+
+        original_list = channels.topics_client.list_messages
+        original_report_back = channels._report_back
+        try:
+            channels.topics_client.list_messages = lambda *_a, **_k: []
+            channels._report_back = spy_report_back
+
+            await channels._run_and_post_response(
+                "P0", "ops", "clodia", PlainChat(), "prompt",
+            )  # report_back default: False
+
+            # `_report_back` parte via `_spawn_bg` (fire-and-forget): si dà
+            # all'event loop la chance di eseguirlo prima di controllare.
+            for _ in range(20):
+                if called:
+                    break
+                await asyncio.sleep(0.01)
+            self.assertEqual(len(called), 1, "una delega vera deve ancora "
+                                              "riportare l'esito al chiamante")
+        finally:
+            channels.topics_client.list_messages = original_list
+            channels._report_back = original_report_back
 
     async def test_unserved_direct_mention_does_not_fall_through_to_routing(self) -> None:
         agents = {
