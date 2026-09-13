@@ -650,7 +650,7 @@ def _topic_title(tier: str, name: str) -> str | None:
 
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
                                  principal: str | None = None, hop: int = 0,
-                                 timing=None) -> str | None:
+                                 timing=None, report_back: bool = False) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
 
     La ChatSession serializza gia' i turni con il suo lock: se lo stesso agent
@@ -663,6 +663,14 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     `timing`: il cronometro delle fasi aperto dal dispatcher (#330). Opzionale e
     tollerato assente, così questa funzione resta chiamabile senza — la misura
     non è una precondizione del turno.
+
+    `report_back` (router-notebook R22): QUESTO turno è stato aperto da
+    `_report_back` (notifica di cortesia «il tuo delegato ha finito»), non da
+    una delega vera. Se True, la reazione del chiamante NON genera un suo
+    proprio `_report_back` a fine turno — una notifica di cortesia non deve
+    poterne generare un'altra. La catena di delega VERA (`@mention` esplicita
+    dentro la risposta, gestita da `_maybe_delegate`) resta intatta: si tronca
+    solo il rimbalzo automatico della notifica su se stessa.
     """
     # PRIMA di qualunque I/O (clodia-platform#330). `channel_typing` è l'unico
     # segnale che dice «il turno è partito», e stava dopo la fetch qui sotto —
@@ -783,7 +791,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             except Exception as e:  # noqa: BLE001
                 LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
         _ultimo = posted_during_turn[-1].get("text") or reply
-        _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
+        if not report_back:
+            _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
         return _ultimo
 
     # `autore` è calcolato prima del turno (serve alle bolle per blocco).
@@ -813,7 +822,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                               origin_chain=getattr(chat, "origin", None))
     except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
         LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
-    _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
+    if not report_back:
+        _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
     return reply
 
 
@@ -876,8 +886,16 @@ async def _report_back(tier: str, name: str, responder: str, chat,
             return
         testo = (f"[turno concluso] @{responder} ha terminato il compito che gli "
                  f"avevi assegnato. Esito riportato:\n\n{(esito or '').strip()[:2000]}")
+        # `report_back=True` (router-notebook R22): QUESTO turno è una notifica
+        # di cortesia, non una nuova delega. Se la reazione del chiamante non
+        # tagga nessuno esplicitamente, il suo proprio `_report_back` non deve
+        # rimbalzare più su — altrimenti due agenti senza nulla da dirsi si
+        # svegliano a vicenda finché non esauriscono `_MAX_DELEGATION_HOPS`
+        # (misurato il 13 set 2026, `tomato-blogging`: ~70 turni di "nessuna
+        # novità" in 7 minuti, fino al limite di sessione del provider).
         await _start_turn(tier, name, tier_real, spec, "channel", testo, "direct",
-                          hop=hop + 1, origin=list(getattr(chat, "origin", None) or []))
+                          hop=hop + 1, origin=list(getattr(chat, "origin", None) or []),
+                          report_back=True)
     except Exception as e:  # noqa: BLE001 — il ritorno non deve rompere il turno
         LOG.warning("ritorno al chiamante non riuscito su %s/%s da %s: %s",
                     tier, name, responder, e)
@@ -1467,6 +1485,26 @@ def _effective_clearance(spec) -> str:
     return _norm(ps) if ps else _norm(getattr(spec, "clearance", None))
 
 
+def _topic_runtime(spec, tier: str | None) -> dict:
+    """Il runtime override di QUESTA stanza, letto UNA volta. `{}` se non si
+    risolve: un provider non connesso non è un guasto — è un agente che in
+    questa stanza non può lavorare.
+
+    Esiste perché la promessa qui sotto fosse vera e non solo scritta: provider
+    e modello escono dalla stessa scelta, ma `_topic_runtime_field` risolveva da
+    capo a ogni campo, e due risoluzioni indipendenti sono il posto in cui i due
+    valori possono divergere — la lezione di clodia-platform#315, applicata alla
+    funzione che la enunciava.
+    """
+    try:
+        return topic_runtime_override(spec.name, tier) or {}
+    except ProviderNotConnected:
+        return {}
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("runtime di stanza non risolto per %s/%s: %s", spec.name, tier, e)
+        return {}
+
+
 def _topic_runtime_field(spec, tier: str | None, field: str) -> str | None:
     """Un campo del runtime override di QUESTA stanza, o None se non si risolve.
 
@@ -1475,13 +1513,7 @@ def _topic_runtime_field(spec, tier: str | None, field: str) -> str | None:
     provider), quindi si leggono dalla stessa risposta e con lo stesso
     trattamento dell'errore: un provider non connesso non è un guasto — è un
     agente che in questa stanza non può lavorare, e lo dice `None`."""
-    try:
-        return topic_runtime_override(spec.name, tier).get(field)
-    except ProviderNotConnected:
-        return None
-    except Exception as e:  # noqa: BLE001
-        LOG.warning("topic %s non risolto per %s/%s: %s", field, spec.name, tier, e)
-        return None
+    return _topic_runtime(spec, tier).get(field)
 
 
 def _topic_provider(spec, tier: str | None) -> str | None:
@@ -2109,7 +2141,8 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                       user_text: str, kind: str, hop: int = 0,
                       ordinal: int | None = None,
                       spawn: str | None = None,
-                      origin: list | None = None) -> bool:
+                      origin: list | None = None,
+                      report_back: bool = False) -> bool:
     """Avvia (fire-and-forget) un turno del responder `spec`.
 
     ALLOCAZIONE DELLA MENZIONE (regola di Davide, 18 ago 2026):
@@ -2289,7 +2322,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         directive = (f"[Sei lo spawn {spawn_nome} di {spec.name}: i tuoi messaggi "
                      f"appaiono come {spawn_nome}.]\n" + (directive or ""))
     if created:
-        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name, spec.name)
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         base = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),
@@ -2311,7 +2344,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     # occupata comunque, quindi tenerla prenotata fino alla fine non toglie nulla.
     _spawn_bg(_run_then_unclaim(chat_id, _run_and_post_response(
         tier, name, label, chat, prompt, principal=principal, hop=hop,
-        timing=timing)))
+        timing=timing, report_back=report_back)))
     return True
 
 
@@ -2322,18 +2355,34 @@ async def _run_then_unclaim(chat_id: str, coro):
         _claimed.discard(chat_id)
 
 
-def _channel_meta(body: dict, principal: str, name: str) -> dict:
+def _channel_meta(body: dict, principal: str, name: str, tier: str | None = None) -> dict:
     # Default del contact agent per EDIZIONE (topics_defaults.contact_agent):
     # nelle edizioni verticali il referente delle pratiche è l'agente di
     # dominio (es. commercialista), non clodia (feedback Davide 7 lug).
     from .. import instance_profile
     _edition_ca = (instance_profile.load().topics_defaults or {}).get("contact_agent") or "clodia"
     contact_agent = (body.get("contact_agent") or _edition_ca).strip().lower()
+    # Terzo ingresso dell'appartenenza, e il meno evidente: qui il contact agent
+    # si SEDEVA senza che nessuno guardasse il tier (clodia-platform#190). Chi
+    # non è idoneo non entra — meglio una stanza senza referente, che
+    # `_select_topic_intro_agent` prova comunque a colmare col fallback, di un
+    # membro che quella stanza non può trattare.
+    # Un contact agent SCONOSCIUTO al registro resta seduto come prima: qui si
+    # misura l'idoneità di chi esiste, non si aggiunge un secondo controllo di
+    # esistenza che oggi non c'è. E si applica la regola delle azioni
+    # automatiche: non si siede solo chi si SA essere sotto il tier.
+    _ca_spec = registry.get_by_name(contact_agent)
+    seduti = [principal]
+    if _ca_spec is None or not _declared_below_tier(_ca_spec, tier):
+        seduti.append(contact_agent)
+    else:
+        LOG.warning("contact agent %s non idoneo a %s: non entra fra i "
+                    "partecipanti di %s", contact_agent, _norm(tier), name)
     meta = {
         "title": (body.get("title") or name),
         "type": body.get("type") or "progetto",
         "owner": principal,
-        "participants": list(dict.fromkeys([principal, contact_agent])),
+        "participants": list(dict.fromkeys(seduti)),
         "contact_agent": contact_agent,
     }
     # Storage backend dei FILE (scelto in UI): local (default) o drive.
@@ -2439,20 +2488,195 @@ def _provider_seal_ok(spec, tier: str | None) -> bool:
     return _CLEAR.get(_norm(ps), 0) >= _CLEAR.get(_norm(tier), 0)
 
 
+def _declared_seal_ok(spec, tier: str | None) -> bool:
+    """True se lo stack DICHIARATO dall'agent regge il tier — l'idoneità
+    DUREVOLE, cioè il titolo a stare nella stanza (clodia-platform#190).
+
+    Non è `_provider_seal_ok` con altre parole: quella guarda il provider
+    EFFETTIVO (collegato, non in pausa) e risponde «può rispondere adesso?».
+    Questa ignora lo stato e risponde «è un membro?». Un `pause_provider` non
+    deve poter cambiare la composizione di un canale: se le due domande
+    condividessero il predicato, lo cambierebbe — è il sintomo dell'11 ago 2026,
+    la stanza che sembra vuota."""
+    from .providers import declares_provider_for_tier
+    return declares_provider_for_tier(
+        getattr(spec, "providers", None), getattr(spec, "provider", None),
+        getattr(spec, "agent_sdk", None), tier, getattr(spec, "model", None),
+        getattr(spec, "provider_models", None))
+
+
+def _declared_seal(spec) -> str | None:
+    """La SEAL più alta che lo stack dichiarato dell'agent raggiunge, per DIRE la
+    ragione di un rifiuto invece di limitarsi a rifiutare."""
+    from .providers import declared_seal_ceiling
+    return declared_seal_ceiling(
+        getattr(spec, "providers", None), getattr(spec, "provider", None),
+        getattr(spec, "agent_sdk", None), getattr(spec, "model", None),
+        getattr(spec, "provider_models", None))
+
+
+def _member_eligible(spec, tier: str | None) -> bool:
+    """Titolo di APPARTENENZA a un topic di questo tier.
+
+    Due assi, perché le due identità sono fatte in modo diverso: un bot tratta i
+    dati attraverso un provider (conta la SEAL dello stack dichiarato), una
+    persona no (conta la sua clearance, lo stesso asse di `runtime_inspect_topic`).
+
+    I `proxy` restano fuori dal cancello, ed è deliberato: non sono eseguiti e
+    non portano clearance (`clearance` è `None` per disegno, cfr. AgentSpec), per
+    cui misurarli su quell'asse li escluderebbe da ogni stanza sopra SEAL-0 —
+    un cambio di policy che #190 non chiede."""
+    if not spec:
+        return False
+    tipo = getattr(spec, "type", "")
+    if tipo == "human":
+        return _can_access(getattr(spec, "clearance", None), tier)
+    if tipo != "bot":
+        return True
+    return _declared_seal_ok(spec, tier)
+
+
+def _declared_below_tier(spec, tier: str | None) -> bool:
+    """True solo quando si SA che lo stack dichiarato del bot resta sotto il tier.
+
+    Distinzione che conta per le azioni AUTOMATICHE (espellere un partecipante,
+    non far sedere il contact agent alla creazione): «non ho trovato un provider
+    adeguato» e «ho trovato il tetto ed è troppo basso» non sono la stessa cosa.
+    Un seed con un modello fuori dai pattern del catalogo non ha candidati noti —
+    è un difetto di configurazione, non la prova che quell'agente non regga il
+    tier — e su quella incertezza non si sfratta nessuno.
+
+    L'invito ESPLICITO resta invece severo (`_assert_member_eligible`): lì c'è
+    una persona che riceve il messaggio d'errore e può correggere il seed."""
+    if getattr(spec, "type", "") != "bot":
+        return False
+    if _declared_seal_ok(spec, tier):
+        return False
+    return _declared_seal(spec) is not None
+
+
+def _ineligibility_reason(spec, tier: str | None) -> str:
+    """Perché quell'agente non può stare in questa stanza, in una riga leggibile
+    da chi la legge nel canale o nel messaggio d'errore dell'API."""
+    nome = getattr(spec, "name", "?")
+    if getattr(spec, "type", "") != "bot":
+        return (f"la clearance di {nome} ({_norm(getattr(spec, 'clearance', None)) or 'ignota'}) "
+                f"non arriva a {_norm(tier)}")
+    massimo = _declared_seal(spec) or "nessun provider noto"
+    return (f"lo stack dichiarato di @{nome} non arriva a {_norm(tier)} "
+            f"(massimo dichiarato: {massimo})")
+
+
+def _assert_member_eligible(spec, tier: str | None) -> None:
+    """Cancello unico dell'AGGIUNTA a un canale (clodia-platform#190).
+
+    Una funzione sola per tutti gli ingressi — invito dell'owner dalla webui,
+    aggiunta di un agente via gateway, contact agent alla creazione del topic —
+    perché una regola di appartenenza scritta in tre punti è una regola che fra
+    tre mesi vale in due. 409 e non 403: non è «non ti è permesso», è «lo stato
+    di quell'agente è in conflitto con questa stanza», e il messaggio dice quale
+    stato, così chi lo legge sa cosa cambiare."""
+    if _member_eligible(spec, tier):
+        return
+    raise HTTPException(409, f"idoneità: {_ineligibility_reason(spec, tier)}. "
+                             f"Non può entrare in un canale {_norm(tier)}.")
+
+
+def _announce_membership_removal(tier: str, name: str, agent: str, motivo: str) -> None:
+    """La riga nella stanza che dice CHI esce e PERCHÉ.
+
+    Stesso pattern di `_announce_failure`: un evento che cambia la stanza si
+    scrive nella stanza, sempre. Una rimozione silenziosa è indistinguibile da
+    un agente che tace — cioè esattamente l'ambiguità che #190 chiude.
+
+    Best-effort dal principio alla fine: annunciare una rimozione non deve poter
+    rompere l'apertura del canale. Il messaggio persiste sul gateway, che lo
+    annuncia già sul bus (cfr. la nota #219 in `_channel_message`): qui non
+    serve una seconda pubblicazione, e non ce ne sarebbe modo — questo cammino
+    è sincrono."""
+    try:
+        topics_client.post_message(
+            tier, name, "system",
+            f"👥 **@{agent}** non è più partecipante di questo canale: {motivo}.\n\n"
+            f"Non è una pausa: è l'idoneità DICHIARATA dal seed a non reggere il "
+            f"tier della stanza. Torna partecipante quando il suo stack dichiara "
+            f"un provider adeguato — e può essere reinvitato allora.",
+            kind="system")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("rimozione di %s da %s/%s non annunciata: %s", agent, tier, name, e)
+
+
+def reconcile_membership(tier: str, name: str, meta: dict) -> list[str]:
+    """Fa uscire dai partecipanti i BOT che non reggono più il tier della stanza.
+    Ritorna i nomi rimossi; muta `meta["participants"]` di conseguenza.
+
+    È l'unico punto di questo diff che TOGLIE qualcosa, e per questo poggia su
+    `_declared_seal_ok`, che non dipende né da connessione né da pausa: un
+    provider giù non è una perdita di titolo, quindi qui non rimuove nessuno. La
+    perdita durevole è un'altra cosa — il seed cambia stack, o il catalogo
+    declassa un provider — e allora sì, si esce, con la riga che lo dice.
+
+    Umani e proxy NON vengono mai rimossi in automatico: la clearance di una
+    persona la cambia una persona, e sfrattarla senza che nessuno l'abbia
+    deciso sarebbe autorità silenziosa su un utente. L'owner non si tocca mai:
+    il canale è suo.
+    """
+    tier_real = meta.get("tier", tier)
+    owner = meta.get("owner")
+    rimossi: list[str] = []
+    for agent in list(meta.get("participants") or []):
+        if agent == owner:
+            continue
+        spec = registry.get_by_name(agent)
+        if spec is None or not _declared_below_tier(spec, tier_real):
+            continue
+        motivo = _ineligibility_reason(spec, tier_real)
+        try:
+            topics_client.set_participant(tier, name, agent, add=False)
+        except Exception as e:  # noqa: BLE001 — un gateway muto non è un'espulsione
+            LOG.warning("riconciliazione di %s/%s: %s non rimosso (%s)",
+                        tier, name, agent, e)
+            continue
+        # La forma di `participants` (lista legacy o mappa dei ruoli) è quella
+        # che il chiamante ha già in mano: si toglie la voce, non si sostituisce
+        # la struttura.
+        parti = meta.get("participants")
+        if isinstance(parti, dict):
+            parti.pop(agent, None)
+        elif isinstance(parti, list):
+            meta["participants"] = [p for p in parti if p != agent]
+        rimossi.append(agent)
+        LOG.warning("idoneità: %s rimosso da %s/%s — %s", agent, tier, name, motivo)
+        _announce_membership_removal(tier, name, agent, motivo)
+    return rimossi
+
+
 def _eligibility(spec, tier: str | None) -> dict:
-    """Idoneità di un AeI al tier del topic, per la UI.
-    - umani: sempre idonei (non trattano dati via provider), nessun provider.
-    - bot: idoneo SOLO se la SEAL EFFETTIVA (= quella del provider) ≥ tier.
-      Nessuno tratta dati SEAL-3+ su un provider SEAL-2-. Stessa regola per tutti.
-    `provider` è quello EFFETTIVO in questa stanza (clodia-platform#310, A14):
-    lo stesso agente può girare su provider diversi da un topic all'altro (A13).
-    `model` è il modello ABBINATO a quel provider (#315): cambia con lui, e per
-    gli umani è `None` come il provider — ma la chiave c'è sempre, così la UI
-    legge sempre lo stesso oggetto."""
+    """Idoneità di un AeI al tier del topic, per la UI. Due campi, due domande
+    (clodia-platform#190):
+
+    - `eligible` — DUREVOLE: il titolo a stare nella stanza. Per un bot lo dà lo
+      stack DICHIARATO, non quello acceso adesso; è il bit che governa
+      l'appartenenza e il dropdown «aggiungi agente».
+    - `available` — TRANSITORIO: può prendere un turno adesso (provider
+      collegato, non in pausa, SEAL ≥ tier). Un `false` qui è un badge, non
+      un'espulsione.
+
+    Prima erano lo stesso bit, e la UI ci filtrava la lista dei partecipanti:
+    bastava mettere in pausa un provider perché la stanza sembrasse vuota.
+
+    - umani: nessun provider, quindi sempre `available`; `eligible` è la loro
+      clearance, così il dropdown d'invito non propone qualcuno che il cancello
+      poi rifiuterebbe.
+    - bot: `provider` è quello EFFETTIVO in questa stanza (clodia-platform#310,
+      A14) e `model` è il modello ABBINATO a quel provider (#315). Per gli umani
+      sono `None` — ma le chiavi ci sono sempre, così la UI legge sempre lo
+      stesso oggetto."""
     if not spec or spec.type != "bot":
-        return {"eligible": True, "warn": False, "provider": None, "model": None}
-    ok = _provider_seal_ok(spec, tier)
-    return {"eligible": bool(ok), "warn": False,
+        return {"eligible": _member_eligible(spec, tier), "available": True,
+                "warn": False, "provider": None, "model": None}
+    return {"eligible": _declared_seal_ok(spec, tier),
+            "available": _provider_seal_ok(spec, tier), "warn": False,
             "provider": _topic_provider(spec, tier),
             "model": _topic_provider_model(spec, tier)}
 
@@ -3136,9 +3360,40 @@ _CHANNEL_CAPS = (
 # prompt-bloat / token-cost DoS da un file gonfiato ad arte.
 _AGENTS_MD_MAX_CHARS = 6000
 
+# Riga indirizzata a un solo agente: `@nome testo...` (fine riga = fine
+# direttiva, non un blocco multi-riga). Stesso nome di `@mention`
+# (`mentions._NAME`, comprensivo di `namespace.shortname` R18) per coerenza —
+# un agente che risponde a `@tomato.officer` nel canale riconosce la stessa
+# forma qui.
+_AGENTS_MD_DIRECTIVE_RE = re.compile(rf"^@(?P<agent>{mentions._NAME})\s+(?P<text>.+)$")
 
-def _topic_agents_md(tier: str, name: str) -> tuple[str | None, bool]:
-    """`(testo, autorevole)` delle istruzioni di scope.
+
+def _filter_agents_md_for_agent(text: str, agent_name: str | None) -> str:
+    """Righe generali → sempre incluse. Righe `@nome ...` → solo per `nome`.
+
+    È un filtro di IGIENE del contesto (non isolare rumore altrui), non un
+    confine di riservatezza: chi ha accesso allo scope può comunque leggere
+    l'AGENTS.md grezzo con `topic.read_file`/`topic.open`. Un `@nome` che non
+    corrisponde a un agente noto non è trattato come direttiva (resta riga
+    generale) — un refuso o una menzione a scopo diverso non deve far
+    sparire la riga per tutti.
+    """
+    if agent_name is None:
+        return text
+    out: list[str] = []
+    for line in text.splitlines():
+        m = _AGENTS_MD_DIRECTIVE_RE.match(line)
+        if not m or registry.get_by_name(m.group("agent")) is None:
+            out.append(line)
+        elif m.group("agent") == agent_name:
+            out.append(m.group("text"))
+        # else: direttiva per un altro agente — non entra nel suo prompt.
+    return "\n".join(out)
+
+
+def _topic_agents_md(tier: str, name: str,
+                     agent_name: str | None = None) -> tuple[str | None, bool]:
+    """`(testo, autorevole)` delle istruzioni di scope, filtrate per `agent_name`.
 
     Il secondo valore decide come il testo entra nel prompt, e la distinzione è
     sostanziale, non cosmetica:
@@ -3155,12 +3410,20 @@ def _topic_agents_md(tier: str, name: str) -> tuple[str | None, bool]:
     Finché la migrazione non è passata su tutti i topic i due casi coesistono, e
     trattarli allo stesso modo significherebbe sbagliare su uno dei due: o si
     dichiara fidato ciò che non lo è, o si ignora un'istruzione legittima.
+
+    `agent_name` filtra le righe `@nome ...` non indirizzate a chi legge (vedi
+    `_filter_agents_md_for_agent`) PRIMA del troncamento: un blocco per un
+    altro agente non deve consumare budget di caratteri a scapito del testo
+    generale.
     """
     try:
         text, _version, authoritative = topics_client.get_agents_md(tier, name)
     except topics_client.TopicsClientError:
         return None, False
     text = (text or "").strip()
+    if not text:
+        return None, False
+    text = _filter_agents_md_for_agent(text, agent_name).strip()
     if not text:
         return None, False
     if len(text) > _AGENTS_MD_MAX_CHARS:
@@ -3384,6 +3647,30 @@ async def _announce_provider_inadeguato(tier: str, name: str, spec, pid) -> None
                             w["message"], tier=tier, kind="system"))
 
 
+def _motivo_decadenza(pid: str, tier_real: str, spec) -> str:
+    """Perché questo provider non è più spendibile, in chiaro e per il log.
+
+    `provider_usable_for_tier` risponde sì/no: qui si ri-pongono le sue
+    condizioni una per una SOLO quando la risposta è già «no», per dire quale.
+    Nessun giudizio nuovo — se una condizione cambiasse solo qui, il log
+    racconterebbe una decisione che nessuno ha preso.
+    """
+    from .providers import (provider_effective_model, provider_meets_tier,
+                            provider_supports_model, provider_paused)
+    try:
+        if provider_paused(pid):
+            return "in pausa"
+        if not provider_meets_tier(pid, tier_real):
+            return f"SEAL insufficiente per il tier {tier_real}"
+        modello = provider_effective_model(pid, getattr(spec, "model", None),
+                                           getattr(spec, "provider_models", None))
+        if not provider_supports_model(pid, modello):
+            return f"non serve il modello {modello}"
+        return "non più collegato"
+    except Exception:  # noqa: BLE001 — un log non fa fallire un turno
+        return "non più valido"
+
+
 async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: str,
                                                spec, chat_id: str) -> bool:
     """Il provider della sessione VIVA regge ancora il tier? Altrimenti la rifà.
@@ -3416,23 +3703,34 @@ async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: 
     except KeyError:
         return True                      # non esiste: la create farà la scelta
     in_uso = session_provider(chat)
-    if not in_uso or provider_usable_for_tier(in_uso, tier_real):
+    # Il modello va passato, non dedotto qui: un provider può essere connesso,
+    # non in pausa e idoneo al tier, e comunque RIFIUTARE il modello di questo
+    # agente — è il caso di clodia-logic#399, dove la sessione sopravviveva al
+    # 400 che la rendeva inutile.
+    if not in_uso or provider_usable_for_tier(in_uso, tier_real,
+                                              getattr(spec, "model", None),
+                                              getattr(spec, "provider_models", None)):
         return True
+    # Le ragioni per cui un provider decade sono ora due, e dirne una sola quando
+    # vale l'altra manda la diagnosi dalla parte sbagliata: clodia-logic#399 è
+    # costata un turno in più proprio perché i metadati dicevano «provider
+    # corretto» mentre a rifiutare era l'accoppiata provider↔modello.
+    motivo = _motivo_decadenza(in_uso, tier_real, spec)
     if _chat_busy(chat_id):
         # Un turno è in corso proprio ora su quel provider: interromperlo non lo
         # rende retroattivamente idoneo e ucciderebbe un lavoro a metà. Si lascia
         # finire, e il ricalcolo tocca al turno dopo.
-        LOG.warning("provider %s non più idoneo al tier %s su %s/%s ma la sessione "
-                    "è occupata: ricalcolo rimandato", in_uso, tier_real, tier, name)
+        LOG.warning("provider %s non più valido su %s/%s (%s) ma la sessione "
+                    "è occupata: ricalcolo rimandato", in_uso, tier, name, motivo)
         return True
     sostituto = _topic_provider(spec, tier_real)
     if not sostituto:
-        LOG.warning("nessun provider idoneo al tier %s per %s su %s/%s: turno non "
-                    "avviato", tier_real, spec.name, tier, name)
+        LOG.warning("nessun provider valido per %s su %s/%s (%s): turno non "
+                    "avviato", spec.name, tier, name, motivo)
         await _announce_provider_inadeguato(tier, name, spec, in_uso)
         return False
-    LOG.info("provider di %s su %s/%s: %s → %s (non più idoneo al tier %s)",
-             spec.name, tier, name, in_uso, sostituto, tier_real)
+    LOG.info("provider di %s su %s/%s: %s → %s (%s)",
+             spec.name, tier, name, in_uso, sostituto, motivo)
     await manager.delete(chat_id)
     return True
 
@@ -3754,6 +4052,22 @@ async def post_channel_message(
             "responder": bootstrap_responder.name if started else None,
             "bootstrap": True,
         }
+
+    # NESSUNA mention → la rilevanza è un canale per un messaggio UMANO (o un
+    # trigger di sistema fidato, cioè lo scheduler), non per la chiacchiera
+    # spontanea di un bot (router-notebook R21, Davide 13 set 2026). Un bot che
+    # posta "ok, resto in attesa" senza taggare nessuno non deve far scattare
+    # nessun altro bot — è il rumore che la voce esiste per chiudere. `kind`
+    # "system" + `trusted_internal` resta escluso da questo gate: è lo
+    # scheduler che innesca deliberatamente un turno routed, non un bot che
+    # chiacchiera fra sé — comportamento invariato per quel percorso.
+    _msg_umano = _from_human({"kind": kind, "author": principal})
+    _msg_sistema_fidato = kind == "system" and trusted_internal
+    if not (_msg_umano or _msg_sistema_fidato):
+        return {"posted": True, "responder": None,
+                "note": ("nessuna mention diretta e il messaggio non è di un "
+                         "umano (né un trigger di sistema fidato): nessun "
+                         "turno per rilevanza (router-notebook R21)")}
 
     # nessun tag → routing per rilevanza, anche multi-intento
     routing: dict = {}
@@ -4283,9 +4597,22 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         semantic_message = responder_routing.compose_routing_context(
             recent, config=route_cfg
         ) or (trigger_text or "")
-        responder = _pick_responder(participants, tier_real, _tagged(trigger_text or ""),
-                                    trigger_text or "", trace=routing,
-                                    routing_message=semantic_message)
+        _tag = _tagged(trigger_text or "")
+        _autore_eff = _safe_name(trigger_author or principal_hint or "channel")
+        _kind_eff = trigger_kind or _inbound_kind(_autore_eff)
+        if _tag is None and _kind_eff != "human":
+            # Stesso gate di `post_channel_message` (router-notebook R21): senza
+            # mention, la rilevanza risponde solo a un umano. Un trigger `ai`/
+            # `external` (bot, Telegram non firmato) che arriva qui senza tag
+            # non deve svegliare nessuno — a monte (relay, trigger/internal) la
+            # mention è già stata la condizione per arrivare fin qui in teoria,
+            # ma questo resta il punto che lo garantisce anche se un chiamante
+            # futuro se ne dimenticasse.
+            responder = None
+        else:
+            responder = _pick_responder(participants, tier_real, _tag,
+                                        trigger_text or "", trace=routing,
+                                        routing_message=semantic_message)
         if routing.get("chosen"):
             try:
                 payload = {"tier": tier, "name": name, **routing}
@@ -4329,7 +4656,7 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     timing.mark("session_ready")
     chat.principal = principal_hint or "channel"  # proxy: nessuna autorità
     if created:
-        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name, responder.name)
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         prompt = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),
@@ -4361,7 +4688,7 @@ async def channel_create(request: Request) -> dict:
     tier = _norm(body.get("tier"))
     if not name:
         raise HTTPException(400, "nome richiesto")
-    meta = _channel_meta(body, principal, name)
+    meta = _channel_meta(body, principal, name, tier)
     intro_agent = _select_topic_intro_agent(meta, tier)
     try:
         created = await topics_client.async_create_topic(tier, name, meta)
@@ -4861,6 +5188,11 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(404, "canale non trovato")
     _require_member(request, topic.get("meta", {}))
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
+    # L'appartenenza si riconcilia quando si guarda la stanza: costo nullo nel
+    # caso normale (nessuna chiamata di rete finché non c'è davvero qualcuno da
+    # far uscire) e la stanza che conta è quella che si sta aprendo.
+    topic["membership_removed"] = reconcile_membership(tier, name,
+                                                       topic.get("meta", {}))
     _partecipanti = topic.get("meta", {}).get("participants", [])
     # `active_responders` resta una lista di SEED (contratto invariato per la UI
     # esistente); `participant_instances` è il dettaglio per il super-nodo.
@@ -5184,8 +5516,15 @@ async def channel_feedback_lesson_delete(tier: str, name: str, lesson_id: str,
 @router.get("/clodia/channels/{tier}/{name}/eligibility")
 def channel_eligibility(tier: str, name: str, request: Request) -> dict:
     """Idoneità di ogni AeI registrato rispetto al tier del topic.
-    Usato dalla UI per (a) nascondere i partecipanti non idonei,
-    mostrati con ⚠️ — e (b) filtrare il dropdown «aggiungi agente»."""
+
+    Due bit per agente (clodia-platform#190): `eligible` = può STARE nella
+    stanza (durevole, filtra il dropdown «aggiungi agente»), `available` = può
+    rispondere ADESSO (transitorio, è un badge accanto al partecipante).
+
+    La UI non deve più usare nessuno dei due per NASCONDERE un partecipante: chi
+    è nella stanza si vede. Un non idoneo non ci finisce (il cancello è in
+    aggiunta) e se ci finisce esce (`reconcile_membership`); filtrarlo a display
+    lasciava la stanza apparentemente vuota, che è il difetto che #190 chiude."""
     topic = topics_client.open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
@@ -5196,17 +5535,45 @@ def channel_eligibility(tier: str, name: str, request: Request) -> dict:
     for spec in registry.list():
         e = _eligibility(spec, tier_real)
         agents.append({"name": spec.name, "type": spec.type,
-                       "context": _agent_context(tier, name, spec), **e})
+                       "context": _agent_context(tier, name, spec, tier_real), **e})
     return {"tier": tier_real, "agents": agents}
 
 
-def _agent_context(tier: str, name: str, spec) -> dict | None:
+def _agent_context(tier: str, name: str, spec, tier_real: str | None = None) -> dict | None:
     """Occupazione ATTUALE della finestra di contesto dell'agente in QUESTO canale:
     token dell'ultimo turno (input + cache) / finestra del modello. None se non c'è
-    ancora una sessione o se la finestra del modello è ignota (la UI nasconde la barra)."""
+    ancora una sessione o se la finestra del modello è ignota (la UI nasconde la barra).
+
+    La finestra è quella dello stack DI QUESTA STANZA, non di quello dichiarato
+    (clodia-logic#398). `model_context_window` risolve la coppia (harness,
+    modello) proprio perché lo stesso modello ha finestre diverse secondo la CLI
+    che lo comanda, e riceveva la coppia dichiarata — fuori da qualunque stanza —
+    mentre la sessione gira sul provider scelto per il tier, col modello abbinato
+    a quel provider e sotto l'harness di quel provider (`agent_runtime_sdk` segue
+    il provider effettivo, per permettere i ripieghi cross-SDK).
+
+    È il difetto di clodia-platform#322 in un punto che #390 non ha raggiunto, e
+    qui non si vede come un nome sbagliato ma come un RIGHELLO sbagliato: un
+    agente dichiarato su `claude-opus-5` (1M sotto claude) che in stanza gira su
+    `scaleway`/`glm-5.1` (200k sotto opencode) mostrava l'occupazione contro una
+    finestra cinque volte troppo lunga — un contesto quasi pieno si legge come
+    vuoto, cioè la barra mente proprio quando servirebbe.
+    """
     from ..agents.model_context import model_context_window
-    window = model_context_window(getattr(spec, "model", None),
-                                  getattr(spec, "agent_sdk", None))
+    from .providers import provider_sdk
+    # Modello e harness dalla STESSA risoluzione: leggerli da due chiamate
+    # separate è come tornerebbero a divergere (#315).
+    rt = _topic_runtime(spec, tier_real or tier)
+    if not rt.get("provider"):
+        # Nessun provider idoneo al tier → nessun righello da mostrare. Ripiegare
+        # sul dichiarato rimetterebbe in circolo il valore fuori-stanza che questa
+        # correzione toglie: è la stessa scelta di `agent_effective_model_for_tier`
+        # (#390). In quel tier l'agente non prende turni, e `_eligibility` accanto
+        # lo dice già.
+        return None
+    window = model_context_window(rt.get("model") or getattr(spec, "model", None),
+                                  provider_sdk(rt["provider"])
+                                  or getattr(spec, "agent_sdk", None))
     if not window:
         return None
     try:
@@ -5336,8 +5703,11 @@ async def channel_add_participant(tier: str, name: str, request: Request) -> dic
     if not agent:
         raise HTTPException(400, "agent richiesto")
     # No partecipanti inesistenti: dev'essere un agent/umano registrato.
-    if registry.get_by_name(agent) is None:
+    spec = registry.get_by_name(agent)
+    if spec is None:
         raise HTTPException(404, f"'{agent}' non esiste: invita un agent/utente registrato")
+    meta = topic.get("meta", {})
+    _assert_member_eligible(spec, meta.get("tier", tier))
     ruolo = (body.get("role") or "").strip().lower() or None
     if ruolo and ruolo not in ("contributor", "reader"):
         raise HTTPException(
@@ -5369,9 +5739,16 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     """Aggiunge/rimuove un partecipante su richiesta di un AGENTE (via gateway).
     Body: {agent, by, add}. Autorizzazione: `by` (il chiamante) deve essere
     l'owner o un partecipante del canale — chi è "nella stanza"
-    può gestire la squadra (come invitare in un canale Slack). L'idoneità SEAL
-    dell'agente aggiunto resta enforced al momento della risposta (un agente
-    sotto-tier può entrare ma non risponde). Nessun principal: endpoint interno."""
+    può gestire la squadra (come invitare in un canale Slack).
+
+    L'idoneità SEAL dell'agente aggiunto è enforced QUI, allo stesso cancello
+    dell'invito dell'owner (`_assert_member_eligible`). Fino a #190 questa
+    docstring diceva il contrario — «un agente sotto-tier può entrare ma non
+    risponde» — ed era la decisione sbagliata: un membro che non può mai
+    rispondere è indistinguibile, per chi guarda la stanza, da un membro che
+    tace. La rimozione resta libera: si esce sempre.
+
+    Nessun principal: endpoint interno."""
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
@@ -5386,8 +5763,11 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     if not (by == meta.get("owner") or by in (meta.get("participants") or [])):
         raise HTTPException(403, f"'{by}' non è owner/partecipante di questo canale")
     # l'agente aggiunto dev'essere registrato
-    if registry.get_by_name(agent) is None:
+    spec = registry.get_by_name(agent)
+    if spec is None:
         raise HTTPException(404, f"'{agent}' non esiste: aggiungi un agent/utente registrato")
+    if add:
+        _assert_member_eligible(spec, meta.get("tier", tier))
     result = await topics_client.async_set_participant(tier, name, agent, add=add)
     result["introduction_queued"] = (
         _queue_join_introduction(tier, name, meta, agent, result) if add else False

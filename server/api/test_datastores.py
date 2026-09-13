@@ -30,11 +30,11 @@ def _zip_bytes(files: dict[str, str]) -> bytes:
     return buf.getvalue()
 
 
-def _agent_yaml(name: str) -> str:
+def _agent_yaml(name: str, **campi) -> str:
     return yaml.safe_dump({
         "name": name, "display_name": name.capitalize(), "description": "test",
         "type": "normal", "system_prompt": "system-prompt.md",
-        "capabilities": [], "requires_plugins": [],
+        "capabilities": [], "requires_plugins": [], **campi,
     }, sort_keys=False)
 
 
@@ -122,6 +122,13 @@ class DatastoresInventoryTests(unittest.TestCase):
             }),
         }))
 
+    def _seed(self, name: str, **campi) -> None:
+        """Un agente della colonia con i suoi grant, come lo legge la registry."""
+        d = self.agents_dir / name
+        d.mkdir(parents=True, exist_ok=True)
+        (d / "agent.yaml").write_text(_agent_yaml(name, **campi), encoding="utf-8")
+        registry.load()
+
     def _con_datastore_scritto(self) -> None:
         """Il datastore esiste davvero sul disco, come lo lascerebbe l'MCP del
         pack alla prima esecuzione — altrimenti l'archiviazione non troverebbe
@@ -206,6 +213,52 @@ class DatastoresInventoryTests(unittest.TestCase):
         # anche duplicata come orfana solo perché esiste anche in pgvector.
         stati = [r["status"] for r in out["rag_collections"] if r["name"] == "prassi-fiscale"]
         self.assertEqual(["active"], stati)
+
+    # --- member list delle collection (#341) -----------------------------
+
+    def test_an_active_collection_shows_the_seeds_that_declare_it(self) -> None:
+        """La member list di una collection non è un campo del manifest: è
+        l'indice inverso dei grant `rag_read`/`rag_write` dei seed. Senza
+        proiezione la pagina Databases mostra il clearance e tace su CHI
+        entra, che è metà del requisito di #341."""
+        self._install_pack()  # dichiara "prassi-fiscale"
+        self._seed("aitiero", rag_read=["prassi-fiscale"])
+        self._seed("archivista", rag_read=["prassi-fiscale"],
+                   rag_write=["prassi-fiscale"])
+
+        rc = self._rag_row("prassi-fiscale")
+        self.assertEqual(["aitiero", "archivista"], rc["seeds_read"])
+        self.assertEqual(["archivista"], rc["seeds_write"])
+        self.assertEqual([], rc["seeds_bypass"])
+
+    def test_the_namespace_holder_is_projected_apart_from_the_members(self) -> None:
+        """sysadmin (`rag.*`, il provisioner dei pack) entra ovunque senza
+        nominare nessuna collection: sta in `seeds_bypass`, non nella member
+        list — altrimenti risulterebbe membro di ogni riga."""
+        self._install_pack()
+        self._seed("sysadmin", tool_permissions=["rag.*"])
+
+        rc = self._rag_row("prassi-fiscale")
+        self.assertEqual([], rc["seeds_read"])
+        self.assertEqual(["sysadmin"], rc["seeds_bypass"])
+
+    def test_an_orphaned_collection_carries_its_member_list_too(self) -> None:
+        """L'orfana è il caso che un `seeds:` nel manifest non coprirebbe mai:
+        nessun pack installato la dichiara più, ma i seed che la leggono sono
+        ancora lì e vanno visti."""
+        self._seed("aitiero", rag_read=["vecchio-corpus"])
+        rag_store.list_collections = lambda: [
+            {"collection": "vecchio-corpus", "tier": "SEAL-0", "documents": 9, "chunks": 200},
+        ]
+        rc = self._rag_row("vecchio-corpus")
+        self.assertEqual("orphaned", rc["status"])
+        self.assertEqual(["aitiero"], rc["seeds_read"])
+
+    def _rag_row(self, name: str) -> dict:
+        righe = [r for r in asyncio.run(datastores.list_datastores())["rag_collections"]
+                 if r["name"] == name]
+        self.assertEqual(1, len(righe))
+        return righe[0]
 
     def test_rag_service_unreachable_degrades_to_no_orphans_not_an_error(self) -> None:
         """Un guasto infra sulla sola RAG non deve rompere l'intera pagina: i

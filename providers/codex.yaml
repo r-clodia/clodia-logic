@@ -10,6 +10,24 @@ flow: openai
 priority: 20
 cost_rank: 20
 models: ["gpt-*", "o1*", "o3*", "o4*", "codex*"]
+# ECCEZIONE, e vince su `models` qui sopra. L'autenticazione di QUESTO provider è
+# l'account ChatGPT (mechanism: subscription), e quel meccanismo non abilita i
+# modelli della famiglia "-codex". Non è una nostra policy: è il backend che
+# risponde, con un 400 pulito e il motivo scritto dentro —
+#
+#   "The 'gpt-5-codex' model is not supported when using Codex with a ChatGPT account."
+#
+# (clodia-platform#333: turno di ophelia-8 perso il 2026-09-10, il modello era
+# `gpt-5-codex` e il ripiego automatico era caduto qui). Lo stesso modello via
+# `openai-api` (mechanism: apikey) funziona: la restrizione è del MECCANISMO, non
+# del modello, e infatti sta in questo file e non in quello.
+#
+# Il glob copre l'intera famiglia (`gpt-5-codex`, `gpt-5-codex-mini`, …) mentre il
+# 400 misurato nomina solo `gpt-5-codex`: è deliberato, perché qui sbagliare per
+# eccesso costa un provider in meno fra i candidati e sbagliare per difetto costa
+# un altro turno bruciato. `codex*` NON è toccato — nessun pattern qui combacia
+# con un id che inizia per "codex".
+models_excluded: ["*-codex*"]
 
 # ── Sovranità (EC Cloud Sovereignty Framework v1.2.1) — SEAL eff = min(SOV-2/3/7)
 sovereignty:

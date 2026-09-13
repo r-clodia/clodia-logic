@@ -164,8 +164,10 @@ class ClodiaMandateTests(unittest.TestCase):
                          "runtime", "integrations", "providers", "mcp", "packs",
                          "jobs", "egress", "ingress", "rag", "web", "email"}
 
-    #: A7: «confermiamo base, editorial, e anthropic. Perde comms»
-    PACK_ATTESI = {"base-pack", "editorial-pack", "anthropic-pack"}
+    #: A7: «confermiamo base, editorial, e anthropic. Perde comms». `editorial-pack`
+    #: è confluito in `business-pack` (fusione con `media-agency-pack`, fuori da
+    #: clodia-logic): il nome è cambiato, il requisito no.
+    PACK_ATTESI = {"base-pack", "business-pack", "anthropic-pack"}
 
     def setUp(self) -> None:
         self.clodia = _seeds()["clodia"]
