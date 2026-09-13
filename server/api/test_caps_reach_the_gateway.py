@@ -37,11 +37,14 @@ from . import agent_registry as AR
 from . import gateway_admin
 
 
-#: Scritto come un seed vero (lista indentata), non con `yaml.safe_dump`: il
-#: dump produce sequenze senza indentazione, che `_set_yaml_list` non riconosce
-#: come figlie della chiave. È un limite preesistente di quell'helper e non ha
-#: niente a che vedere con #304 — ma un fixture in quella forma farebbe fallire
-#: questo test per la ragione sbagliata.
+#: Lista indentata: era l'UNICA forma che `_set_yaml_list` riconosceva come
+#: figlia della chiave (bug chiuso il 13 set 2026, v. `SetYamlListIndentTests`
+#: più sotto) — uno stile a indentazione ZERO (`tool_permissions:` seguita da
+#: `- x` allo stesso livello della chiave, la forma dominante in questo repo,
+#: prodotta anche da `yaml.safe_dump`) non veniva consumato e restava
+#: duplicato in coda al file. Qui resta indentata comunque: è la forma che
+#: questo test aveva SEMPRE usato, e cambiarla non aggiunge copertura — la
+#: aggiunge la classe dedicata sotto.
 SEED = """name: avvocato
 description: seed di prova
 type: normal
@@ -188,6 +191,59 @@ class TheReasonIsWrittenDownTests(unittest.TestCase):
         import inspect
         src = inspect.getsource(AR.patch_agent_caps)
         self.assertIn("register_agent_async", src)
+
+
+class SetYamlListIndentTests(unittest.TestCase):
+    """`_set_yaml_list` deve riconoscere una lista a indentazione ZERO come
+    figlia della chiave — non solo quella indentata.
+
+    Misurato il 13 set 2026 su `tomato.fullstack-dev` in produzione:
+    `agents.grant_tool` (`github.*`) ha scritto la nuova lista indentata SOPRA
+    la vecchia `- web.post` a indentazione zero, che il vecchio `\\s+` non
+    riconosceva come già-presente e quindi non consumava — risultato, due
+    liste per la stessa chiave, YAML non più parsabile, l'agente sparito dal
+    registry (`registry.get_by_name` → `None`), 500 sul PATCH e NESSUN
+    rollback per quella via (il rollback esiste solo per il fallimento della
+    registrazione al gateway, non per un YAML riscritto male)."""
+
+    def test_zero_indent_existing_list_is_replaced_not_duplicated(self):
+        # Lo stile dominante in questo repo — `tool_permissions:` seguita da
+        # `- x` allo STESSO livello della chiave, non indentata.
+        text = "name: x\ntool_permissions:\n- web.post\nexpertise: >-\n  y\n"
+        out = AR._set_yaml_list(text, "tool_permissions", ["web.post", "github.*"])
+        parsed = yaml.safe_load(out)
+        self.assertEqual(parsed["tool_permissions"], ["web.post", "github.*"])
+        # La vecchia riga non deve sopravvivere duplicata in coda.
+        self.assertEqual(out.count("web.post"), 1)
+
+    def test_indented_existing_list_is_replaced_not_duplicated(self):
+        # La forma indentata (l'unica che il vecchio regex riconosceva) deve
+        # continuare a funzionare: non è un fix a senso unico.
+        text = 'name: x\ntool_permissions:\n  - "web.post"\nexpertise: >-\n  y\n'
+        out = AR._set_yaml_list(text, "tool_permissions", ["web.post", "github.*"])
+        parsed = yaml.safe_load(out)
+        self.assertEqual(parsed["tool_permissions"], ["web.post", "github.*"])
+        self.assertEqual(out.count("web.post"), 1)
+
+    def test_a_comment_immediately_above_the_key_is_preserved(self):
+        # Il caso reale di `tomato.fullstack-dev`: un commento subito sopra
+        # `tool_permissions:` — non deve sparire né spostarsi nella lista.
+        text = ("name: x\nrules: []\n# nota sul perché\ntool_permissions:\n"
+               "- web.post\nexpertise: >-\n  y\n")
+        out = AR._set_yaml_list(text, "tool_permissions", ["web.post"])
+        self.assertIn("# nota sul perché", out)
+        parsed = yaml.safe_load(out)
+        self.assertEqual(parsed["tool_permissions"], ["web.post"])
+
+    def test_result_is_always_valid_yaml_regardless_of_source_style(self):
+        # La proprietà che conta più delle altre: qualunque sia lo stile in
+        # ingresso, il risultato deve sempre riparsare pulito.
+        for lista in ("- a\n- b\n", "  - a\n  - b\n"):
+            with self.subTest(stile=lista.splitlines()[0]):
+                text = f"name: x\ncapabilities:\n{lista}rules: []\n"
+                out = AR._set_yaml_list(text, "capabilities", ["a", "b", "c"])
+                parsed = yaml.safe_load(out)  # solleva se non parsabile
+                self.assertEqual(parsed["capabilities"], ["a", "b", "c"])
 
 
 if __name__ == "__main__":
