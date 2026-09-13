@@ -2303,7 +2303,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         directive = (f"[Sei lo spawn {spawn_nome} di {spec.name}: i tuoi messaggi "
                      f"appaiono come {spawn_nome}.]\n" + (directive or ""))
     if created:
-        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name, spec.name)
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         base = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),
@@ -3324,9 +3324,40 @@ _CHANNEL_CAPS = (
 # prompt-bloat / token-cost DoS da un file gonfiato ad arte.
 _AGENTS_MD_MAX_CHARS = 6000
 
+# Riga indirizzata a un solo agente: `@nome testo...` (fine riga = fine
+# direttiva, non un blocco multi-riga). Stesso nome di `@mention`
+# (`mentions._NAME`, comprensivo di `namespace.shortname` R18) per coerenza —
+# un agente che risponde a `@tomato.officer` nel canale riconosce la stessa
+# forma qui.
+_AGENTS_MD_DIRECTIVE_RE = re.compile(rf"^@(?P<agent>{mentions._NAME})\s+(?P<text>.+)$")
 
-def _topic_agents_md(tier: str, name: str) -> tuple[str | None, bool]:
-    """`(testo, autorevole)` delle istruzioni di scope.
+
+def _filter_agents_md_for_agent(text: str, agent_name: str | None) -> str:
+    """Righe generali → sempre incluse. Righe `@nome ...` → solo per `nome`.
+
+    È un filtro di IGIENE del contesto (non isolare rumore altrui), non un
+    confine di riservatezza: chi ha accesso allo scope può comunque leggere
+    l'AGENTS.md grezzo con `topic.read_file`/`topic.open`. Un `@nome` che non
+    corrisponde a un agente noto non è trattato come direttiva (resta riga
+    generale) — un refuso o una menzione a scopo diverso non deve far
+    sparire la riga per tutti.
+    """
+    if agent_name is None:
+        return text
+    out: list[str] = []
+    for line in text.splitlines():
+        m = _AGENTS_MD_DIRECTIVE_RE.match(line)
+        if not m or registry.get_by_name(m.group("agent")) is None:
+            out.append(line)
+        elif m.group("agent") == agent_name:
+            out.append(m.group("text"))
+        # else: direttiva per un altro agente — non entra nel suo prompt.
+    return "\n".join(out)
+
+
+def _topic_agents_md(tier: str, name: str,
+                     agent_name: str | None = None) -> tuple[str | None, bool]:
+    """`(testo, autorevole)` delle istruzioni di scope, filtrate per `agent_name`.
 
     Il secondo valore decide come il testo entra nel prompt, e la distinzione è
     sostanziale, non cosmetica:
@@ -3343,12 +3374,20 @@ def _topic_agents_md(tier: str, name: str) -> tuple[str | None, bool]:
     Finché la migrazione non è passata su tutti i topic i due casi coesistono, e
     trattarli allo stesso modo significherebbe sbagliare su uno dei due: o si
     dichiara fidato ciò che non lo è, o si ignora un'istruzione legittima.
+
+    `agent_name` filtra le righe `@nome ...` non indirizzate a chi legge (vedi
+    `_filter_agents_md_for_agent`) PRIMA del troncamento: un blocco per un
+    altro agente non deve consumare budget di caratteri a scapito del testo
+    generale.
     """
     try:
         text, _version, authoritative = topics_client.get_agents_md(tier, name)
     except topics_client.TopicsClientError:
         return None, False
     text = (text or "").strip()
+    if not text:
+        return None, False
+    text = _filter_agents_md_for_agent(text, agent_name).strip()
     if not text:
         return None, False
     if len(text) > _AGENTS_MD_MAX_CHARS:
@@ -4539,7 +4578,7 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     timing.mark("session_ready")
     chat.principal = principal_hint or "channel"  # proxy: nessuna autorità
     if created:
-        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name)
+        _amd, _amd_auth = await asyncio.to_thread(_topic_agents_md, tier, name, responder.name)
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         prompt = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),
