@@ -227,6 +227,13 @@ def _pack_license_info(umbrella: str, plugin_children: list) -> dict[str, Any]:
             "license_missing": missing}
 
 
+#: Le tre dichiarazioni che fanno di un pack qualcosa da provisionare. Una sola
+#: lista: `_pack_needs_setup` (il flag) e `_provisioning_signature` (cosa è già
+#: stato fatto) devono guardare gli stessi campi, o la seconda direbbe «uguale»
+#: su una dichiarazione che per la prima è nuova.
+_PROVISIONING_KEYS = ("mcp_servers", "rag_collections", "datastores")
+
+
 def _pack_needs_setup(plugin_children: list) -> bool:
     """True se il pack ha qualcosa da PROVISIONARE (roba che il sysadmin deve
     rendere effettiva sul server MCP): server MCP da montare, collection RAG da
@@ -234,7 +241,7 @@ def _pack_needs_setup(plugin_children: list) -> bool:
     for c in plugin_children or []:
         if not isinstance(c, dict):
             continue
-        if c.get("mcp_servers") or c.get("rag_collections") or c.get("datastores"):
+        if any(c.get(k) for k in _PROVISIONING_KEYS):
             return True
     return False
 
@@ -243,17 +250,152 @@ def _setup_marker_path(name: str):
     return pack_import.PACKS_META_DIR / name / ".setup_pending"
 
 
-def set_setup_pending(name: str, pending: bool) -> None:
-    """Marca/smarca il setup del pack come pendente (marker file nel meta)."""
+def _setup_done_path(name: str):
+    """La RICEVUTA dell'ultimo `setup_done`: quando, da chi, e su quali
+    dichiarazioni. Accanto al marker, nel meta del pack: sopravvive a un update
+    (`install_pack_from_root` riscrive `pack.yaml`, non svuota la cartella)."""
+    return pack_import.PACKS_META_DIR / name / ".setup_done"
+
+
+def _now_iso() -> str:
+    from datetime import datetime, timezone
+    return datetime.now(timezone.utc).isoformat(timespec="seconds")
+
+
+def _read_yaml_marker(p, what: str, name: str) -> dict[str, str]:
+    """Il contenuto di un marker, `{}` se assente o illeggibile. I marker scritti
+    prima della clodia-platform#347 sono file VUOTI: `{}` è la loro risposta
+    onesta — nessuna causa da raccontare, non un errore."""
+    if not p.is_file():
+        return {}
+    try:
+        data = yaml.safe_load(p.read_text(encoding="utf-8")) or {}
+    except (OSError, yaml.YAMLError) as e:
+        LOG.warning("%s di '%s' non leggibile: %s", what, name, e)
+        return {}
+    return {str(k): str(v) for k, v in data.items()} if isinstance(data, dict) else {}
+
+
+def _installed_plugin_children(name: str) -> list[dict[str, Any]]:
+    """I plugin del pack INSTALLATO, nella forma che `_pack_needs_setup` legge.
+
+    Serve agli scrittori del marker, che hanno in mano solo il nome del pack: la
+    lista completa la costruisce `_list_packs`, ma ricalcolarla tutta per una
+    domanda su un pack solo costerebbe l'intero catalogo a ogni import.
+    """
+    items = {p["name"]: p for p in plugins_api.list_plugins()}
+    meta = _pack_meta(name) or {}
+    children = [items.get(str(p), {"name": str(p), "missing": True})
+                for p in (meta.get("plugins") or [])]
+    if not children and name in items:
+        # Pack VIRTUALE: il pack è il plugin omonimo (import di un plugin sciolto).
+        children = [items[name]]
+    return children
+
+
+def _provisioning_signature(name: str) -> str:
+    """Firma di COSA c'è da provisionare per questo pack, oggi.
+
+    Due update che riportano le stesse dichiarazioni hanno la stessa firma, e il
+    secondo non ha niente da far rifare al sysadmin. Serializzazione per chiave
+    ordinata e insieme dei plugin ordinato: la firma non deve cambiare perché è
+    cambiato l'ordine con cui il manifest elenca i plugin.
+    """
+    import hashlib
+    import json
+    decl = sorted(
+        json.dumps({k: c.get(k) for k in _PROVISIONING_KEYS},
+                   sort_keys=True, default=str, ensure_ascii=False)
+        for c in _installed_plugin_children(name) if isinstance(c, dict)
+    )
+    return hashlib.sha256("\n".join(decl).encode("utf-8")).hexdigest()[:16]
+
+
+def set_setup_pending(name: str, pending: bool, *,
+                      reason: str = "", by: str = "") -> bool:
+    """Marca/smarca il setup del pack come pendente e ritorna lo stato RILETTO
+    dal disco — non quello richiesto.
+
+    Due difetti della clodia-platform#347 si chiudono qui, dove il marker si
+    scrive, invece che nei chiamanti:
+
+    - l'`unlink` viveva in un `except OSError: pass` e il chiamante rispondeva
+      «fatto» comunque: un `setup_done` che confermava `setup_pending: false`
+      non era una misura, era una costante. Ora l'errore si logga e il valore di
+      ritorno è `marker.is_file()`;
+    - gli scrittori del marker sono due (post-import e update) e accendevano
+      entrambi in modo incondizionato. La guardia sta QUI, così è SIMMETRICA per
+      costruzione e un terzo scrittore la eredita senza doverla ricordare:
+      si accende solo per un pack che ha davvero qualcosa da provisionare, e solo
+      se quelle dichiarazioni non sono già state chiuse da un `setup_done`.
+    """
     p = _setup_marker_path(name)
+    if pending:
+        if not _pack_needs_setup(_installed_plugin_children(name)):
+            LOG.info("setup_pending NON acceso su '%s' (%s): il pack non dichiara "
+                     "nulla da provisionare", name, reason or "senza causa")
+            return p.is_file()
+        firma = _provisioning_signature(name)
+        fatto = _read_yaml_marker(_setup_done_path(name), "ricevuta di setup", name)
+        if fatto.get("provisioning") == firma:
+            LOG.info("setup_pending NON riacceso su '%s' (%s): il setup del %s "
+                     "copre già queste dichiarazioni (firma %s)", name,
+                     reason or "senza causa", fatto.get("at", "?"), firma)
+            return p.is_file()
     try:
         if pending:
             p.parent.mkdir(parents=True, exist_ok=True)
-            p.write_text("", encoding="utf-8")
+            p.write_text(yaml.safe_dump(
+                {"reason": reason or "sconosciuta", "by": by or "sconosciuto",
+                 "at": _now_iso()}, allow_unicode=True, sort_keys=False),
+                encoding="utf-8")
+            LOG.info("setup_pending acceso su '%s': %s (%s)", name,
+                     reason or "senza causa", by or "sconosciuto")
         elif p.exists():
             p.unlink()
-    except OSError:
-        pass
+    except OSError as e:
+        # Non si ingoia: un marker che non si è potuto togliere è esattamente il
+        # caso in cui il chiamante NON deve rispondere «fatto».
+        LOG.warning("marker di setup di '%s' non %s: %s", name,
+                    "scritto" if pending else "rimosso", e)
+    return p.is_file()
+
+
+def record_setup_done(name: str, by: str = "") -> None:
+    """Lascia la ricevuta del setup: quando, chi, e su QUALI dichiarazioni.
+
+    È il pezzo che mancava per distinguere «da provisionare» da «già fatto»: senza,
+    ogni update ri-accende il marker di un pack con `datastores` dichiarati (il caso
+    di `base-pack`) anche quando non porta niente di nuovo — il flag «Finish setup»
+    che si ripresenta da solo della #347.
+    """
+    p = _setup_done_path(name)
+    if not p.parent.is_dir():
+        # Pack non installato qui: niente ricevuta da lasciare, e nessuna
+        # cartella da inventare nel meta.
+        return
+    try:
+        p.write_text(yaml.safe_dump(
+            {"at": _now_iso(), "by": by or "sconosciuto",
+             "provisioning": _provisioning_signature(name)},
+            allow_unicode=True, sort_keys=False), encoding="utf-8")
+    except OSError as e:
+        LOG.warning("ricevuta di setup di '%s' non scritta: %s", name, e)
+
+
+def setup_pending_reason(name: str) -> str:
+    """Perché «Finish setup» è acceso su questo pack: causa, autore, quando.
+
+    Vuota se il marker non c'è o tace (i marker pre-#347 sono file vuoti). È la
+    risposta letterale alla domanda della #347 — «dove/come si rialza» — e non
+    dipende dalla retention dei log, che nel caso originale non copriva l'evento.
+    """
+    m = _read_yaml_marker(_setup_marker_path(name), "marker di setup", name)
+    if not m:
+        return ""
+    perche = m.get("reason") or "causa sconosciuta"
+    chi, quando = m.get("by") or "sconosciuto", m.get("at") or "data sconosciuta"
+    return f"{perche} — {chi}, {quando}"
 
 
 def _setup_pending(name: str, plugin_children: list) -> bool:
@@ -307,6 +449,10 @@ def _list_packs() -> list[dict[str, Any]]:
             # setup non è ancora stato eseguito (marker) → la UI mostra "Finish setup".
             "needs_setup": _pack_needs_setup(plugin_children),
             "setup_pending": _setup_pending(name, plugin_children),
+            # Chi ha acceso il marker e perché: un flag che si ripresenta da solo
+            # va poi spiegato a mano, e il log non arriva sempre fin lì (#347).
+            "setup_pending_reason": (setup_pending_reason(name)
+                                     if _setup_pending(name, plugin_children) else ""),
             "virtual": False,
             # first-party (base-pack e riservati) → non rimovibile
             "deletable": name not in pack_import.RESERVED_PACK_NAMES,
@@ -337,6 +483,8 @@ def _list_packs() -> list[dict[str, Any]]:
             "plugins": [item],
             "needs_setup": _pack_needs_setup([item]),
             "setup_pending": _setup_pending(pname, [item]),
+            "setup_pending_reason": (setup_pending_reason(pname)
+                                     if _setup_pending(pname, [item]) else ""),
             "virtual": True,
             "deletable": bool(item.get("deletable", True))
             and pname not in pack_import.RESERVED_PACK_NAMES,
@@ -414,8 +562,13 @@ def _maybe_trigger_pack_ops(result: dict) -> None:
             return out
         nm = r.get("pack") or r.get("name")
         return [nm] if nm else []
+    # Una per pack: `_has_pack_ops_declarations` è un `any()` su TUTTO il batch e
+    # basta a decidere se vale un run del sysadmin, ma non dice QUALE pack dichiara
+    # qualcosa. La guardia dentro `set_setup_pending` lo verifica pack per pack:
+    # un bundle in cui un solo pack dichiara non marca più anche i vicini (#347).
     for nm in _names(result):
-        set_setup_pending(nm, True)
+        set_setup_pending(nm, True, reason="import: dichiarazioni da provisionare",
+                          by="packs.import")
     import asyncio
 
     from . import pack_ops
@@ -540,9 +693,12 @@ async def update_pack(name: str, request: Request):
         registry.load()
     except Exception:  # noqa: BLE001
         pass
-    # Setup pendente dopo un update: se il pack ha roba da provisionare (MCP/RAG/
-    # datastore) va rifatto il setup → marker (la UI mostra "Finish setup").
-    set_setup_pending(name, True)
+    # Setup pendente dopo un update: solo se l'update ha portato dichiarazioni
+    # (MCP/RAG/datastore) che il `setup_done` precedente non copre già — la
+    # guardia è dentro `set_setup_pending`. Ri-marcare incondizionatamente è
+    # l'altra metà del flag che si ripresenta da solo (#347).
+    set_setup_pending(name, True, by="packs.update",
+                      reason=f"update da {up['repo']}@{up['ref']}")
     # Restart di tutti gli agenti: le sessioni vive ripartono coi seed aggiornati.
     stopped = []
     try:
@@ -667,10 +823,21 @@ async def mark_pack_setup_done(name: str, request: Request):
     `sysadmin` ha `packs.*` e riceveva un 403 (clodia-platform#297). Il verbo
     esiste come tool del gateway: `packs.setup_done`.
     """
-    await gateway_pdp.require_authz_async(request, "packs.setup_done")
+    principal = await gateway_pdp.require_authz_async(request, "packs.setup_done")
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
-    set_setup_pending(name, False)
+    # Lo stato si RILEGGE dal disco: `{"setup_pending": False}` costante confermava
+    # un setup chiuso anche quando il marker era ancora lì (#347), e rendeva la
+    # segnalazione non falsificabile.
+    ancora_pendente = set_setup_pending(name, False)
+    if ancora_pendente:
+        return JSONResponse(status_code=500, content={
+            "name": name, "setup_pending": True,
+            "error": (f"il marker di setup di '{name}' non è stato rimosso: "
+                      "il setup risulta ancora pendente (vedi i log del server)")})
+    # Ricevuta: su quali dichiarazioni il setup è stato chiuso. Un update che non
+    # ne porta di nuove non riaccende il marker.
+    record_setup_done(name, by=str(principal or ""))
     return {"name": name, "setup_pending": False}
 
 

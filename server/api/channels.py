@@ -649,7 +649,7 @@ def _topic_title(tier: str, name: str) -> str | None:
 
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
                                  principal: str | None = None, hop: int = 0,
-                                 timing=None) -> str | None:
+                                 timing=None, report_back: bool = False) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
 
     La ChatSession serializza gia' i turni con il suo lock: se lo stesso agent
@@ -662,6 +662,14 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     `timing`: il cronometro delle fasi aperto dal dispatcher (#330). Opzionale e
     tollerato assente, così questa funzione resta chiamabile senza — la misura
     non è una precondizione del turno.
+
+    `report_back` (router-notebook R22): QUESTO turno è stato aperto da
+    `_report_back` (notifica di cortesia «il tuo delegato ha finito»), non da
+    una delega vera. Se True, la reazione del chiamante NON genera un suo
+    proprio `_report_back` a fine turno — una notifica di cortesia non deve
+    poterne generare un'altra. La catena di delega VERA (`@mention` esplicita
+    dentro la risposta, gestita da `_maybe_delegate`) resta intatta: si tronca
+    solo il rimbalzo automatico della notifica su se stessa.
     """
     # PRIMA di qualunque I/O (clodia-platform#330). `channel_typing` è l'unico
     # segnale che dice «il turno è partito», e stava dopo la fetch qui sotto —
@@ -782,7 +790,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             except Exception as e:  # noqa: BLE001
                 LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
         _ultimo = posted_during_turn[-1].get("text") or reply
-        _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
+        if not report_back:
+            _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
         return _ultimo
 
     # `autore` è calcolato prima del turno (serve alle bolle per blocco).
@@ -812,7 +821,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                               origin_chain=getattr(chat, "origin", None))
     except Exception as e:  # noqa: BLE001 — la delega non deve rompere il turno
         LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
-    _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
+    if not report_back:
+        _spawn_bg(_report_back(tier, name, responder, chat, reply, hop))
     return reply
 
 
@@ -875,8 +885,16 @@ async def _report_back(tier: str, name: str, responder: str, chat,
             return
         testo = (f"[turno concluso] @{responder} ha terminato il compito che gli "
                  f"avevi assegnato. Esito riportato:\n\n{(esito or '').strip()[:2000]}")
+        # `report_back=True` (router-notebook R22): QUESTO turno è una notifica
+        # di cortesia, non una nuova delega. Se la reazione del chiamante non
+        # tagga nessuno esplicitamente, il suo proprio `_report_back` non deve
+        # rimbalzare più su — altrimenti due agenti senza nulla da dirsi si
+        # svegliano a vicenda finché non esauriscono `_MAX_DELEGATION_HOPS`
+        # (misurato il 13 set 2026, `tomato-blogging`: ~70 turni di "nessuna
+        # novità" in 7 minuti, fino al limite di sessione del provider).
         await _start_turn(tier, name, tier_real, spec, "channel", testo, "direct",
-                          hop=hop + 1, origin=list(getattr(chat, "origin", None) or []))
+                          hop=hop + 1, origin=list(getattr(chat, "origin", None) or []),
+                          report_back=True)
     except Exception as e:  # noqa: BLE001 — il ritorno non deve rompere il turno
         LOG.warning("ritorno al chiamante non riuscito su %s/%s da %s: %s",
                     tier, name, responder, e)
@@ -1010,9 +1028,11 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     # senza questo, l'unica via d'uscita di un agente bloccato è chiedere
     # all'umano — che è il comportamento che abbiamo visto tutto il giorno, e la
     # ragione per cui esiste questa modalità.
-    if debug_watch.enabled() and debug_watch.WATCHER in hard \
-            and debug_watch.WATCHER not in participants \
-            and _seed_name(from_agent) != debug_watch.WATCHER:
+    guardiano_svegliato = (
+        debug_watch.enabled() and debug_watch.WATCHER in hard
+        and debug_watch.WATCHER not in participants
+        and _seed_name(from_agent) != debug_watch.WATCHER)
+    if guardiano_svegliato:
         _spawn_bg(_watch_report(
             tier, name, "help_requested", _seed_name(from_agent),
             f"{from_agent} ha chiesto aiuto taggando @{debug_watch.WATCHER}: "
@@ -1077,6 +1097,83 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             LOG.info("citazione $%s da %s su %s/%s: nessun turno (R12)",
                      t, from_agent, tier, name)
     if not plan:
+        # HANDOFF FUORI STANZA, e lo si DICE (#192). Il filtro qui sopra scarta i
+        # `@` verso chi non partecipa al canale, e l'uscita era muta: né un
+        # messaggio né una riga di log. Delle tre strade per cui un handoff si
+        # ferma — il turno del delegato crasha (`_announce_failure`), il delegato
+        # rifiuta l'attivazione (guardia di `_start_turn`), il bersaglio non è
+        # nella stanza — solo questa taceva, e per chi guarda il canale «l'ho
+        # chiamato e non risponde» è indistinguibile da un guasto.
+        #
+        # Colpisce soprattutto il coordinatore: è l'unico che arriva qui sapendo
+        # che nella stanza non c'è nessuno di pertinente, e con in mano l'output
+        # di `topic.suggest_team` — che è una lista di nomi della COLONIA, non
+        # della stanza. Prendere un nome da lì e scriverlo con `@` invece che
+        # dentro `<!-- invite= -->` produce l'esito peggiore: la persona legge
+        # «questa è di @X» e poi non succede più niente.
+        #
+        # La decisione resta STOP dopo un handoff: niente seconda cascata, che
+        # rimetterebbe il router a decidere dopo che un modello ha già deciso.
+        # Quello che mancava non è un meccanismo, è una riga che dice cosa è
+        # successo — con la pill che rende il rimedio cliccabile (#332: «serve un
+        # messaggio con una sola menzione» era vero e inerte).
+        #
+        # SOLO nomi REGISTRATI, e il confine è quello che
+        # `test_delegation_limit_visible` fissa già per il limite catena: `@nessuno`
+        # non era un bersaglio, e una nota su un nome che non esiste è rumore su
+        # una menzione che non c'era. Un nome inventato non ha nemmeno un rimedio
+        # da offrire — invitarlo non si può — quindi resta una riga di log, che è
+        # dove si conta un'allucinazione senza pagarla in canale.
+        fuori = _distinct_by(
+            [t for t in hard
+             if not _is_self_tag(t, from_agent, _spec_of(from_agent))
+             and _seed_name(t) not in participants
+             # Il guardiano chiamato in debug un turno lo apre davvero (sopra):
+             # annunciarlo come menzione morta sarebbe falso.
+             and not (guardiano_svegliato
+                      and _seed_name(t) == debug_watch.WATCHER)],
+            _target_identity)
+        noti = [t for t in fuori if _is_known_seed(_seed_name(t) or "")]
+        if len(noti) < len(fuori):
+            LOG.info("delega da %s su %s/%s: %d menzioni verso nomi che non "
+                     "esistono nella colonia, nessuna nota in canale",
+                     from_agent, tier, name, len(fuori) - len(noti))
+        if not noti:
+            return          # niente da servire e niente da dire: nessun rumore
+        nomi = [_target_identity(t) for t in noti]
+        # La pill porta il SEED, che è ciò che si invita: `@worker-3` chiede
+        # un'istanza, ma in stanza entra `worker`.
+        invitabili = _distinct_by([_seed_name(t) for t in noti], lambda s: s)
+        uno = len(nomi) == 1
+        testo = (
+            f"{_elenco_or(nomi)} {'è stato taggato' if uno else 'sono stati taggati'} "
+            f"da {_seed_name(from_agent)}, ma {'non partecipa' if uno else 'non partecipano'} "
+            f"a questo canale: nessun turno è partito, e la catena si ferma qui.\n\n"
+            f"Due strade: riformulare la richiesta per chi è già nella stanza, "
+            f"oppure {'invitarlo' if uno else 'invitarli'} — l'invito lo esegue "
+            f"l'owner.\n\n<!-- invite={','.join(invitabili)} -->"
+        )
+        nota = await topics_client.async_post_message(
+            tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
+        await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",
+                               message=nota, topic_title=meta.get("title"))
+        LOG.info("delega da %s su %s/%s: %s taggati ma fuori dal canale, nessun "
+                 "turno avviato", from_agent, tier, name, ", ".join(nomi))
+        # SEGNALE, non solo messaggio: come per il limite catena, chi non sta
+        # guardando la chat deve poter sapere che una menzione è morta lì.
+        try:
+            await bus.publish(Event(
+                type="routing_decision",
+                payload={"tier": tier, "name": name, "mode": "delega-fuori-stanza",
+                         "reason": (f"{', '.join(nomi)} non "
+                                    f"{'partecipa' if uno else 'partecipano'} a "
+                                    f"{tier}/{name}: nessun turno avviato"),
+                         "from_agent": _seed_name(from_agent), "negati": nomi,
+                         "invitabili": invitabili, "hop": hop,
+                         "chosen": None, "candidates": [], "eligible": []},
+                timestamp=datetime.now(timezone.utc)))
+        except Exception as e:  # noqa: BLE001 — un segnale non rompe un turno
+            LOG.debug("routing_decision fuori stanza non pubblicato: %s", e)
         return
     # LIMITE DELLA CATENA, e lo si DICE. Il controllo stava nei due chiamanti, che
     # saltavano questa funzione: nessun log, nessun messaggio, e per chi guardava
@@ -2122,7 +2219,8 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                       user_text: str, kind: str, hop: int = 0,
                       ordinal: int | None = None,
                       spawn: str | None = None,
-                      origin: list | None = None) -> bool:
+                      origin: list | None = None,
+                      report_back: bool = False) -> bool:
     """Avvia (fire-and-forget) un turno del responder `spec`.
 
     ALLOCAZIONE DELLA MENZIONE (regola di Davide, 18 ago 2026):
@@ -2204,6 +2302,11 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                  label, tier, name)
         await _announce_refusal(tier, name, label)
         return False
+    # Il tier della stanza può essere cambiato dall'ultimo turno: il provider
+    # della sessione viva lo sa già (sotto), il coordinamento passava di mano in
+    # silenzio (clodia-platform#345). L'annuncio precede l'avvio: chi legge la
+    # chat deve sapere chi coordina PRIMA di leggere la risposta di un altro.
+    await _annuncia_cambio_coordinatore(tier, name, tier_real)
     if not await _provider_della_stanza_ancora_valido(tier, name, tier_real, spec, chat_id):
         return False
     created = False
@@ -2324,7 +2427,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     # occupata comunque, quindi tenerla prenotata fino alla fine non toglie nulla.
     _spawn_bg(_run_then_unclaim(chat_id, _run_and_post_response(
         tier, name, label, chat, prompt, principal=principal, hop=hop,
-        timing=timing)))
+        timing=timing, report_back=report_back)))
     return True
 
 
@@ -3066,6 +3169,12 @@ def _routing_plan(participants: list[str], tier: str, message: str,
             if agent not in eligible:
                 eligible.append(agent)
 
+    #: Chi, in questo piano, è stato convocato PER RIPIEGO e non per dominio —
+    #: cioè va istruito con `[COORDINAMENTO]` e non con `[ROUTING AUTOMATICO]`.
+    #: Senza questo nome il turno parte dicendogli il contrario della verità
+    #: (clodia-platform#192): il `mode` del trace qui resta `multi-intent`, e a
+    #: valle non resta niente da cui distinguere i due casi.
+    coordinamento_per: str | None = None
     if unmatched:
         # Il batch di ciò che non ha matchato va a CHI COORDINA la stanza. Era la
         # stessa domanda del ripiego con una seconda risposta: qui arrivava un
@@ -3076,7 +3185,17 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         coordinator = _pick_responder(participants, tier, None,
                                       coordinator_only=True, trace=coord_trace)
         if coordinator is not None:
+            # Si legge PRIMA dell'extend: dopo, «aveva già roba sua» non è più
+            # distinguibile da «gli è appena arrivato il batch».
+            solo_ripiego = coordinator.name not in grouped
             grouped.setdefault(coordinator.name, (coordinator, []))[1].extend(unmatched)
+            # Se il coordinatore aveva ANCHE intent suoi per rilevanza, resta un
+            # responder normale: `[COORDINAMENTO]` gli direbbe «il router non ha
+            # trovato nessuno di pertinente», che è falso per metà del suo
+            # incarico — e i tre esiti di quella direttiva gli farebbero passare
+            # ad altri anche il lavoro che era davvero suo.
+            if solo_ripiego:
+                coordinamento_per = coordinator.name
             for route in routes:
                 if route["chosen"] is None:
                     route["chosen"] = coordinator.name
@@ -3093,6 +3212,7 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         trace.update({
             "tier": tier,
             "mode": "multi-intent",
+            "coordinator": coordinamento_per,
             "reason": f"{len(intents)} sotto-task instradati",
             "chosen": ", ".join(spec.name for spec, _prompt in plan),
             "chosen_agents": [spec.name for spec, _prompt in plan],
@@ -3698,6 +3818,108 @@ async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: 
     return True
 
 
+#: L'ultimo tier con cui si è visto partire un turno, per stanza. Risponde a una
+#: domanda sola — «il tier è cambiato da quando siamo passati di qui?» — e quella
+#: è la sola condizione che può spostare il coordinatore.
+#:
+#: SHORTCUT: mappa in memoria, per processo. Regge perché serve a confrontare due
+#:           turni CONSECUTIVI della stessa stanza, che girano nello stesso
+#:           agent-server; al riavvio la prima transizione dopo il restart non ha
+#:           un «prima» osservato e resta muta. Sale a metadato del topic quando
+#:           il gateway esporrà una scrittura di meta generica: oggi
+#:           `topics_client` ha solo `create_topic`/`set_status`/`set_deadline`.
+_TIER_VISTO: dict[tuple[str, str], str] = {}
+
+
+def _tier_visto_reset() -> None:
+    """Dimentica i tier osservati (test, e riconfigurazioni che rifanno il mondo)."""
+    _TIER_VISTO.clear()
+
+
+def _coordinatore_al_tier(participants: list[str], tier: str) -> str | None:
+    """Chi coordinerebbe questa stanza a quel tier.
+
+    Non riapplica la regola del coordinatore: la CHIEDE a `_pick_responder`, che
+    la chiede a `coordinator_mod.pick`. Una seconda copia della precedenza
+    diverge al primo cambiamento, ed è esattamente il difetto che il docstring di
+    `agents/coordinator.py` denuncia — la ruling sta in una riga, e in una sola.
+    """
+    return getattr(_pick_responder(participants, tier, None,
+                                   coordinator_only=True), "name", None)
+
+
+async def _annuncia_cambio_coordinatore(tier: str, name: str, tier_real: str,
+                                        participants: list[str] | None = None) -> None:
+    """Il tier della stanza è cambiato e con esso chi coordina: lo dice in chat.
+
+    L'idoneità si ricalcola a ogni turno, quindi una stanza promossa oltre il
+    tier di clodia passa a `segretario` dal turno dopo — corretto, e finora
+    silenzioso: l'unica traccia era la `reason` del singolo messaggio
+    (`fallback-coordinatore dichiarato (segretario)`), che vede chi apre la
+    trace e non chi legge la chat. È il residuo A4 di clodia-platform#195
+    (clodia-platform#345), lo stesso «silence is the one option that must go»
+    sopravvissuto sul percorso del cambio di tier a stanza aperta.
+
+    Sta qui, accanto al ricalcolo del provider, e non nel router: il router vede
+    un turno per volta e non sa che il precedente aveva un coordinatore diverso.
+    Il confronto è fra il tier di PRIMA e quello di ADESSO, quindi il verso
+    opposto — tier abbassato, clodia torna a coordinare — è la stessa
+    transizione letta al contrario e non ha bisogno di un ramo suo.
+
+    `participants` lo passa chi ce l'ha già in mano; chi non ce l'ha lo fa
+    chiedere qui, e solo alla transizione: a tier invariato questa funzione
+    ritorna prima di qualunque await, cioè non costa una chiamata di rete per
+    turno.
+    """
+    chiave = (tier, name)
+    precedente = _TIER_VISTO.get(chiave)
+    if precedente == tier_real:
+        return
+    # Il claim sta PRIMA di ogni await, come per `_ANNOUNCED_IDS`: due spawn che
+    # partono insieme sulla stessa transizione la vedono in uno solo, e la stanza
+    # non riceve l'annuncio due volte.
+    _TIER_VISTO[chiave] = tier_real
+    if precedente is None:
+        # Prima volta che si passa di qui: non abbiamo osservato nessuna
+        # transizione, e raccontarne una sarebbe rumore a ogni riavvio.
+        return
+    annunciato = False
+    try:
+        if participants is None:
+            topic = await topics_client.async_open_topic(tier, name)
+            participants = list(((topic or {}).get("meta") or {}).get("participants") or [])
+        prima = _coordinatore_al_tier(participants, precedente)
+        dopo = _coordinatore_al_tier(participants, tier_real)
+        # `None` da una delle due parti vuol dire «nessun agente idoneo a quel
+        # tier»: è una stanza senza coordinatore, che ha già la sua voce in
+        # `_announce_provider_inadeguato` quando un turno non parte. Qui si
+        # racconta un passaggio di mano, e senza due mani non c'è passaggio.
+        if prima is None or dopo is None or prima == dopo:
+            return
+        testo = (f"🔁 **Il coordinamento di questa stanza passa da @{prima} a "
+                 f"@{dopo}.** Il tier è cambiato ({precedente} → {tier_real}) e con "
+                 f"esso chi è idoneo a coordinare: da ora i messaggi che non sono "
+                 f"per nessuno in particolare li prende @{dopo}.")
+        msg = await topics_client.async_post_message(tier, name, "system", testo,
+                                                     kind="system")
+        annunciato = True
+        await _channel_message(tier, name, "system", "system", message=msg)
+        activity_log.append(dopo, "coordinator_changed", {
+            "channel": f"{tier}/{name}",
+            "tier": tier_real,
+            "previous_tier": precedente,
+            "previous": prima,
+            "reason": "tier_changed",
+        })
+    except Exception as e:  # noqa: BLE001 — dirlo non deve rompere un turno
+        if not annunciato:
+            # La transizione non è stata raccontata: si rimette il tier di prima,
+            # così il turno successivo riprova invece di perderla per sempre.
+            _TIER_VISTO[chiave] = precedente
+        LOG.warning("cambio di coordinatore non annunciato su %s/%s (%s → %s): %s",
+                    tier, name, precedente, tier_real, e)
+
+
 async def _announce_refusal(tier: str, name: str, label: str) -> None:
     """Dice nel topic che il turno non parte, e perché.
 
@@ -4108,12 +4330,25 @@ async def post_channel_message(
     # arrivo (`human`/`ai`), e riusarlo per il tipo del TURNO metterebbe due cose
     # diverse sotto la stessa parola, in un punto dove sbagliarle si vede solo in
     # produzione.
-    turn_kind = "coordinamento" if routing.get("mode") == "coordinator" else (
+    #
+    # Il kind è PER RISPONDITORE, non per piano (clodia-platform#192). Il
+    # coordinatore si raggiunge da due strade: il ripiego semplice, che marca
+    # tutto il trace con `mode: "coordinator"`, e il batch multi-intento, dove
+    # gli altri responder del piano hanno matchato per davvero e lui no. Con un
+    # solo kind per piano la seconda strada consegnava `[ROUTING AUTOMATICO] …
+    # perché attinente al tuo dominio` proprio a chi è lì perché NIENTE ha
+    # matchato — e al segretario, il cui mandato rimanda al capitano quando è
+    # fuori dominio, faceva rimandare alla stanza il suo stesso coordinatore.
+    base_kind = "coordinamento" if routing.get("mode") == "coordinator" else (
         "routed" if routed else "plain")
+    coordinamento_per = routing.get("coordinator")
     for responder, assigned in plan:
         if skip_if_busy and _responder_busy(tier, name, responder.name):
             skipped.append(responder.name)
             continue
+        turn_kind = ("coordinamento"
+                     if coordinamento_per and responder.name == coordinamento_per
+                     else base_kind)
         if await _start_turn(
             tier, name, tier_real, responder, principal, assigned, turn_kind,
         ):
@@ -4483,9 +4718,9 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     messaggio arrivato dal canale non eredita autorità (barriera azioni, spec §5).
     Il responder è comunque scelto con le stesse regole SEAL/clearance della webui.
 
-    `responder_hint`: FORZA uno specifico agente come responder (usato dal motore
-    dei workflow, dove l'agente di ogni stadio è deciso dall'engine, non
-    dall'auto-picker). L'agente deve comunque avere clearance ≥ tier.
+    `responder_hint`: FORZA uno specifico agente come responder, quando a
+    sceglierlo è il chiamante e non l'auto-picker (es. il saluto di un agente
+    appena aggiunto al topic). L'agente deve comunque avere clearance ≥ tier.
 
     `trigger_author`: CHI ha innescato, quando lo si sa (es. il proxy che ha
     chiamato `trigger/internal`). Non tocca l'autorità — quella resta
@@ -4500,14 +4735,15 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     (percorsi interni, dove il nome lo mette il codice), sempre fail-closed.
 
     `directive`: istruzione operativa del turno iniettata ESPLICITAMENTE nel
-    prompt. Necessaria per i workflow: su sessione riusata il reused-turn prompt
-    filtra i messaggi il cui autore coincide col principal (il kickoff è authored
-    "workflow" == principal_hint), quindi senza questo l'agente non vedrebbe mai
-    l'istruzione dello stadio e resterebbe in attesa."""
+    prompt. Necessaria ogni volta che a innescare è il canale e non una persona:
+    su sessione riusata il reused-turn prompt filtra i messaggi il cui autore
+    coincide col principal (il kickoff è authored "channel" == principal_hint),
+    quindi senza questo l'agente non vedrebbe mai l'istruzione del turno e
+    resterebbe in attesa."""
     # Secondo dispatcher, stesso cronometro (#330): questo percorso non passa da
     # `_start_turn`, e strumentarne uno solo avrebbe dato numeri per la webui e
-    # nessuno per Telegram, trigger e workflow — che sono proprio i turni che
-    # nessuno guarda partire.
+    # nessuno per Telegram e i trigger — che sono proprio i turni che nessuno
+    # guarda partire.
     timing = turn_timing.begin("topic_turn")
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
@@ -4580,6 +4816,11 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     # turno.
     timing.mark("routing")
     chat_id = f"chan:{tier}:{name}:{responder.name}"
+    # Secondo dispatcher, stesso annuncio (clodia-platform#345): questo percorso
+    # non passa da `_start_turn`, e coprirne uno solo lascerebbe muti i turni di
+    # Telegram, trigger e workflow. Qui i partecipanti sono già in mano: si
+    # passano, così la transizione non costa una lettura in più al gateway.
+    await _annuncia_cambio_coordinatore(tier, name, tier_real, participants)
     if not await _provider_della_stanza_ancora_valido(tier, name, tier_real,
                                                      responder, chat_id):
         return None, None
