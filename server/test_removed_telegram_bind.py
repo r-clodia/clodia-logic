@@ -1,7 +1,9 @@
 """Il meccanismo A di Telegram non c'è più, e questo file è la prova che non torna.
 
 Fratello di `server/test_removed_workflow_scope.py`, stessa forma: là cadeva il
-namespace `workflows.`, qui cade tutto ciò che da questo lato nominava ancora il
+namespace dei verbi di run — che il file gemello nomina, e che qui non si scrive
+nemmeno per fare un esempio, perché quel guard sorveglia anche questo file —
+qui cade tutto ciò che da questo lato nominava ancora il
 **meccanismo A** — il «collegamento» di un gruppo a un topic
 (`topic.telegram_bind` / `topic.telegram_unbind`) e la notifica-su-menzione che
 ci stava sopra (`telegram.notify_pending` / `telegram.notify_ack`).
