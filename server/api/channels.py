@@ -854,15 +854,24 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         # a sapere se c'era un tag da servire e quindi la sola che possa dirlo.
         # Saltare la chiamata qui era il silenzio.
         #
-        # Una menzione PER BOLLA: se l'agente tagga @X nel primo blocco e di
-        # nuovo nell'ultimo, X riceve due turni. È la stessa regola dei
-        # messaggi umani (un messaggio, un turno) applicata a messaggi che ora
-        # sono più d'uno — non un caso nuovo, ma diventa comune con #243.
+        # Ogni bolla viene servita, ma un BERSAGLIO si sveglia una volta sola
+        # (clodia-logic#434). Le bolle sono la stessa risposta dello stesso
+        # agente nello stesso turno, spezzata per farla vedere prima: `@X` nel
+        # primo blocco e di nuovo nell'ultimo è la stessa convocazione ripetuta,
+        # e servirla due volte dava due spawn di X che ripartono dalla stessa
+        # storia e rivendicano lo stesso lavoro. «Un messaggio, un turno» resta
+        # la regola dei messaggi delle PERSONE — due messaggi umani sono due
+        # richieste — e questi non lo sono.
+        #
+        # Il set vive quanto il turno: un turno successivo che richiama @X è una
+        # richiesta nuova e deve poterlo svegliare.
+        serviti: set = set()
         for msg in posted_during_turn:
             try:
                 await _maybe_delegate(tier, name, responder,
                                       msg.get("text") or "", principal, hop,
-                                      origin_chain=getattr(chat, "origin", None))
+                                      origin_chain=getattr(chat, "origin", None),
+                                      serviti=serviti)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
         _ultimo = posted_during_turn[-1].get("text") or reply
@@ -1083,11 +1092,27 @@ async def _watch_report(tier: str, name: str, kind: str, subject: str,
 
 async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str,
                           principal: str | None, hop: int,
-                          origin_chain: list | None = None) -> None:
+                          origin_chain: list | None = None,
+                          serviti: set | None = None) -> None:
     """Gioco di squadra: se nel suo reply un agente tagga ALTRI agenti idonei, ne
     innesca il turno. @tag = incarico diretto e unica convocazione; $tag = una
     citazione, che non avvia nulla (R12). Salta i tag verso sé stesso o
-    non-partecipanti; il limite hop (_max_delegation_hops) evita loop."""
+    non-partecipanti; il limite hop (_max_delegation_hops) evita loop.
+
+    `serviti`: i bersagli già svegliati nello STESSO turno di `from_agent`
+    (clodia-logic#434). Da #243 una risposta è più bolle e questa funzione viene
+    chiamata una volta per bolla: senza memoria condivisa, `@X` nel primo blocco
+    e `@X` nell'ultimo sono due turni di X — due spawn dello stesso seed che
+    ripartono dalla stessa storia e possono rivendicare lo stesso lavoro. È la
+    stessa regola che `_distinct_by` applica già ai due tag dentro un testo
+    solo, estesa a un messaggio che ora è più d'uno.
+
+    Il set lo possiede il CHIAMANTE e dura quanto il turno: non è uno stato di
+    modulo. Un turno successivo che richiama lo stesso agente è una richiesta
+    nuova — una memoria più lunga renderebbe irraggiungibile chi è già stato
+    chiamato una volta. Assente (`None`), ogni chiamata è indipendente come
+    prima.
+    """
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         return
@@ -1402,7 +1427,10 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                  "(non avviati: %s)", from_agent, tier, name, plan[0][0],
                  ", ".join(t for t, _k in plan[1:]))
         plan = plan[:1]
-    started: list[str] = []
+    # Chi è già stato svegliato. Il set del CHIAMANTE quando c'è (le bolle di uno
+    # stesso turno lo condividono, #434), altrimenti uno nuovo che vive quanto
+    # questa chiamata — cioè il comportamento di prima.
+    started: set = serviti if serviti is not None else set()
     for tag, kind in plan:
         seed, want_spawn = _split_target(tag)
         # idoneità: _pick_responder col tag ritorna il delegato SOLO se idoneo al tier
@@ -1418,6 +1446,14 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                     f"partito: non è partecipante idoneo di questo canale, o il suo "
                     f"provider non copre il tier.",
                     tagged_by=from_agent, tier=tier_real, kind=kind))
+            else:
+                # Soppressa di proposito, e lo si DICE: un secondo `@X` nello
+                # stesso turno è la stessa convocazione ripetuta, non una
+                # mention caduta nel vuoto. Senza questa riga la differenza fra
+                # le due si legge solo contando gli spawn (#434).
+                LOG.info("delega da %s su %s/%s: @%s già svegliato in questo "
+                         "turno, nessun secondo turno", from_agent, tier, name,
+                         delegate.name)
             continue
         LOG.info("delega %s: %s → @%s (hop %d) su %s/%s",
                  kind, from_agent, delegate.name, hop + 1, tier, name)
@@ -1444,7 +1480,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                              # eredita la catena del delegante: è il punto esatto
                              # in cui l'autorità verrebbe amplificata
                              origin=list(origin_chain or [])):
-            started.append(delegate.name)
+            started.add(delegate.name)
 
 # I DM sono canali a 2 partecipanti (meta.kind="dm"): nome deterministico (i due
 # nomi ordinati) così "owner↔clodia" e "clodia↔owner" sono lo STESSO canale.
