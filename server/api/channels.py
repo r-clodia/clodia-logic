@@ -5920,6 +5920,58 @@ async def channel_announce_internal(tier: str, name: str, request: Request) -> d
     return {"announced": annunciato, "id": body.get("id")}
 
 
+@router.post("/clodia/channels/runtime-facts/internal")
+async def channel_runtime_facts_internal(request: Request) -> dict:
+    """Provider/modello/SEAL EFFETTIVI di un agente in UNO scope — per un
+    annuncio deterministico, non per un turno.
+
+    Nato per il messaggio di ingresso di `topic.add_participant` (clodia-tools,
+    `TopicService.add_participant`): quando entra un bot, il canale deve poter
+    dire con che provider/modello/SEAL lavorerà QUI — fatto, non impressione
+    lasciata al modello (Davide, 14 set 2026: «deve essere deterministico, no
+    random»). `clodia-tools` non ha questi dati (vivono nella risoluzione
+    runtime di `clodia-logic`); questa rotta glieli presta, la stessa identica
+    scelta già usata per il chip "provider · modello" della webui
+    (`_topic_provider`/`_topic_provider_model`, clodia-platform#310/#315) — due
+    letture indipendenti della stessa scelta avrebbero potuto divergere.
+
+    `is_bot=False` per un principal umano/proxy: non ha provider/modello, il
+    chiamante non deve appendere nulla. `eligible=False` quando
+    `_topic_runtime` non risolve nessun provider per questo tier — è il caso
+    che conta di più: un bot invitato in un topic il cui provider dichiarato
+    non regge il tier deve poterlo DIRE, non restare silenzioso o mostrare
+    valori come se fossero validi.
+    """
+    _paired_gateway(request)
+    body = await request.json()
+    tier = str(body.get("tier") or "").strip()
+    name = str(body.get("name") or "").strip()
+    agent = str(body.get("agent") or "").strip()
+    if not (tier and name and agent):
+        raise HTTPException(400, "tier, name, agent richiesti")
+    spec = registry.get_by_name(agent)
+    if spec is None:
+        raise HTTPException(404, f"agente '{agent}' non registrato")
+    if getattr(spec, "type", None) in ("human", "proxy"):
+        return {"is_bot": False}
+    topic = await topics_client.async_open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    tier_real = (topic.get("meta") or {}).get("tier", tier)
+    runtime = _topic_runtime(spec, tier_real)
+    if not runtime:
+        return {"is_bot": True, "eligible": False}
+    from .providers import provider_seal
+    pid = runtime.get("provider")
+    return {
+        "is_bot": True,
+        "eligible": True,
+        "provider": pid,
+        "model": runtime.get("model"),
+        "seal": provider_seal(pid) if pid else None,
+    }
+
+
 @router.post("/clodia/runtime/inspect-topic")
 async def runtime_inspect_topic(body: dict) -> dict:
     """Introspezione di UN topic per un agente steward (es. sysadmin) che lo chiama
