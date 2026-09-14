@@ -8,18 +8,25 @@ Comportamento (deciso con Davide):
 - il messaggero OSSERVA la chat e ne tiene un BUFFER di contesto (verbatim + handle
   autenticati), ma NON riversa ogni messaggio nel topic;
 - si ATTIVA solo quando un messaggio **interpella il bot** (menzione @clodia*/agente):
-  * mittente in WHITELIST → riporta nel topic il **contesto accumulato + la
-    richiesta** (un blocco unico, autore = istanza messaggero), poi innesca il
-    responder tra gli agenti reali;
-  * mittente NON in whitelist → il **messaggero risponde su Telegram** col rifiuto
+  * mittente fra gli INGRESS del topic (`tg:@handle`) → riporta nel topic il
+    **contesto accumulato + la richiesta** (un blocco unico, autore = istanza
+    messaggero), poi innesca il responder tra gli agenti reali;
+  * mittente NON vagliato → il **messaggero risponde su Telegram** col rifiuto
     «Non sono autorizzata ad interagire con questo utente»; NON tocca il topic;
 - la chiacchiera che non interpella il bot resta nel buffer (contesto), non entra
   da sola nel topic.
+
+L'autorizzazione del mittente è un INGRESS dello scope come ogni altro
+(clodia-platform#365): fino al 14 set 2026 viveva in un blocco JSON ad-hoc nella
+`MEMORY.md` del messaggero, invisibile al modello ingress/egress e non revocabile
+dall'owner con l'interfaccia standard. Con lei è sparita la distinzione
+`command`/`dialogue`, che nel codice non aveva mai avuto un effetto distinto.
 
 Trasporto MECCANICO: nessuna logica AI nel relay.
 """
 from __future__ import annotations
 
+import asyncio
 import json
 import logging
 import os
@@ -42,44 +49,41 @@ def _is_messenger(agent: str) -> bool:
     return a == "messaggero" or a.startswith("messaggero-")
 
 
-def _seed_of(name: str) -> str:
-    return re.sub(r"-\d+$", "", str(name or "").strip()) or "messaggero"
+# ── autorizzazione del mittente: un INGRESS dello scope come ogni altro ───────
+async def _is_vetted_tg_source(username, tier: str, topic: str) -> bool:
+    """True se `@username` è una fonte vagliata PER QUESTO topic.
 
+    Chi decide è il gateway (`egress.is_vetted_source`), interrogato con la query
+    di appartenenza `/internal/egress?uri=…&direction=ingress&scope=…`: la lista
+    vive sul volume che l'agent-server non monta di proposito (clodia-platform#80)
+    e la regola di match non è banale (wildcard di schema, liste per-scope,
+    perimetro). Rifarla qui sarebbe una seconda copia che diverge alla prima
+    modifica, e divergerebbe in silenzio — un'autorizzazione concessa per sbaglio
+    non la rilegge nessuno.
 
-# ── whitelist (nella seed memory del messaggero: blocco in MEMORY.md) ──────────
-_WL_RE = re.compile(
-    r"<!--\s*telegram-whitelist\s*-->\s*```(?:json)?\s*(\{.*?\})\s*```",
-    re.DOTALL | re.IGNORECASE)
+    Lo scope è quello del BINDING, non del chiamante: la chat è legata a QUEL
+    topic, e vagliare contro le fonti di un altro sbaglierebbe nella direzione
+    permissiva (stessa ragione di clodia-platform#364).
 
-
-def _parse_whitelist(text: str) -> dict:
-    m = _WL_RE.search(text or "")
-    if not m:
-        return {}
+    **Fail-closed** su gateway irraggiungibile o risposta non leggibile: un
+    guasto non autorizza nessuno. E un mittente senza handle non è vagliabile per
+    costruzione — `tg:` in ingresso registra `@handle`, non un uid — quindi è
+    rifiutato qui senza nemmeno chiedere, invece di esplodere più in basso.
+    """
+    handle = str(username or "").strip().lstrip("@")
+    if not handle:
+        return False
+    from .observe import _gw
     try:
-        data = json.loads(m.group(1))
-    except (json.JSONDecodeError, TypeError):
-        return {}
-    return {str(k): v for k, v in data.items() if v in ("command", "dialogue")}
-
-
-def _load_whitelist(instance: str | None) -> dict:
-    seed = _seed_of(instance or "messaggero")
-    base = os.environ.get("CLODIA_DATA", "/datadir")
-    mdir = os.path.join(base, "agents", seed, "memory")
-    try:
-        with open(os.path.join(mdir, "MEMORY.md"), encoding="utf-8") as f:
-            wl = _parse_whitelist(f.read())
-        if wl:
-            return wl
-    except OSError:
-        pass
-    try:  # retro-compat
-        with open(os.path.join(mdir, "telegram_whitelist.json"), encoding="utf-8") as f:
-            data = json.load(f)
-        return {str(k): v for k, v in data.items() if v in ("command", "dialogue")}
-    except (OSError, json.JSONDecodeError, AttributeError):
-        return {}
+        r = await asyncio.to_thread(
+            _gw, "/internal/egress",
+            {"uri": f"tg:@{handle}", "direction": "ingress", "scope": f"{tier}/{topic}"})
+        r.raise_for_status()
+        return bool(r.json().get("vetted"))
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("ingress di %s/%s per tg:@%s non verificabile (%s) → rifiuto",
+                    tier, topic, handle, str(e)[:120])
+        return False
 
 
 def _addresses_bot(text: str, participants: list) -> bool:
@@ -92,10 +96,6 @@ def _addresses_bot(text: str, participants: list) -> bool:
         if pl and f"@{pl}" in t:
             return True
     return False
-
-
-def _rights(whitelist: dict, uid) -> str | None:
-    return whitelist.get(str(uid)) if uid is not None else None
 
 
 # ── stato per-chat: seen (dedup) + buffer di contesto ─────────────────────────
@@ -164,7 +164,6 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
     topic = binding.get("topic")
     if not (tier and topic):
         return
-    whitelist = _load_whitelist(instance)
     try:
         meta = (await topics_client.async_open_topic(tier, topic)).get("meta", {})
     except Exception as e:  # noqa: BLE001
@@ -191,10 +190,11 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
         # REPLY a un suo messaggio (le reply valgono come menzioni dirette).
         if not (_addresses_bot(text, participants) or m.get("reply_to_bot")):
             continue
-        # messaggio che INTERPELLA il bot → PRIMO CHECK: mittente in whitelist?
-        uid = m.get("from_id")
-        disp = m.get("from") or m.get("from_username") or str(uid)
-        if _rights(whitelist, uid) in ("command", "dialogue"):
+        # messaggio che INTERPELLA il bot → PRIMO CHECK: mittente vagliato come
+        # fonte di QUESTO topic? L'handle è quello AUTENTICATO (campo `from`
+        # dell'API), mai ciò che il testo dichiara.
+        disp = m.get("from") or m.get("from_username") or str(m.get("from_id"))
+        if await _is_vetted_tg_source(m.get("from_username"), tier, topic):
             # SÌ → ACK immediato su Telegram + riporto nel topic (trigger)
             trigger = m
             try:
@@ -249,7 +249,6 @@ async def run_poll_cycle(timeout: int = 25) -> int:
     timeout, poi instrada i messaggi delle chat LEGATE ai rispettivi topic. Ritorna
     il numero di chat servite. Latenza quasi zero: appena arriva un messaggio, il
     getUpdates ritorna e si processa subito."""
-    import asyncio
     updates = await asyncio.to_thread(telegram_client.poll, timeout)
     if not updates:
         return 0
@@ -267,5 +266,4 @@ async def run_poll_cycle(timeout: int = 25) -> int:
             n += 1
         except Exception as e:  # noqa: BLE001
             LOG.warning("relay chat %s: %s", chat_id, e)
-    return n
     return n

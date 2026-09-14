@@ -1,26 +1,138 @@
 """Test della logica pura del relay telegram-proxy (binding istanza↔chat).
 
-Perni: autorizzazione per uid numerico autenticato; il bot risponde solo se
-interpellato; il contesto è verbatim con handle autenticati.
+Perni: l'autorizzazione del mittente è un INGRESS dello scope, chiesta al gateway
+e fail-closed (clodia-platform#365); il bot risponde solo se interpellato; il
+contesto è verbatim con handle autenticati.
 """
-import os
-import tempfile
+import asyncio
 import unittest
+from unittest.mock import patch
 
-from .channel_relay import (_addresses_bot, _context_block, _is_messenger, _line,
-                            _load_whitelist, _parse_whitelist, _rights, _seed_of)
+from . import channel_relay
+from .channel_relay import (_addresses_bot, _context_block, _is_messenger,
+                            _is_vetted_tg_source, _line)
 
 
-class RightsTests(unittest.TestCase):
-    def test_command_dialogue_unknown(self):
-        wl = {"76632169": "command", "5": "dialogue"}
-        self.assertEqual(_rights(wl, 76632169), "command")
-        self.assertEqual(_rights(wl, 5), "dialogue")
-        self.assertIsNone(_rights(wl, 999))
-        self.assertIsNone(_rights(wl, None))
+class _Risposta:
+    """La risposta del gateway, quel tanto che ne usa il relay."""
 
-    def test_uid_numeric_not_username(self):
-        self.assertIsNone(_rights({"76632169": "command"}, 42))
+    def __init__(self, payload=None, boom=None):
+        self._payload, self._boom = payload or {}, boom
+
+    def raise_for_status(self):
+        if self._boom:
+            raise self._boom
+
+    def json(self):
+        return self._payload
+
+
+class VettedSourceTests(unittest.TestCase):
+    """La domanda «questo mittente è autorizzato?» la fa il GATEWAY.
+
+    Qui si verifica che il relay la ponga nella forma giusta (uri `tg:@handle`,
+    direzione ingresso, scope del BINDING) e che non se la risponda da solo
+    quando la risposta non arriva.
+    """
+
+    def _chiedi(self, username, payload=None, boom=None):
+        self.chiamate = []
+
+        def _gw(path, params=None):
+            self.chiamate.append((path, params))
+            return _Risposta(payload, boom)
+
+        with patch("server.api.observe._gw", _gw):
+            return asyncio.run(_is_vetted_tg_source(username, "SEAL-1", "software-house"))
+
+    def test_a_vetted_handle_is_authorized(self):
+        self.assertTrue(self._chiedi("therealdadabit", {"vetted": True}))
+
+    def test_the_question_names_the_uri_the_direction_and_the_scope_of_the_binding(self):
+        """Lo scope è quello della chat legata, non del chiamante: vagliare
+        contro le fonti di un altro topic sbaglierebbe in permissivo (#364)."""
+        self._chiedi("@TheRealDadabit", {"vetted": True})
+        path, params = self.chiamate[0]
+        self.assertEqual(path, "/internal/egress")
+        self.assertEqual(params, {"uri": "tg:@TheRealDadabit", "direction": "ingress",
+                                  "scope": "SEAL-1/software-house"})
+
+    def test_an_unvetted_handle_is_refused(self):
+        self.assertFalse(self._chiedi("estraneo", {"vetted": False}))
+
+    def test_a_sender_without_a_handle_is_refused_without_even_asking(self):
+        """`tg:` in ingresso registra un `@handle`, non un uid: un mittente senza
+        handle non è vagliabile per costruzione, e va rifiutato senza esplodere."""
+        self.assertFalse(self._chiedi(None, {"vetted": True}))
+        self.assertFalse(self._chiedi("", {"vetted": True}))
+        self.assertEqual(self.chiamate, [])
+
+    def test_a_broken_gateway_authorizes_nobody(self):
+        """Fail-closed: un guasto non è un permesso. È la direzione d'errore che
+        non si vede, perché nessuno rilegge le autorizzazioni concesse."""
+        self.assertFalse(self._chiedi("therealdadabit", boom=RuntimeError("503")))
+
+    def test_a_reply_without_the_verdict_is_a_refusal(self):
+        self.assertFalse(self._chiedi("therealdadabit", {"mode": "gate"}))
+
+
+class RelayGateTests(unittest.TestCase):
+    """Il percorso vero: chi è vagliato innesca il turno, chi non lo è riceve il
+    rifiuto su Telegram e il topic non viene toccato."""
+
+    BINDING = {"instance": "messaggero-1", "tier": "SEAL-1", "topic": "software-house"}
+
+    def _run(self, vetted, testo="@clodia riassumi", username="therealdadabit"):
+        import tempfile
+        from pathlib import Path
+        inviati, postati, turni = [], [], []
+
+        async def _send(chat_id, text):
+            inviati.append(text)
+            return {}
+
+        async def _open(tier, name):
+            return {"meta": {"participants": ["clodia"]}}
+
+        async def _post(tier, name, autore, testo, kind=None):
+            postati.append(testo)
+
+        async def _turn(tier, name, meta, trigger_text=""):
+            turni.append(trigger_text)
+
+        async def _vetted(u, tier, topic):
+            return vetted
+
+        d = Path(tempfile.mkdtemp())
+        msg = {"message_id": 1, "from_id": 76632169, "from_username": username,
+               "from": username, "text": testo}
+        with patch.object(channel_relay, "_state_path", lambda c: d / "s.json"), \
+                patch.object(channel_relay, "_is_vetted_tg_source", _vetted), \
+                patch.object(channel_relay.telegram_client, "send_async", _send), \
+                patch.object(channel_relay.topics_client, "async_open_topic", _open), \
+                patch.object(channel_relay.topics_client, "async_post_message", _post), \
+                patch.object(channel_relay, "run_topic_turn", _turn):
+            asyncio.run(channel_relay._relay_chat("-5279916551", self.BINDING, [msg]))
+        return inviati, postati, turni
+
+    def test_a_vetted_sender_triggers_the_turn(self):
+        inviati, postati, turni = self._run(True)
+        self.assertTrue(any("Ricevuto" in t for t in inviati))
+        self.assertEqual(len(postati), 1)
+        self.assertIn("@clodia riassumi", postati[0])
+        self.assertEqual(turni, ["@clodia riassumi"])
+
+    def test_an_unvetted_sender_is_refused_and_the_topic_is_not_touched(self):
+        inviati, postati, turni = self._run(False)
+        self.assertEqual(inviati, [channel_relay._DENY])
+        self.assertEqual(postati, [])
+        self.assertEqual(turni, [])
+
+    def test_chatter_that_does_not_address_the_bot_stays_in_the_buffer(self):
+        """Nessuna regressione sulla precondizione: senza menzione non si
+        autorizza e non si rifiuta nulla — è contesto, non una richiesta."""
+        inviati, postati, turni = self._run(True, testo="guardate il doc")
+        self.assertEqual((inviati, postati, turni), ([], [], []))
 
 
 class AddressesBotTests(unittest.TestCase):
@@ -38,54 +150,19 @@ class AddressesBotTests(unittest.TestCase):
             "ciao @therealdadabit @matlemad ho aggiunto il doc", ["ophelia", "davide"]))
 
 
-class WhitelistTests(unittest.TestCase):
-    def _with_data(self, fn):
-        old = os.environ.get("CLODIA_DATA")
-        os.environ["CLODIA_DATA"] = tempfile.mkdtemp()
-        try:
-            return fn(os.environ["CLODIA_DATA"])
-        finally:
-            if old is None:
-                os.environ.pop("CLODIA_DATA", None)
-            else:
-                os.environ["CLODIA_DATA"] = old
+class NoWhitelistLeftTests(unittest.TestCase):
+    """Il blocco `<!-- telegram-whitelist -->` non ha più un lettore.
 
-    def test_missing_is_fail_closed(self):
-        self.assertEqual(self._with_data(lambda d: _load_whitelist("messaggero")), {})
+    Un residuo che resta in giro è peggio del meccanismo che sostituiva: qualcuno
+    lo aggiorna credendo di autorizzare qualcuno, e non succede niente.
+    """
 
-    def test_block_in_memory_md_primary(self):
-        def go(d):
-            md = os.path.join(d, "agents", "messaggero", "memory")
-            os.makedirs(md)
-            open(os.path.join(md, "MEMORY.md"), "w").write(
-                "# Memory\n\n<!-- telegram-whitelist -->\n```json\n"
-                '{"76632169": "command"}\n```\n')
-            return _load_whitelist("messaggero-2")
-        self.assertEqual(self._with_data(go), {"76632169": "command"})
-
-    def test_json_fallback(self):
-        def go(d):
-            md = os.path.join(d, "agents", "messaggero", "memory")
-            os.makedirs(md)
-            open(os.path.join(md, "telegram_whitelist.json"), "w").write(
-                '{"5": "dialogue", "9": "bogus"}')
-            return _load_whitelist("messaggero")
-        self.assertEqual(self._with_data(go), {"5": "dialogue"})
-
-
-class ParseWhitelistTests(unittest.TestCase):
-    def test_extracts(self):
-        md = "x\n<!-- telegram-whitelist -->\n```json\n{\"1\": \"command\"}\n```\ny"
-        self.assertEqual(_parse_whitelist(md), {"1": "command"})
-
-    def test_malformed_is_empty(self):
-        self.assertEqual(_parse_whitelist("<!-- telegram-whitelist -->\n```json\n{x}\n```"), {})
-
-
-class SeedTests(unittest.TestCase):
-    def test_strips_suffix(self):
-        self.assertEqual(_seed_of("messaggero-3"), "messaggero")
-        self.assertEqual(_seed_of("messaggero"), "messaggero")
+    def test_the_module_has_no_whitelist_reader(self):
+        import inspect
+        codice = [r for r in inspect.getsource(channel_relay).splitlines()
+                  if "telegram-whitelist" in r or "telegram_whitelist" in r
+                  or "_load_whitelist" in r or '"dialogue"' in r]
+        self.assertEqual(codice, [], f"residui del meccanismo vecchio: {codice}")
 
 
 class MessengerTests(unittest.TestCase):
