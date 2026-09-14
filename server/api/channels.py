@@ -17,11 +17,13 @@ un agente, vedi `_maybe_delegate`).
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import hmac
 import json
 import logging
 import os
 import re
+import time
 from collections import OrderedDict
 from collections.abc import Iterable
 from datetime import datetime, timezone
@@ -460,6 +462,80 @@ def _first_announcement(message_id: str) -> bool:
     _ANNOUNCED_IDS[message_id] = None
     while len(_ANNOUNCED_IDS) > _ANNOUNCED_MAX:
         _ANNOUNCED_IDS.popitem(last=False)
+    return True
+
+
+# Finestra dei trigger già serviti (clodia-logic#434). `trigger/internal` è
+# fire-and-forget: chi la chiama non sa se il turno è partito, quindi un retry —
+# o un loop di retry rotto lato proxy — ripresenta lo STESSO testo dopo pochi
+# secondi. Ogni chiamata fa ripartire un turno a freddo che rilegge la stessa
+# storia del canale e ri-decide le STESSE delegazioni: il testo finale viene
+# soppresso a valle (`risposta finale ... soppressa`), le `@menzioni` no, e due
+# spawn dello stesso seed rivendicano lo stesso lavoro. Il dedup del testo non
+# poteva vederlo: arriva dopo che il turno ha già agito.
+#
+# La chiave è (canale, chiamante, testo): non l'`id` di un messaggio, perché qui
+# il messaggio è già stato postato da qualcun altro e il body porta solo il testo.
+#
+# SHORTCUT: finestra in memoria, per processo, come `_ANNOUNCED_IDS`. Regge
+#           finché l'agent-server è il processo unico che spawna i turni — un
+#           doppione non può nascere altrove. Con più worker la finestra va dove
+#           va lo stato dei turni (Redis, o la tabella dei turni), non qui.
+_TRIGGERED: OrderedDict[tuple, float] = OrderedDict()
+_TRIGGERED_MAX = 256
+
+# Perché 90 secondi. Deve coprire il retry di chi non ha visto la risposta (i
+# doppioni osservati nella #434 stavano in 20-80s l'uno dall'altro) e restare
+# sotto il tempo in cui un canale cambia davvero: oltre, un trigger identico è
+# più probabilmente una richiesta nuova che una replica.
+_DEFAULT_TRIGGER_DEDUP_S = 90.0
+
+
+def _trigger_dedup_window() -> float:
+    """Finestra anti-replica di `trigger/internal` (`CLODIA_TRIGGER_DEDUP_S`).
+
+    `0` la spegne — di proposito: è la valvola per rimettere in moto un canale
+    senza un deploy, se un giorno la guardia sopprimesse un trigger legittimo.
+    Un valore illeggibile o negativo ricade sul default: questa funzione sta nel
+    percorso di un trigger, e un trigger non deve morire per una variabile
+    scritta male.
+    """
+    raw = (os.environ.get("CLODIA_TRIGGER_DEDUP_S") or "").strip()
+    if not raw:
+        return _DEFAULT_TRIGGER_DEDUP_S
+    try:
+        v = float(raw)
+    except ValueError:
+        return _DEFAULT_TRIGGER_DEDUP_S
+    return v if v >= 0 else _DEFAULT_TRIGGER_DEDUP_S
+
+
+def _first_trigger(tier: str, name: str, by: str, text: str) -> bool:
+    """True se questo trigger non replica uno appena servito (e lo registra).
+
+    Nessun lock: fra la lettura e la scrittura non c'è `await`, e la porta gira
+    nell'event loop dell'agent-server (stessa ragione di `_first_announcement`).
+
+    Un testo vuoto non arriva qui — l'endpoint lo rifiuta prima con 400.
+    """
+    finestra = _trigger_dedup_window()
+    if finestra <= 0:
+        return True
+    ora = time.monotonic()
+    # Scadute in testa: l'OrderedDict è in ordine di inserimento, quindi appena
+    # se ne incontra una ancora valida le successive lo sono per costruzione.
+    while _TRIGGERED:
+        chiave_vecchia, quando = next(iter(_TRIGGERED.items()))
+        if ora - quando <= finestra:
+            break
+        _TRIGGERED.pop(chiave_vecchia, None)
+    chiave = (tier, name, by,
+              hashlib.sha256(text.encode("utf-8", "replace")).hexdigest())
+    if chiave in _TRIGGERED:
+        return False
+    _TRIGGERED[chiave] = ora
+    while len(_TRIGGERED) > _TRIGGERED_MAX:
+        _TRIGGERED.popitem(last=False)
     return True
 
 
@@ -5839,6 +5915,16 @@ async def channel_trigger_internal(tier: str, name: str, request: Request) -> di
         LOG.info("trigger esterno su %s/%s (dichiarato '%s', firmato '%s')",
                  tier, name, _safe_name(by), _safe_name(firmato or ""))
         avviso = _untrusted_trigger_directive(by)
+    # REPLICA (clodia-logic#434). Lo stesso testo dallo stesso chiamante entro la
+    # finestra non fa ripartire un secondo turno: sarebbe lo stesso lavoro rifatto
+    # a freddo, e le sue @menzioni — a differenza del testo — non hanno un dedup a
+    # valle. La guardia sta QUI e non sulle deleghe perché a valle il turno è già
+    # girato: avrebbe speso token, chiamato tool e postato.
+    if not _first_trigger(tier, name, by, text):
+        LOG.info("trigger duplicato su %s/%s (dichiarato '%s'): stesso testo entro "
+                 "%.0fs, nessun turno avviato", tier, name, _safe_name(by),
+                 _trigger_dedup_window())
+        return {"triggered": False, "by": by, "kind": kind, "duplicate": True}
     _spawn_bg(run_topic_turn(tier, name, meta, trigger_text=text,
                              principal_hint="channel",
                              trigger_author=_safe_name(by),
