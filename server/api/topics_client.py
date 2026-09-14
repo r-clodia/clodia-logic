@@ -130,24 +130,6 @@ def create_topic(tier: str, name: str, meta: dict) -> dict:
 
 
 
-def telegram_binding(tier: str, name: str, payload: dict) -> dict:
-    url = f"{_base()}/{tier}/{name}/telegram"
-    try:
-        r = _gw_http.post(url, headers=_headers(), json=payload, timeout=_HTTP_TIMEOUT_ESTERNO)
-    except requests.RequestException as e:
-        raise TopicsClientError(f"gateway telegram irraggiungibile: {e}") from e
-    if r.status_code >= 400:
-        # Il messaggio del gateway arriva INTATTO: dice quale delle cinque
-        # verifiche ha fermato il collegamento (cap, url pubblico, bot fuori dal
-        # gruppo, mappa vuota, nome sconosciuto), e ognuna ha un rimedio diverso.
-        try:
-            det = (r.json() or {}).get("error") or r.text[:200]
-        except Exception:  # noqa: BLE001
-            det = r.text[:200]
-        raise TopicsClientError(det)
-    return r.json()
-
-
 def read_topic_logo(tier: str, name: str) -> tuple[bytes, str]:
     """I byte del logo, col tipo che il gateway ha rilevato al caricamento.
 
@@ -490,7 +472,6 @@ async_put_file = _async_of("put_file")
 async_set_participant = _async_of("set_participant")
 async_mcp_clients = _async_of("mcp_clients")
 async_clear_taint = _async_of("clear_taint")
-async_telegram_binding = _async_of("telegram_binding")
 async_topic_logo = _async_of("topic_logo")
 async_read_topic_logo = _async_of("read_topic_logo")
 async_set_status = _async_of("set_status")
