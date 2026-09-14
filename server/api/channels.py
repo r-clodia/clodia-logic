@@ -3514,10 +3514,47 @@ def _topic_agents_md(tier: str, name: str,
     return text, authoritative
 
 
+def _collassa_avvisi_router(messages: list[dict]) -> list[dict]:
+    """Un avviso del router ripetuto identico resta UNA volta: l'ultima.
+
+    La finestra di storico è di 15 righe (`_history_prompt`), ed è l'UNICO
+    contesto che un turno riceve. Gli avvisi del router — «X è stato taggato ma
+    non partecipa a questo canale», il limite catena, il dialogo di routing —
+    sono messaggi di SERVIZIO: informano il mittente, non portano conversazione.
+    Ma occupano una riga ciascuno come qualunque altro messaggio, e si generano
+    in ciclo: basta che qualcuno ritagghi un non-partecipante perché ne compaia
+    un altro, identico byte per byte.
+
+    Misurato in `SEAL-1/software-house` il 14/09/2026: **dieci** delle quindici
+    righe erano lo stesso avviso su `@davide`. Le cinque rimaste non bastavano a
+    contenere l'assegnazione di cui il turno doveva occuparsi, che era scorsa
+    fuori dalla finestra. Il costo non è il rumore: è che un avviso di servizio
+    **sfratta la conversazione vera** dal solo contesto che l'agente legge — e
+    lo sfratto peggiora proprio quando il ciclo va avanti, cioè quando il
+    contesto servirebbe di più.
+
+    Si tiene l'occorrenza più recente e si scartano le precedenti IDENTICHE:
+    l'informazione («quel tag non è arrivato») vale una volta sola, e la copia
+    che sopravvive è quella che riflette lo stato corrente. Avvisi del router
+    con testo DIVERSO restano tutti: sono fatti diversi.
+    """
+    visti: set[str] = set()
+    tenuti: list[dict] = []
+    for m in reversed(messages):
+        if (m or {}).get("author") == _ROUTING_DIALOG_AUTHOR:
+            testo = ((m or {}).get("text") or "").strip()
+            if testo in visti:
+                continue
+            visti.add(testo)
+        tenuti.append(m)
+    tenuti.reverse()
+    return tenuti
+
+
 def _history_prompt(name: str, tier: str, messages: list[dict],
                     topic_agents_md: str | None = None,
                     agents_md_authoritative: bool = False) -> str:
-    lines = [_fmt_msg(m) for m in messages[-15:]]
+    lines = [_fmt_msg(m) for m in _collassa_avvisi_router(messages)[-15:]]
     topic_boot = ""
     if topic_agents_md and agents_md_authoritative:
         # Control-plane: scritto solo attraverso un verbo gated, quindi da chi
@@ -3587,7 +3624,19 @@ def _reused_turn_prompt(tier: str, name: str, responder: str, principal: str,
     unseen = msgs[last_own + 1:]
     # C'è un messaggio non-visto di un TERZO (né il responder né chi ha appena
     # scritto)? → il responder deve vederlo per non perdere il filo multi-agente.
-    if any(_chi(m.get("author")) not in (mio, principal) for m in unseen):
+    #
+    # Il `router` NON è un terzo partecipante: i suoi messaggi sono avvisi di
+    # SERVIZIO rivolti a chi ha taggato, non conversazione rivolta al responder.
+    # Contandolo qui, un avviso di non-recapito comparso dopo l'ultimo intervento
+    # del responder era sufficiente a sostituire il `fallback` (il messaggio a cui
+    # rispondere davvero) con lo storico intero — che si chiude con «Rispondi
+    # all'ultimo messaggio», e l'ultimo messaggio era l'avviso. Il turno veniva
+    # così puntato su una bolla di servizio a cui non c'è niente da rispondere:
+    # il rimedio che manca (l'invito, o la decisione dell'owner) è fuori dalla
+    # stanza per costruzione. Escluderlo non nasconde nulla, perché se c'è
+    # davvero del filo da recuperare lo porta un messaggio di un terzo VERO.
+    if any(_chi(m.get("author")) not in (mio, principal, _ROUTING_DIALOG_AUTHOR)
+           for m in unseen):
         return _history_prompt(name, tier, _context_messages(unseen))
     return fallback
 
