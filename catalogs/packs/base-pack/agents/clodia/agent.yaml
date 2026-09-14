@@ -32,8 +32,8 @@ sandbox:
 
 # bot di coordinamento: primitive di piattaforma + pack first-party di ruolo.
 # SENZA `comms-pack` (agents-notebook A7, clodia-platform#198): la posta è il
-# mestiere del CORRIERE. Le quattro skill del pack — `check-email`,
-# `mention-relay`, `telegram-1to1`, `helpdesk` — restano dichiarate una per una
+# mestiere del CORRIERE. Le skill del pack — `check-email`, `telegram-1to1`,
+# `helpdesk` — restano dichiarate una per una
 # su `messaggero` e `sysadmin`, che le hanno per ruolo; qui arrivavano solo dal
 # wildcard, e nessuna riga del system-prompt di clodia le nomina. Non è una
 # perdita di capacità: `email.send` è un VERBO (vedi `tool_permissions`), non

@@ -204,9 +204,10 @@ async def _lifespan(app: FastAPI):
                 # ha nascosto per un giorno la causa vera di un altro guasto,
                 # perché chi cercava un colpevole nei log trovava questi.
                 #
-                # Il binding si crea a runtime (`topic.telegram_bind`), quindi si
-                # ricontrolla invece di uscire: il relay riparte da sé entro
-                # mezzo minuto da quando una chat viene legata.
+                # Il binding si crea a runtime (`telegram.listen`, gated sugli
+                # ingress del topic bersaglio), quindi si ricontrolla invece di
+                # uscire: il relay riparte da sé entro mezzo minuto da quando una
+                # chat viene legata.
                 if not _tb.load():
                     if not senza_binding:
                         LOG.info("channel relay: nessuna chat legata a un topic — "

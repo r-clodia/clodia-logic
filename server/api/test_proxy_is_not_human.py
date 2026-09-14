@@ -233,6 +233,15 @@ class TriggerInternalTests(unittest.IsolatedAsyncioTestCase):
     turno non sa né chi lo ha svegliato né che il contenuto viene da fuori.
     """
 
+    def setUp(self) -> None:
+        # La finestra anti-replica di clodia-logic#434 è stato di MODULO, e i
+        # test qui sotto innescano tutti lo stesso testo: senza questa pulizia
+        # il secondo test del file verrebbe soppresso come doppione del primo.
+        # In esercizio non è lo stesso caso — lì due trigger identici a pochi
+        # secondi SONO lo stesso lavoro — ma un test parte da un canale pulito.
+        ch._TRIGGERED.clear()
+        self.addCleanup(ch._TRIGGERED.clear)
+
     async def _trigger(self, by: str, firmato: str | None = None) -> tuple[dict, dict]:
         """`firmato` = identità VERIFICATA dalla CA (Bearer ckt1), `by` = ciò che
         il chiamante DICHIARA nel body. Sono due cose diverse, ed è tutto il

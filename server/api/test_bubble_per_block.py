@@ -166,10 +166,15 @@ class BubblesArePostedAsTheyAppearTests(unittest.IsolatedAsyncioTestCase):
         self.assertNotIn("primo\n\nsecondo", [t for _a, t, _k in self.posts])
 
     async def test_every_bubble_gets_its_mention_served(self) -> None:
-        """Una menzione per bolla. Se l'agente tagga @X nel primo blocco e di
-        nuovo nell'ultimo, X riceve due turni: è la regola dei messaggi umani
-        (un messaggio, un turno) applicata a messaggi che ora sono più d'uno.
-        Dichiarato in un test perché con #243 smette di essere un caso raro."""
+        """Nessuna bolla resta senza il suo giro di delega: il ciclo le serve
+        TUTTE, e qui `_maybe_delegate` è una spia, quindi si contano le chiamate.
+
+        Quante ne sopravvivono è un'altra domanda, e la decide `_maybe_delegate`:
+        da clodia-logic#434 le bolle di uno stesso turno condividono la memoria
+        dei bersagli già svegliati, quindi `@X` in due bolle è UN turno di X
+        (`test_434_delega_una_per_turno`). Prima erano due, ed era dichiarato
+        qui come «un messaggio, un turno» — regola vera per i messaggi delle
+        persone, non per le bolle, che sono la stessa risposta spezzata."""
         with patch.dict(os.environ, {"CLODIA_BUBBLE_PER_BLOCK": "1"}):
             await self._run(_Chat(["@worker comincia tu", "ho finito, @worker chiudi"]))
         self.assertEqual(["@worker comincia tu", "ho finito, @worker chiudi"],
