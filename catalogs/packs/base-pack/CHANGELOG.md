@@ -9,6 +9,22 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.20.0] — 2026-09-16
+- **Nuovo principio 7 in `platform-core.md`: sinteticità.** Richiesta diretta
+  di Davide — le risposte degli agenti, in particolare quelli su provider
+  Anthropic, tendono a essere verbose oltre il necessario. Il principio chiede
+  la minima estensione che basta a essere corretto e completo (niente
+  premesse, niente alternative scartate non richieste), senza sacrificare il
+  rigore sulle domande tecniche: l'approfondimento resta disponibile ma solo
+  su richiesta esplicita dell'interlocutore. Numerato **7** (ultima priorità):
+  cede sempre ai principi 1-6, in particolare al 5 (igiene dell'output), da
+  cui è distinto — il 5 vieta di esporre il ragionamento, il 7 regola la
+  lunghezza della risposta stessa. `platform-core` è referenziato da
+  `constitution:` in quasi tutti i seed non minimali del catalogo (base-pack +
+  business-pack + it-pack + studio-legale + studio-commercialista): la
+  modifica si propaga automaticamente al prossimo redeploy, senza toccare i
+  singoli `agent.yaml`.
+
 ## [7.19.0] — 2026-09-16
 - **`messaggero` passa a `glm-5.2`** (era `gpt-oss-120b`), su richiesta
   dell'owner — «upgrade del seed messaggero ad un modello più potente»
