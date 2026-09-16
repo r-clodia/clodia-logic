@@ -17,12 +17,27 @@ constitution: platform-core
 # Runtime segue il provider effettivo: scaleway→opencode, aws-region-eu→claude.
 # agent_sdk è il default/fallback quando nessun provider risolve.
 agent_sdk: opencode
-# Messaggero è un dispacciatore: non serve ragionamento pesante, basta affidabilità
-# nel tool-use. Primario: gpt-oss-120b (open, sovrano) su scaleway via OpenCode.
-model: gpt-oss-120b
+# Messaggero è un dispacciatore: il mestiere è affidabilità nel tool-use, non
+# ragionamento pesante. Primario: glm-5.2 (open, sovrano) su scaleway via
+# OpenCode — dal 16 set 2026 (clodia-platform#370), al posto di gpt-oss-120b.
+# Cosa cambia davvero: capacità di tool-use superiore e finestra NATIVA da 1M
+# contro i 128k di gpt-oss-120b, cioè il thread email lungo che prima non ci
+# stava. Il provider non cambia (scaleway serve già `glm*` nel suo catalogo),
+# quindi la sovranità del dato resta quella di prima: SEAL-3, nessun SEAL-1.
+model: glm-5.2
+# Il reasoning di glm-5.2 è SPENTO, e non per risparmio: su un esecutore di tool
+# i turni reasoning non convergono — iterano finché scade il read timeout e la
+# sessione sembra piantata (vedi `_opencode_reasoning_effort` in
+# sdk_runtime/session.py, che per questo lo forza a "none" quando il seed tace).
+# È dichiarato QUI e non lasciato a quel default perché quel ramo è una rete per
+# i pack importati vecchi, non una decisione di questo seed: un default può
+# cambiare, e il giorno che cambiasse il messaggero comincerebbe a pensare senza
+# che nessuno l'abbia scelto. Chi vuole più "potenza" alzi questo campo — è la
+# riga da toccare, e tocca una sola cosa.
+reasoning_effort: none
 # Provider: SOLO SEAL≥2 (= clearance di Messaggero); le comunicazioni trasportano
 # documenti cross-topic fino a SEAL-2, mai su provider SEAL-1. Catena di fallback
-# cross-SDK: scaleway (SEAL-3, gpt-oss via OpenCode) → aws-region-eu (SEAL-2,
+# cross-SDK: scaleway (SEAL-3, glm-5.2 via OpenCode) → aws-region-eu (SEAL-2,
 # haiku via Bedrock/claude, override in provider_models). Nessun SEAL-1.
 providers: [scaleway, aws-region-eu]
 provider_models: {aws-region-eu: claude-haiku-4-5}

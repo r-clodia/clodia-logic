@@ -264,3 +264,67 @@ class NativeToolsFormTests(unittest.TestCase):
                 self.assertEqual(
                     nt.redundant_declarations(y.get("native_tools")), [],
                     f"'{nome}': native_tools ridondante")
+
+
+class EngineDeclarationTests(unittest.TestCase):
+    """Il motore dichiarato dal seed deve essere servibile ED essere quello che
+    la stanza mostra (clodia-platform#370).
+
+    Un seed dichiara tre cose che devono stare insieme: un `model`, i
+    `providers` che possono servirlo e un `agent_sdk` che decide la finestra di
+    contesto. Nessuna delle tre si rompe rumorosamente quando diverge dalle
+    altre: un modello che nessun provider dichiarato serve fallisce al primo
+    turno (`ProviderModelNotFoundError`, visto su venere il 10 ago 2026), e un
+    modello ignoto alla tabella di `model_context` non fallisce affatto —
+    ripiega sulla famiglia e mostra in stanza un numero SBAGLIATO, che è il
+    difetto peggiore dei due perché nessuno lo vede.
+
+    Il caso concreto della #370: `glm-5.3` passerebbe il glob `glm*` di Scaleway
+    e cadrebbe sul fallback di famiglia a 200k, pur essendo — se esiste — un
+    modello di cui nessuno qui conosce la finestra. Per questo il controllo sul
+    messaggero pinna il NUMERO, non la presenza: chi cambia il modello deve
+    tornare su `model_context` e dichiararne la finestra vera.
+    """
+
+    def setUp(self) -> None:
+        self.seeds = _seeds()
+        self.messaggero = self.seeds["messaggero"]
+
+    def test_il_messaggero_gira_su_glm_5_2(self) -> None:
+        """#370: upgrade da `gpt-oss-120b`. Non 5.3: non è verificabile da qui
+        (nessun riferimento nel motore, finestra non mappata)."""
+        self.assertEqual("glm-5.2", self.messaggero.get("model"))
+
+    def test_il_reasoning_del_messaggero_e_spento_ESPLICITAMENTE(self) -> None:
+        """`_opencode_reasoning_effort` spegne già il reasoning di glm-5.2 quando
+        il seed tace — ma è un default del runtime, scritto per i pack importati
+        vecchi, e un default può cambiare. Il messaggero è un esecutore di tool:
+        la scelta è sua e va detta nel file, dove chi legge il seed la vede."""
+        self.assertEqual("none", self.messaggero.get("reasoning_effort"))
+
+    def test_la_finestra_del_messaggero_e_quella_del_modello_dichiarato(self) -> None:
+        from .model_context import model_context_window
+        self.assertEqual(
+            1_000_000,
+            model_context_window(self.messaggero.get("model"),
+                                 self.messaggero.get("agent_sdk")),
+            "finestra non mappata per questo modello: aggiorna model_context, "
+            "non lasciare che ripieghi sul fallback di famiglia")
+
+    def test_ogni_seed_e_servibile_da_almeno_un_suo_provider(self) -> None:
+        """Il glob sta nel catalogo dei provider e il confronto pure: qui si
+        riusa `provider_supports_model`, non se ne riscrive una seconda copia."""
+        from ..api.providers import provider_effective_model, provider_supports_model
+        for nome, y in self.seeds.items():
+            provider = y.get("providers") or []
+            if not (y.get("model") and provider):
+                continue          # archseed non gira; ophelia non dichiara provider
+            with self.subTest(seed=nome):
+                servito = [p for p in provider
+                           if provider_supports_model(
+                               p, provider_effective_model(
+                                   p, y.get("model"), y.get("provider_models")))]
+                self.assertTrue(
+                    servito,
+                    f"'{nome}': nessuno dei provider dichiarati serve "
+                    f"'{y.get('model')}'")
