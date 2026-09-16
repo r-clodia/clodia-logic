@@ -57,7 +57,7 @@ def _reply_text(text: str, n: int = _REPLY_MAX) -> str:
     """
     s = (text or "").strip()
     return s[:n] + ("…" if len(s) > n else "")
-from ..core import turn_timing
+from ..core import loop_lag, turn_timing
 from ..core.events import bus
 from ..core.models import Event, ClodiaStatus
 from ..observability import langfuse_attributes, langfuse_observation, trace_io
@@ -229,6 +229,17 @@ QUERY_TIMEOUT         = 90         # invio prompt al subprocess: oltre = client 
 # subprocess non riesce a cancellare la __anext__). Se per WATCHDOG_SILENCE
 # secondi non arriva NESSUN evento SDK, chiude forzatamente il client → la
 # lettura appesa erra e il turno termina/recupera, invece di restare bloccato.
+#
+# TRE MINUTI, E NON SI ABBASSANO (clodia-platform#358). Il ticket chiedeva una
+# soglia più aggressiva perché un turno era rimasto appeso sette ore e mezza.
+# Ma la soglia non c'entra: nei log di esercizio questo watchdog scatta a 187s,
+# 191s e 192s (15 set 2026 ×2, 16 set 2026), cioè al primo tick utile dopo i
+# 180. Quella notte non ha funzionato perché non è GIRATO — e con lui è stato
+# zitto anche COLLECT_CHUNK_TIMEOUT, che è un timer indipendente. Due timer
+# asincroni diversi fermi insieme sono un event loop bloccato, non due tarature
+# sbagliate: il numero qui sotto poteva essere 30 e sarebbe cambiato nulla.
+# Abbassarlo avrebbe però ucciso turni lenti legittimi — una perdita certa in
+# cambio di un guadagno inesistente. Chi lo blocca lo misura: `core.loop_lag`.
 WATCHDOG_SILENCE = int(os.environ.get("CLODIA_TURN_WATCHDOG_SILENCE", "180"))
 WATCHDOG_TICK    = 15
 #: RITIRATA il 7 ago 2026. Era la chat creata al boot, `topic: null`, protetta
@@ -1204,6 +1215,8 @@ class ChatSession:
         self._current_turn_task: Optional[asyncio.Task] = None
         self._last_event_at: float = 0.0   # ts ultimo evento SDK del turno (per il watchdog)
         self._watchdog_fired: bool = False  # il watchdog ha ucciso il subprocess di questo turno
+        #: Perché l'ha ucciso, nelle parole che leggerà la persona nel canale.
+        self._watchdog_reason: str = ""
         self._last_usage: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
         # occupazione ATTUALE della finestra di contesto (token dell'ultimo turno).
@@ -1595,6 +1608,7 @@ class ChatSession:
                         raise
                     self._last_event_at = asyncio.get_event_loop().time()
                     self._watchdog_fired = False
+                    self._watchdog_reason = ""
                     self._current_turn_task = asyncio.create_task(self._collect_response())
                     _watchdog = asyncio.create_task(self._turn_watchdog(self._current_turn_task))
                     try:
@@ -1616,8 +1630,12 @@ class ChatSession:
                     except asyncio.CancelledError:
                         # distingui interruzione utente da kill del watchdog
                         wd = self._watchdog_fired
-                        note = ("⏱ Turno interrotto dal watchdog: il subprocess non rispondeva "
-                                "(nessun evento per troppo tempo). Riprova."
+                        # La misura che il watchdog ha già fatto arriva fino a
+                        # qui, che è dove qualcuno la legge. Prima diceva «il
+                        # subprocess non rispondeva»: un'attribuzione, non
+                        # un'osservazione, e nella #358 quella sbagliata.
+                        note = ((f"⏱ Turno interrotto dal watchdog: "
+                                 f"{self._watchdog_reason or 'subprocess silente'}. Riprova.")
                                 if wd else "⏹ Inferenza interrotta dall'utente.")
                         reason = "watchdog_kill" if wd else "user_interrupt"
                         generation.update(output=trace_io(note),
@@ -1631,8 +1649,13 @@ class ChatSession:
                         ))
                         await self._set_status(ClodiaStatus.IDLE)
                         return note
-                    except asyncio.TimeoutError:
-                        note = (f"⏱ Timeout: nessun evento SDK per {COLLECT_CHUNK_TIMEOUT // 60}min "
+                    except asyncio.TimeoutError as e:
+                        # `str(e)` dice QUALE dei due timeout è scattato e con
+                        # quali numeri. La vecchia nota li elencava entrambi
+                        # separati da un «o»: chi la leggeva restava con la
+                        # stessa domanda con cui era arrivato.
+                        note = (f"⏱ Timeout: {e}." if str(e) else
+                                f"⏱ Timeout: nessun evento SDK per {COLLECT_CHUNK_TIMEOUT // 60}min "
                                 f"(o superato il cap di {COLLECT_MAX_SECONDS // 3600}h).")
                         generation.update(output=trace_io(note), metadata={"status": "timeout"})
                         await self._record({"role": "system", "content": note})
@@ -1702,6 +1725,24 @@ class ChatSession:
         task.cancel()
         return True
 
+    def _silence_diagnosis(self, silence: float) -> str:
+        """Il silenzio, e **di chi** è la colpa (clodia-platform#358).
+
+        «Nessun evento SDK da Xs» descrive ciò che si è osservato da qui dentro,
+        e lo presenta come un fatto sul subprocess. Sono due cose diverse: se a
+        fermarsi è stato l'event loop, gli eventi possono esserci stati e non
+        esserci stato nessuno ad ascoltarli. La differenza decide da che parte
+        si cerca il guasto la volta dopo — e nella #358 ha mandato la ricerca
+        per sette ore dalla parte sbagliata.
+        """
+        base = f"nessun evento SDK da {silence:.0f}s"
+        bloccato = loop_lag.stall_since(self._last_event_at)
+        if bloccato <= 0:
+            return base
+        return (f"{base}, ma l'event loop è rimasto bloccato {bloccato:.0f}s "
+                f"nella stessa finestra: il silenzio può essere di chi ascolta, "
+                f"non di chi parla")
+
     async def _turn_watchdog(self, turn_task: "asyncio.Task") -> None:
         """Watchdog del turno, indipendente da asyncio.timeout. Se per
         WATCHDOG_SILENCE secondi non arriva NESSUN evento SDK, chiude
@@ -1715,8 +1756,9 @@ class ChatSession:
                     return
                 silence = asyncio.get_event_loop().time() - self._last_event_at
                 if silence >= WATCHDOG_SILENCE:
-                    LOG.error("watchdog %s: nessun evento SDK da %.0fs → chiudo il subprocess",
-                              self.chat_id, silence)
+                    self._watchdog_reason = self._silence_diagnosis(silence)
+                    LOG.error("watchdog %s: %s → chiudo il subprocess",
+                              self.chat_id, self._watchdog_reason)
                     self._watchdog_fired = True
                     ctx = self._client_ctx
                     self._client = None
@@ -1766,7 +1808,13 @@ class ChatSession:
         while True:
             elapsed = asyncio.get_event_loop().time() - start
             if elapsed >= COLLECT_MAX_SECONDS:
-                raise asyncio.TimeoutError()
+                # Il messaggio non è decorazione: `_announce_failure` pubblica
+                # `repr(err)` nel canale, e di un'eccezione senza argomenti il
+                # repr è il nome della classe — `TimeoutError()`, che è quanto
+                # la persona ha letto nella #358 dopo una notte di attesa.
+                raise asyncio.TimeoutError(
+                    f"superato il cap di turno: {elapsed:.0f}s "
+                    f"(massimo {COLLECT_MAX_SECONDS // 3600}h)")
             chunk_timeout = min(COLLECT_CHUNK_TIMEOUT, COLLECT_MAX_SECONDS - elapsed)
             try:
                 async with asyncio.timeout(chunk_timeout):
@@ -1788,7 +1836,10 @@ class ChatSession:
                 await _emit_blocks()
                 break
             except asyncio.TimeoutError:
-                raise
+                # Stesso motivo del cap qui sopra, con in più l'attribuzione:
+                # se il loop era fermo, il silenzio non è del subprocess.
+                raise asyncio.TimeoutError(
+                    self._silence_diagnosis(chunk_timeout)) from None
 
             self._last_event_at = asyncio.get_event_loop().time()  # progresso → watchdog quieto
             # E anche `last_activity`, che è ciò che l'API legge per dire se una

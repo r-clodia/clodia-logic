@@ -16,6 +16,7 @@ from fastapi.middleware.cors import CORSMiddleware
 from . import __version__, instance_profile
 from .api import admin, agent_registry, agents, auth, catalog, channel_aliases, channels, connectors, datastores, files, gate, health, human_auth, observe, packs, plugins, profile, providers, spawns, topics, transfers
 from .config import HOST, PORT
+from .core import loop_lag
 from .scheduler import api as jobs_api
 from .scheduler import (
     init_db as scheduler_init_db,
@@ -273,11 +274,17 @@ async def _lifespan(app: FastAPI):
                 except Exception as e:  # noqa: BLE001
                     LOG.warning("sweep processi runtime orfani: %s", e)
     reaper_task = asyncio.create_task(_idle_reaper_loop())
+    # Battito dell'event loop (clodia-platform#358): misura la deriva e logga i
+    # blocchi. Uno strumento che nessuno accende non esiste — e il guasto che
+    # deve cogliere è raro, quindi non ci si accorgerebbe che è spento fino alla
+    # notte in cui serviva.
+    lag_task = asyncio.create_task(loop_lag.heartbeat())
 
     yield
     # --- shutdown ---
     relay_task.cancel()
     reaper_task.cancel()
+    lag_task.cancel()
     try:
         shutdown_scheduler()
     except Exception as e:  # pragma: no cover
