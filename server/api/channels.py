@@ -1241,6 +1241,28 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                      from_agent, tier, name, len(fuori) - len(noti))
         if not noti:
             return          # niente da servire e niente da dire: nessun rumore
+        # UN AVVISO PER TURNO, non per bolla (clodia-platform#367). Da #243 una
+        # risposta è più bolle e questa funzione gira una volta per bolla:
+        # `@davide` in tre blocchi produceva tre avvisi identici. Misurati cinque
+        # in 1,1 secondi dallo stesso spawn il 14 set 2026.
+        #
+        # La memoria è quella che c'è già — `serviti`, per-turno (#434) — e non
+        # una nuova per chiave `(mittente, bersaglio, canale)`: quella è la
+        # chiave sbagliata (il mittente cambia a ogni giro) e la vita sbagliata
+        # (un ritag domani è un fatto NUOVO, e chi lo scrive ha diritto di sapere
+        # che quel nome non è ancora nella stanza). Prefisso `fuori:` perché
+        # nello stesso insieme convivono i bersagli SVEGLIATI: i due non possono
+        # collidere — un nome è partecipante o non lo è — ma chi legge non deve
+        # doverlo dedurre.
+        if serviti is not None:
+            noti = [t for t in noti
+                    if f"fuori:{_seed_name(t)}" not in serviti]
+            if not noti:
+                LOG.info("delega da %s su %s/%s: mancato recapito già annunciato "
+                         "in questo turno, nessun secondo avviso",
+                         from_agent, tier, name)
+                return
+            serviti.update(f"fuori:{_seed_name(t)}" for t in noti)
         nomi = [_target_identity(t) for t in noti]
         # La pill porta il SEED, che è ciò che si invita: `@worker-3` chiede
         # un'istanza, ma in stanza entra `worker`.
@@ -2369,7 +2391,8 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     inst_ord: int | None = None
     atteso = False
     mirato = _chat_of_spawn(tier, name, spec.name, spawn) if spawn else None
-    if spawn and mirato is None:
+    sostituito = bool(spawn and mirato is None)
+    if sostituito:
         LOG.info("spawn %s non è più vivo su %s/%s: la menzione passa "
                  "dall'allocazione normale", spawn, tier, name)
     if mirato is not None:
@@ -2472,6 +2495,27 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     # autorizzazione.
     chat.origin = _origin_for(principal, origin, spec.name)
     directive = _tag_directive(kind, principal, user_text)
+    if sostituito:
+        # LA SOSTITUZIONE SI DICE A CHI LA SUBISCE (clodia-platform#367, difetto
+        # collegato 1). La ricaduta su spawn morto è deliberata e giusta — una
+        # menzione non deve morire perché il destinatario ha chiuso il turno —
+        # ma finora viveva solo nel `LOG.info` qui sopra, che l'agente non
+        # legge: riceveva «è una richiesta diretta A TE», identico a quello che
+        # avrebbe ricevuto il destinatario vero.
+        #
+        # Innocuo per una RICHIESTA («rispondi a X»), sbagliato per un ORDINE
+        # con stato locale («continua dal tuo branch», «hai già la #361»): il
+        # sostituto quel branch non ce l'ha, e l'unico modo che ha di
+        # accorgersene è andare a verificare il remoto — cioè il lavoro che il
+        # 14 set 2026 si è ripetuto tre volte sulla stessa issue.
+        directive = (f"[SOSTITUTO] Questo messaggio era indirizzato a "
+                     f"`{spawn}`, che non è più attivo: lo servi tu al suo "
+                     f"posto. Non dare per acquisito il suo stato locale (branch, "
+                     f"file nella sua scratch, lavoro in corso): non è tuo e non "
+                     f"è recuperabile. Se l'ordine presuppone quello stato, "
+                     f"verificalo dove è visibile a tutti — il remoto, i file "
+                     f"del topic — oppure dillo invece di ricominciarlo.\n"
+                     + (directive or ""))
     # Il nome che l'istanza sente dire di sé è quello con cui compare in chat:
     # il numero di SPAWN. Prima le si diceva «sei nome#2» e «i tuoi messaggi
     # appaiono come nome#2» — e la seconda frase era falsa, perché l'autore del
@@ -3666,7 +3710,8 @@ def _collassa_avvisi_router(messages: list[dict]) -> list[dict]:
 def _history_prompt(name: str, tier: str, messages: list[dict],
                     topic_agents_md: str | None = None,
                     agents_md_authoritative: bool = False) -> str:
-    lines = [_fmt_msg(m) for m in _collassa_avvisi_router(messages)[-15:]]
+    finestra = _collassa_avvisi_router(messages)[-15:]
+    lines = [_fmt_msg(m) for m in finestra]
     topic_boot = ""
     if topic_agents_md and agents_md_authoritative:
         # Control-plane: scritto solo attraverso un verbo gated, quindi da chi
@@ -3701,7 +3746,37 @@ def _history_prompt(name: str, tier: str, messages: list[dict],
             + topic_boot
             + "\n\nStorico recente:\n"
             + "\n".join(lines)
-            + "\n\nRispondi all'ultimo messaggio come parte della conversazione del canale.")
+            + "\n\n" + _chiusura_storico(finestra))
+
+
+def _chiusura_storico(finestra: list[dict]) -> str:
+    """L'istruzione finale del prompt: a COSA risponde questo turno.
+
+    «Rispondi all'ultimo messaggio» è giusto finché l'ultimo messaggio è
+    conversazione. Se è un avviso del router — «X è stato taggato ma non
+    partecipa», il limite catena — il turno nasce puntato su una bolla di
+    SERVIZIO: informa chi ha taggato, non chiede niente a nessuno, e il rimedio
+    che nomina (l'invito, o la decisione dell'owner) è fuori dalla stanza per
+    costruzione. Il turno non può che riformulare o richiedere l'invito, e se
+    qualcuno ritagga il giro ricomincia (clodia-platform#367, §Controprova: al
+    terzo giro lo spawn ha fatto la cosa «giusta» e il quarto è arrivato lo
+    stesso).
+
+    L'avviso NON si toglie dallo storico: chi ha taggato deve poter leggere che
+    non è arrivato. Si toglie soltanto la pretesa che sia una richiesta.
+
+    Si guarda la CODA, non la presenza: un avviso a metà storico, seguito da
+    conversazione vera, è storia come tutto il resto.
+    """
+    normale = "Rispondi all'ultimo messaggio come parte della conversazione del canale."
+    if not finestra or (finestra[-1] or {}).get("author") != _ROUTING_DIALOG_AUTHOR:
+        return normale
+    return ("L'ultimo messaggio dello storico è un **avviso di servizio** del "
+            "router: dice che una menzione non è stata recapitata, e non chiede "
+            "niente a te. Non rispondergli e non riformularlo — ciò che serve "
+            "per chiuderlo (un invito, una decisione dell'owner) è fuori da "
+            "questo canale. Riprendi dall'ultimo messaggio di CONVERSAZIONE qui "
+            "sopra; se non ne resta nessuno in sospeso, non serve un turno.")
 
 
 def _reused_turn_prompt(tier: str, name: str, responder: str, principal: str,
