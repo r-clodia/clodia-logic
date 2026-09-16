@@ -9,6 +9,40 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.19.0] — 2026-09-16
+- **`messaggero` passa a `glm-5.2`** (era `gpt-oss-120b`), su richiesta
+  dell'owner — «upgrade del seed messaggero ad un modello più potente»
+  (clodia-platform#370). Provider invariato: `scaleway` dichiara già `glm*` nel
+  suo catalogo, quindi nessun cambio di sovranità (SEAL-3) e nessun tocco alla
+  catena di fallback (`aws-region-eu` → `claude-haiku-4-5`). Il guadagno
+  misurabile è la finestra: **1M contro 128k**, cioè il thread email lungo che
+  prima non ci stava.
+- **Non `glm-5.3`**, e la ragione è verificabile invece che prudenziale: nel
+  motore non esiste alcun riferimento a quel modello e `model_context` non ne
+  mappa la finestra — il glob `glm*` di Scaleway lo accetterebbe comunque e la
+  stanza mostrerebbe **200k**, il fallback di famiglia, come se fosse un dato.
+  Un numero sbagliato è un difetto peggiore di una versione in meno, perché non
+  si vede. Riaprire la scelta richiede prima di interrogare il catalogo
+  Scaleway, che da qui non è raggiungibile.
+- **`reasoning_effort: none` dichiarato nel seed.** Il runtime lo applicava già
+  di suo (`_opencode_reasoning_effort`: il reasoning di glm-5.2 non converge
+  sugli esecutori di tool, iterano finché scade il read timeout e la sessione
+  sembra piantata), ma quel ramo è una rete per i pack importati vecchi, non una
+  decisione di questo seed. Un default può cambiare; una riga nel file no.
+- Precedente di forma: **6.4.2**, lo swap di modello del `segretario`.
+- Copertura: `EngineDeclarationTests` in `server/agents/test_base_pack_seeds.py`
+  — il modello, il reasoning esplicito, e la finestra pinnata **al numero**
+  (1M), così chi cambia modello domani deve tornare su `model_context` e
+  dichiarare la finestra vera invece di lasciarla ripiegare. Il quarto test non
+  riguarda il messaggero: per **ogni** seed del pack verifica che almeno uno dei
+  `providers` dichiarati serva davvero il modello (riusando
+  `provider_supports_model`, non una seconda copia del glob) — è il controllo
+  che mancava quando un modello non risolto si scopriva al primo turno.
+- **Nota per chi legge il ticket originale**: la #370 nomina tre skill del
+  messaggero, il seed ne dichiara **due** (`comms-pack/check-email`,
+  `comms-pack/telegram-1to1`). `mention-relay` non è stata dimenticata: è
+  decaduta col meccanismo A (clodia-platform#360/#361).
+
 ## [7.18.0] — 2026-09-12
 - **`sysadmin` non promette più il lifecycle dei run.** Il seed elencava
   «**Workflow** (`workflows.*`): osservi + lifecycle run» fra i namespace
