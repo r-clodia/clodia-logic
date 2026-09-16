@@ -1264,18 +1264,40 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                 return
             serviti.update(f"fuori:{_seed_name(t)}" for t in noti)
         nomi = [_target_identity(t) for t in noti]
+        # Umani ESCLUSI dalla pill di invito: quel bottone chiama
+        # `add_participant`, che per un bot basta — la prossima volta che gira
+        # lo vede nello scope e può rispondere. Per una persona non fa niente di
+        # simile: un umano non "gira" da solo sui topic, quindi aggiungerlo come
+        # partecipante non lo avvisa di nulla. Chi deve raggiungere una persona
+        # assente tagga `@messaggero` (principio 4 della costituzione — il
+        # canale ufficiale verso l'umano), non clicca un invito silenzioso.
+        umani = [t for t in noti if _is_human_principal(_seed_name(t))]
+        bot = [t for t in noti if t not in umani]
         # La pill porta il SEED, che è ciò che si invita: `@worker-3` chiede
         # un'istanza, ma in stanza entra `worker`.
-        invitabili = _distinct_by([_seed_name(t) for t in noti], lambda s: s)
+        invitabili = _distinct_by([_seed_name(t) for t in bot], lambda s: s)
         uno = len(nomi) == 1
         testo = (
             f"{_elenco_or(nomi)} {'è stato taggato' if uno else 'sono stati taggati'} "
             f"da {_seed_name(from_agent)}, ma {'non partecipa' if uno else 'non partecipano'} "
             f"a questo canale: nessun turno è partito, e la catena si ferma qui.\n\n"
-            f"Due strade: riformulare la richiesta per chi è già nella stanza, "
-            f"oppure {'invitarlo' if uno else 'invitarli'} — l'invito lo esegue "
-            f"l'owner.\n\n<!-- invite={','.join(invitabili)} -->"
         )
+        strade = ["riformulare la richiesta per chi è già nella stanza"]
+        if invitabili:
+            strade.append(
+                f"{'invitarlo' if len(invitabili) == 1 else 'invitarli'} in "
+                f"stanza — l'invito lo esegue l'owner"
+            )
+        if umani:
+            nomi_umani = _elenco_or([_target_identity(t) for t in umani])
+            strade.append(
+                f"avvisare {nomi_umani} fuori da qui — tagga `@messaggero`: "
+                f"aggiunger{'lo' if len(umani) == 1 else 'li'} come partecipante "
+                f"non arriva come notifica, una persona non legge i topic da sola"
+            )
+        testo += f"Strade possibili: {'; '.join(strade)}."
+        if invitabili:
+            testo += f"\n\n<!-- invite={','.join(invitabili)} -->"
         nota = await topics_client.async_post_message(
             tier, name, _ROUTING_DIALOG_AUTHOR, testo, kind="system")
         await _channel_message(tier, name, _ROUTING_DIALOG_AUTHOR, "system",

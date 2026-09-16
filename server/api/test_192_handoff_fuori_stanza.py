@@ -33,6 +33,7 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from . import channels
+from .test_channels import _a
 from .test_r3_one_mention import _Base
 
 
@@ -132,6 +133,38 @@ class TheNoteDoesNotBecomeNoiseTests(_FuoriStanza):
 
         start.assert_not_awaited()
         self.assertEqual([], posts)
+
+
+class AMentionedHumanIsNotOfferedTheInviteButtonTests(_FuoriStanza):
+    """Segnalato da Davide il 16 set 2026: la pill `<!-- invite= -->` va bene per
+    un bot (aggiungerlo come partecipante gli basta per rispondere al prossimo
+    giro), ma per un umano non fa niente — una persona non "gira" da sola sui
+    topic, quindi va avvisata fuori dalla stanza (`@messaggero`), non aggiunta
+    in silenzio."""
+
+    async def _delega_umano(self, testo: str):
+        self.agents["davide"] = _a("davide", "human", role="owner")
+        return await self._delega(testo)
+
+    async def test_a_human_target_gets_no_invite_pill(self) -> None:
+        posts, start, _publish = await self._delega_umano("Serve @davide.")
+
+        start.assert_not_awaited()
+        nota = posts[-1]["text"]
+        self.assertIn("davide", nota)
+        self.assertNotIn("<!-- invite=", nota)
+        self.assertIn("messaggero", nota)
+
+    async def test_a_mixed_mention_invites_only_the_bot(self) -> None:
+        """`@accountant` (bot) e `@davide` (umano) nello stesso messaggio: la
+        pill invita solo il bot, l'umano ha la sua riga separata."""
+        posts, _start, _publish = await self._delega_umano(
+            "Serve @accountant per i conti e @davide per l'ok finale.")
+
+        nota = posts[-1]["text"]
+        self.assertIn("<!-- invite=accountant -->", nota)
+        self.assertNotIn("davide" + " -->", nota)  # non nella pill
+        self.assertIn("messaggero", nota)
 
 
 class TheWatcherKeepsItsOwnDoorTests(_FuoriStanza):
