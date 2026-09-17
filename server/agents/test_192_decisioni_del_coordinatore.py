@@ -50,6 +50,15 @@ PERIMETRO = {
     "topic.suggest_team",
     # la propria memoria, confinata alla propria cartella
     "memory.*",
+    # Whitelist egress/ingress LOCALE alla stanza (clodia-platform#374, 17 set
+    # 2026): decisione più recente e più larga di #192 — «qualunque bot», non
+    # «tutti tranne il segretario». Non è la stessa porta laterale di
+    # `ESECUZIONE` qui sotto: quella evita che segretario possa CAMBIARE chi è
+    # nella stanza scavalcando il marker `<!-- invite= -->`; questa non tocca i
+    # partecipanti, tocca solo quali destinazioni/fonti di rete sono vagliate,
+    # ed è gated WALLS quanto `add_participant` — l'owner approva comunque.
+    "topic.egress_add", "topic.egress_remove",
+    "topic.ingress_add", "topic.ingress_remove",
 }
 
 #: Verbi che eseguirebbero al posto di raccomandare. `add_participant` è quello

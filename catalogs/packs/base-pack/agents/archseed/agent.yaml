@@ -55,6 +55,26 @@ tool_permissions:
   # (§2.9).
   - topic.post_message
 
+  # Whitelist egress/ingress LOCALE alla propria stanza (router-notebook R17,
+  # clodia-platform#334/#374): decisione esplicita di Davide, «in/egress locali
+  # al canale devono poter essere aggiunti da qualunque bot, fermo restando che
+  # deve avvenire tramite gate». Sembra un'eccezione al pavimento di sola
+  # lettura qui sopra, ma non muta niente in autonomia: entrambi i verbi sono
+  # GATE_WALLS (`gate.py`) — chiedono, e solo l'OWNER della stanza in cui gira
+  # lo spawn approva o nega. È la stessa mediazione di `topic.add_participant`,
+  # non un allargamento del perimetro deciso dall'agente. Add e remove insieme,
+  # non solo add: un bot che può proporre un ingresso e mai ritirarlo produce
+  # liste che crescono soltanto, ed è lo stesso owner a decidere in entrambe le
+  # direzioni "quanto è largo" lo scope.
+  #
+  # Distinto dalla whitelist GLOBALE (`egress.allow`/`ingress.allow`, verbi a
+  # parte): quella vale per OGNI stanza e resta riservata a `clodia` e
+  # `sysadmin` — un bot qualsiasi non la dichiara e non la eredita da qui.
+  - topic.egress_add
+  - topic.egress_remove
+  - topic.ingress_add
+  - topic.ingress_remove
+
 # ── Il pavimento degli strumenti NATIVI del runtime ──────────────────────────
 #
 # I ~30 tool della CLI non passano dal gateway, e nessuno li dichiarava: ogni
