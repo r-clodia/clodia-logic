@@ -9,6 +9,27 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.21.0] — 2026-09-17
+- **Egress/ingress: due assi, due platee** (clodia-platform#374). Segnalato da
+  Davide su `SEAL-1/hedge-iot-new`: `sysadmin` ha aperto un `egress.allow`
+  GLOBALE dove serviva uno scopato al topic, poi ha negato (erroneamente) che
+  esistesse un meccanismo scopato — confondendolo col campo non correlato
+  `drive_folders`. Il meccanismo scopato esiste già ed è generico
+  (`egress.py::scope_allow`/`scope_uris`, verbi `topic.egress_add`/
+  `ingress_add`, GATE_WALLS da R17/#334): il gap era che **nessun seed li
+  dichiarava**, quindi nessun bot poteva usarli.
+- **`topic.egress_add`/`egress_remove`/`ingress_add`/`ingress_remove` nel
+  pavimento** (`archseed`): ogni bot li eredita ora, gated WALLS — solo
+  l'owner della stanza in cui gira lo spawn approva. Direttiva di Davide:
+  «locali al canale, aggiungibili da qualunque bot, sempre tramite gate».
+- **`egress.allow`/`ingress.allow` (i GLOBALI) aggiunti a `clodia`**, accanto a
+  `sysadmin` che già li aveva: «globali, gestiti solo da clodia e sysadmin» —
+  prima la coordinatrice ne era esclusa.
+- `test_192_decisioni_del_coordinatore.py::PERIMETRO` esteso: la nuova
+  decisione (17 set) è più larga della #192 (6 set) sul segretario — non tocca
+  chi è nella stanza (resta vietato), solo quali destinazioni/fonti di rete
+  sono vagliate.
+
 ## [7.20.0] — 2026-09-16
 - **Nuovo principio 7 in `platform-core.md`: sinteticità.** Richiesta diretta
   di Davide — le risposte degli agenti, in particolare quelli su provider

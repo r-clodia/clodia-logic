@@ -106,6 +106,52 @@ class TradeTests(unittest.TestCase):
         self.assertNotIn("*", effective)
 
 
+class EgressIngressGrantTests(unittest.TestCase):
+    """clodia-platform#374: due assi distinti, due platee distinte.
+
+    Davide, 17 set 2026: «in/egress globali devono essere gestiti solo da
+    clodia e sysadmin, e in/egress locali al canale devono poter essere
+    aggiunti da qualunque bot, fermo restando che in entrambi i casi deve
+    avvenire tramite gate». Il gate (GATE_WALLS per i locali, GATE_OUTWARD per
+    i globali) è già impianto lato clodia-tools — mancava solo la platea:
+    nessun seed dichiarava `topic.egress_add`/`ingress_add`, quindi nessun bot
+    poteva proporre un ingress/egress locale, e `clodia` non aveva i globali
+    nonostante il mandato le competa quanto a sysadmin.
+    """
+
+    def test_every_bot_inherits_the_local_scoped_verbs_from_the_floor(self) -> None:
+        base = set(_seeds()["archseed"]["tool_permissions"])
+        for verbo in ("topic.egress_add", "topic.egress_remove",
+                      "topic.ingress_add", "topic.ingress_remove"):
+            with self.subTest(verbo=verbo):
+                self.assertIn(verbo, base,
+                              f"'{verbo}' deve stare nel pavimento: è locale alla "
+                              f"stanza e gated WALLS, non un privilegio da seed")
+
+    def test_clodia_has_the_global_verbs_alongside_sysadmin(self) -> None:
+        seeds = _seeds()
+        for verbo in ("egress.allow", "ingress.allow"):
+            with self.subTest(verbo=verbo):
+                self.assertIn(verbo, seeds["clodia"].get("tool_permissions") or [],
+                              f"clodia manca '{verbo}': il mandato globale è suo "
+                              f"quanto di sysadmin, non solo di sysadmin")
+                self.assertIn(verbo, seeds["sysadmin"].get("tool_permissions") or [])
+
+    def test_no_other_seed_declares_the_global_verbs(self) -> None:
+        """I globali restano a due identità sole: un terzo seed che li
+        dichiarasse vanificherebbe la restrizione appena scritta sopra."""
+        seeds = _seeds()
+        for nome, y in seeds.items():
+            if nome in ("clodia", "sysadmin", "archseed"):
+                continue
+            verbi = set(y.get("tool_permissions") or [])
+            with self.subTest(seed=nome):
+                self.assertEqual(
+                    verbi & {"egress.allow", "ingress.allow"}, set(),
+                    f"'{nome}' dichiara un verbo egress/ingress globale: "
+                    f"resta riservato a clodia e sysadmin")
+
+
 if __name__ == "__main__":
     unittest.main()
 

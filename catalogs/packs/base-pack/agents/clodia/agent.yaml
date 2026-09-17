@@ -157,6 +157,15 @@ tool_permissions:
   - jobs.list
   - egress.list
   - ingress.list
+  # Whitelist GLOBALE (clodia-platform#374): decisione di Davide, «egress/
+  # ingress globali devono essere gestiti solo da clodia e sysadmin». Prima
+  # solo sysadmin li aveva — coordinatrice esclusa dal proprio stesso mandato.
+  # Gated (GATE_OUTWARD, gate.py): chiede comunque, non concede da sola.
+  # Distinto da topic.egress_add/ingress_add (arciseed, GATE_WALLS): quelli
+  # sono locali alla singola stanza e li ha OGNI bot; questi valgono per ogni
+  # stanza e restano riservati alle due identità con mandato di piattaforma.
+  - egress.allow
+  - ingress.allow
   - rag.collections
   - memory.list
   - memory.read
