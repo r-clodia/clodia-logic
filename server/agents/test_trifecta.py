@@ -167,23 +167,28 @@ class SeedAgentsTests(unittest.TestCase):
         # `ophelia` è scesa da 3 a 2 il 13 ago 2026, quando le è stato tolto il
         # wildcard (#202): senza `*` non dichiara più nessun verbo d'uscita, e le
         # restano le due gambe che il pavimento dell'arciseed le dà — leggere e
-        # la propria memoria.
+        # la propria memoria. È risalita a 3 il 18 set 2026 con `gdrive.*`
+        # (decisione di Davide, lettura/scrittura Drive): `gdrive.upload`/
+        # `mkdir`/`move` sono uscita per il catalogo trifecta.yaml.
         #
-        # Un punteggio che cala va guardato due volte, perché rc3 registra il
-        # caso opposto: il punteggio di `segretario` era sceso perché un file era
-        # diventato più pulito, cioè un segnale di sicurezza che si abbassava
-        # senza che l'agente fosse più sicuro. Qui non è così — il verbo è stato
-        # tolto davvero, e la misura lo segue.
-        expected = {"clodia": 3, "ophelia": 2, "sysadmin": 3, "messaggero": 3,
+        # Questo NON è un allarme di prodotto (`agent_profile.score` è capacità
+        # pura, mai mostrata accanto a un agente — vedi la sua docstring): è il
+        # motore di calcolo che riflette un fatto vero sul seed. Il rischio REALE
+        # di un canale resta quello di `context_profile`/`_channel_trifecta`, che
+        # conta eventi (taint) e fatti sullo scope (file davvero presenti,
+        # destinazione davvero non confinata) — non le capacità di chi vi
+        # partecipa.
+        expected = {"clodia": 3, "ophelia": 3, "sysadmin": 3, "messaggero": 3,
                     "segretario": 2}
         got = {n: trifecta.agent_profile(_seed(n), all_specs=_all_seeds())["score"] for n in expected}
         self.assertEqual(got, expected)
 
-    def test_ophelia_lost_the_outward_leg_and_not_the_others(self) -> None:
-        """Quale gamba è caduta, non solo che il numero è sceso."""
+    def test_ophelia_regained_the_outward_leg_via_gdrive(self) -> None:
+        """Quale gamba si è riaccesa, non solo che il numero è risalito
+        (18 set 2026: gdrive.* enumerato, decisione di Davide)."""
         p = trifecta.agent_profile(_seed("ophelia"), all_specs=_all_seeds())
-        self.assertFalse(p["legs"]["egress"], "senza wildcard non ha più uscite")
-        self.assertEqual(p["why"]["egress"], [])
+        self.assertTrue(p["legs"]["egress"], "gdrive.upload/mkdir/move sono uscita")
+        self.assertTrue(any("gdrive" in g for g in p["why"]["egress"]))
 
     def test_segretario_is_two_thirds_because_it_cannot_send(self) -> None:
         p = trifecta.agent_profile(_seed("segretario"), all_specs=_all_seeds())

@@ -131,8 +131,12 @@ class ExpansionClosureTests(unittest.TestCase):
                 self.assertTrue(trifecta.agent_profile(_seeds()[name])["expands"])
 
     def test_ophelia_has_no_wildcard_and_does_not_expand(self) -> None:
+        """18 set 2026: ophelia ha guadagnato gdrive.* enumerato (decisione di
+        Davide) — non più `tool_permissions: []`, ma niente wildcard e nessuna
+        capacità di espandere la composizione del canale, come prima."""
         spec = _seeds()["ophelia"]
-        self.assertEqual(spec.tool_permissions, [])
+        self.assertTrue(spec.tool_permissions)
+        self.assertTrue(all(g.startswith("gdrive.") for g in spec.tool_permissions))
         self.assertNotIn("*", _grants(spec))
         self.assertFalse(trifecta.agent_profile(spec)["expands"])
 

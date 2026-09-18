@@ -90,15 +90,15 @@ class TradeTests(unittest.TestCase):
             if nome == "archseed":
                 continue
             with self.subTest(seed=nome):
-                if nome == "ophelia":
-                    self.assertEqual(y.get("tool_permissions"), [])
-                    continue
                 self.assertTrue(y.get("tool_permissions"),
                                 f"'{nome}' non dichiara alcun mestiere proprio")
 
-    def test_ophelia_declares_no_extra_trade_but_inherits_the_floor(self):
+    def test_ophelia_inherits_the_floor_on_top_of_its_own_trade(self):
+        """18 set 2026: ophelia ha guadagnato un mestiere proprio (gdrive.*,
+        letto/scrivo, decisione di Davide) — non è più «solo il pavimento»,
+        ma il pavimento resta comunque ereditato sotto."""
         seeds = _seeds()
-        self.assertEqual(seeds["ophelia"].get("tool_permissions"), [])
+        self.assertIn("gdrive.list", seeds["ophelia"].get("tool_permissions") or [])
         from .inheritance import effective_tool_permissions
         effective = effective_tool_permissions("ophelia", seeds)
         self.assertIn("topic.post_message", effective)
@@ -206,9 +206,10 @@ class ClodiaMandateTests(unittest.TestCase):
     #: Perde tutti gli altri». `web.fetch` ed `email.send` sono l'eccezione
     #: decisa il 15 ago (A12 non li tocca, li aggiunge il pack 7.9.0): stanno
     #: qui perché l'elenco dica la verità, non perché A6 sia stata allargata.
+    #: `gdrive` è l'eccezione successiva, decisa il 18 set 2026.
     NAMESPACE_AMMESSI = {"topic", "artifact", "agents", "memory", "fs", "github",
                          "runtime", "integrations", "providers", "mcp", "packs",
-                         "jobs", "egress", "ingress", "rag", "web", "email"}
+                         "jobs", "egress", "ingress", "rag", "web", "email", "gdrive"}
 
     #: A7: «confermiamo base, editorial, e anthropic. Perde comms». `editorial-pack`
     #: è confluito in `business-pack` (fusione con `media-agency-pack`, fuori da

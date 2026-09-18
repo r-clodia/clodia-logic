@@ -40,7 +40,18 @@ capabilities: ["base-pack/*", "business-pack/article-spec", "business-pack/edito
 # potere aggiunto domani, qui ogni LIMITE scritto per un altro mestiere. Le
 # rules si dichiarano una per una, come i verbi.
 rules: []
-tool_permissions: []
+# Lettura e scrittura su Google Drive (18 set 2026, decisione di Davide),
+# enumerati uno per uno — niente wildcard che si allarghi da solo al
+# prossimo verbo gdrive aggiunto. `gdrive.share` resta ESCLUSO: è uscita
+# verso una PERSONA, non trasporto di file (stessa classe di `email.reply`).
+tool_permissions:
+  - gdrive.list
+  - gdrive.search
+  - gdrive.mkdir
+  - gdrive.upload
+  - gdrive.download
+  - gdrive.rename
+  - gdrive.move
 
 memory:
   dir: memory/

@@ -9,6 +9,19 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.22.0] — 2026-09-18
+- **`clodia` e `ophelia` guadagnano lettura/scrittura Drive** (clodia-platform#378):
+  `gdrive.list`/`search`/`mkdir`/`upload`/`download`/`rename`/`move`, enumerati
+  uno per uno (niente wildcard, coerente col vincolo già su `clodia`).
+  `gdrive.share` resta escluso per entrambi: è uscita verso una PERSONA
+  (condivisione con un'email esterna), stessa classe di `email.reply`.
+- **`ophelia` risale a 3/3 nel calcolo `agent_profile`** (capacità pura per-seed,
+  MAI mostrata come badge — solo `context_profile`/`_channel_trifecta` a
+  livello di canale conta per il rischio reale, ed è basato su fatti: file
+  davvero presenti, contaminazione realmente avvenuta, destinazione realmente
+  non confinata). `gdrive.upload`/`mkdir`/`move` sono egress nel catalogo
+  `trifecta.yaml`. 3 test aggiornati.
+
 ## [7.21.0] — 2026-09-17
 - **Egress/ingress: due assi, due platee** (clodia-platform#374). Segnalato da
   Davide su `SEAL-1/hedge-iot-new`: `sysadmin` ha aperto un `egress.allow`
