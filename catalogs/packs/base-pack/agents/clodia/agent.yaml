@@ -125,6 +125,18 @@ tool_permissions:
   - web.fetch
   - web.download
   - email.send
+  # Lettura e scrittura su Google Drive (18 set 2026, decisione di Davide),
+  # enumerati uno per uno per la stessa ragione di sempre — niente wildcard
+  # che si allarghi da solo al prossimo verbo gdrive aggiunto. `gdrive.share`
+  # resta ESCLUSO (vedi sopra): è uscita verso una PERSONA, non trasporto di
+  # file, la stessa classe di `email.reply`.
+  - gdrive.list
+  - gdrive.search
+  - gdrive.mkdir
+  - gdrive.upload
+  - gdrive.download
+  - gdrive.rename
+  - gdrive.move
   - topic.remote_status
   - topic.add_minute
   - topic.save_summary
