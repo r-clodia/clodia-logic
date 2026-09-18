@@ -50,10 +50,22 @@ class VerbMappingTests(unittest.TestCase):
         self.assertEqual(observe._SCOPE_VERB[("ingress", "revoke")], "topic.ingress_remove")
 
     def test_an_unknown_pair_is_a_400_before_touching_anything(self) -> None:
-        with patch("server.api.topics_client.async_open_topic") as apri:
+        with patch.object(observe, "_principal", return_value="davide"), \
+             patch("server.api.topics_client.async_open_topic") as apri:
             r = _app().post("/api/observe/whitelist/scope/SEAL-1/acme/egress/delete",
                             json={"uri": "gdrive:folder/1AbC"})
         self.assertEqual(400, r.status_code)
+        apri.assert_not_called()
+
+    def test_an_anonymous_caller_gets_401_even_with_a_malformed_pair(self) -> None:
+        """L'autenticazione viene PRIMA della forma dei parametri: un anonimo
+        non deve poter distinguere «URL malformato» da «URL valido ma non
+        autorizzato» chiamando senza credenziali."""
+        with patch.object(observe, "_principal", return_value=None), \
+             patch("server.api.topics_client.async_open_topic") as apri:
+            r = _app().post("/api/observe/whitelist/scope/SEAL-1/acme/egress/delete",
+                            json={"uri": "gdrive:folder/1AbC"})
+        self.assertEqual(401, r.status_code)
         apri.assert_not_called()
 
 
@@ -61,7 +73,8 @@ class WhoCanWriteTests(unittest.TestCase):
     def test_a_non_owner_participant_is_refused(self) -> None:
         """La stessa autorità di `drive_folder_add`: partecipare non basta,
         serve possedere lo scope."""
-        with patch("server.api.topics_client.async_open_topic",
+        with patch.object(observe, "_principal", return_value="davide"), \
+             patch("server.api.topics_client.async_open_topic",
                    new=AsyncMock(return_value={"meta": _META})), \
              patch("server.api.channels._require_scope_owner",
                    side_effect=HTTPException(403, "riservato all'owner del topic")):
@@ -73,7 +86,8 @@ class WhoCanWriteTests(unittest.TestCase):
         """`_require_scope_owner` decide CHI (owner di questa stanza);
         `require_authz_async` decide SE quel ruolo può eseguire una mutazione
         gated — le due non si sostituiscono a vicenda."""
-        with patch("server.api.topics_client.async_open_topic",
+        with patch.object(observe, "_principal", return_value="davide"), \
+             patch("server.api.topics_client.async_open_topic",
                    new=AsyncMock(return_value={"meta": _META})), \
              patch("server.api.channels._require_scope_owner", return_value="davide"), \
              patch("server.api.channels.require_authz_async",
@@ -86,7 +100,8 @@ class WhoCanWriteTests(unittest.TestCase):
         gwp.assert_not_called()
 
     def test_an_authorized_owner_reaches_the_gateway_with_the_right_path(self) -> None:
-        with patch("server.api.topics_client.async_open_topic",
+        with patch.object(observe, "_principal", return_value="davide"), \
+             patch("server.api.topics_client.async_open_topic",
                    new=AsyncMock(return_value={"meta": _META})), \
              patch("server.api.channels._require_scope_owner", return_value="davide"), \
              patch("server.api.channels.require_authz_async",
@@ -106,7 +121,8 @@ class WhoCanWriteTests(unittest.TestCase):
 
 class ValidationTests(unittest.TestCase):
     def test_a_missing_uri_is_a_400_before_reaching_the_gateway(self) -> None:
-        with patch("server.api.topics_client.async_open_topic",
+        with patch.object(observe, "_principal", return_value="davide"), \
+             patch("server.api.topics_client.async_open_topic",
                    new=AsyncMock(return_value={"meta": _META})), \
              patch("server.api.channels._require_scope_owner", return_value="davide"), \
              patch("server.api.channels.require_authz_async",
@@ -119,7 +135,8 @@ class ValidationTests(unittest.TestCase):
     def test_a_gateway_rejection_forwards_its_reason(self) -> None:
         """Un URI degenere (`gdrive:folder/` senza id) è un errore
         dell'utente: il motivo del gateway arriva intatto, non un 500 generico."""
-        with patch("server.api.topics_client.async_open_topic",
+        with patch.object(observe, "_principal", return_value="davide"), \
+             patch("server.api.topics_client.async_open_topic",
                    new=AsyncMock(return_value={"meta": _META})), \
              patch("server.api.channels._require_scope_owner", return_value="davide"), \
              patch("server.api.channels.require_authz_async",
@@ -132,14 +149,16 @@ class ValidationTests(unittest.TestCase):
         self.assertEqual("voce degenere", r.json()["error"])
 
     def test_a_missing_topic_is_404(self) -> None:
-        with patch("server.api.topics_client.async_open_topic",
+        with patch.object(observe, "_principal", return_value="davide"), \
+             patch("server.api.topics_client.async_open_topic",
                    new=AsyncMock(return_value=None)):
             r = _app().post("/api/observe/whitelist/scope/SEAL-1/fantasma/egress/allow",
                             json={"uri": "gdrive:folder/1AbC"})
         self.assertEqual(404, r.status_code)
 
     def test_the_gateway_being_unreachable_is_503_not_500(self) -> None:
-        with patch("server.api.topics_client.async_open_topic",
+        with patch.object(observe, "_principal", return_value="davide"), \
+             patch("server.api.topics_client.async_open_topic",
                    new=AsyncMock(return_value={"meta": _META})), \
              patch("server.api.channels._require_scope_owner", return_value="davide"), \
              patch("server.api.channels.require_authz_async",

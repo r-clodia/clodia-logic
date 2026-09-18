@@ -195,6 +195,12 @@ async def whitelist_scope_edit(tier: str, name: str, direction: str, action: str
        quel ruolo può eseguire mutazioni gated a prescindere dalla stanza.
     """
     from . import channels, topics_client
+    # Autenticazione PRIMA di ogni altra cosa, anche della forma dei
+    # parametri: un anonimo non deve poter distinguere «URL malformato» da
+    # «URL valido ma non autorizzato» chiamando senza credenziali — è la
+    # stessa regola che ogni altro endpoint di questo file applica per primo.
+    if not _principal(request):
+        return JSONResponse({"error": "unauthorized"}, status_code=401)
     verbo = _SCOPE_VERB.get((direction, action))
     if verbo is None:
         return JSONResponse({"error": "direction/action non validi"}, status_code=400)
