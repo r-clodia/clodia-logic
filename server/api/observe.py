@@ -161,3 +161,70 @@ async def whitelist_scope(tier: str, name: str, request: Request):
         LOG.warning("observe: whitelist locale di %s/%s non leggibile (%s)",
                    tier, name, str(e)[:120])
         return JSONResponse({"egress": [], "ingress": []})
+
+
+#: `{direzione}_{action}` → verbo gate MCP corrispondente (gate.py, GATE_WALLS).
+#: Chi chiama `require_authz_async` deve nominare lo STESSO verbo che vede un
+#: agente quando lo chiede da un turno: due nomi per la stessa mutazione
+#: divergerebbero nella card di conferma prima ancora che nel codice.
+_SCOPE_VERB = {
+    ("egress", "allow"): "topic.egress_add", ("egress", "revoke"): "topic.egress_remove",
+    ("ingress", "allow"): "topic.ingress_add", ("ingress", "revoke"): "topic.ingress_remove",
+}
+
+
+@router.post("/api/observe/whitelist/scope/{tier}/{name}/{direction}/{action}")
+async def whitelist_scope_edit(tier: str, name: str, direction: str, action: str,
+                                request: Request):
+    """Aggiunge o toglie una voce LOCALE a questo topic, dalla sidebar.
+
+    Richiesta di Davide, 18 set 2026: «devo poter aggiungere manualmente un
+    egress/ingress nella sidebar di canale» — dopo che #374 ha dato ai BOT il
+    verbo scoped (`topic.egress_add`/`ingress_add`, pavimento, gated WALLS): a
+    un umano che clicca dalla webui mancava la porta equivalente, quella
+    globale (`whitelist_edit` qui sopra) è ammin-only e non scopata.
+
+    Guardia in DUE passi, distinti apposta:
+    1. `_require_scope_owner` — solo l'OWNER di QUESTA stanza, non un
+       partecipante qualunque: è lo stesso perimetro che sposta, quindi la
+       stessa autorità di `drive_folder_add`/`add_participant`.
+    2. `require_authz_async` sul verbo MCP esatto (`_SCOPE_VERB`) — per un
+       umano il gateway PDP decide sul ruolo admin, la stessa porta che
+       userebbe un agente per lo stesso verbo. Non duplica la prima guardia:
+       la prima decide CHI (l'owner di questa stanza), la seconda decide SE
+       quel ruolo può eseguire mutazioni gated a prescindere dalla stanza.
+    """
+    from . import channels, topics_client
+    verbo = _SCOPE_VERB.get((direction, action))
+    if verbo is None:
+        return JSONResponse({"error": "direction/action non validi"}, status_code=400)
+    try:
+        topic = await topics_client.async_open_topic(tier, name)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("observe: topic %s/%s non apribile (%s)", tier, name, str(e)[:120])
+        return JSONResponse({"error": "topic non raggiungibile"}, status_code=503)
+    if not topic:
+        return JSONResponse({"error": "topic non trovato"}, status_code=404)
+    try:
+        channels._require_scope_owner(request, topic.get("meta") or {})
+        await channels.require_authz_async(request, verbo)
+    except HTTPException as e:
+        return JSONResponse({"error": e.detail}, status_code=e.status_code)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    uri = str((body or {}).get("uri") or "").strip()
+    if not uri:
+        return JSONResponse({"error": "uri richiesto"}, status_code=400)
+    try:
+        r = _gw_post(f"/internal/egress/whitelist/scope/{tier}/{name}/{direction}/{action}",
+                     {"uri": uri})
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("whitelist scope %s/%s %s/%s: gateway irraggiungibile (%s)",
+                    tier, name, direction, action, str(e)[:120])
+        return JSONResponse({"error": "gateway irraggiungibile"}, status_code=503)
+    # Il 400 del gateway porta il MOTIVO del rifiuto (voce degenere, schema
+    # sbagliato): si inoltra invece di tradurlo in «non valido».
+    return JSONResponse(r.json() if r.content else {"ok": r.status_code == 200},
+                        status_code=r.status_code)
