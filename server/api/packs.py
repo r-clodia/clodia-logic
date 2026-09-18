@@ -661,19 +661,21 @@ def _download_upstream_tarball(up: dict, tmp: Path) -> Path:
     return root
 
 
-@router.post("/clodia/packs/{name}/update")
-async def update_pack(name: str, request: Request):
-    """Aggiorna un pack first-party dal suo repo GitHub (upstream): scarica,
-    SOSTITUISCE seed/skill/mcp (force), aggiorna il manifest e RIAVVIA tutti gli
-    agenti (drop_all: le sessioni ripartono coi seed nuovi al prossimo messaggio)."""
-    # admin-only (PDP gateway)
-    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")
+async def _perform_update(name: str, principal: str) -> dict:
+    """Il lavoro di un Update, senza il layer HTTP: scarica dall'upstream,
+    SOSTITUISCE seed/skill/mcp (force), monta gli MCP trusted, aggiorna il
+    manifest e RIAVVIA tutti gli agenti. Estratta da `update_pack` per essere
+    riusata da `update_all_packs` senza passare per N richieste HTTP separate.
+
+    Solleva `ValueError` (upstream assente/import rifiutato) o `RuntimeError`
+    (update fallito): il chiamante HTTP li traduce in 400/500, il chiamante
+    batch li registra come voce fallita e continua con gli altri pack.
+    """
     if not catalog._NAME_RE.fullmatch(name):
-        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+        raise ValueError("nome non valido")
     up = _pack_upstream(name)
     if not up:
-        return JSONResponse(status_code=400, content={
-            "error": f"'{name}' non dichiara un upstream: update non disponibile"})
+        raise ValueError(f"'{name}' non dichiara un upstream: update non disponibile")
     import tempfile
     from ..api.pack_import import PackImportError as _PIE
     try:
@@ -682,9 +684,9 @@ async def update_pack(name: str, request: Request):
             result = pack_import.install_pack_from_root(
                 root, source=f"github:{up['repo']}", allow_reserved=True, force=True)
     except _PIE as e:
-        return JSONResponse(status_code=400, content={"error": f"update: {str(e)[:160]}"})
+        raise ValueError(f"update: {str(e)[:160]}") from e
     except Exception as e:  # noqa: BLE001
-        return JSONResponse(status_code=500, content={"error": f"update fallito: {str(e)[:160]}"})
+        raise RuntimeError(f"update fallito: {str(e)[:160]}") from e
     # update di un pack FIRST-PARTY dal proprio upstream = codice nostro → mount
     # automatico consentito (fonte trusted). Gli import da zip/URL restano opt-in.
     pack_mcp_mount.auto_mount_imported_mcp(result, principal, trusted=True)
@@ -699,13 +701,6 @@ async def update_pack(name: str, request: Request):
     # l'altra metà del flag che si ripresenta da solo (#347).
     set_setup_pending(name, True, by="packs.update",
                       reason=f"update da {up['repo']}@{up['ref']}")
-    # Restart di tutti gli agenti: le sessioni vive ripartono coi seed aggiornati.
-    stopped = []
-    try:
-        from ..sdk_runtime.session import manager
-        stopped = await manager.drop_all()
-    except Exception as e:  # noqa: BLE001
-        LOG.warning("drop_all dopo update fallito: %s", e)
     new_ver = ""
     meta = pack_import.PACKS_META_DIR / name / "pack.yaml"
     if meta.is_file():
@@ -713,8 +708,93 @@ async def update_pack(name: str, request: Request):
             new_ver = str((yaml.safe_load(meta.read_text(encoding="utf-8")) or {}).get("version") or "").strip()
         except Exception:  # noqa: BLE001
             pass
-    return {"updated": name, "version": new_ver, "agents_restarted": len(stopped),
-            **(result or {})}
+    return {"updated": name, "version": new_ver, **(result or {})}
+
+
+@router.post("/clodia/packs/{name}/update")
+async def update_pack(name: str, request: Request):
+    """Aggiorna un pack first-party dal suo repo GitHub (upstream). Vedi
+    `_perform_update`. RIAVVIA tutti gli agenti dopo (drop_all: le sessioni
+    ripartono coi seed nuovi al prossimo messaggio) — qui e non in
+    `_perform_update` perché un batch (`update_all_packs`) lo fa UNA volta
+    sola alla fine, non un `drop_all` per pack aggiornato."""
+    # admin-only (PDP gateway)
+    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")
+    try:
+        result = await _perform_update(name, principal)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except RuntimeError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    stopped = []
+    try:
+        from ..sdk_runtime.session import manager
+        stopped = await manager.drop_all()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("drop_all dopo update fallito: %s", e)
+    return {**result, "agents_restarted": len(stopped)}
+
+
+@router.post("/clodia/packs/update-all")
+async def update_all_packs(request: Request):
+    """Un click: Update + setup LOGICO (non un turno d'agente) per ogni pack
+    con upstream dichiarato.
+
+    Richiesta di Davide, 18 set 2026: «ci vorrebbe un tasto update all che per
+    ognuno dei pack lancia sia l'update che il setup. Il setup potrebbe essere
+    logico e non agentico». Il setup logico (`pack_ops_logical`) itera sulle
+    dichiarazioni STRUTTURATE del manifest (requires/rag_collections) e chiama
+    i verbi gateway direttamente — nessun prompt, nessuna interpretazione.
+    Trusted come il mount MCP: il click è già l'approvazione, non si apre una
+    card per pacchetto.
+
+    Un pack che fallisce (update o setup) non blocca gli altri: il report
+    elenca ok/errore per ciascuno, e il chiamante decide cosa rifare. Il
+    restart degli agenti è UNO solo a fine batch, non uno per pack.
+    """
+    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")
+    nomi = [p["name"] for p in _list_packs() if p.get("has_upstream")]
+    from . import pack_ops, pack_ops_logical
+    from .pack_mcp_mount import _plugin_names
+    results = []
+    for name in nomi:
+        try:
+            up = await _perform_update(name, principal)
+        except (ValueError, RuntimeError) as e:
+            results.append({"name": name, "updated": False, "error": str(e)})
+            continue
+        # Rilette DOPO l'update, e per i PLUGIN che il pack porta davvero — un
+        # pack e il suo plugin non condividono sempre lo stesso nome, e
+        # `_perform_update` può averne cambiato il set (es. un pack che aggiunge
+        # un plugin nuovo in una versione).
+        decls = pack_ops.declarations()
+        pack_decls: dict = {}
+        for plugin in _plugin_names(up):
+            for key in ("requires", "datastores", "rag_collections", "mcp_servers"):
+                merged = pack_decls.setdefault(key, [] if key != "requires" else {})
+                src = (decls.get(plugin) or {}).get(key)
+                if not src:
+                    continue
+                if key == "requires":
+                    for k, v in (src or {}).items():
+                        merged.setdefault(k, [])
+                        merged[k] = list(merged[k]) + [x for x in v if x not in merged[k]]
+                else:
+                    merged.extend(x for x in src if x not in merged)
+        setup = await pack_ops_logical.run_logical_setup_async(
+            name, pack_decls, principal)
+        if not setup["gaps"]:
+            record_setup_done(name, by=str(principal or ""))
+        results.append({"name": name, "updated": True, "version": up.get("version"),
+                        "setup_done": not setup["gaps"],
+                        "setup_gaps": setup["gaps"], "setup_actions": setup["done"]})
+    stopped = []
+    try:
+        from ..sdk_runtime.session import manager
+        stopped = await manager.drop_all()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("drop_all dopo update-all fallito: %s", e)
+    return {"packs": results, "agents_restarted": len(stopped)}
 
 
 # ── Drift seed ↔ pack (clodia-platform#266) ──────────────────────────────────
