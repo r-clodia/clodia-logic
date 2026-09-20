@@ -322,6 +322,24 @@ def drive_folder_action(tier: str, name: str, action: str, **params) -> dict:
     return r.json()
 
 
+def local_folder_action(tier: str, name: str, action: str, **params) -> dict:
+    """Cartella condivisa Mac↔container per un topic (add/remove) → gateway.
+
+    A differenza di `drive_folder_action`, qui il collegamento È un
+    filesystem vero (bind su una radice unica, `LOCAL_SHARED_ROOT` lato
+    gateway): non uno specchio, non un perimetro dichiarato — vedi
+    `TopicService.local_folder_add`."""
+    url = f"{_base()}/{tier}/{name}/local-folder"
+    try:
+        r = _gw_http.post(url, headers=_headers(), json={"action": action, **params},
+                          timeout=60)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway local-folder irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("local-folder", r)
+    return r.json()
+
+
 def list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
     url = f"{_base()}/{tier}/{name}/files"
     try:
@@ -465,6 +483,7 @@ async_save_agents_md = _async_of("save_agents_md")
 async_list_messages = _async_of("list_messages")
 async_post_message = _async_of("post_message")
 async_drive_folder_action = _async_of("drive_folder_action")
+async_local_folder_action = _async_of("local_folder_action")
 async_list_files = _async_of("list_files")
 async_get_file = _async_of("get_file")
 async_read_file = _async_of("read_file")

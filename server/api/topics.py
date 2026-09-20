@@ -758,6 +758,28 @@ async def set_topic_deadline(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+@router.post("/api/topics/{tier}/{name}/local-folder")
+async def local_folder(tier: str, name: str, request: Request):
+    """Cartella condivisa Mac↔container: aggancia/sgancia una sottocartella
+    come local/<mount>/ nel topic. Solo l'owner (o admin) — bind reale: chi
+    lo dichiara sta decidendo cosa il topic può leggere/scrivere oltre ai
+    propri file, come drive_folder_add/remove."""
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    body = body or {}
+    action = body.get("action")
+    mount = body.get("mount")
+    if action not in ("add", "remove") or not mount:
+        raise HTTPException(400, "richiesti 'action' (add|remove) e 'mount'")
+    try:
+        return await topics_client.async_local_folder_action(tier, name, action, mount=mount)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
 @router.get("/api/topics/catalog")
 async def topics_catalog(request: Request) -> list[dict]:
     """Catalogo COMPLETO dei topic (tier/name/title/kind) per il picker di export.
