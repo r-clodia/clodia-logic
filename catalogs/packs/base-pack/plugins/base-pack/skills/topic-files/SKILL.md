@@ -57,6 +57,18 @@ sessione corrente. I byte attraversano `/shared` solo come envelope cifrato
 per-destinatario e vengono rimossi subito dopo il consumo.
 Dopo il `put`, verifica con `topic.files` che il file sia presente con la size attesa.
 
+## Cartella condivisa Mac↔container (`local/<nome>/`)
+
+Se `topic.files` mostra `local/<nome>/` con dentro file che nessuno ha
+caricato via chat, non è un errore: è una **cartella condivisa** agganciata
+dall'owner (icona 🗂️ nella sidebar del topic, o `topic.local_folder_add` per
+chi ha quel verbo — riservato a `clodia`/`sysadmin`, come la whitelist
+globale). A differenza di un mount Drive (specchio, sincronizzato), qui è un
+**bind filesystem reale**: chi scrive da un lato lo vede istantaneamente
+dall'altro. Si legge e si scrive con gli **stessi verbi** di ogni altro file
+del topic — `topic.fetch`/`put` per i binari, `topic.read_file`/`write_file`
+per il testo — nessun meccanismo diverso da imparare.
+
 ## Completezza dei dati
 Prima di compilare, **raccogli TUTTE le voci dal topic**, non solo quelle citate in
 chat: leggi il `summary.md` e i file in `files/` (ricevute, conferme). Es. per un

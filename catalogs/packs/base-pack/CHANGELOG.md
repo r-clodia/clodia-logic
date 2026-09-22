@@ -9,6 +9,16 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.23.0] — 2026-09-23
+- **Skill `topic-files` documenta la cartella condivisa Mac↔container**
+  (`local/<nome>/`, clodia-platform#381): un agente che la incontra in
+  `topic.files` ora sa che è un bind filesystem reale, non un errore, e che
+  si legge/scrive con gli stessi verbi di ogni altro file del topic. Il
+  verbo per agganciarla/sganciarla (`topic.local_folder_add`/`remove`)
+  resta riservato a `clodia`/`sysadmin`, come la whitelist globale — non è
+  nel pavimento di archseed: sapere che esiste non è la stessa cosa di
+  poterla spostare.
+
 ## [7.22.0] — 2026-09-18
 - **`clodia` e `ophelia` guadagnano lettura/scrittura Drive** (clodia-platform#378):
   `gdrive.list`/`search`/`mkdir`/`upload`/`download`/`rename`/`move`, enumerati
