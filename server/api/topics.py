@@ -787,6 +787,37 @@ async def local_folder(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+@router.get("/api/topics/{tier}/{name}/tg-link")
+async def telegram_link_status(tier: str, name: str, request: Request):
+    """Stato del collegamento Telegram del topic. Whitelist e binding sono
+    due assi distinti (Davide, 23 set 2026) — questo legge il secondo."""
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        return await topics_client.async_telegram_link_status(tier, name)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
+@router.post("/api/topics/{tier}/{name}/tg-link")
+async def telegram_link_action(tier: str, name: str, request: Request):
+    """Connette/disconnette la chat Telegram del topic — whitelist E binding
+    insieme, non due passi scollegati (vedi `telegram_link_status`)."""
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    body = body or {}
+    action = body.get("action")
+    if action not in ("connect", "disconnect"):
+        raise HTTPException(400, "richiesto 'action' (connect|disconnect)")
+    try:
+        return await topics_client.async_telegram_link_action(
+            tier, name, action, chat_id=body.get("chat_id"))
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
 @router.get("/api/topics/catalog")
 async def topics_catalog(request: Request) -> list[dict]:
     """Catalogo COMPLETO dei topic (tier/name/title/kind) per il picker di export.
