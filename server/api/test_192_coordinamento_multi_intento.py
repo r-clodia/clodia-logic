@@ -216,26 +216,11 @@ class IlTraceNominaIlCoordinatoreTests(unittest.TestCase):
             "il piano sa che clodia è lì per ripiego e non lo dice a nessuno: "
             "a valle il turno parte come se la parte fosse del suo dominio")
 
-    def test_il_trace_non_lo_nomina_se_aveva_gia_matchato(self) -> None:
-        """Il rovescio della micro-decisione, sul costruttore vero."""
-        def score(_specialists, intent):
-            return [(self.agents["clodia"],
-                     0.91 if "summary" in intent else 0.20)]
-
-        trace: dict = {}
-        with self._router(score):
-            channels._routing_plan(
-                ["clodia", "worker"], "P0",
-                "- Aggiorna il summary del topic\n"
-                "- Organizza la richiesta non classificata",
-                trace=trace,
-            )
-
-        self.assertIsNone(
-            trace.get("coordinator"),
-            "clodia aveva un intent suo per rilevanza: convocarla con "
-            "«nessuno ha matchato» le farebbe passare ad altri anche quello")
-
+    # Il rovescio di questa micro-decisione (un intent che matcha per
+    # rilevanza PRIMA del batch non matchato) non è più costruibile: modello
+    # nave (clodia-platform#389), la rilevanza non elegge più nessuno —
+    # `_routing_plan` non nota mai il caso "coordinatore che aveva anche
+    # matchato" perché quel match non avviene mai. Test ritirato.
 
 if __name__ == "__main__":
     unittest.main()
