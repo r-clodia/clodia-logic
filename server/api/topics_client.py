@@ -340,6 +340,40 @@ def local_folder_action(tier: str, name: str, action: str, **params) -> dict:
     return r.json()
 
 
+def telegram_link_status(tier: str, name: str) -> dict:
+    """Stato del collegamento Telegram di questo topic → gateway.
+
+    Whitelist (`tg:<chat_id>` in egress/ingress) e binding
+    (`telegram_bindings.json`) sono due assi distinti (Davide, 23 set 2026):
+    questo legge lo stato del SECONDO, quello che decide se il messaggero
+    riporta davvero i messaggi — vedi `TopicService`/`telegram_link` lato
+    gateway."""
+    url = f"{_base()}/{tier}/{name}/telegram-link"
+    try:
+        r = _gw_http.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway telegram-link irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("telegram-link", r)
+    return r.json()
+
+
+def telegram_link_action(tier: str, name: str, action: str, **params) -> dict:
+    """Connette/disconnette la chat Telegram di questo topic → gateway.
+
+    Fa ENTRAMBI i passi in un colpo solo (whitelist + binding) — vedi
+    `telegram_link_status` per la distinzione fra i due."""
+    url = f"{_base()}/{tier}/{name}/telegram-link"
+    try:
+        r = _gw_http.post(url, headers=_headers(), json={"action": action, **params},
+                          timeout=60)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway telegram-link irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("telegram-link", r)
+    return r.json()
+
+
 def list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
     url = f"{_base()}/{tier}/{name}/files"
     try:
@@ -484,6 +518,8 @@ async_list_messages = _async_of("list_messages")
 async_post_message = _async_of("post_message")
 async_drive_folder_action = _async_of("drive_folder_action")
 async_local_folder_action = _async_of("local_folder_action")
+async_telegram_link_status = _async_of("telegram_link_status")
+async_telegram_link_action = _async_of("telegram_link_action")
 async_list_files = _async_of("list_files")
 async_get_file = _async_of("get_file")
 async_read_file = _async_of("read_file")
