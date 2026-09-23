@@ -46,93 +46,40 @@ class FollowUpBreaksTheTieTests(unittest.TestCase):
         channels._is_known_seed = lambda n: n in self.agents
         self.addCleanup(lambda: setattr(channels, "_is_known_seed", self._known))
 
-    def _pick(self, storia: list[dict], trace: dict):
+    # I cinque test end-to-end che vivevano qui («chi risponde in caso di tie
+    # per rilevanza / follow-up / storia vuota») sono ritirati: modello nave
+    # (clodia-platform#389), un messaggio non indirizzato non è più deciso
+    # dalla rilevanza — cade sempre sul coordinatore dichiarato, mai su
+    # un'ambiguità fra specialisti né su un follow-up fra pari. La funzione
+    # `_follow_up_pick` resta viva e testata a sé in `FollowUpUnitTests` sotto
+    # (segnale consultivo, non più nel percorso decisionale di
+    # `_pick_responder`).
+
+    def test_an_unaddressed_message_never_reopens_a_tie_between_specialists(self) -> None:
+        """Regressione diretta del modello nave: stessi punteggi ravvicinati
+        di prima (che aprivano un'ambiguità), stesso storico di follow-up —
+        ora non c'è nessuna ambiguità e nessun follow-up: risponde sempre il
+        coordinatore."""
+        trace: dict = {}
         with (
             patch.object(channels, "_provider_seal_ok", return_value=True),
             patch.object(channels, "_routing_mode", return_value="relevance"),
-            patch.object(channels.responder_routing, "pick_by_exemplar",
-                         return_value=None),
             patch.object(channels.responder_routing, "score_specialists",
                          return_value=self.scored),
-            patch.object(channels.responder_routing, "decide", return_value=None),
-            patch.object(channels.router_config, "load",
-                         return_value=channels.router_config.RouterConfig(3, 0.80, 0.015)),
         ):
-            return channels._pick_responder(
+            picked = channels._pick_responder(
                 ["clodia", "worker", "accountant"], "P0", None,
                 "e per la fattura di luglio?", trace=trace,
-                routing_messages=storia,
+                routing_messages=[
+                    _msg("davide", "human", "come sta andando?"),
+                    _msg("accountant-7", "ai", "il conto di giugno è chiuso"),
+                    _msg("davide", "human", "e per la fattura di luglio?"),
+                ],
             )
 
-    def test_the_last_responder_among_peers_takes_the_follow_up(self) -> None:
-        trace: dict = {}
-        picked = self._pick([
-            _msg("davide", "human", "come sta andando?"),
-            _msg("accountant-7", "ai", "il conto di giugno è chiuso"),
-            _msg("davide", "human", "e per la fattura di luglio?"),
-        ], trace)
-
-        self.assertIsNotNone(picked)
-        self.assertEqual(picked.name, "accountant")
-        self.assertEqual(trace["mode"], "follow-up")
+        self.assertEqual(picked.name, "clodia")
+        self.assertEqual(trace["mode"], "coordinator")
         self.assertNotIn("choices", trace)
-
-    def test_a_stranger_to_the_tie_does_not_decide_it(self) -> None:
-        # Ha risposto clodia, che NON è fra i due a pari merito: la continuità
-        # non dice niente sul tie e la domanda resta legittima.
-        trace: dict = {}
-        picked = self._pick([
-            _msg("clodia-3", "ai", "ci penso io"),
-            _msg("davide", "human", "e per la fattura di luglio?"),
-        ], trace)
-
-        self.assertIsNone(picked)
-        self.assertEqual(trace["mode"], "ambiguous")
-        self.assertEqual(trace["choices"], ["worker", "accountant"])
-
-    def test_the_router_dialog_is_not_a_conversation_to_continue(self) -> None:
-        trace: dict = {}
-        picked = self._pick([
-            _msg("accountant-7", "ai", "il conto di giugno è chiuso"),
-            _msg("router", "ai", "Routing ambiguo: chi deve rispondere?"),
-            _msg("davide", "human", "e per la fattura di luglio?"),
-        ], trace)
-
-        self.assertIsNone(picked)
-        self.assertEqual(trace["mode"], "ambiguous")
-
-    def test_no_history_leaves_the_question_where_it_was(self) -> None:
-        trace: dict = {}
-        self.assertIsNone(self._pick([], trace))
-        self.assertEqual(trace["mode"], "ambiguous")
-
-    def test_the_plan_carries_the_window_down_to_the_picker(self) -> None:
-        # Il piano è l'entry point vero del canale: se la finestra non arriva al
-        # picker, la classificazione è codice morto.
-        trace: dict = {}
-        storia = [
-            _msg("worker-2", "ai", "ho aperto il branch"),
-            _msg("davide", "human", "e i test?"),
-        ]
-        with (
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels, "_routing_mode", return_value="relevance"),
-            patch.object(channels, "_multi_responder_enabled", return_value=False),
-            patch.object(channels.responder_routing, "pick_by_exemplar",
-                         return_value=None),
-            patch.object(channels.responder_routing, "score_specialists",
-                         return_value=self.scored),
-            patch.object(channels.responder_routing, "decide", return_value=None),
-            patch.object(channels.router_config, "load",
-                         return_value=channels.router_config.RouterConfig(3, 0.80, 0.015)),
-        ):
-            plan = channels._routing_plan(
-                ["clodia", "worker", "accountant"], "P0", "e i test?",
-                trace=trace, routing_messages=storia,
-            )
-
-        self.assertEqual([spec.name for spec, _prompt in plan], ["worker"])
-        self.assertEqual(trace["mode"], "follow-up")
 
     def test_the_decision_is_counted_as_relevance_not_as_rank(self) -> None:
         visto: dict = {}

@@ -3211,83 +3211,18 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         return None
     mode = _routing_mode()
     if message and mode == "relevance":
-        specialists = list(ai)
-        # 2a. ESEMPLARI: conferme e correzioni votano fra tutti gli agenti
-        # idonei prima del routing per rilevanza.
-        # In modalità shadow (default) la decisione è solo tracciata: qui `ex`
-        # resta None e si prosegue col routing per rilevanza.
+        # Modello nave (clodia-platform#389): un messaggio non indirizzato a
+        # nessuno non elegge più uno specialista per rilevanza — l'AUTORITÀ di
+        # scelta è sempre e solo il coordinatore dichiarato (Clodia, o
+        # Segretario quando lei è assente/non tier-eleggibile: `coordinator_mod
+        # .pick`, invariato). Il punteggio di rilevanza resta calcolato e
+        # finisce nella trace di `_record_fallback`: non decide più da solo,
+        # ma resta un segnale consultivo leggibile (per Clodia/Segretario, o
+        # per un futuro uso come suggerimento di delega).
         try:
-            known = {
-                s.name for s in registry.list()
-                if s and s.type == "bot"
-            }
-            ex = responder_routing.pick_by_exemplar(
-                semantic_message, [s.name for s in ai], known,
-                topic=trace.get("topic") if trace else None
-            )
+            scored = responder_routing.score_specialists(list(ai), semantic_message)
         except Exception:  # noqa: BLE001
-            ex = None
-        if ex:
-            chosen = next((s for s in ai if s.name == ex[0]), None)
-            if chosen:
-                result = _record(
-                    chosen, f"esemplari (conf {ex[1]})", "exemplar",
-                    [(chosen, ex[1])]
-                )
-                if trace is not None:
-                    trace["exemplar_confidence"] = ex[1]
-                return result
-        try:
-            scored = responder_routing.score_specialists(specialists, semantic_message)
-            hit = responder_routing.decide(scored, config=route_cfg)
-        except Exception:  # noqa: BLE001
-            scored, hit = [], None
-        if hit:
-            return _record(hit[0], "relevance", "relevance", scored)
-        # Ambiguità (#186) letta con la configurazione VIVA (#185): soglia e
-        # margine sono quelli effettivi della decisione, non le costanti — e la
-        # traccia mostra gli stessi numeri con cui la scelta è stata abbandonata.
-        ambiguous = _routing_ambiguity(scored, config=route_cfg)
-        if ambiguous:
-            # #264: prima di chiedere, si guarda se la persona sta continuando la
-            # conversazione con chi ha appena risposto. La pill in più è una
-            # domanda a cui ha già risposto scrivendo.
-            follow_up = _follow_up_pick(routing_messages, ambiguous)
-            if follow_up is not None:
-                spec, score = follow_up
-                return _record(
-                    spec, f"follow-up all'ultimo risponditore (pari a {round(score, 3)})",
-                    "follow-up", scored)
-            if trace is not None:
-                trace.update({
-                    "tier": tier,
-                    "mode": "ambiguous",
-                    "reason": "routing ambiguity within margin",
-                    "chosen": None,
-                    "chosen_agents": [],
-                    "threshold": route_cfg.threshold,
-                    "margin": route_cfg.margin,
-                    "recent_messages": route_cfg.recent_messages,
-                    "candidates": [
-                        {"name": s.name, "score": round(sc, 3),
-                         "bot": s.type == "bot", "super": False}
-                        for s, sc in scored
-                    ],
-                    "eligible": [s.name for s in ai],
-                    "choices": [s.name for s, _score in ambiguous],
-                })
-            return None
-        soft_hits = responder_routing.soft_matches(scored, config=route_cfg)
-        if multi and _multi_responder_enabled() and len(soft_hits) >= 2:
-            return _record_multi([spec for spec, _score in soft_hits], scored)
-        if soft_hits:
-            # BEST FIT: `scored` è ordinato per rilevanza discendente, quindi
-            # soft_hits[0] è il più pertinente. Prima, con ≥2 soft match,
-            # rispondevano tutti; ora risponde solo il migliore. Il coordinatore
-            # dichiarato resta il fallback quando nessuno è pertinente.
-            best, best_score = soft_hits[0]
-            return _record(best, f"best-fit (soft {round(best_score, 3)})",
-                           "relevance", scored)
+            scored = []
         return _record_fallback(scored)
     return _record(rank_mod.highest(ai), "rank", "rank")
 

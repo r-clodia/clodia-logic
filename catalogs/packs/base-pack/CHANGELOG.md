@@ -9,6 +9,25 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.24.0] — 2026-09-24
+- **Ship model: only Clodia/Segretario talk to the user and hand out work**
+  (clodia-platform#389). Paradigm shift, decided by the owner: a specialist
+  agent no longer auto-elects itself to answer an unaddressed channel
+  message based on semantic relevance — that authority now belongs
+  exclusively to the declared coordinator (Clodia, or Segretario when she is
+  absent or the scope's tier exceeds her clearance; `coordinator.pick`,
+  unchanged). Specialists never mention each other — the only mentions they
+  produce are reports/escalations to Clodia/Segretario — and never address
+  the user directly unless the user tagged them by name. `platform-core.md`
+  (Principle 4) and the `multiagent-collaboration` skill are rewritten
+  accordingly; Clodia's seed gets an explicit closing mandate, Segretario's
+  `[COORDINAMENTO]` exception is extended to full complex-task orchestration
+  when she is the fallback.
+- Relevance scoring (`responder_routing.py`) is disabled as a deciding
+  authority in `channels.py:_pick_responder()` but kept alive as an advisory
+  signal recorded in the routing trace — not removed, in case a future
+  delegation-hint use case wants it.
+
 ## [7.23.0] — 2026-09-23
 - **Skill `topic-files` documenta la cartella condivisa Mac↔container**
   (`local/<nome>/`, clodia-platform#381): un agente che la incontra in

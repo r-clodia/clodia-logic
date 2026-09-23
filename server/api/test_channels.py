@@ -118,19 +118,18 @@ class ResponderTests(unittest.TestCase):
 
         self.assertIsNone(r)
 
-    def test_exemplar_can_select_an_eligible_super_agent(self) -> None:
+    def test_relevance_never_elects_a_specialist_even_with_a_strong_score(self) -> None:
+        """Modello nave (clodia-platform#389): l'esemplare/la rilevanza non
+        decidono più il risponditore, nemmeno con un punteggio altissimo — un
+        messaggio non indirizzato cade sempre sul coordinatore dichiarato."""
         trace = {}
         with (
             patch.object(channels, "_provider_seal_ok", return_value=True),
             patch.object(channels, "_routing_mode", return_value="relevance"),
             patch.object(
-                channels.registry, "list", return_value=list(self.agents.values())
+                channels.responder_routing, "score_specialists",
+                return_value=[(self.agents["worker"], 0.99)],
             ),
-            patch.object(
-                channels.responder_routing,
-                "pick_by_exemplar",
-                return_value=("clodia", 0.82),
-            ) as picker,
         ):
             picked = channels._pick_responder(
                 ["clodia", "worker"], "P0", None,
@@ -138,14 +137,7 @@ class ResponderTests(unittest.TestCase):
             )
 
         self.assertEqual(picked.name, "clodia")
-        self.assertEqual(trace["mode"], "exemplar")
-        self.assertEqual(trace["exemplar_confidence"], 0.82)
-        picker.assert_called_once_with(
-            "coordina questa attività",
-            ["clodia", "worker"],
-            {"clodia", "ophelia", "worker", "accountant", "segretario"},
-            topic=None,   # passato per la telemetria delle decisioni (shadow mode)
-        )
+        self.assertEqual(trace["mode"], "coordinator")
 
     def test_routing_stats_include_leave_one_out_metrics(self) -> None:
         request = SimpleNamespace(headers={})
@@ -328,214 +320,20 @@ class ResponderTests(unittest.TestCase):
         self.assertIn("names", seen)
         self.assertNotIn("worker", seen["names"])  # P1 escluso su canale P2
 
-    def test_soft_fallback_returns_multiple_specialists(self) -> None:
-        # modalità opt-in CHANNEL_MULTI_RESPONDER=1 (il default è risposta singola)
-        scored = [
-            (self.agents["worker"], 0.70),
-            (self.agents["accountant"], 0.68),
-        ]
-        trace = {}
-        with (
-            patch.dict(os.environ, {"CHANNEL_MULTI_RESPONDER": "1"}),
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels, "_routing_mode", return_value="relevance"),
-            patch.object(
-                channels.responder_routing, "pick_by_exemplar", return_value=None
-            ),
-            patch.object(
-                channels.responder_routing, "score_specialists",
-                return_value=scored,
-            ),
-            patch.object(channels.responder_routing, "decide", return_value=None),
-            patch.object(
-                channels.router_config, "load",
-                return_value=channels.router_config.RouterConfig(3, 0.75, 0.015),
-            ),
-            patch.object(channels.responder_routing, "FALLBACK_SOFT_RATIO", 0.87),
-        ):
-            picked = channels._pick_responder(
-                ["clodia", "worker", "accountant"],
-                "P0",
-                None,
-                "richiesta ambigua",
-                trace=trace,
-                multi=True,
-            )
-
-        self.assertEqual([spec.name for spec in picked], ["worker", "accountant"])
-        self.assertEqual(trace["mode"], "relevance-multi")
-        self.assertEqual(trace["chosen"], "worker, accountant")
-        self.assertEqual(trace["chosen_agents"], ["worker", "accountant"])
-
-    def test_close_relevance_scores_open_ambiguity_dialog(self) -> None:
-        scored = [
-            (self.agents["worker"], 0.91),
-            (self.agents["accountant"], 0.905),
-        ]
-        trace = {}
-        with (
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels, "_routing_mode", return_value="relevance"),
-            patch.object(
-                channels.responder_routing, "pick_by_exemplar", return_value=None
-            ),
-            patch.object(
-                channels.responder_routing, "score_specialists",
-                return_value=scored,
-            ),
-            patch.object(channels.responder_routing, "decide", return_value=None),
-            # Soglia e margine vengono dalla configurazione VIVA (#185): erano
-            # costanti del modulo, e questi due test le mockavano lì. Patcharle
-            # dove non esistono più farebbe fallire il test per un attributo
-            # mancante — non per la proprietà che sta verificando.
-            patch.object(
-                channels.router_config, "load",
-                return_value=channels.router_config.RouterConfig(3, 0.80, 0.015),
-            ),
-        ):
-            picked = channels._pick_responder(
-                ["clodia", "worker", "accountant"],
-                "P0",
-                None,
-                "richiesta ambigua",
-                trace=trace,
-            )
-
-        self.assertIsNone(picked)
-        self.assertEqual(trace["mode"], "ambiguous")
-        self.assertEqual(trace["choices"], ["worker", "accountant"])
-        self.assertIsNone(trace["chosen"])
-
-    def test_multi_intent_plan_routes_and_batches_by_agent(self) -> None:
-        # modalità opt-in CHANNEL_MULTI_RESPONDER=1 (il default è risposta singola)
-        def score(_specialists, intent):
-            if "summary" in intent:
-                return [
-                    (self.agents["worker"], 0.91),
-                    (self.agents["accountant"], 0.30),
-                ]
-            return [
-                (self.agents["accountant"], 0.92),
-                (self.agents["worker"], 0.25),
-            ]
-
-        trace = {}
-        with (
-            patch.dict(os.environ, {"CHANNEL_MULTI_RESPONDER": "1"}),
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels, "_routing_mode", return_value="relevance"),
-            patch.object(
-                channels.responder_routing, "pick_by_exemplar", return_value=None
-            ),
-            patch.object(
-                channels.responder_routing, "score_specialists", side_effect=score
-            ),
-            patch.object(
-                channels.responder_routing, "decide",
-                side_effect=lambda scored, **_kwargs: scored[0],
-            ),
-        ):
+    def test_multi_intent_everything_goes_to_the_coordinator(self) -> None:
+        """Modello nave (clodia-platform#389): la decomposizione multi-intento
+        non assegna più sotto-task a specialisti diversi per rilevanza — ogni
+        intento non trova match (nessuno lo trova più, per costruzione) e
+        finisce tutto sul coordinatore dichiarato, in un solo batch."""
+        with patch.dict(os.environ, {"CHANNEL_MULTI_RESPONDER": "1"}):
             plan = channels._routing_plan(
                 ["clodia", "worker", "accountant"],
                 "P0",
                 "- Aggiorna il summary del topic\n"
                 "- Invia il preventivo al cliente",
-                trace=trace,
             )
 
-        self.assertEqual(
-            [(spec.name, prompt) for spec, prompt in plan],
-            [
-                ("worker", "Aggiorna il summary del topic"),
-                ("accountant", "Invia il preventivo al cliente"),
-            ],
-        )
-        self.assertEqual(trace["mode"], "multi-intent")
-        self.assertEqual(trace["chosen_agents"], ["worker", "accountant"])
-        self.assertEqual(
-            [route["chosen"] for route in trace["routes"]],
-            ["worker", "accountant"],
-        )
-
-    def test_multi_intent_unmatched_tasks_go_to_coordinator(self) -> None:
-
-        """router-notebook R10: quando il router non sa scegliere, sceglie un agente intelligente."""
-        # modalità opt-in CHANNEL_MULTI_RESPONDER=1 (il default è risposta singola)
-        def score(_specialists, intent):
-            if "summary" in intent:
-                return [(self.agents["worker"], 0.91)]
-            return [(self.agents["worker"], 0.20)]
-
-        with (
-            patch.dict(os.environ, {"CHANNEL_MULTI_RESPONDER": "1"}),
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels, "_routing_mode", return_value="relevance"),
-            patch.object(
-                channels.responder_routing, "pick_by_exemplar", return_value=None
-            ),
-            patch.object(
-                channels.responder_routing, "score_specialists", side_effect=score
-            ),
-            patch.object(
-                channels.responder_routing, "decide",
-                side_effect=lambda scored, **_kwargs: (
-                    scored[0] if scored and scored[0][1] >= 0.75 else None
-                ),
-            ),
-        ):
-            plan = channels._routing_plan(
-                ["clodia", "worker", "accountant"],
-                "P0",
-                "- Aggiorna il summary del topic\n"
-                "- Organizza la richiesta non classificata",
-            )
-
-        self.assertEqual(
-            [(spec.name, prompt) for spec, prompt in plan],
-            [
-                ("worker", "Aggiorna il summary del topic"),
-                ("clodia", "Organizza la richiesta non classificata"),
-            ],
-        )
-
-    # --- Risposta singola (default) ---------------------------------------
-    # Fix urgente: nessun fan-out simultaneo. Il routing sceglie il best fit.
-
-    def test_soft_matches_pick_single_best_fit_by_default(self) -> None:
-        # due soft match: prima rispondevano entrambi, ora solo il migliore
-        scored = [
-            (self.agents["worker"], 0.70),
-            (self.agents["accountant"], 0.68),
-        ]
-        trace = {}
-        with (
-            patch.dict(os.environ, {}, clear=False),
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels, "_routing_mode", return_value="relevance"),
-            patch.object(
-                channels.responder_routing, "pick_by_exemplar", return_value=None
-            ),
-            patch.object(
-                channels.responder_routing, "score_specialists", return_value=scored
-            ),
-            patch.object(channels.responder_routing, "decide", return_value=None),
-            patch.object(
-                channels.router_config, "load",
-                return_value=channels.router_config.RouterConfig(3, 0.75, 0.015),
-            ),
-            patch.object(channels.responder_routing, "FALLBACK_SOFT_RATIO", 0.87),
-        ):
-            os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
-            picked = channels._pick_responder(
-                ["clodia", "worker", "accountant"], "P0", None,
-                "richiesta ambigua", trace=trace, multi=True,
-            )
-
-        self.assertFalse(isinstance(picked, list))
-        self.assertEqual(picked.name, "worker")          # best fit = score più alto
-        self.assertEqual(trace["mode"], "relevance")
-        self.assertIn("best-fit", trace["reason"])
-        self.assertEqual(trace["chosen"], "worker")
+        self.assertEqual([spec.name for spec, _prompt in plan], ["clodia"])
 
     def _fallback(self, participants, message="fuori dominio", scored=None,
                   trace=None):
@@ -662,42 +460,28 @@ class ResponderTests(unittest.TestCase):
         self.assertIn("@", d)                              # l'hand-over è una menzione
 
     def test_routing_plan_does_not_decompose_by_default(self) -> None:
-        # messaggio con due bullet: un solo turno, messaggio integro
+        # messaggio con due bullet: un solo turno, messaggio integro, e va
+        # comunque al coordinatore (modello nave: nessuna decomposizione per
+        # specialista, mai)
         message = ("- Aggiorna il summary del topic\n"
                    "- Invia il preventivo al cliente")
 
-        def score(_specialists, _msg):
-            return [
-                (self.agents["worker"], 0.91),
-                (self.agents["accountant"], 0.30),
-            ]
-
         trace = {}
-        with (
-            patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels, "_routing_mode", return_value="relevance"),
-            patch.object(
-                channels.responder_routing, "pick_by_exemplar", return_value=None
-            ),
-            patch.object(
-                channels.responder_routing, "score_specialists", side_effect=score
-            ),
-            patch.object(
-                channels.responder_routing, "decide",
-                side_effect=lambda scored, **_kwargs: scored[0],
-            ),
-        ):
+        with patch.object(channels, "_provider_seal_ok", return_value=True):
             os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
             plan = channels._routing_plan(
                 ["clodia", "worker", "accountant"], "P0", message, trace=trace,
             )
 
         self.assertEqual(len(plan), 1)
-        self.assertEqual(plan[0][0].name, "worker")
+        self.assertEqual(plan[0][0].name, "clodia")
         self.assertEqual(plan[0][1], message)            # nessuna decomposizione
         self.assertNotEqual(trace.get("mode"), "multi-intent")
 
     def test_routing_plan_scores_the_live_message_window(self) -> None:
+        """Il segnale di rilevanza resta calcolato sulla finestra viva dei
+        messaggi (consultivo, in trace) anche se non decide più il
+        risponditore — che è sempre il coordinatore."""
         seen = {}
         messages = [
             {"author": "owner", "kind": "human", "text": "vecchio"},
@@ -711,20 +495,12 @@ class ResponderTests(unittest.TestCase):
 
         with (
             patch.object(channels, "_provider_seal_ok", return_value=True),
-            patch.object(channels, "_routing_mode", return_value="relevance"),
             patch.object(
                 channels.router_config, "load",
                 return_value=channels.router_config.RouterConfig(2, 0.80, 0.015),
             ),
             patch.object(
-                channels.responder_routing, "pick_by_exemplar", return_value=None
-            ),
-            patch.object(
                 channels.responder_routing, "score_specialists", side_effect=score
-            ),
-            patch.object(
-                channels.responder_routing, "decide",
-                side_effect=lambda scored, **_kwargs: scored[0],
             ),
         ):
             plan = channels._routing_plan(
@@ -732,7 +508,7 @@ class ResponderTests(unittest.TestCase):
                 routing_messages=messages,
             )
 
-        self.assertEqual(plan[0][0].name, "worker")
+        self.assertEqual(plan[0][0].name, "clodia")
         self.assertNotIn("vecchio", seen["message"])
         self.assertIn("[agent @worker] parliamo del contratto", seen["message"])
         self.assertIn("[human @owner] si, quello startup", seen["message"])
