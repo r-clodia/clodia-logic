@@ -772,8 +772,15 @@ async def local_folder(tier: str, name: str, request: Request):
     body = body or {}
     action = body.get("action")
     mount = body.get("mount")
-    if action not in ("add", "remove") or not mount:
-        raise HTTPException(400, "richiesti 'action' (add|remove) e 'mount'")
+    # `mount` omesso su "add" → il gateway usa il codename del topic
+    # (TopicService.local_folder_add): scoperto il 23 set 2026 che un nome
+    # scelto a mano rende ambiguo su ClodiaShared/ di quale topic sia la
+    # cartella. Su "remove" resta obbligatorio: non c'è un default sensato
+    # per "quale sganciare".
+    if action not in ("add", "remove"):
+        raise HTTPException(400, "richiesto 'action' (add|remove)")
+    if action == "remove" and not mount:
+        raise HTTPException(400, "richiesto 'mount' per action=remove")
     try:
         return await topics_client.async_local_folder_action(tier, name, action, mount=mount)
     except topics_client.TopicsClientError as e:
