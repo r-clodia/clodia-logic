@@ -950,13 +950,10 @@ async def _report_back(tier: str, name: str, responder: str, chat,
         caller = _caller_of(getattr(chat, "origin", None), responder)
         if not caller:
             return
-        hard, _soft = _tags(esito or "")
-        # Solo i `@`: la deduplica esiste per non dare DUE turni allo stesso
-        # evento, e un turno lo apre soltanto una convocazione. Contare anche le
-        # `$` faceva perdere il ritorno al delegato educato («$clodia per
-        # conoscenza, ho finito»): nessuno lo aveva svegliato — `$` è inerte
-        # (R12) — e il chiamante restava in attesa di un messaggio che non
-        # arrivava, cioè il difetto che questo meccanismo esiste per chiudere.
+        hard = _tags(esito or "")
+        # Solo le convocazioni vere: la deduplica esiste per non dare DUE turni
+        # allo stesso evento. Un nome scritto senza `@` («clodia, ho finito»)
+        # non ha svegliato nessuno, e il ritorno deve partire lo stesso.
         if caller in {_seed_name(x) for x in hard}:
             return                      # l'ha già chiamato lui: un evento, un turno
         spec = registry.get_by_name(caller)
@@ -1095,8 +1092,8 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                           origin_chain: list | None = None,
                           serviti: set | None = None) -> None:
     """Gioco di squadra: se nel suo reply un agente tagga ALTRI agenti idonei, ne
-    innesca il turno. @tag = incarico diretto e unica convocazione; $tag = una
-    citazione, che non avvia nulla (R12). Salta i tag verso sé stesso o
+    innesca il turno. @tag = incarico diretto e unica convocazione; il `$` non è
+    una menzione (#391), appartiene agli alias del composer. Salta i tag verso sé stesso o
     non-partecipanti; il limite hop (_max_delegation_hops) evita loop.
 
     `serviti`: i bersagli già svegliati nello STESSO turno di `from_agent`
@@ -1119,7 +1116,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     meta = topic.get("meta", {})
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
-    hard, soft = _tags(reply_text or "")
+    hard = _tags(reply_text or "")
     # Confronti per SEED: 'fullstack-dev#2' che tagga @fullstack-dev non deve
     # auto-delegarsi; il tag con ordinale (@nome#N) resta valido se il SEED è
     # partecipante (issue#94).
@@ -1141,18 +1138,10 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
             f"una decisione. Leggi gli ultimi messaggi del canale per il sintomo.",
             requested_by=from_agent))
 
-    # `$tag` NON avvia un turno. Prima lo avviava, con l'aggravante che la
-    # direttiva soft ORDINAVA un cenno anche a chi non aveva nulla da dire:
-    # costava come un `@` e produceva in più un messaggio vuoto. La citazione
-    # resta nel campo `mentions` (badge, notifica) e l'agente citato la vede
-    # nella storia del canale al suo prossimo turno naturale, quando può
-    # reagire sapendo già com'è finita.
-    #
-    # Il cenno campionato che stava qui è RIMOSSO, non spento: una manopola che,
-    # riaccesa, viola R12 è debito che nessuno sa di avere — fra un anno la si
-    # rialza senza sapere che cosa vietava, e la regressione non ha un nome. Se
-    # il silenzio dopo una citazione tornerà a essere un problema, è un problema
-    # diverso da «$ non attiva mai» e va aperto e misurato per conto suo.
+    # Solo `@` convoca (#391): il vecchio `$tag` era una citazione inerte da R12,
+    # ed è stato rimosso del tutto — il `$` è degli alias del composer. Un nome
+    # scritto senza sigillo non apre turni e non lascia badge: chi è nominato lo
+    # legge nella storia del canale al suo prossimo turno naturale.
     plan: list[tuple[str, str]] = [
         (t, "direct") for t in hard
         if _seed_name(t) in participants
@@ -1189,14 +1178,10 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         # questa riga è l'unico modo per contare il pattern invece di dedurlo
         # dai canali — il «warning distinto per audit» chiesto dalla issue.
         LOG.warning("delega da %s su %s/%s: @%s convocato da una menzione che "
-                    "sembra narrativa (%r): turno avviato comunque, ma il "
-                    "sigillo giusto per un resoconto è $ (#336)",
+                    "sembra narrativa (%r): turno avviato comunque, ma la "
+                    "forma giusta per un resoconto è il nome senza @ (#336)",
                     from_agent, tier, name, _target_identity(plan[0][0]),
                     _mention_context(reply_text or "", plan[0][0]))
-    for t in soft:
-        if _seed_name(t) in participants:
-            LOG.info("citazione $%s da %s su %s/%s: nessun turno (R12)",
-                     t, from_agent, tier, name)
     if not plan:
         # HANDOFF FUORI STANZA, e lo si DICE (#192). Il filtro qui sopra scarta i
         # `@` verso chi non partecipa al canale, e l'uscita era muta: né un
@@ -1464,7 +1449,8 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         return
     if not _multi_responder_enabled() and len(plan) > 1:
         # Rete di sicurezza, non più un caso vivo: il misto che serviva a coprire
-        # — un `@` diretto più una `$` campionata — non esiste più (R12), e due
+        # — un `@` diretto più una citazione campionata — non esiste più (R12,
+        # #391), e due
         # `@` non arrivano fin qui, vengono chiesti sopra (R3). Resta perché il
         # tetto «una risposta sola» va tenuto dove i turni partono davvero.
         LOG.info("delega da %s su %s/%s: risposta singola, delego solo a @%s "
@@ -1516,7 +1502,7 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
                 timestamp=datetime.now(timezone.utc)))
         except Exception:  # noqa: BLE001
             pass
-        # riusa la stessa logica di turno multi-tag (direttiva direct/soft), il
+        # riusa la stessa logica di turno multi-tag (direttiva direct), il
         # messaggio è il reply dell'agente delegante
         if await _start_turn(tier, name, tier_real, delegate,
                              principal or "channel", reply_text or "", kind, hop=hop + 1,
@@ -1770,7 +1756,7 @@ def _can_access(clearance: str | None, tier: str | None) -> bool:
 
 def _tagged(text: str) -> str | None:
     """Il primo `@tag` del testo, o None. Vedi `_tags` per le regole."""
-    hard, _soft = _tags(text)
+    hard = _tags(text)
     return hard[0] if hard else None
 
 
@@ -1778,13 +1764,14 @@ def _tagged(text: str) -> str | None:
 _SENTENCE_END_RE = re.compile(r"(?<=[.!?;:\n])\s+")
 
 
-def _tags(text: str) -> tuple[list[str], list[str]]:
-    """(hard @tag, soft $tag) dal testo — dedup, in ordine, escluse le righe citate.
-    N tag possono attivare N agenti. Un nome sia @ che $ → conta come hard.
+def _tags(text: str) -> list[str]:
+    """I `@tag` del testo — dedup, in ordine, escluse le righe citate.
+    N tag possono attivare N agenti.
 
-    Tag SOFT (`$agente`): CITAZIONE, non una richiesta d'azione. Non avvia mai un
-    turno (R12): informa, resta nel campo `mentions` del messaggio e la si legge
-    nella storia del canale. `@agente` è la sola convocazione.
+    `@` è l'unico sigillo di menzione (#391). La vecchia citazione `$agente`,
+    che da R12 non apriva più nessun turno, non esiste più: il `$` appartiene
+    agli alias del composer (`$recap`), e un agente nominato senza essere
+    chiamato si scrive col nome e basta.
 
     Le regole di riconoscimento stanno in `mentions.py` e sono le STESSE del
     gateway, che produce il campo strutturato `mentions` (badge, notifiche).
@@ -1893,9 +1880,8 @@ def _humans_tagged(content: str, participants: list[str]) -> list[str]:
     Non è un'aggiunta di regola, è la chiusura di un buco: l'assenza di un
     bersaglio veniva letta come assenza di destinatario.
     """
-    hard, soft = _tags(content)
     fuori: list[str] = []
-    for nm in hard + soft:
+    for nm in _tags(content):
         seed, _ord = _split_ord(nm)
         if seed not in participants:
             continue
@@ -2009,11 +1995,10 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "COME COINVOLGERE, e quanto costa. `@nome` **apre un turno completo** di "
             "quell'agente: consuma il suo contesto e produce un messaggio che tutti nel "
             "canale leggono. Usalo SOLO quando ti serve che faccia qualcosa che tu non "
-            "puoi fare. `$nome` è una CITAZIONE: non apre un turno, lo informa e "
-            "gli lascia la storia del canale da leggere al suo prossimo intervento. "
-            "Usalo quando lo stai nominando, informando o ringraziando. In dubbio, `$`: "
-            "chi serve davvero lo si tagga al passaggio dopo, mentre un `@` di troppo "
-            "non si ritira.\n\n"
+            "puoi fare. Se lo stai solo nominando, informando o ringraziando, scrivi "
+            "il suo nome SENZA `@`: legge il canale al suo prossimo intervento. In "
+            "dubbio, niente `@`: chi serve davvero lo si tagga al passaggio dopo, "
+            "mentre un `@` di troppo non si ritira.\n\n"
             # R3: dirlo QUI è ciò che rende la regola gratuita. Senza questa riga
             # un agente scrive due `@` in buona fede, non parte nessuno dei due e
             # si paga un turno di domanda per scoprirlo: il vincolo esisterebbe
@@ -2022,11 +2007,8 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "ne metti due, non parte nessuno dei due: ti viene chiesto quale "
             "intendevi, e il turno lo paghi. Se ti servono davvero in due, chiama il "
             "primo adesso e il secondo quando ha finito — avrai anche il suo esito da "
-            "passargli. Le citazioni `$` non contano e puoi metterne quante "
+            "passargli. I nomi scritti senza `@` non contano e puoi metterne quanti "
             "vuoi.\n\nMessaggio:\n" + text)
-    # Nessuna direttiva di CITAZIONE: `$` non apre un turno, quindi non c'è un
-    # turno da istruire (R12). Quella che stava qui si contraddiceva da sola —
-    # «di norma non ti fa nemmeno aprire un turno: questo è un campione».
     if kind == "disambigua":
         # R3: la domanda torna all'autore del messaggio ambiguo. La direttiva gli
         # dice cosa fare — una sola menzione — perché interrogarlo senza istruirlo
@@ -2038,7 +2020,8 @@ def _tag_directive(kind: str, author: str, text: str) -> str | None:
             "tu chi serve adesso e scrivi un messaggio con UNA sola menzione "
             "`@nome`. Se ti servono davvero entrambi, chiamane uno ora e l'altro "
             "quando il primo ha finito — avrai anche il suo esito da passargli. "
-            "Per informare qualcuno senza aprirgli un turno usa `$nome`.\n\n"
+            "Per informare qualcuno senza aprirgli un turno scrivi il suo nome senza "
+            "`@`.\n\n"
             + text)
     if kind == "debug":
         # Il brief è già completo (debug_watch.Anomaly.brief): non lo si
@@ -3498,22 +3481,18 @@ _CHANNEL_CAPS = (
     "  UNA sola menzione per messaggio: se ne metti due non parte nessuno dei due e "
     "  ti viene chiesto quale intendevi. Se ti servono in due, chiama il primo ora e "
     "  il secondo quando ha finito.\n"
-    # R12 · questa riga prometteva un potere che il runtime non concede: «decide
-    # lui se rispondere» — non decide niente, perché la citazione non gli apre
-    # nessun turno in cui decidere. È il testo su cui l'agente sceglie il
-    # sigillo: lasciarlo falso significa farlo citare credendo di aver chiamato,
-    # e poi aspettare una risposta che non arriverà.
-    "- `$agente` = CITAZIONE: lo nomini o lo informi. NON gli apre un turno e non "
-    "  gli chiede nulla: legge il canale al suo prossimo intervento. Se ti serve "
-    "  una sua azione ADESSO, l'unica strada è `@`.\n"
+    # #391 · `@` è l'unico sigillo: il `$` appartiene agli alias del composer.
     # #336 · il controesempio, che è il caso in cui il sigillo si sbaglia
     # davvero: il `@` in un RESOCONTO convoca come qualunque altro, e chi
     # scriveva stava solo raccontando.
-    "Quando NOMINI un agente in un resoconto — «$nome è stato taggato», «$nome ha "
-    "risposto», «il piano approvato da $nome» — usa `$`: il `@` in una frase di "
-    "racconto apre un turno vero a chi non ti aveva chiesto niente.\n"
+    "- Nome senza `@` = lo nomini o lo informi. NON gli apre un turno e non gli "
+    "  chiede nulla: legge il canale al suo prossimo intervento. Se ti serve una "
+    "  sua azione ADESSO, l'unica strada è `@`.\n"
+    "Quando NOMINI un agente in un resoconto — «avvocato è stato taggato», «avvocato "
+    "ha risposto», «il piano approvato da clodia» — scrivi il nome senza `@`: il `@` "
+    "in una frase di racconto apre un turno vero a chi non ti aveva chiesto niente.\n"
     "Non accentrare: se un altro agente è più competente per una parte, passagliela "
-    "con @; usa $ per tenere qualcuno nel giro senza obbligarlo.\n"
+    "con @.\n"
     "\n"
     "Quando proponi all'utente una scelta tra opzioni, includi nel messaggio un "
     "marcatore HTML-commento (resta INVISIBILE nel testo, l'interfaccia lo rende "
@@ -4264,13 +4243,10 @@ async def post_channel_message(
     if not respond:
         return {"posted": True, "responder": None}
 
-    # 2. DESTINATARI. @tag = richiesta diretta e unica convocazione; $tag = una
-    #    CITAZIONE, che non avvia nessun turno (R12) — resta nel campo strutturato
-    #    `mentions` del messaggio (badge, notifica) e l'agente citato la legge
-    #    nella storia del canale al suo prossimo intervento. Un messaggio di sole
-    #    citazioni è, per il routing, un messaggio senza tag: va per rilevanza.
-    #    Due @ diretti chiedono all'umano chi deve rispondere; le $ non contano
-    #    per quella soglia, perché contano le convocazioni e `$` non lo è (R12).
+    # 2. DESTINATARI. @tag = richiesta diretta e unica convocazione; `@` è
+    #    l'unico sigillo di menzione (#391, il `$` è degli alias del composer).
+    #    Un messaggio senza `@` va al coordinatore. Due @ diretti chiedono
+    #    all'umano chi deve rispondere.
     # ── Una menzione rivolta solo a umani NON instrada un bot ────────────────
     #
     # Una domanda rivolta a una persona non diventa una
@@ -4283,7 +4259,7 @@ async def post_channel_message(
     # messaggero prende il turno — uno solo — per dire che sta avvisando la
     # persona di là. Non risponde nel merito: porta fuori l'avviso e lo dichiara
     # dentro, così chi resta nella stanza sa che la palla è passata.
-    hard, soft = _tags(content)
+    hard = _tags(content)
     router_choice, routed_source = _routing_dialog_reply(
         content, participants, tier_real, pending_routing_request
     )
@@ -4312,16 +4288,6 @@ async def post_channel_message(
             targets.append((s, "direct", want_spawn))
         elif hard_unserved is None:
             hard_unserved = tag_trace
-    # R12 · `$nome` NON diventa un target. Prima ci finiva con kind "soft" e da
-    # lì in `_start_turn`: una citazione scritta da una persona apriva un turno
-    # come un `@`. Il difetto sopravviveva perché con `CHANNEL_MULTI_RESPONDER`
-    # a OFF il taglio a `targets[:1]` nascondeva il caso misto (`@a $b` → parte
-    # solo `a`), mentre la citazione da sola attivava sempre — e col flag ON
-    # attivava comunque. Non si tocca il conteggio delle soglie: quelle già
-    # contavano i soli `@`.
-    for nm in soft:
-        LOG.info("citazione $%s di %s su %s/%s: nessun turno (soft)",
-                 nm, principal, tier, name)
 
     # Stesso dedup del percorso agente, e per la stessa ragione: `targets` ha una
     # entry per TAG SCRITTO, e due tag possono chiedere lo stesso agente (#256).
@@ -4357,7 +4323,7 @@ async def post_channel_message(
         return {"posted": True, "queued": False, "responder": None,
                 "routing_dialog": True, "choices": nomi}
 
-    # Da qui `targets` ha 0 o 1 elemento: sono solo `@` (le `$` non entrano più) e
+    # Da qui `targets` ha 0 o 1 elemento: sono solo `@` e
     # due o più `@` sono già tornati sopra col dialogo. Il taglio a `targets[:1]`
     # che stava qui non serve più — e tenerlo avrebbe raccontato un fan-out di tag
     # che non esiste in nessuna configurazione.

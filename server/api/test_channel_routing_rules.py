@@ -67,11 +67,11 @@ class HumansAreNotRoutedTests(unittest.TestCase):
     def test_an_agent_tag_is_not_a_human(self):
         self.assertEqual(C._humans_tagged("@segretario verbalizza", PARTECIPANTI), [])
 
-    def test_a_soft_mention_of_a_human_counts_too(self):
-        """`$matteo` è una citazione più leggera, ma resta rivolta a una
-        persona: rispondere al posto suo sarebbe lo stesso errore."""
+    def test_a_dollar_name_is_not_a_mention_of_a_human(self):
+        """#391: `$` è degli alias del composer. `$matteo` è testo, non una
+        menzione: la stanza non si ferma ad aspettare Matteo."""
         self.assertEqual(C._humans_tagged("ne parlavo con $matteo", PARTECIPANTI),
-                         ["matteo"])
+                         [])
 
     def test_someone_outside_the_channel_is_not_counted(self):
         """Un nome che non partecipa non è un destinatario di questa stanza."""

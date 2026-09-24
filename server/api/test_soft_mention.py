@@ -1,4 +1,4 @@
-"""`$nome` è una citazione, non un'invocazione.
+"""`$nome` non è più una menzione (#391); questo file tiene i test della ex citazione.
 
 Sintomo: nel canale bilancio-tomato-2026 gli agenti usavano `@` quasi sempre (125
 mention hard contro 16 soft su 207 messaggi). La diagnosi ovvia era «scelgono il
@@ -110,13 +110,13 @@ class SoftDirectiveTests(unittest.TestCase):
         self.assertIsNone(channels._tag_directive("soft", "commercialista", "t"))
 
     def test_the_direct_directive_states_the_cost_of_a_hard_mention(self):
-        """La direttiva presentava `@` e `$` come un menu, senza criterio né
-        costo. A quel punto `@` è la scelta razionale: è lo strumento più forte
-        per «portare a casa l'obiettivo», che è ciò che le chiediamo."""
+        """La direttiva deve dare il costo di `@` e l'alternativa: il nome senza
+        sigillo (#391 — il `$` non è più una menzione)."""
         d = channels._tag_directive("direct", "davide", "testo")
         self.assertIn("apre un turno completo", d)
-        self.assertIn("non apre un turno", d)
+        self.assertIn("SENZA `@`", d)
         self.assertIn("In dubbio", d)
+        self.assertNotIn("`$nome`", d)
 
     def test_the_sampled_ack_kind_is_gone_too(self):
         self.assertIsNone(channels._tag_directive("soft-ack", "x", "t"))
