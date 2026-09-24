@@ -9,6 +9,11 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.26.0] — 2026-09-24
+- **Clodia moves to Claude Opus 5.5** (`claude-opus-5-5`, clodia-platform#392).
+  Owner decision: every Opus seed runs Opus 5.5 on every provider. On Bedrock
+  it resolves to the EU geo inference profile `eu.anthropic.claude-opus-5-5`.
+
 ## [7.25.0] — 2026-09-24
 - **Soft mentions removed** (clodia-platform#391). `@name` is the only mention
   and always opens a turn; `$name` is no longer a citation: `$` belongs to
