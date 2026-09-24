@@ -300,14 +300,14 @@ KIND_TITLE_PREFIX = {
     "ophelia": "[OPH]",
 }
 # Modello richiesto per kind. None = usa default del CLI/config server.
-# Ada richiede sempre Opus 4.7 (o superiore): è una system developer e i
-# task tecnici complessi non sono delegabili a Sonnet/Haiku. Quando uscirà
-# un Opus successivo, aggiornare qui.
+# Ada richiede sempre l'Opus corrente: è una system developer e i task tecnici
+# complessi non sono delegabili a Sonnet/Haiku. Opus 5.5 dal 24 set 2026
+# (clodia-platform#392); quando uscirà un Opus successivo, aggiornare qui.
 # Looper è esecutore meccanico di routine cicliche: Haiku 4.5 è abbondante,
 # il prompt è snello e le decisioni sono prefissate.
 KIND_MODEL = {
     "clodia": None,
-    "ada":    "claude-opus-4-7",
+    "ada":    "claude-opus-5-5",
     "looper": "claude-haiku-4-5",
 }
 # Override esplicito del permission_mode SDK. Necessario per agent che girano

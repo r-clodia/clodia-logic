@@ -17,8 +17,9 @@ extra_env:
   # finisce nei log). Portati alla versione più recente disponibile in regione:
   # erano fermi a opus-4-6 / sonnet-4-6, e siccome la vecchia traduzione
   # guardava solo la famiglia, OGNI agent opus girava su Opus 4.6 qualunque cosa
-  # dichiarasse.
-  ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-5"
+  # dichiarasse. Dal 24 set 2026 (clodia-platform#392) il default opus è
+  # Opus 5.5: ogni opus della piattaforma gira su 5.5, su ogni provider.
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-5-5"
   ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-5"
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -34,7 +35,11 @@ extra_env:
 # Verificato con ListInferenceProfiles su eu-west-1 il 3 set 2026 (12 profili
 # Claude EU). Quando ne compaiono di nuovi, questa lista va estesa: è il posto
 # giusto in cui farlo, perché è la definizione del provider e viaggia col clone.
+#
+# `claude-opus-5-5` (24 set 2026, clodia-platform#392): solo inference profile,
+# nessun id di base in regione; il profilo EU geo `eu.` tiene i dati in UE.
 model_ids:
+  claude-opus-5-5: "eu.anthropic.claude-opus-5-5"
   claude-opus-5: "eu.anthropic.claude-opus-5"
   claude-opus-4-8: "eu.anthropic.claude-opus-4-8"
   claude-opus-4-7: "eu.anthropic.claude-opus-4-7"

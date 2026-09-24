@@ -24,6 +24,7 @@ _BY_SDK: dict[str, list[tuple[str, int]]] = {
         # essendo 1M-capable: la barra del contesto nella webui diceva un quinto
         # del vero per ogni agent su Opus 5. Le voci vanno dalla PIÙ specifica
         # alla meno, e `opus-5` deve stare prima di `opus`.
+        ("opus-5-5", 1_000_000),
         ("opus-5", 1_000_000),
         ("opus-4-6", 1_000_000),
         ("opus-4-7", 1_000_000),

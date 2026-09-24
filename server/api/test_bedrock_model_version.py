@@ -138,8 +138,9 @@ class RealProviderFileTests(unittest.TestCase):
 
     def test_default_di_famiglia_non_sono_fermi_a_una_versione_vecchia(self):
         env = P.provider_extra_env("aws-region-eu")
+        # clodia-platform#392: il default opus è Opus 5.5.
         self.assertEqual(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL"),
-                         "eu.anthropic.claude-opus-5")
+                         "eu.anthropic.claude-opus-5-5")
 
 
 class ContextWindowTests(unittest.TestCase):
@@ -159,3 +160,22 @@ class ContextWindowTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class OpusFiveFiveOnTheRealProviderTests(unittest.TestCase):
+    """clodia-platform#392: ogni opus gira su Opus 5.5, anche su Bedrock.
+
+    Si legge il catalogo VERO (`providers/aws-region-eu.yaml`), non un finto:
+    è quel file che decide cosa gira. Senza la voce esplicita `claude-opus-5-5`
+    un seed su 5.5 ripiegherebbe sulla famiglia, e con il default di famiglia
+    fermo a Opus 5 lo farebbe su un modello diverso da quello dichiarato.
+    """
+
+    def test_opus_5_5_resolves_to_its_eu_profile(self):
+        self.assertEqual("eu.anthropic.claude-opus-5-5",
+                         P.bedrock_model_id("aws-region-eu", "claude-opus-5-5"))
+
+    def test_opus_5_5_has_the_one_million_window(self):
+        from ..agents import model_context
+        self.assertEqual(
+            model_context.model_context_window("claude-opus-5-5", "claude"), 1_000_000)
