@@ -30,9 +30,8 @@ def _with_sessions(sessions):
 
 class TagOrdinalTests(unittest.TestCase):
     def test_tag_with_ordinal_captured_whole(self) -> None:
-        hard, soft = ch._tags("fai tu @fullstack-dev#2 e $anna")
-        self.assertEqual(hard, ["fullstack-dev#2"])
-        self.assertEqual(soft, ["anna"])
+        self.assertEqual(ch._tags("fai tu @fullstack-dev#2 e $anna"),
+                         ["fullstack-dev#2"])
 
     def test_split_ord(self) -> None:
         self.assertEqual(ch._split_ord("fullstack-dev#2"), ("fullstack-dev", 2))

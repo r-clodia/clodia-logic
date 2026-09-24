@@ -9,6 +9,13 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.25.0] — 2026-09-24
+- **Soft mentions removed** (clodia-platform#391). `@name` is the only mention
+  and always opens a turn; `$name` is no longer a citation: `$` belongs to
+  composer aliases only (e.g. `$recap`). Clodia's seed and the
+  `multiagent-collaboration` skill drop the `$` convention: a report that
+  names an agent without calling it uses the plain name.
+
 ## [7.24.0] — 2026-09-24
 - **Ship model: only Clodia/Segretario talk to the user and hand out work**
   (clodia-platform#389). Paradigm shift, decided by the owner: a specialist

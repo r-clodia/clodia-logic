@@ -1,7 +1,8 @@
 """Parser delle mention nei messaggi di canale (issue clodia-platform#83, D1;
-confine sinistro e convergenza dei due parser: issue clodia-platform#255).
+confine sinistro e convergenza dei due parser: issue clodia-platform#255;
+un solo sigillo: issue clodia-platform#391).
 
-Le mention (`@nome` / `$nome`) diventano un campo STRUTTURATO del messaggio
+Le mention (`@nome`) diventano un campo STRUTTURATO del messaggio
 al momento della scrittura (`post_message`), così chi calcola i badge
 azionabili interroga una lista di destinatari e non fa regex sul testo raw.
 
@@ -9,7 +10,11 @@ Regole (falsi positivi esclusi per costruzione):
 - il testo dentro i fenced code block (```...```) e l'inline code (`...`)
   non produce mention;
 - le righe citate (prefisso `>`) non producono mention;
-- `$$nome` è l'escape letterale dell'expander macro: NON è una mention;
+- `$nome` NON è una mention (#391): il `$` appartiene soltanto agli alias del
+  composer (`$recap`), che la webui espande prima dell'invio. Fino a #391
+  esisteva la «citazione» `$nome`, che da R12 non apriva più nessun turno:
+  un secondo tipo di menzione inerte, da insegnare a ogni agente e ambiguo con
+  gli alias;
 - il sigillo deve trovarsi a un confine di parola "vero": inizio riga,
   whitespace o punteggiatura di apertura — `/log/@nome`, `a@b.it` e simili
   (path, email, log incollati) non contano.
@@ -53,97 +58,88 @@ _ORDINAL = r"(?:#[1-9][0-9]{0,2})?"
 # Sigillo valido solo dopo inizio stringa, whitespace o punteggiatura di
 # apertura (non dopo lettere, cifre, `/`, `.`, `$` ecc.).
 _MENTION_RE = re.compile(
-    rf"(?:(?<=^)|(?<=[\s\(\[\{{<,;:'\"]))(?P<sigillo>[@$])(?P<nome>{_NAME}{_ORDINAL})")
+    rf"(?:(?<=^)|(?<=[\s\(\[\{{<,;:'\"]))@(?P<nome>{_NAME}{_ORDINAL})")
 
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 _QUOTED_LINE_RE = re.compile(r"^[ \t]{0,3}>.*$", re.MULTILINE)
-# `$$nome` (escape letterale) va consumato PRIMA del match delle mention.
-_ESCAPED_RE = re.compile(rf"\$\${_NAME}{_ORDINAL}")
 
 
-def _scan(text: str) -> list[tuple[str, str]]:
-    """`[(sigillo, nome), ...]` nell'ordine di apparizione, nomi in minuscolo.
+def _scan(text: str) -> list[str]:
+    """Nomi menzionati con `@`, nell'ordine di apparizione, in minuscolo.
 
-    Non deduplica: la deduplicazione dipende da che cosa si sta calcolando —
-    l'elenco dei destinatari (`extract_mentions`) o la coppia hard/soft
-    (`extract_tags`), dove un nome scritto in entrambi i modi conta hard.
+    Non deduplica: lo fa chi calcola l'elenco.
     """
     if not text:
         return []
     clean = _FENCE_RE.sub(" ", text)
     clean = _INLINE_CODE_RE.sub(" ", clean)
     clean = _QUOTED_LINE_RE.sub(" ", clean)
-    clean = _ESCAPED_RE.sub(" ", clean)
-    return [(m.group("sigillo"), m.group("nome").lower())
-            for m in _MENTION_RE.finditer(clean)]
+    return [m.group("nome").lower() for m in _MENTION_RE.finditer(clean)]
 
 
 def extract_mentions(text: str) -> list[str]:
     """Destinatari menzionati nel testo, deduplicati, in minuscolo,
     nell'ordine di prima apparizione. Lista vuota se nessuna mention."""
     out: list[str] = []
-    for _sigillo, nome in _scan(text):
+    for nome in _scan(text):
         if nome not in out:
             out.append(nome)
     return out
 
 
-def extract_tags(text: str) -> tuple[list[str], list[str]]:
-    """`(hard @tag, soft $tag)` — dedup, in ordine, righe citate escluse.
+def extract_tags(text: str) -> list[str]:
+    """Tag `@` che convocano un turno — dedup, in ordine, righe citate escluse.
 
-    Un nome scritto sia con `@` sia con `$` conta **hard**: la convocazione è
-    l'intento più forte dei due, e una citazione non la annulla.
+    Dal #391 coincide con `extract_mentions`: esiste un solo sigillo, quindi
+    ogni menzione è una convocazione. Restano due nomi perché sono due entry
+    point con due chiamanti (router e campo strutturato), e il golden li
+    misura entrambi.
     """
-    letti = _scan(text)
-    hard: list[str] = []
-    soft: list[str] = []
-    for sigillo, nome in letti:
-        if sigillo == "@" and nome not in hard:
-            hard.append(nome)
-    for sigillo, nome in letti:
-        if sigillo == "$" and nome not in hard and nome not in soft:
-            soft.append(nome)
-    return hard, soft
+    return extract_mentions(text)
 
 
-#: Casi di riferimento delle due copie: `(testo, mentions, hard, soft)`.
+#: Casi di riferimento delle due copie: `(testo, attesi)`, dove `attesi` è
+#: l'esito sia di `extract_mentions` sia di `extract_tags` (#391).
 #: La suite di entrambi i repository li esegue — qui su `extract_mentions`
 #: (campo strutturato, badge), in `clodia-logic` anche su `_tags`/`_tagged`,
 #: che sono gli entry point del router. È il «one shared rule set with a test
 #: that exercises both entry points» chiesto da #255.
-GOLDEN_CASES: tuple[tuple[str, list[str], list[str], list[str]], ...] = (
+GOLDEN_CASES: tuple[tuple[str, list[str]], ...] = (
     # ── #255: un indirizzo email non è una menzione ─────────────────────────
-    ("scrivi a foo@bar.com", [], [], []),
-    ("manda a mario.rossi@cmm.it la LOI", [], [], []),
-    ("la mia mail è davide@tomato.blue", [], [], []),
-    ("ticket: support@github.com", [], [], []),
-    ("costo 50@unita", [], [], []),
-    ("x@clodia.io", [], [], []),
-    ("log in /var/@web/x", [], [], []),
+    ("scrivi a foo@bar.com", []),
+    ("manda a mario.rossi@cmm.it la LOI", []),
+    ("la mia mail è davide@tomato.blue", []),
+    ("ticket: support@github.com", []),
+    ("costo 50@unita", []),
+    ("x@clodia.io", []),
+    ("log in /var/@web/x", []),
     # ── una menzione vera resta una menzione vera ───────────────────────────
-    ("@clodia guarda support@github.com", ["clodia"], ["clodia"], []),
-    ("scrivi a foo@bar.com poi @clodia rivedi", ["clodia"], ["clodia"], []),
-    ("fai tu @fullstack-dev#2", ["fullstack-dev#2"], ["fullstack-dev#2"], []),
-    ("fai tu @fullstack-dev-124", ["fullstack-dev-124"], ["fullstack-dev-124"], []),
-    ("(vedi @davide) e [cc $anna]", ["davide", "anna"], ["davide"], ["anna"]),
-    ("@Davide poi @mario e ancora @davide", ["davide", "mario"], ["davide", "mario"], []),
-    ("@dev#0", ["dev"], ["dev"], []),
+    ("@clodia guarda support@github.com", ["clodia"]),
+    ("scrivi a foo@bar.com poi @clodia rivedi", ["clodia"]),
+    ("fai tu @fullstack-dev#2", ["fullstack-dev#2"]),
+    ("fai tu @fullstack-dev-124", ["fullstack-dev-124"]),
+    ("(vedi @davide) e [cc $anna]", ["davide"]),
+    ("@Davide poi @mario e ancora @davide", ["davide", "mario"]),
+    ("@dev#0", ["dev"]),
     # ── namespace.shortname (12 set 2026): seed derivati con parents: ───────
-    ("fai tu @tomato.fullstack-dev", ["tomato.fullstack-dev"], ["tomato.fullstack-dev"], []),
-    ("@tomato.fullstack-dev#2 vai", ["tomato.fullstack-dev#2"], ["tomato.fullstack-dev#2"], []),
-    ("@tomato.fullstack-dev-124 vai", ["tomato.fullstack-dev-124"], ["tomato.fullstack-dev-124"], []),
+    ("fai tu @tomato.fullstack-dev", ["tomato.fullstack-dev"]),
+    ("@tomato.fullstack-dev#2 vai", ["tomato.fullstack-dev#2"]),
+    ("@tomato.fullstack-dev-124 vai", ["tomato.fullstack-dev-124"]),
     # ── codice e citazioni non convocano nessuno ────────────────────────────
-    ("```\ncurl -u a@clodia.io\n```", [], [], []),
-    ("```\n@clodia guarda qui\n```\nfuori dal blocco @anna", ["anna"], ["anna"], []),
-    ("usa `ssh a@clodia` per entrare", [], [], []),
-    ("usa `@clodia` come placeholder", [], [], []),
-    ("> @clodia aveva scritto così\nrispondo io: @luca", ["luca"], ["luca"], []),
-    ("il letterale $$davide non conta", [], [], []),
-    # ── i due sigilli: ordine, dedup, e `@` che vince su `$` ────────────────
-    ("ciao @davide, senti $mario", ["davide", "mario"], ["davide"], ["mario"]),
-    ("$mario avvisa, poi @davide decide", ["mario", "davide"], ["davide"], ["mario"]),
-    ("@davide procedi, $davide per conoscenza", ["davide"], ["davide"], []),
-    ("", [], [], []),
-    ("nessuna menzione qui", [], [], []),
+    ("```\ncurl -u a@clodia.io\n```", []),
+    ("```\n@clodia guarda qui\n```\nfuori dal blocco @anna", ["anna"]),
+    ("usa `ssh a@clodia` per entrare", []),
+    ("usa `@clodia` come placeholder", []),
+    ("> @clodia aveva scritto così\nrispondo io: @luca", ["luca"]),
+    ("il letterale $$davide non conta", []),
+    # ── #391: `$` è degli alias del composer, non è una menzione ───────────
+    ("ciao @davide, senti $mario", ["davide"]),
+    ("$mario avvisa, poi @davide decide", ["davide"]),
+    ("@davide procedi, $davide per conoscenza", ["davide"]),
+    ("$clodia", []),
+    ("usa $recap qui", []),
+    ("$@clodia", []),
+    ("", []),
+    ("nessuna menzione qui", []),
 )

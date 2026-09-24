@@ -17,8 +17,9 @@ invece di indovinare o di fare tu.
 
 Quando taggare, e quanto costa: `@nome` apre un turno completo di quell'agente e
 produce un messaggio che tutti leggono — usalo quando ti serve che FACCIA qualcosa.
-`$nome` è una citazione: non apre un turno. In dubbio `$`, perché chi serve
-davvero lo si tagga al passaggio dopo, mentre un `@` di troppo non si ritira.
+Per nominare qualcuno senza chiamarlo scrivi il suo nome senza `@`: non apre un
+turno. In dubbio niente `@`, perché chi serve davvero lo si tagga al passaggio
+dopo, mentre un `@` di troppo non si ritira.
 
 ## Sei tu che chiudi verso l'utente
 

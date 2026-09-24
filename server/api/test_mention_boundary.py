@@ -33,22 +33,22 @@ class GoldenCasesOnBothRouterEntryPointsTests(unittest.TestCase):
     """La tabella condivisa, eseguita sugli entry point di QUESTO repository."""
 
     def test_tags_matches_the_shared_rule_set(self) -> None:
-        for testo, _men, hard, soft in mentions.GOLDEN_CASES:
+        for testo, attesi in mentions.GOLDEN_CASES:
             with self.subTest(testo=testo):
-                self.assertEqual((hard, soft), channels._tags(testo))
+                self.assertEqual(attesi, channels._tags(testo))
 
     def test_tagged_returns_the_first_hard_tag_or_nothing(self) -> None:
-        for testo, _men, hard, _soft in mentions.GOLDEN_CASES:
+        for testo, attesi in mentions.GOLDEN_CASES:
             with self.subTest(testo=testo):
-                self.assertEqual(hard[0] if hard else None, channels._tagged(testo))
+                self.assertEqual(attesi[0] if attesi else None, channels._tagged(testo))
 
     def test_the_local_copy_of_the_parser_agrees_with_its_own_table(self) -> None:
         """Se questa copia divergesse da quella del gateway, il golden che
         viaggia dentro il modulo fa rosso da questo lato."""
-        for testo, men, hard, soft in mentions.GOLDEN_CASES:
+        for testo, attesi in mentions.GOLDEN_CASES:
             with self.subTest(testo=testo):
-                self.assertEqual(men, mentions.extract_mentions(testo))
-                self.assertEqual((hard, soft), mentions.extract_tags(testo))
+                self.assertEqual(attesi, mentions.extract_mentions(testo))
+                self.assertEqual(attesi, mentions.extract_tags(testo))
 
 
 class TheAddressesMeasuredInTheIssueTests(unittest.TestCase):
@@ -64,25 +64,25 @@ class TheAddressesMeasuredInTheIssueTests(unittest.TestCase):
         ):
             with self.subTest(testo=testo):
                 self.assertNotEqual(atteso_prima, channels._tagged(testo))
-                self.assertEqual(([], []), channels._tags(testo))
+                self.assertEqual([], channels._tags(testo))
 
     def test_the_collision_that_summoned_a_real_agent(self) -> None:
         """Sintomo B: dei sedici agenti registrati, `clodia` collide — qualunque
         `*@clodia.` la convocava."""
-        self.assertEqual(([], []), channels._tags("credenziali su a@clodia.io"))
+        self.assertEqual([], channels._tags("credenziali su a@clodia.io"))
 
     def test_pasting_a_command_no_longer_starts_a_turn(self) -> None:
         """Sintomo C: `_tags` scartava le righe citate e nient'altro."""
-        self.assertEqual(([], []), channels._tags("```\ncurl -u a@clodia.io\n```"))
-        self.assertEqual(([], []), channels._tags("usa `ssh a@clodia` per entrare"))
+        self.assertEqual([], channels._tags("```\ncurl -u a@clodia.io\n```"))
+        self.assertEqual([], channels._tags("usa `ssh a@clodia` per entrare"))
 
     def test_a_real_mention_after_an_address_still_summons(self) -> None:
-        self.assertEqual((["clodia"], []),
+        self.assertEqual(["clodia"],
                          channels._tags("scrivi a foo@bar.com, poi @clodia rivedi"))
 
     def test_the_two_numeric_forms_still_parse(self) -> None:
-        self.assertEqual((["clodia#2"], []), channels._tags("@clodia#2 senti"))
-        self.assertEqual((["clodia-124"], []), channels._tags("@clodia-124 senti"))
+        self.assertEqual(["clodia#2"], channels._tags("@clodia#2 senti"))
+        self.assertEqual(["clodia-124"], channels._tags("@clodia-124 senti"))
 
 
 class OneParserOnlyTests(unittest.TestCase):
@@ -101,8 +101,8 @@ class OneParserOnlyTests(unittest.TestCase):
 
     def test_the_router_reads_the_tags_from_the_shared_module(self) -> None:
         with patch.object(mentions, "extract_tags",
-                          return_value=(["sentinella"], [])) as fake:
-            self.assertEqual((["sentinella"], []), channels._tags("@qualcuno"))
+                          return_value=["sentinella"]) as fake:
+            self.assertEqual(["sentinella"], channels._tags("@qualcuno"))
         fake.assert_called_once()
 
 
