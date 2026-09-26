@@ -17,7 +17,9 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
 
-from claude_agent_sdk import ClaudeSDKClient, ClaudeAgentOptions, ResultMessage
+from claude_agent_sdk import (
+    ClaudeSDKClient, ClaudeAgentOptions, CLIConnectionError, ResultMessage,
+)
 from claude_agent_sdk.types import (
     AssistantMessage, UserMessage,
     ToolUseBlock, ToolResultBlock, ThinkingBlock,
@@ -242,6 +244,7 @@ QUERY_TIMEOUT         = 90         # invio prompt al subprocess: oltre = client 
 # cambio di un guadagno inesistente. Chi lo blocca lo misura: `core.loop_lag`.
 WATCHDOG_SILENCE = int(os.environ.get("CLODIA_TURN_WATCHDOG_SILENCE", "180"))
 WATCHDOG_TICK    = 15
+
 #: RITIRATA il 7 ago 2026. Era la chat creata al boot, `topic: null`, protetta
 #: dall'idle-reaper — quindi uno spawn vivo a tempo indeterminato.
 #:
@@ -259,6 +262,59 @@ WATCHDOG_TICK    = 15
 #: La costante resta, vuota di funzione, perché il nome compare nei log e negli
 #: storici: chi la incontra deve trovare questa nota invece di un'assenza.
 RETIRED_DEFAULT_CHAT_ID = "default"
+
+#: Un subprocess CLI che non c'è più, detto da chi non usa `CLIConnectionError`.
+#: Gli altri runtime (codex, opencode) muoiono con la stessa sostanza e un'altra
+#: classe, e la sostanza è ciò che cambia il messaggio da mostrare.
+# SHORTCUT: riconoscimento sul testo. Regge finché i runtime dicono «processo
+#           terminato» in una di queste forme; il giorno che uno ne inventa una
+#           terza il caso degrada al comportamento di prima (repr grezzo in
+#           canale), non a un messaggio sbagliato. Se diventano tanti, la strada
+#           è un'eccezione di dominio sollevata dall'adapter di ogni runtime.
+_PROCESSO_MORTO_RE = re.compile(
+    r"terminated process|process (?:has )?exited|closed pipe|broken pipe",
+    re.IGNORECASE)
+
+
+class SessioneTerminata(RuntimeError):
+    """Il turno è caduto perché il subprocess CLI era già morto, non per ciò
+    che il turno conteneva (clodia-platform#397, punto 3).
+
+    Esiste per una cosa sola: portare fino alla stanza le due informazioni che
+    `repr(CLIConnectionError(...))` non dà — che il messaggio **non è stato
+    elaborato**, e se la sessione è stata ricreata (quindi se rimandarlo basta).
+    `_announce_failure` legge `nota_utente`; l'eccezione originale resta in
+    `causa` e in `__cause__` per chi indaga.
+    """
+
+    def __init__(self, causa: BaseException, ripristinata: bool) -> None:
+        self.causa = causa
+        self.ripristinata = ripristinata
+        esito = ("È stata ricreata subito: il messaggio non è andato perso per "
+                 "sempre, basta rimandarlo."
+                 if ripristinata else
+                 "**Non è stato possibile ricrearla**: serve un intervento "
+                 "prima di riprovare.")
+        self.nota_utente = (
+            "La sessione dell'agente era terminata in modo inatteso, quindi il "
+            f"messaggio non è stato elaborato. {esito}\n\n"
+            f"Dettaglio tecnico: `{type(causa).__name__}: {causa}`")
+        super().__init__(self.nota_utente)
+
+
+def _sessione_terminata(err: BaseException, ripristinata: bool):
+    """`SessioneTerminata` se il turno è morto con il subprocess, altrimenti
+    `None` — e in quel caso l'eccezione originale va rilanciata com'è.
+
+    Rivestire un guasto qualunque sarebbe peggio del difetto: «basta
+    rimandarlo» è una promessa, e su un errore che non si ripara da sé è falsa.
+    """
+    if isinstance(err, asyncio.CancelledError):
+        return None
+    if isinstance(err, CLIConnectionError) or _PROCESSO_MORTO_RE.search(str(err)):
+        return SessioneTerminata(err, ripristinata)
+    return None
+
 
 # Tipi di agente supportati. Ogni kind ha un cwd dedicato (dove vive il
 # CLAUDE.md e i settings di quell'agente) e una cartella sessions/
@@ -1616,8 +1672,15 @@ class ChatSession:
                         activity_log.append(self.kind, "error",
                                             {"error": _snippet(str(e)), "chat_id": self.chat_id})
                         await self._publish_error(str(e))
-                        if not await self._recover_session():
+                        ripristinata = await self._recover_session()
+                        if not ripristinata:
                             await self._set_status(ClodiaStatus.ERROR)
+                        # La recovery è appena successa o fallita: è QUI che si
+                        # sa cosa dire a chi ha scritto, e un `raise` nudo la
+                        # butterebbe via (#397 punto 3, come già #358).
+                        parlante = _sessione_terminata(e, ripristinata)
+                        if parlante is not None:
+                            raise parlante from e
                         raise
                     self._last_event_at = asyncio.get_event_loop().time()
                     self._watchdog_fired = False
@@ -1681,8 +1744,14 @@ class ChatSession:
                     except Exception as e:
                         generation.update(output=trace_io(str(e)), metadata={"status": "error"})
                         await self._publish_error(str(e))
-                        if not await self._recover_session():
+                        ripristinata = await self._recover_session()
+                        if not ripristinata:
                             await self._set_status(ClodiaStatus.ERROR)
+                        # Il subprocess può morire anche DOPO l'invio, mentre si
+                        # raccoglie la risposta: stessa sostanza, stesso messaggio.
+                        parlante = _sessione_terminata(e, ripristinata)
+                        if parlante is not None:
+                            raise parlante from e
                         raise
                     finally:
                         _watchdog.cancel()
