@@ -97,6 +97,7 @@ class RelayGateTests(unittest.TestCase):
 
         async def _post(tier, name, autore, testo, kind=None):
             postati.append(testo)
+            self.post_kinds = getattr(self, "post_kinds", []) + [(autore, kind)]
 
         async def _turn(tier, name, meta, trigger_text="", **kw):
             turni.append(trigger_text)
@@ -124,11 +125,14 @@ class RelayGateTests(unittest.TestCase):
         return inviati, postati, turni
 
     def test_a_vetted_sender_triggers_the_turn(self):
+        """La richiesta arriva con la sintassi del messaggero (menzione vera del
+        coordinatore + messaggio riportato), e parte il turno del coordinatore."""
         inviati, postati, turni = self._run(True)
+        atteso = ("@clodia, riporto dal gruppo telegram «-5279916551» il seguente "
+                  "messaggio di utente telegram therealdadabit: '`@clodia` riassumi'")
         self.assertTrue(any("Ricevuto" in t for t in inviati))
-        self.assertEqual(len(postati), 1)
-        self.assertIn("`@clodia` riassumi", postati[0])
-        self.assertEqual(turni, ["`@clodia` riassumi"])
+        self.assertEqual(postati, [atteso])
+        self.assertEqual(turni, [atteso])
 
     def test_an_unvetted_sender_is_refused_and_the_topic_is_not_touched(self):
         inviati, postati, turni = self._run(False)
@@ -149,18 +153,21 @@ class RelayGateTests(unittest.TestCase):
 
     def test_in_a_whitelisted_group_an_unvetted_sender_is_never_refused(self):
         """Il caso del rifiuto: menzione da chi non è fra gli handle vagliati.
-        Il gruppo è la fonte vagliata: ack, messaggio nel canale, turno."""
+        Il gruppo è la fonte vagliata: ack, richiesta nel canale, turno."""
         inviati, postati, turni = self._run(False, username="estraneo", group=True)
         self.assertNotIn(channel_relay._DENY, inviati)
         self.assertTrue(any("Ricevuto" in t for t in inviati))
         self.assertEqual(len(postati), 1)
-        self.assertEqual(turni, ["`@clodia` riassumi"])
+        self.assertIn("utente telegram estraneo", postati[0])
+        self.assertEqual(turni, postati)
 
     def test_in_a_whitelisted_group_a_reply_to_the_bot_counts_as_a_mention(self):
-        inviati, _postati, turni = self._run(False, testo="sì, procedi", username=None,
-                                             group=True, extra={"reply_to_bot": True})
+        inviati, postati, turni = self._run(False, testo="sì, procedi", username=None,
+                                            group=True, extra={"reply_to_bot": True})
         self.assertTrue(any("Ricevuto" in t for t in inviati))
-        self.assertEqual(turni, ["sì, procedi"])
+        self.assertEqual(len(turni), 1)
+        self.assertTrue(turni[0].startswith("@clodia, riporto"))
+        self.assertTrue(turni[0].endswith("'sì, procedi'"))
 
     def test_in_a_whitelisted_group_several_messages_are_one_block(self):
         msgs = [{"message_id": i, "from_id": i, "from_username": f"u{i}", "from": f"u{i}",
@@ -195,27 +202,39 @@ class RelayGateTests(unittest.TestCase):
 
     # ── richiesta azionabile (clodia-platform#402, seconda parte) ────────────
     def test_the_request_goes_to_the_coordinator_with_an_explicit_directive(self):
-        """Il nome del bot non è più una menzione, il destinatario è esplicito
-        (il coordinatore) e il turno sa cosa gli si chiede e da dove viene."""
-        _i, _p, turni = self._run(False, testo="@clodia_topics_bot chiedi la lista delle issue",
-                                  username="therealdadabit", group=True,
-                                  extra={"chat_title": "Clodia Sviluppo"})
-        self.assertEqual(len(turni), 1)
+        """Sintassi decisa da Davide: «@clodia, riporto dal gruppo telegram … il
+        seguente messaggio di utente telegram <nome>: '<testo>'». L'unica
+        convocazione è il coordinatore, che poi incarica il messaggero."""
+        from . import mentions
+        _i, postati, turni = self._run(False, testo="@clodia_topics_bot chiedi la lista delle issue",
+                                       username="therealdadabit", group=True,
+                                       extra={"chat_title": "Clodia Sviluppo"})
+        atteso = ("@clodia, riporto dal gruppo telegram «Clodia Sviluppo» il seguente "
+                  "messaggio di utente telegram therealdadabit: "
+                  "'`@clodia_topics_bot` chiedi la lista delle issue'")
+        self.assertEqual(postati, [atteso])
+        self.assertEqual(turni, [atteso])
+        self.assertEqual(["clodia"], mentions.extract_tags(atteso))
         kw = self.turn_kw
         self.assertEqual(kw["responder_hint"], "clodia")
+        self.assertEqual(kw["directive"], channel_relay._TG_DIRECTIVE)
+        self.assertIn("incarica il messaggero", kw["directive"])
         self.assertEqual(kw["trigger_kind"], "external")
-        self.assertIn("[RICHIESTA DA TELEGRAM]", kw["directive"])
-        self.assertIn("Clodia Sviluppo", kw["directive"])
-        self.assertIn("chiedi la lista delle issue", kw["directive"])
-        from . import mentions
-        self.assertEqual([], mentions.extract_tags(turni[0]))
 
-    def test_the_relayed_block_summons_nobody_in_the_channel(self):
+    def test_the_relayed_context_summons_nobody_and_the_request_only_the_coordinator(self):
         from . import mentions
-        _i, postati, _t = self._run(False, testo="ricevuto @clodia_topics_bot, ciao @giocasu75",
-                                    group=True)
-        self.assertEqual([], mentions.extract_tags(postati[0]))
-        self.assertIn("`@giocasu75`", postati[0])
+        msgs = [{"message_id": 1, "from_id": 1, "from_username": "giocasu75", "from": "giocasu75",
+                 "text": "ciao @therealdadabit, guarda il doc"},
+                {"message_id": 2, "from_id": 2, "from_username": "therealdadabit",
+                 "from": "therealdadabit", "text": "@clodia_topics_bot riassumi"}]
+        _i, postati, _t = self._run(False, group=True, msgs=msgs)
+        self.assertEqual(len(postati), 2)
+        contesto, richiesta = postati
+        self.assertEqual([], mentions.extract_tags(contesto))
+        self.assertIn("`@therealdadabit`", contesto)
+        self.assertNotIn("riassumi", contesto, "la richiesta non si ripete nel contesto")
+        self.assertEqual(["clodia"], mentions.extract_tags(richiesta))
+        self.assertEqual("ai", self.post_kinds[-1][1])
 
     def test_an_email_address_is_not_touched(self):
         self.assertEqual("scrivi a mario@cmm.it",
