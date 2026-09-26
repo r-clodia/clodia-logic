@@ -573,7 +573,11 @@ def mint_capability(agent: str, instance: str, minutes: int, by: str,
     import secrets
     ca_key, _ = _load_ca()
     now = int(time.time())
-    minutes = max(1, min(int(minutes or 15), 120))  # cap 2h
+    # cap 2h; 24h solo per `copybrain` (clodia-platform#393), stessa regola del
+    # gateway (`pki_mint.capability_ceiling_minutes`): vale «fino a fine spawn»,
+    # e la fine vera la chiude `api.gate.release_spawn_loans`.
+    tetto = 24 * 60 if str(cap or "").startswith("gate:copybrain:") else 120
+    minutes = max(1, min(int(minutes or 15), tetto))
     jti = secrets.token_hex(8)
     payload = {
         "cap": cap, "agent": agent, "instance": instance or "-",

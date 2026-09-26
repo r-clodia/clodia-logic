@@ -63,7 +63,12 @@ rules: []
 # è la modalità con gate del suo prompt: non è un insieme diverso di poteri, ma
 # gli stessi poteri quando serve una domanda davanti.
 #
-# ESCLUSI, irraggiungibili anche con un gate, e perché:
+# ESCLUSI dal set proprio, e perché. Dal 26 set 2026 (clodia-platform#393) non
+# sono più «irraggiungibili»: con `copybrain` clodia può assumere i verbi di un
+# seed che li ha — `sysadmin` per `settings.*`, il corriere per la posta in
+# arrivo — ma solo per uno spawn, fino alla sua fine, e dopo che l'owner della
+# stanza ha approvato. Il motivo dell'esclusione resta la ragione per cui NON
+# stanno qui: sono il mestiere di un altro.
 #   email.list/read/search     la posta IN ARRIVO è il mestiere del corriere, e
 #                              ha una fonte diversa a ogni messaggio
 #   email.reply                il destinatario non sta negli argomenti: viene dal
@@ -89,9 +94,12 @@ tool_permissions:
 # Non esiste più un secondo insieme «raggiungibile ma fuori profilo»: se un
 # verbo non è qui, clodia non lo ha. Punto.
 #
-# Quando le verrà chiesto un task che richiede un verbo che non possiede,
-# riceverà un GRANT specifico attraverso un gate. Quel meccanismo non è ancora
-# implementato (6 ago 2026): per ora il set è statico e questo file lo dichiara.
+# Quando le serve un verbo che non possiede, lo prende in prestito con
+# `copybrain` (clodia-platform#393, 26 set 2026): i verbi di UN altro seed, per
+# lo spawn che sta usando, dopo un gate deciso dall'owner della stanza. Il set
+# qui sotto resta il suo; il prestito non lo modifica e finisce con lo spawn.
+# Per la stessa ragione NON ha `contabilita.*`, `leads.*`, `normattiva.*`,
+# `sedia.*`: glieli aggiungeva il gateway a ogni mount MCP, senza dichiarazione.
 # Leggere il web e spedire una relazione (14 ago 2026, decisione di Davide). Il
 # 6 agosto `email.*` era escluso in blocco perché «uscita»: la ragione era giusta
 # ma il rimedio era nel posto sbagliato. Un permesso tolto a un agente e lasciato
@@ -189,6 +197,11 @@ tool_permissions:
   - fs.list_dir
   - topic.remote_commit
   - topic.remote_push
+  # Prestito dei verbi di un altro seed per lo spawn corrente, previo gate
+  # (clodia-platform#393). `assume` chiede, `call` esegue, `release` restituisce.
+  - copybrain.assume
+  - copybrain.call
+  - copybrain.release
 
 memory:
   dir: memory/

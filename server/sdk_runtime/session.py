@@ -553,6 +553,15 @@ def _materialize_spawn(kind: str, runtime_override: Optional[dict] = None):
         return None, None
 
 
+def _release_spawn_loans(kind: str, spawn) -> None:
+    """Revoca best-effort dei prestiti `copybrain` dello spawn che si chiude."""
+    try:
+        from ..api.gate import release_spawn_loans
+        release_spawn_loans(kind, _execution_id(spawn))
+    except Exception as e:  # noqa: BLE001 — la chiusura dello spawn non dipende da questo
+        LOG.warning("copybrain: revoca a fine spawn non riuscita per %s: %s", kind, e)
+
+
 def _execution_id(spawn) -> str:
     """Identità dello SPAWN per il token firmato: `clodia-1`, o `""` se non
     ancora materializzato.
@@ -1526,6 +1535,10 @@ class ChatSession:
         # Nice termination dello spawn: la memory (symlink) è preservata, scratch
         # e copia effimera distrutti.
         if self._spawn is not None:
+            # Lo spawn finisce: i verbi presi in prestito con `copybrain` finiscono
+            # con lui (clodia-platform#393). Prima della pulizia, perché dopo lo
+            # spawn non ha più un'identità da nominare.
+            await asyncio.to_thread(_release_spawn_loans, self.kind, self._spawn)
             try:
                 self._spawn.cleanup()
             except Exception:  # noqa: BLE001
@@ -2292,6 +2305,10 @@ class CodexChatSession:
         self._proc = None
         self._client = None
         if self._spawn is not None:
+            # Lo spawn finisce: i verbi presi in prestito con `copybrain` finiscono
+            # con lui (clodia-platform#393). Prima della pulizia, perché dopo lo
+            # spawn non ha più un'identità da nominare.
+            await asyncio.to_thread(_release_spawn_loans, self.kind, self._spawn)
             try:
                 self._spawn.cleanup()
             except Exception:  # noqa: BLE001
@@ -3108,6 +3125,10 @@ class OpenCodeChatSession:
         self._proc = None
         self._client = None
         if self._spawn is not None:
+            # Lo spawn finisce: i verbi presi in prestito con `copybrain` finiscono
+            # con lui (clodia-platform#393). Prima della pulizia, perché dopo lo
+            # spawn non ha più un'identità da nominare.
+            await asyncio.to_thread(_release_spawn_loans, self.kind, self._spawn)
             try:
                 self._spawn.cleanup()
             except Exception:  # noqa: BLE001

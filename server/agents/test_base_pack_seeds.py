@@ -206,10 +206,18 @@ class ClodiaMandateTests(unittest.TestCase):
     #: Perde tutti gli altri». `web.fetch` ed `email.send` sono l'eccezione
     #: decisa il 15 ago (A12 non li tocca, li aggiunge il pack 7.9.0): stanno
     #: qui perché l'elenco dica la verità, non perché A6 sia stata allargata.
-    #: `gdrive` è l'eccezione successiva, decisa il 18 set 2026.
+    #: `gdrive` è l'eccezione successiva, decisa il 18 set 2026. `copybrain`
+    #: (26 set 2026, clodia-platform#393) è il prestito, previo gate, dei verbi
+    #: di un altro seed per uno spawn: non è un mestiere nuovo, è la porta con
+    #: cui clodia chiede quello di un altro.
     NAMESPACE_AMMESSI = {"topic", "artifact", "agents", "memory", "fs", "github",
                          "runtime", "integrations", "providers", "mcp", "packs",
-                         "jobs", "egress", "ingress", "rag", "web", "email", "gdrive"}
+                         "jobs", "egress", "ingress", "rag", "web", "email", "gdrive",
+                         "copybrain"}
+
+    #: clodia-platform#393: i mestieri di altri seed. Clodia li ottiene solo in
+    #: prestito con `copybrain`, mai nel proprio set.
+    NAMESPACE_ALTRUI = {"contabilita", "leads", "normattiva", "sedia"}
 
     #: A7: «confermiamo base, editorial, e anthropic. Perde comms». `editorial-pack`
     #: è confluito in `business-pack` (fusione con `media-agency-pack`, fuori da
@@ -225,6 +233,16 @@ class ClodiaMandateTests(unittest.TestCase):
             if v.split(".", 1)[0] not in self.NAMESPACE_AMMESSI
         )
         self.assertEqual([], fuori, f"verbi fuori dai namespace di A6: {fuori}")
+
+    def test_the_trades_of_other_seeds_are_not_hers(self) -> None:
+        suoi = sorted(v for v in (self.clodia.get("tool_permissions") or [])
+                      if v.split(".", 1)[0] in self.NAMESPACE_ALTRUI)
+        self.assertEqual([], suoi)
+
+    def test_copybrain_is_declared_verb_by_verb(self) -> None:
+        tp = set(self.clodia.get("tool_permissions") or [])
+        self.assertTrue({"copybrain.assume", "copybrain.call", "copybrain.release"} <= tp)
+        self.assertNotIn("copybrain.*", tp)
 
     def test_the_verbs_are_enumerated_not_a_wildcard(self) -> None:
         """«clodia non può più avere [*]» (6 ago). Il wildcard non era pericoloso
