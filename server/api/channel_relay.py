@@ -19,9 +19,12 @@ Comportamento (deciso con Davide):
 **Gruppo in whitelist** (clodia-platform#402, decisione di Davide, 26 set 2026):
 se la CHAT stessa è un ingress autorizzato dello scope (`tg:<chat_id>`), la fonte
 vagliata è il gruppo, non il singolo mittente. Allora:
-- ogni messaggio del gruppo è riportato nel canale, chiunque lo scriva;
+- nessun rifiuto, chiunque scriva;
+- nel canale entra SOLO la richiesta (menzione del bot o reply), con la sintassi
+  «@<coordinatore>, riporto dal gruppo telegram …»: la chiacchiera del gruppo
+  non si ripete nel canale;
 - il messaggero resta SILENTE su Telegram, a meno che qualcuno la menzioni o le
-  risponda: solo allora l'ack e il turno. Mai il rifiuto, a nessuno.
+  risponda: solo allora l'ack e il turno del coordinatore.
 Il percorso per mittente qui sopra resta per i gruppi che NON sono in whitelist.
 
 L'autorizzazione del mittente è un INGRESS dello scope come ogni altro
@@ -228,7 +231,6 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
         text = (m.get("text") or "").strip()
         if not text:
             continue
-        buffer.append(m)                       # contesto (sempre)
         # Il bot è INTERPELLATO da una menzione (@clodia/agente) OPPURE da una
         # REPLY a un suo messaggio (le reply valgono come menzioni dirette).
         if not (_addresses_bot(text, participants) or m.get("reply_to_bot")):
@@ -253,23 +255,14 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
             except Exception as e:  # noqa: BLE001
                 LOG.warning("deny send chat %s: %s", chat_id, e)
 
-    state["buffer"] = buffer
+    # Nel canale va SOLO la richiesta (decisione di Davide, 26 set 2026,
+    # clodia-platform#402): i messaggi del gruppo che non interpellano il bot
+    # non si ripetono nel canale, né come contesto né in blocco.
+    state["buffer"] = []
     if trigger is not None:
-        # Allegati: salvati nello storage del topic solo alla relay (on trigger).
-        await _save_attachments(tier, topic, buffer)
-        # Il contesto senza la richiesta, che arriva da sola con la sintassi che
-        # attiva il coordinatore (`_request_message`).
-        block = _context_block([m for m in buffer if m is not trigger], str(chat_id))
-        try:
-            if block:
-                await topics_client.async_post_message(tier, topic, instance, block,
-                                                       kind="telegram")
-            state["buffer"] = []               # contesto consumato → svuota
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("post_message %s/%s: %s", tier, topic, e)
-        else:
-            await _act_on_telegram_request(chat_id, instance, tier, topic, meta,
-                                           participants, trigger)
+        await _save_attachments(tier, topic, [trigger])
+        await _act_on_telegram_request(chat_id, instance, tier, topic, meta,
+                                       participants, trigger)
 
     _save_state(chat_id, state)
 
@@ -288,8 +281,14 @@ def _request_message(coordinatore: str | None, trigger: dict, chat_id) -> str:
               or trigger.get("from_id") or "?").lstrip("@")
     testo = _neutralize_tg_mentions((trigger.get("text") or "").strip())
     apertura = f"@{coordinatore}, riporto" if coordinatore else "Riporto"
-    return (f"{apertura} dal gruppo telegram «{gruppo}» il seguente messaggio di "
-            f"utente telegram {chi}: '{testo}'")
+    out = (f"{apertura} dal gruppo telegram «{gruppo}» il seguente messaggio di "
+           f"utente telegram {chi}: '{testo}'")
+    f = trigger.get("file")
+    if f:
+        salvato = trigger.get("saved_file")
+        out += (f" — con allegato {f.get('file_name')}, salvato in `{salvato}`" if salvato
+                else f" — con allegato {f.get('file_name')} (download non riuscito)")
+    return out
 
 
 #: Cosa ci si aspetta dal coordinatore: orchestrare, poi affidare la risposta al
@@ -365,12 +364,13 @@ async def _relay_vetted_group(chat_id, instance: str, tier: str, topic: str, met
                               messages: list) -> None:
     """Gruppo in whitelist (clodia-platform#402): la fonte vagliata è la chat.
 
-    Ogni messaggio nuovo entra nel canale, chiunque l'abbia scritto; il
-    messaggero parla su Telegram solo se interpellata (menzione o reply), e in
-    quel caso parte anche il turno. Nessun rifiuto: in un gruppo autorizzato non
-    c'è un mittente da respingere.
+    Chiunque scriva, nessun rifiuto. Ma nel canale entra SOLO la richiesta — il
+    messaggio che menziona il bot o gli risponde — con la sintassi che attiva il
+    coordinatore: la chiacchiera del gruppo non si ripete nel canale (decisione
+    di Davide, 26 set 2026). Senza richiesta il messaggero resta silente anche
+    su Telegram.
     """
-    nuovi, trigger = [], None
+    trigger = None
     for m in messages:
         mid = m.get("message_id")
         if mid in seen:
@@ -378,32 +378,11 @@ async def _relay_vetted_group(chat_id, instance: str, tier: str, topic: str, met
         seen.add(mid)
         state["seen"].append(mid)
         text = (m.get("text") or "").strip()
-        if not text and not m.get("file"):
-            continue
-        nuovi.append(m)
         if text and (_addresses_bot(text, participants) or m.get("reply_to_bot")):
             trigger = m
-    # Il buffer accumulato prima (quando il gruppo non era ancora in whitelist)
-    # entra insieme ai nuovi: è contesto dello stesso canale, non va perso.
-    da_riportare = buffer + nuovi
-    if not da_riportare:
-        _save_state(str(chat_id), state)
-        return
-    await _save_attachments(tier, topic, da_riportare)
-    # La richiesta non entra nel blocco di contesto: arriva da sola, con la
-    # sintassi che attiva il coordinatore (`_request_message`).
-    contesto = [m for m in da_riportare if m is not trigger]
-    block = _context_block(contesto, str(chat_id))
-    if block:
-        try:
-            await topics_client.async_post_message(tier, topic, instance, block, kind="telegram")
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("post_message %s/%s: %s", tier, topic, e)
-            state["buffer"] = da_riportare     # riprova al prossimo ciclo
-            _save_state(str(chat_id), state)
-            return
     state["buffer"] = []
     if trigger is not None:
+        await _save_attachments(tier, topic, [trigger])
         disp = trigger.get("from") or trigger.get("from_username") or str(trigger.get("from_id"))
         try:
             await telegram_client.send_async(
