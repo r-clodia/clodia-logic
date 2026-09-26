@@ -9,6 +9,11 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.27.1] — 2026-09-26
+- **`copybrain` is approved by an admin**, not by the owner of the room
+  (owner correction, clodia-platform#393). Clodia's system prompt and seed
+  comments say so.
+
 ## [7.27.0] — 2026-09-26
 - **Clodia gets `copybrain`** (clodia-platform#393): `copybrain.assume`,
   `copybrain.call`, `copybrain.release`. Behind a gate decided by the owner of

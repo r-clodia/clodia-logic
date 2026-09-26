@@ -66,8 +66,8 @@ rules: []
 # ESCLUSI dal set proprio, e perché. Dal 26 set 2026 (clodia-platform#393) non
 # sono più «irraggiungibili»: con `copybrain` clodia può assumere i verbi di un
 # seed che li ha — `sysadmin` per `settings.*`, il corriere per la posta in
-# arrivo — ma solo per uno spawn, fino alla sua fine, e dopo che l'owner della
-# stanza ha approvato. Il motivo dell'esclusione resta la ragione per cui NON
+# arrivo — ma solo per uno spawn, fino alla sua fine, e dopo che un admin ha
+# approvato. Il motivo dell'esclusione resta la ragione per cui NON
 # stanno qui: sono il mestiere di un altro.
 #   email.list/read/search     la posta IN ARRIVO è il mestiere del corriere, e
 #                              ha una fonte diversa a ogni messaggio
@@ -96,7 +96,7 @@ tool_permissions:
 #
 # Quando le serve un verbo che non possiede, lo prende in prestito con
 # `copybrain` (clodia-platform#393, 26 set 2026): i verbi di UN altro seed, per
-# lo spawn che sta usando, dopo un gate deciso dall'owner della stanza. Il set
+# lo spawn che sta usando, dopo un gate deciso da un admin. Il set
 # qui sotto resta il suo; il prestito non lo modifica e finisce con lo spawn.
 # Per la stessa ragione NON ha `contabilita.*`, `leads.*`, `normattiva.*`,
 # `sedia.*`: glieli aggiungeva il gateway a ogni mount MCP, senza dichiarazione.

@@ -20,7 +20,7 @@ from . import gate as G
 from .test_gate_duplicate_pending import _Req, _Risposta
 
 
-def _approva(body, *, pendenti):
+def _approva(body, *, pendenti, admin_ok=True):
     coniate = []
 
     def _gw(metodo, path, principal, corpo=None):
@@ -34,7 +34,7 @@ def _approva(body, *, pendenti):
 
     with patch.object(G, "_gw", _gw), \
             patch.object(G, "_is_scope_owner", lambda p, s: True), \
-            patch.object(G.admin, "is_admin", lambda p: True), \
+            patch.object(G.admin, "is_admin", lambda p: admin_ok), \
             patch.object(G, "_principal_from_request", lambda r: "davide"), \
             patch.object(G.pki, "mint_capability", _mint), \
             patch.object(G, "_post_outcome", lambda *a, **k: None):
@@ -43,7 +43,7 @@ def _approva(body, *, pendenti):
 
 
 _PENDENTE = [{"agent": "clodia", "instance": "clodia-3", "verb": "copybrain:commercialista",
-              "class": "walls", "chat": "chan:SEAL-1:acme:clodia"}]
+              "class": "system", "chat": "chan:SEAL-1:acme:clodia"}]
 _BODY = {"agent": "clodia", "instance": "clodia-3", "verb": "copybrain:commercialista"}
 
 
@@ -53,6 +53,16 @@ class CopybrainApproveTests(unittest.TestCase):
         self.assertEqual(200, code, corpo)
         self.assertEqual([("clodia", "clodia-3", G.COPYBRAIN_MINUTES,
                            "gate:copybrain:commercialista")], coniate)
+
+    def test_the_owner_of_the_room_who_is_not_an_admin_cannot_approve(self):
+        """Correzione di Davide (26 set 2026): lo decide un admin. Anche con una
+        classe sbagliata nella richiesta (`walls`), l'owner non-admin è fuori."""
+        for classe in ("system", "walls", None):
+            with self.subTest(classe=classe):
+                pend = [{**_PENDENTE[0], "class": classe}]
+                code, _c, coniate = _approva(dict(_BODY), pendenti=pend, admin_ok=False)
+                self.assertEqual(403, code)
+                self.assertEqual([], coniate)
 
     def test_it_is_never_remembered(self):
         for ricorda in ("topic", "global"):

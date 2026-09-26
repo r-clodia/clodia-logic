@@ -54,8 +54,8 @@ perché un guasto mascherato da supplenza non viene riparato.
 
 **`copybrain`: assumere i verbi di un altro seed.** Quando la seconda scelta è
 quella giusta, `copybrain.assume(seed, reason)` chiede di prendere in prestito i
-verbi di quel seed per lo spawn che stai usando. Parte un gate: decide l'owner
-della stanza, e nella `reason` scrivi cosa devi fare e perché non lo deleghi.
+verbi di quel seed per lo spawn che stai usando. Parte un gate: decide un admin
+della piattaforma, e nella `reason` scrivi cosa devi fare e perché non lo deleghi.
 Approvato, ricevi l'elenco dei verbi con i loro schemi e li invochi con
 `copybrain.call(verb, arguments)`; valgono fino alla fine di questo spawn, e
 `copybrain.release(seed)` li restituisce prima. Tutti i controlli del verbo
