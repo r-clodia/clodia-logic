@@ -71,6 +71,21 @@ class JobUpdate(BaseModel):
 
 
 
+class JobSetEnabled(BaseModel):
+    """Accendi/spegni un job già schedulato (clodia-platform#399).
+
+    Non riusa `JobUpdate` di proposito: quello è il form del pannello e tocca
+    cadenza, prompt e agente. Qui si cambia UN flag, ed è la sola mutazione che
+    si fa su un job **mentre sta girando storto** — restringere il campo è la
+    ragione per cui la rotta può accettare anche un `topic_trigger`."""
+    enabled: bool
+    # Chi ha chiesto (l'agente) e perché: finiscono nel log del job, non nel
+    # record. Un campo in più su `_FIELDS` sarebbe uno stato nuovo da mantenere;
+    # qui serve una traccia di chi ha spento cosa, e il log ce l'ha già.
+    by: str = Field("", max_length=100)
+    reason: str = Field("", max_length=500)
+
+
 class TopicCronTriggerUpsert(BaseModel):
     """Periodicità del trigger di un topic: «ogni N minuti, per M volte» (#239).
 
@@ -274,9 +289,19 @@ def _with_freshness(job: dict) -> dict:
 
 
 @router.get("/clodia/jobs")
-async def api_list_jobs():
-    return [_with_freshness(job) for job in db.list_jobs()
-            if job.get("mode") != "topic_trigger"]
+async def api_list_jobs(include_topic_triggers: bool = False):
+    """I job dell'istanza. `include_topic_triggers=true` li elenca TUTTI.
+
+    Il default esclude i `topic_trigger` perché questa è la lista del pannello
+    Jobs, e lì un trigger di topic non è modificabile (ha la sua form nel
+    canale). Ma il filtro non può restare implicito: interrogata senza il
+    parametro, questa rotta ha risposto «non esiste» su un trigger che c'era, e
+    chi leggeva ha concluso in buona fede che il job fosse stato rimosso
+    (clodia-platform#399). Chi vuole vedere tutto ora ha come chiederlo."""
+    jobs = db.list_jobs()
+    if not include_topic_triggers:
+        jobs = [job for job in jobs if job.get("mode") != "topic_trigger"]
+    return [_with_freshness(job) for job in jobs]
 
 
 @router.get("/clodia/jobs/{job_id}")
@@ -420,6 +445,53 @@ async def api_run_job(job_id: int, request: Request):
     _require_job_owner(request, _require_job(job_id))
     result = await scheduler.fire_job(job_id)
     return {"job_id": job_id, **result}
+
+
+@router.post("/clodia/jobs/{job_id}/set-enabled/internal")
+async def api_set_job_enabled(job_id: int, req: JobSetEnabled):
+    """Accende/SPEGNE un job, trigger di topic compresi.
+
+    Chiamata dal gateway per conto del verbo `jobs.set_enabled`, che è **gated**:
+    l'autorizzazione è la conferma umana già avvenuta là, come per
+    `jobs.propose`. Qui non c'è un principal da verificare — la barriera è la
+    rete interna, come per le rotte sorelle `report-status`/`refusal`.
+
+    Perché non basta il `PATCH /clodia/jobs/{id}` che esiste da sempre: quello
+    passa da `_require_job`, che risponde 404 su un `topic_trigger`. Il
+    26/09/2026 un trigger ha riemesso per 77 volte un ordine su un'epic chiusa e
+    nessuno in colonia ha potuto fermarlo — né a mano (mutazione raw-fs fuori dal
+    gate) né dall'API (404) (clodia-platform#399).
+
+    RIARMO. Riaccendere un job a ripetizioni ESAURITE azzera `fired_count`:
+    senza, ripartirebbe già oltre il limite e si rispegnerebbe al primo fire —
+    la stessa scelta già presa in `api_put_topic_cron_trigger`. È nella risposta
+    (`rearmed`) perché è un effetto che chi riaccende deve poter riferire."""
+    job = db.get_job(job_id)
+    if job is None:
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+    rearmed = False
+    if req.enabled and job.get("repeat_count") \
+            and job.get("fired_count", 0) >= job["repeat_count"]:
+        db.update_job(job_id, fired_count=0)
+        rearmed = True
+    esito = db.set_enabled(job_id, req.enabled, by=req.by, reason=req.reason)
+    if esito is None:  # race: cancellato fra get_job e set_enabled
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+    updated, backup = esito
+    # Lo scheduler PRIMA del ritorno: un job che resta registrato in APScheduler
+    # continua a partire anche con `enabled: false` sul file, ed è esattamente il
+    # ciclo che questa rotta esiste per rompere.
+    if updated["enabled"]:
+        scheduler.register_job(updated)
+    else:
+        scheduler.unregister_job(job_id)
+    return {
+        "ok": True, "id": job_id, "name": updated.get("name"),
+        "mode": updated.get("mode"), "enabled": updated["enabled"],
+        "rearmed": rearmed,
+        "backup": backup.name if backup else None,
+        "was_enabled": bool(job.get("enabled")),
+    }
 
 
 @router.post("/clodia/jobs/report-status/internal")

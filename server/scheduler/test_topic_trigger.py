@@ -5,6 +5,8 @@ import unittest
 from pathlib import Path
 from unittest import mock
 
+import yaml
+
 from . import api, db, scheduler
 
 
@@ -391,6 +393,74 @@ class TopicTriggerRepetitionTests(unittest.IsolatedAsyncioTestCase):
         db.update_job(trigger["id"], interval_minutes=60)
 
         self.assertEqual(db.get_job(trigger["id"])["fired_count"], 0)
+
+
+class TriggerVisibileEFermabileTests(unittest.IsolatedAsyncioTestCase):
+    """clodia-platform#399 — un trigger che va storto si deve poter VEDERE e FERMARE.
+
+    Il 26/09/2026 il job 6 ha riemesso 77 volte un ordine su un'epic chiusa.
+    Nessuno ha potuto fermarlo: `jobs.list` non lo elencava (filtro implicito sul
+    `mode`), e l'unica porta di scrittura rifiutava i `topic_trigger` con 404.
+    Questi due test coprono esattamente quelle due strade."""
+
+    async def asyncSetUp(self) -> None:
+        self.tmp = tempfile.TemporaryDirectory()
+        self.old_dir = db.JOBS_DIR
+        db.JOBS_DIR = Path(self.tmp.name)
+        self.trigger = db.create_topic_trigger(
+            "SEAL-1", "software-house", "riparti", interval_minutes=15,
+            agent="clodia", owner="davide")
+
+    async def asyncTearDown(self) -> None:
+        db.JOBS_DIR = self.old_dir
+        self.tmp.cleanup()
+
+    async def test_the_listing_can_show_topic_triggers(self):
+        default = await api.api_list_jobs()
+        tutti = await api.api_list_jobs(include_topic_triggers=True)
+
+        self.assertEqual([j["id"] for j in default], [])
+        self.assertEqual([j["id"] for j in tutti], [self.trigger["id"]])
+        self.assertEqual(tutti[0]["mode"], "topic_trigger")
+
+    async def test_disabling_stops_the_job_and_keeps_a_backup(self):
+        with mock.patch.object(api.scheduler, "unregister_job") as unregister:
+            esito = await api.api_set_job_enabled(
+                self.trigger["id"],
+                api.JobSetEnabled(enabled=False, by="sysadmin",
+                                  reason="epic chiusa"),
+            )
+
+        # 1. non produce più run: né sul file, né in APScheduler.
+        self.assertFalse(esito["enabled"])
+        self.assertFalse(db.get_job(self.trigger["id"])["enabled"])
+        self.assertNotIn(self.trigger["id"],
+                         [j["id"] for j in db.iter_enabled_jobs()])
+        unregister.assert_called_once_with(self.trigger["id"])
+        # 2. il file mantiene un backup, con lo stato PRECEDENTE.
+        backup = db.JOBS_DIR / db.BACKUPS_DIRNAME / esito["backup"]
+        self.assertTrue(backup.is_file())
+        self.assertTrue(yaml.safe_load(backup.read_text())["enabled"])
+        # 3. un backup non è un job: non torna su dal glob di `list_jobs`.
+        self.assertEqual(len(db.list_jobs()), 1)
+
+    async def test_re_enabling_an_exhausted_trigger_rearms_it(self):
+        db.update_job(self.trigger["id"], repeat_count=2, fired_count=2)
+        db.set_enabled(self.trigger["id"], False)
+
+        with mock.patch.object(api.scheduler, "register_job") as register:
+            esito = await api.api_set_job_enabled(
+                self.trigger["id"], api.JobSetEnabled(enabled=True))
+
+        self.assertTrue(esito["rearmed"])
+        self.assertEqual(db.get_job(self.trigger["id"])["fired_count"], 0)
+        register.assert_called_once()
+
+    async def test_a_job_that_does_not_exist_is_a_404(self):
+        with self.assertRaises(Exception) as ctx:
+            await api.api_set_job_enabled(
+                9999, api.JobSetEnabled(enabled=False))
+        self.assertEqual(getattr(ctx.exception, "status_code", None), 404)
 
 
 if __name__ == "__main__":

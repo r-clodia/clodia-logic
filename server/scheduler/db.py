@@ -392,6 +392,65 @@ def update_job(
     return d
 
 
+#: Sottodirectory delle copie di sicurezza (`jobs/backups/<id>-<ts>.yaml`).
+#: Sottodirectory e non file affiancato di proposito: `_all()` scandisce
+#: `JOBS_DIR/*.yaml` non ricorsivamente, quindi un backup non può mai tornare su
+#: come se fosse un job — che con un nome tipo `6.bak.yaml` succederebbe.
+BACKUPS_DIRNAME = "backups"
+
+
+def backup_job(job_id: int) -> Optional[Path]:
+    """Copia il file del job PRIMA di modificarlo. Ritorna il path della copia,
+    o `None` se il job non ha un file da copiare.
+
+    Copia BYTE per byte il file com'è (non un re-dump di `_read`): la copia serve
+    a poter tornare indietro, e un file riserializzato ha già perso i campi fuori
+    da `_FIELDS` e i commenti di chi l'ha scritto a mano."""
+    src = _path(job_id)
+    if not src.is_file():
+        return None
+    dst_dir = JOBS_DIR / BACKUPS_DIRNAME
+    dst_dir.mkdir(parents=True, exist_ok=True)
+    stamp = datetime.now(timezone.utc).strftime("%Y%m%dT%H%M%S%f")
+    dst = dst_dir / f"{job_id}-{stamp}.yaml"
+    dst.write_text(src.read_text(encoding="utf-8"), encoding="utf-8")
+    return dst
+
+
+def set_enabled(job_id: int, enabled: bool, *, by: str = "",
+                reason: str = "") -> Optional[tuple[dict, Optional[Path]]]:
+    """Accende/spegne UN job, con copia di sicurezza. Ritorna `(job, backup)`, o
+    `None` se il job non esiste.
+
+    Perché non basta `update_job(enabled=...)` (clodia-platform#399): questa è
+    l'unica scrittura che avviene mentre un job sta girando per conto suo e
+    qualcuno vuole FERMARLO. Due differenze che contano:
+
+    - la copia di sicurezza. Il file è editabile a mano e può contenere campi o
+      commenti che `_write` non riscrive; spegnere un trigger senza poterlo
+      rimettere com'era renderebbe la pausa una decisione irreversibile, e
+      nessuno spegne volentieri una cosa che non sa riaccendere;
+    - `mode` non è un filtro. `update_job` la porta la aveva già, ma l'unica
+      strada che la raggiungeva (`PATCH /clodia/jobs/{id}`) rifiuta i
+      `topic_trigger` con 404 — cioè proprio i job che il 26/09/2026 nessuno ha
+      potuto fermare.
+
+    Chi ha chiesto lo spegnimento (`by`) e perché (`reason`) finiscono nel log,
+    non nel file: il record del job descrive il job, e un motivo scritto lì non
+    avrebbe un posto in `_FIELDS` né qualcuno che lo legge."""
+    d = get_job(job_id)
+    if d is None:
+        return None
+    backup = backup_job(job_id)
+    d["enabled"] = bool(enabled)
+    d["updated_at"] = _now_iso()
+    _write(d)
+    LOG.info("job %s (%s) %s da %s%s — backup: %s", job_id, d.get("name"),
+             "ABILITATO" if enabled else "DISABILITATO", by or "?",
+             f" ({reason})" if reason else "", backup.name if backup else "-")
+    return d, backup
+
+
 def delete_job(job_id: int) -> bool:
     """Ritorna True se ha cancellato qualcosa, False se non esisteva."""
     p = _path(job_id)
