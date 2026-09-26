@@ -382,6 +382,16 @@ async def approve(request: Request):
                 {"error": "bad_request",
                  "detail": "copybrain senza spawn: il consenso non è scopabile"},
                 status_code=400)
+        # Lo decide un ADMIN (correzione di Davide, 26 set 2026). Il gateway lo
+        # classifica già `system`, ma qui non ci si affida alla sola classe che
+        # viaggia con la richiesta: una richiesta scaduta o una classe sbagliata
+        # non devono riaprire il prestito di un mestiere a chi possiede una stanza.
+        if not admin.is_admin(principal):
+            return JSONResponse(
+                {"error": "forbidden",
+                 "detail": "copybrain presta a uno spawn i verbi di un altro seed: "
+                           "lo approva un admin della piattaforma, non l'owner "
+                           "della stanza"}, status_code=403)
         minutes = COPYBRAIN_MINUTES
     rifiuto = await asyncio.to_thread(_standing_error, principal, agent, instance, verb)
     if rifiuto is not None:
