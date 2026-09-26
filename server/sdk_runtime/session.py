@@ -3394,6 +3394,47 @@ def _runtime_class(kind: str, runtime_override: Optional[dict] = None):
     return ChatSession
 
 
+def subprocess_morto(chat) -> Optional[bool]:
+    """Il subprocess di questa sessione è terminato? `None` = non si sa.
+
+    Il 26 set 2026 il CLI di `clodia-290` è morto da solo alle 16:33 (exit 143)
+    e la piattaforma se n'è accorta 11 minuti dopo, scrivendoci sopra: il turno
+    schedulato delle 16:44 è caduto per scoprirlo (clodia-platform#397 §2).
+    Il dato per saperlo prima c'era già — è lo stesso `returncode` da cui l'SDK
+    ricava «Cannot write to terminated process» — ma nessuno lo guardava.
+
+    I tre esiti sono distinti apposta:
+    - ``True``  processo terminato: la sessione è un guscio, e tiene ancora
+      occupati lo spawn su disco e l'uid di sandbox;
+    - ``False`` processo vivo;
+    - ``None``  non c'è un processo persistente da sorvegliare (codex ne apre
+      uno per turno e lo azzera alla fine), oppure il runtime non lo espone.
+
+    SHORTCUT: legge attributi INTERNI dell'SDK (`_transport._process`). Se un
+              aggiornamento li rinomina, la probe risponde `None` e il
+              comportamento degrada a quello di prima — mai a un'eviction
+              sbagliata, che è l'errore costoso. Quando l'SDK esporrà uno stato
+              pubblico del processo, questa funzione diventa una riga sola.
+    """
+    proc = getattr(chat, "_proc", None)            # codex / opencode
+    if proc is not None:
+        return getattr(proc, "returncode", None) is not None
+    client = getattr(chat, "_client", None)        # claude-agent-sdk
+    if client is None:
+        # Mai avviata, già ferma, o in mezzo a una recovery: non è una morte
+        # da constatare, ed evincerla qui ruberebbe il lavoro a chi la sta
+        # ricreando in questo istante.
+        return None
+    processo = getattr(getattr(client, "_transport", None), "_process", None)
+    if processo is None:
+        return None
+    sentinella = object()
+    rc = getattr(processo, "returncode", sentinella)
+    if rc is sentinella:
+        return None
+    return rc is not None
+
+
 class ChatManager:
     """Multi-chat: dict {chat_id → ChatSession}. Una chat 'default' al boot."""
 
@@ -3497,6 +3538,22 @@ class ChatManager:
         esaurire la memoria della macchina. Ritorna gli id delle sessioni evinte.
         """
         now = datetime.now(timezone.utc)
+        reaped = await self._evict(
+            lambda chat: (now - chat.last_activity).total_seconds() >= ttl_seconds,
+            "reap_idle", protect=protect)
+        if reaped:
+            LOG.info("reap_idle: evinte %d sessioni idle (>%.0fs): %s",
+                     len(reaped), ttl_seconds, ", ".join(reaped))
+        return reaped
+
+    # `list` qui dentro è il metodo della classe, non il builtin: l'annotazione
+    # di ritorno va in stringa o Python prova a indicizzare quella.
+    async def _evict(self, da_evincere, motivo: str, protect=None) -> "list[str]":
+        """Evince le sessioni scelte da ``da_evincere``, mai una in mezzo a un
+        turno. Punto unico: `reap_idle` e `reap_dead` differiscono per il
+        criterio, non per come si smonta una sessione — e una seconda copia di
+        questa procedura sarebbe il posto dove scordarsi il `pop` sotto lock,
+        o l'evento che aggiorna la webui."""
         protect = set(protect) if protect else set()
         victims = []
         async with self._lock:
@@ -3506,7 +3563,11 @@ class ChatManager:
                 turn = getattr(chat, "_current_turn_task", None)
                 if turn is not None and not turn.done():
                     continue  # turno in corso: non toccare
-                if (now - chat.last_activity).total_seconds() < ttl_seconds:
+                try:
+                    if not da_evincere(chat):
+                        continue
+                except Exception:  # noqa: BLE001
+                    LOG.warning("%s: criterio fallito su %s", motivo, cid, exc_info=True)
                     continue
                 self._chats.pop(cid, None)
                 victims.append((cid, chat))
@@ -3521,10 +3582,32 @@ class ChatManager:
                     timestamp=datetime.now(timezone.utc),
                 ))
             except Exception:  # noqa: BLE001
-                LOG.warning("reap_idle: stop fallito per %s", cid, exc_info=True)
+                LOG.warning("%s: stop fallito per %s", motivo, cid, exc_info=True)
+        return reaped
+
+    async def reap_dead(self, protect=None):
+        """Evince le sessioni il cui subprocess è già morto (#397 §2).
+
+        Oggi una sessione terminata in autonomia (exit 143) resta nel registro
+        come se fosse pronta, e il guasto lo scopre il turno successivo —
+        nell'incidente del 26/09, undici minuti dopo, bruciando quel turno.
+        Qui la morte si constata al tick, prima che qualcuno ci scriva sopra.
+
+        Evizione e non ricreazione: il processo è già morto, tenerne caldo uno
+        nuovo per una sessione che nessuno sta usando costa RAM senza comprare
+        niente. La history è persistita, `create()` rimaterializza la chat al
+        prossimo messaggio — ed è la stessa strada che il self-heal già prende
+        oggi, solo senza il turno perduto. In più libera subito lo spawn su
+        disco e l'uid di sandbox, che a processo morto restano appesi fino al
+        TTL idle.
+
+        Prudente per costruzione: solo `subprocess_morto(chat) is True`. Un
+        `None` (non lo so) non è una condanna."""
+        reaped = await self._evict(lambda chat: subprocess_morto(chat) is True,
+                                   "reap_dead", protect=protect)
         if reaped:
-            LOG.info("reap_idle: evinte %d sessioni idle (>%.0fs): %s",
-                     len(reaped), ttl_seconds, ", ".join(reaped))
+            LOG.warning("reap_dead: evinte %d sessioni col subprocess già "
+                        "terminato: %s", len(reaped), ", ".join(reaped))
         return reaped
 
     async def drop_agent(self, agent: str):

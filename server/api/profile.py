@@ -8,6 +8,7 @@ tutto", senza che i PII passino mai da un modello.
 """
 from __future__ import annotations
 
+import asyncio
 import os
 
 import requests
@@ -49,6 +50,11 @@ def _principal(request: Request) -> str:
     return p
 
 
+# Gli handler `def` di questo modulo li esegue FastAPI in un threadpool: la
+# loro `requests` sincrona non tocca l'event loop. Gli `async def` girano
+# invece SUL loop, e lì la stessa chiamata da `timeout=60` lo ferma per tutta
+# la sua durata — watchdog di turno compreso (#397 §1). Per questo, e solo lì,
+# passano da `asyncio.to_thread`.
 def _relay(resp: requests.Response):
     if resp.status_code >= 400:
         try:
@@ -70,8 +76,10 @@ def get_profile(name: str, request: Request):
 async def put_profile(name: str, request: Request):
     p = _principal(request)
     body = await request.json()
-    r = requests.put(f"{_base_url()}/{name}", json={"fields": body.get("fields", {})},
-                     headers=_headers(p), timeout=_HTTP_TIMEOUT)
+    r = await asyncio.to_thread(
+        requests.put, f"{_base_url()}/{name}",
+        json={"fields": body.get("fields", {})},
+        headers=_headers(p), timeout=_HTTP_TIMEOUT)
     return _relay(r)
 
 
@@ -79,9 +87,10 @@ async def put_profile(name: str, request: Request):
 async def grant_profile(name: str, request: Request):
     p = _principal(request)
     body = await request.json()
-    r = requests.post(f"{_base_url()}/{name}/grant",
-                      json={"grantee": body.get("grantee"), "granted": body.get("granted", True)},
-                      headers=_headers(p), timeout=_HTTP_TIMEOUT)
+    r = await asyncio.to_thread(
+        requests.post, f"{_base_url()}/{name}/grant",
+        json={"grantee": body.get("grantee"), "granted": body.get("granted", True)},
+        headers=_headers(p), timeout=_HTTP_TIMEOUT)
     return _relay(r)
 
 
@@ -96,7 +105,9 @@ def list_profile_files(name: str, request: Request):
 async def upload_profile_file(name: str, request: Request):
     p = _principal(request)
     body = await request.json()
-    r = requests.post(f"{_base_url()}/{name}/files", json=body, headers=_headers(p), timeout=60)
+    r = await asyncio.to_thread(
+        requests.post, f"{_base_url()}/{name}/files", json=body,
+        headers=_headers(p), timeout=60)
     return _relay(r)
 
 
