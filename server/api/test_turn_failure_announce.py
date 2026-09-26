@@ -88,6 +88,40 @@ class AnnounceFailureTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(self.posted), 1)
         self.assertEqual(self.turns, [])
 
+    async def test_an_exception_with_a_readable_note_is_shown_as_such(self):
+        """clodia-platform#397 (punto 3) · quando chi ha sollevato l'eccezione
+        ha già scritto la diagnosi, la stanza legge quella.
+
+        Il caso vero è la sessione morta e ricreata: `repr` diceva soltanto
+        `CLIConnectionError('Cannot write to terminated process (exit code:
+        143)')`, cioè né che il messaggio era andato perso né che bastava
+        rimandarlo. L'annunciatore non può dedurlo — glielo dice l'eccezione.
+        """
+        class _Parlante(RuntimeError):
+            nota_utente = ("La sessione era terminata in modo inatteso e il "
+                           "messaggio non è stato elaborato: è stata ricreata, "
+                           "basta rimandarlo.\nDettaglio: exit code 143.")
+
+        ps = self._patches()
+        for p in ps:
+            p.start()
+        try:
+            await channels._announce_failure("SEAL-1", "acme", "clodia#1",
+                                             _Parlante("qualunque cosa"))
+        finally:
+            for p in ps:
+                p.stop()
+        testo = self.posted[0][1]
+        self.assertIn("basta rimandarlo", testo)
+        self.assertIn("exit code 143", testo)
+        self.assertNotIn("_Parlante(", testo, "il repr grezzo era il difetto")
+
+    async def test_without_a_note_nothing_changes(self):
+        """Il `repr` resta il default: è l'unica cosa che c'è, per la stragrande
+        maggioranza dei guasti."""
+        await self._run("fullstack-dev#1")
+        self.assertIn("RuntimeError('codex exit 1')", self.posted[0][1])
+
     async def test_announcing_a_failure_never_raises(self):
         """Annunciare un guasto non deve poterne produrre un secondo."""
         def boom(*_a, **_k):
