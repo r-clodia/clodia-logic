@@ -9,6 +9,16 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.27.0] — 2026-09-26
+- **Clodia gets `copybrain`** (clodia-platform#393): `copybrain.assume`,
+  `copybrain.call`, `copybrain.release`. Behind a gate decided by the owner of
+  the room, the spawn she is running takes on the verbs of another seed of her
+  choice until that spawn ends. The system prompt tells her when to use it
+  (second choice after delegating) and to borrow the minimum.
+- Clodia no longer holds `contabilita.*`, `leads.*`, `normattiva.*`, `sedia.*`:
+  they came from the gateway's automatic grant on every MCP mount, not from her
+  seed, and that grant is gone (clodia-tools 2.27.0).
+
 ## [7.26.0] — 2026-09-24
 - **Clodia moves to Claude Opus 5.5** (`claude-opus-5-5`, clodia-platform#392).
   Owner decision: every Opus seed runs Opus 5.5 on every provider. On Bedrock

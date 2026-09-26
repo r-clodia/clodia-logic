@@ -48,6 +48,32 @@ def _post_outcome(chat: str | None, principal: str, text: str) -> None:
         LOG.warning("post esito gate in chat %s fallito: %s", chat, e)
 
 
+#: Chiave di gate di `copybrain.assume` e durata massima del suo consenso
+#: (clodia-platform#393). La fine vera è la fine dello spawn.
+COPYBRAIN_PREFIX = "copybrain:"
+COPYBRAIN_MINUTES = 24 * 60
+
+
+def release_spawn_loans(agent: str, instance: str) -> list[str]:
+    """Ritira i prestiti `copybrain` di uno spawn che termina. Best-effort:
+    chiamata dalla chiusura della sessione, non deve mai impedirla. Se il
+    gateway non risponde resta il tetto di 24 ore della capability."""
+    if not agent or not instance or instance == "-":
+        return []
+    try:
+        r = _gw("POST", "/revoke_instance", agent, {"agent": agent, "instance": instance})
+        if r.status_code == 200:
+            revocati = (r.json() or {}).get("revoked") or []
+            if revocati:
+                LOG.info("copybrain: fine spawn %s@%s, revocati %s", agent, instance, revocati)
+            return revocati
+        LOG.warning("copybrain: revoca di fine spawn %s@%s → HTTP %s",
+                    agent, instance, r.status_code)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("copybrain: revoca di fine spawn %s@%s non riuscita: %s", agent, instance, e)
+    return []
+
+
 def _gw_base() -> str:
     mcp = os.environ.get("CLODIA_TOOLS_MCP_URL", "http://clodia-tools:7849/mcp/")
     base = mcp.rstrip("/")
@@ -341,6 +367,22 @@ async def approve(request: Request):
     if ricorda not in ("once", "topic", "global"):
         return JSONResponse({"error": f"remember sconosciuto: {ricorda}"},
                             status_code=400)
+    if verb.startswith(COPYBRAIN_PREFIX):
+        # `copybrain` (clodia-platform#393): il consenso vale per QUESTO spawn
+        # fino alla sua fine. «Ricorda» lo estenderebbe agli spawn futuri — cioè
+        # al seed — e non si offre; la durata è quella dello spawn, chiusa dalla
+        # revoca di `release_spawn_loans`, con il tetto della capability come rete.
+        if ricorda != "once":
+            return JSONResponse(
+                {"error": "forbidden",
+                 "detail": "copybrain vale solo per lo spawn che lo chiede: non si "
+                           "ricorda per la stanza né per l'istanza"}, status_code=400)
+        if instance in ("", "-"):
+            return JSONResponse(
+                {"error": "bad_request",
+                 "detail": "copybrain senza spawn: il consenso non è scopabile"},
+                status_code=400)
+        minutes = COPYBRAIN_MINUTES
     rifiuto = await asyncio.to_thread(_standing_error, principal, agent, instance, verb)
     if rifiuto is not None:
         return rifiuto
