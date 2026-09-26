@@ -1167,6 +1167,55 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     # da `plan` dipendono anche la soglia dell'ambiguità e il ciclo che avvia i
     # turni: deduplicare solo il testo avrebbe lasciato la domanda inutile (#256).
     plan = _distinct_by(plan, lambda p: _target_identity(p[0]))
+    # MODELLO NAVE: le menzioni ORIZZONTALI non convocano (clodia-platform#390).
+    #
+    # #458 ha chiuso solo metà della porta: `_pick_responder` manda al
+    # coordinatore i messaggi umani non indirizzati, ma un `@` scritto da un
+    # AGENTE arrivava qui e apriva un turno comunque, perché l'unico controllo
+    # era sul bersaglio (partecipante, non sé stesso). Uno specialista che
+    # scriveva `@altro-specialista` svegliava l'altro: esattamente la delega
+    # orizzontale che il principio 4 vieta. Fuori dal codice restavano solo la
+    # costituzione e la skill — cioè l'aderenza del modello, che un pack vecchio
+    # o un modello distratto non garantiscono.
+    #
+    # Il controllo è STRUTTURALE, sul bersaglio: chi non è coordinatore
+    # dichiarato apre turni solo verso un coordinatore dichiarato. Gli altri `@`
+    # restano menzioni — il nome si legge nel testo, il badge resta — e non
+    # convocano nessuno. Non è un filtro sul contenuto del messaggio: quello
+    # sarebbe aggirabile e non saprebbe dire nulla su chi ha scritto cosa.
+    #
+    # Sta PRIMA di R3 (una menzione per messaggio) perché «@clodia, la parte
+    # fiscale la vedrebbe @accountant» è una richiesta sola: contare anche un
+    # bersaglio che comunque non può partire farebbe chiedere all'autore quale
+    # dei due intendeva, per poi non poter onorare la risposta.
+    #
+    # Il Messaggero NON è eccezione: uno specialista senza grant di
+    # comunicazione riferisce a Clodia/Segretario, che è la stessa frase del
+    # principio 4. L'unica eccezione è il guardiano in debug (sotto).
+    if plan and not _is_declared_coordinator(from_agent):
+        ammessi = [p for p in plan if _mention_opens_turn(p[0])]
+        negati = [_target_identity(t) for t, _k in plan if (t, _k) not in ammessi]
+        if negati:
+            LOG.info("horizontal-mention-blocked: %s ha taggato %s su %s/%s, "
+                     "nessun turno: non è coordinatore dichiarato e apre turni "
+                     "solo verso %s (#390)", from_agent, ", ".join(negati),
+                     tier, name, " o ".join(coordinator_mod.DECLARED))
+            try:
+                await bus.publish(Event(
+                    type="routing_decision",
+                    payload={"tier": tier, "name": name,
+                             "mode": "horizontal-mention-blocked",
+                             "reason": (
+                                 f"{_seed_name(from_agent)} non è coordinatore "
+                                 f"dichiarato: {', '.join(negati)} restano "
+                                 f"menzioni, nessun turno avviato"),
+                             "from_agent": _seed_name(from_agent),
+                             "negati": negati, "hop": hop,
+                             "chosen": None, "candidates": [], "eligible": []},
+                    timestamp=datetime.now(timezone.utc)))
+            except Exception as e:  # noqa: BLE001 — un segnale non rompe un turno
+                LOG.debug("routing_decision menzione orizzontale non pubblicato: %s", e)
+        plan = ammessi
     # RESOCONTO ≠ CONVOCAZIONE (#336), ma solo per SCIOGLIERE un'ambiguità.
     #
     # «@worker è stato taggato da X, ma la catena era al limite. @accountant
@@ -1659,6 +1708,30 @@ def _is_known_seed(nome: str) -> bool:
 def _seed_name(label: str | None) -> str | None:
     """Nome del seed da un'etichetta istanza ('fullstack-dev#2' → 'fullstack-dev')."""
     return _split_ord(label)[0]
+
+
+def _is_declared_coordinator(label: str | None) -> bool:
+    """L'etichetta è un coordinatore dichiarato? Il confronto è per SEED.
+
+    `clodia-2` coordina come `clodia`: il ruolo appartiene al seed, non allo
+    spawn. La lista è una sola ed è `coordinator.DECLARED` — la stessa che decide
+    il ripiego del router e chi introduce un topic nuovo — perché una seconda
+    copia della regola diverge al primo cambiamento (#188).
+    """
+    return (_seed_name(label) or "") in coordinator_mod.DECLARED
+
+
+def _mention_opens_turn(tag: str | None) -> bool:
+    """Un `@tag` scritto da chi NON è coordinatore può aprire un turno?
+
+    Solo verso un coordinatore dichiarato — il resoconto e l'escalation del
+    principio 4 — più il guardiano in modalità debug: `@sysadmin` esiste per chi
+    è bloccato da un GUASTO, e un guasto è proprio il caso in cui la via
+    ordinaria verso il coordinatore può non funzionare. Fuori dal debug quella
+    porta è chiusa come le altre, così non diventa la scorciatoia di tutti.
+    """
+    return (_is_declared_coordinator(tag)
+            or (debug_watch.enabled() and _seed_name(tag) == debug_watch.WATCHER))
 
 
 def _spec_of(label: str | None):

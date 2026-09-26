@@ -28,13 +28,26 @@ import unittest
 from unittest.mock import AsyncMock, patch
 
 from . import channels
+from .test_channels import _a
 from .test_r3_one_mention import _Base
 
-_PARTECIPANTI = ["owner", "clodia", "worker", "accountant"]
+_PARTECIPANTI = ["owner", "clodia", "segretario", "worker", "accountant"]
 
 
 class _Racconto(_Base):
-    """Delega da un agente, con lo stesso montaggio di `AnAgentIsAskedBackTests`."""
+    """Delega da un agente, con lo stesso montaggio di `AnAgentIsAskedBackTests`.
+
+    Gli autori sono COORDINATORI (clodia, segretario): dal modello nave
+    (clodia-platform#390) uno specialista non apre turni verso un altro
+    specialista, e un autore qualsiasi renderebbe questi controlli ciechi — il
+    turno non partirebbe per la regola nuova, non per il riconoscimento del
+    resoconto che qui si sta misurando.
+    """
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.agents["segretario"] = _a(
+            "segretario", "normal", "P1", "2026-02-01T00:00:03Z")
 
     async def _delegate(self, text: str, from_agent: str = "clodia"):
         start = AsyncMock(return_value=True)
@@ -68,7 +81,7 @@ class ANarrativeMentionLosesToTheRealRequestTests(_Racconto):
         resoconto, e non deve entrare in questo ramo (test sotto)."""
         _posts, start = await self._delegate(
             "Il piano approvato da @clodia lo implemento io. @worker fai la review.",
-            from_agent="accountant")
+            from_agent="segretario")
 
         self.assertEqual("worker", self._avviato(start))
 
@@ -77,9 +90,9 @@ class ANarrativeMentionLosesToTheRealRequestTests(_Racconto):
         destinatario di una richiesta, scritta con la stessa preposizione. Due
         richieste vere → la domanda resta, che è il comportamento di R3."""
         _posts, start = await self._delegate(
-            "@worker fatti aiutare da @clodia sulla stima.", from_agent="accountant")
+            "@worker fatti aiutare da @clodia sulla stima.", from_agent="segretario")
 
-        self.assertEqual("accountant", self._avviato(start),
+        self.assertEqual("segretario", self._avviato(start),
                          "la domanda deve tornare all'autore: due richieste vere")
         self.assertEqual("disambigua", start.await_args.args[6])
 
