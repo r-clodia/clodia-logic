@@ -16,8 +16,9 @@ Regole (falsi positivi esclusi per costruzione):
   un secondo tipo di menzione inerte, da insegnare a ogni agente e ambiguo con
   gli alias;
 - il sigillo deve trovarsi a un confine di parola "vero": inizio riga,
-  whitespace o punteggiatura di apertura — `/log/@nome`, `a@b.it` e simili
-  (path, email, log incollati) non contano.
+  whitespace, punteggiatura di apertura o asterisco dell'enfasi markdown —
+  `/log/@nome`, `a@b.it` e simili (path, email, log incollati) non contano,
+  mentre `**@nome**` e `*@nome*` sì (issue#457).
 
 QUESTO FILE VIVE IN DUE COPIE IDENTICHE, di proposito (issue#255):
 
@@ -57,8 +58,16 @@ _ORDINAL = r"(?:#[1-9][0-9]{0,2})?"
 
 # Sigillo valido solo dopo inizio stringa, whitespace o punteggiatura di
 # apertura (non dopo lettere, cifre, `/`, `.`, `$` ecc.).
+#
+# L'asterisco è in elenco perché l'enfasi markdown (`**@nome**`, `*@nome*`) è
+# un confine di parola a tutti gli effetti: chi scrive in grassetto il nome di
+# chi deve rispondere sta convocandolo, non citandolo (issue#457 — prima di
+# questa riga `**@sysadmin**` valeva `[]`, e al suo posto veniva agganciato un
+# altro nome presente nel testo). Non aggiunge `_`: lì il trattino basso è già
+# un carattere valido DENTRO un nome (`_NAME`), quindi `foo_@bar` sarebbe
+# ambiguo, mentre l'enfasi con `_` resta scrivibile come `_**@nome**_`.
 _MENTION_RE = re.compile(
-    rf"(?:(?<=^)|(?<=[\s\(\[\{{<,;:'\"]))@(?P<nome>{_NAME}{_ORDINAL})")
+    rf"(?:(?<=^)|(?<=[\s\*\(\[\{{<,;:'\"]))@(?P<nome>{_NAME}{_ORDINAL})")
 
 _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
@@ -142,4 +151,26 @@ GOLDEN_CASES: tuple[tuple[str, list[str]], ...] = (
     ("$@clodia", []),
     ("", []),
     ("nessuna menzione qui", []),
+    # ── #457: l'enfasi markdown è un confine, non un nascondiglio ──────────
+    ("**@sysadmin** guarda", ["sysadmin"]),
+    ("*@clodia* nota", ["clodia"]),
+    ("chiedi a **@clodia** di guardare", ["clodia"]),
+    ("chiedi a *@clodia*, poi vedi", ["clodia"]),
+    ("**@fullstack-dev#2** prendila tu", ["fullstack-dev#2"]),
+    ("**@tomato.fullstack-dev** vai", ["tomato.fullstack-dev"]),
+    ("***@davide*** decide", ["davide"]),
+    ("_**@anna**_ ok", ["anna"]),
+    ("**@clodia** poi *@mario*", ["clodia", "mario"]),
+    ("(**@davide**) e [*@luca*]", ["davide", "luca"]),
+    # dentro l'enfasi valgono ancora tutte le regole di #255 e #391
+    ("**scrivi a foo@bar.com**", []),
+    ("*a@clodia.io*", []),
+    ("**$clodia**", []),
+    ("*$mario avvisa*", []),
+    ("costa $100 in tutto", []),
+    ("**costa $100 in tutto**", []),
+    ("usa `**@clodia**` come placeholder", []),
+    ("```\n**@clodia** guarda\n```", []),
+    ("> **@clodia** aveva scritto così", []),
+    ("> *@clodia* diceva\nrispondo io: **@luca**", ["luca"]),
 )
