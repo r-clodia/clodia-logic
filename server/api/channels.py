@@ -48,76 +48,6 @@ router = APIRouter()
 LOG = logging.getLogger("agent-server.api.channels")
 
 
-def _routing_ambiguity(scored: list[tuple], config=None) -> list[tuple]:
-    """Top candidates that should be asked about instead of guessed.
-
-    Ambiguity is the R8 case: the best candidate is relevant enough, but the
-    runner-up sits within the configured margin. Below threshold we still fall
-    back normally because the router has no evidence worth asking about.
-
-    `config` è la configurazione VIVA del router (#185): soglia e margine sono
-    quelli con cui la decisione è stata presa, non le costanti del modulo. Senza,
-    cambiare `router.yaml` avrebbe spostato la scelta e lasciato fermo il criterio
-    per chiedere — due letture della stessa soglia, che divergono in silenzio.
-    """
-    if len(scored) < 2:
-        return []
-    cfg = config or router_config.load()
-    top_score = scored[0][1]
-    if top_score < cfg.threshold:
-        return []
-    ambiguous = [
-        (spec, score)
-        for spec, score in scored
-        if (top_score - score) < cfg.margin
-    ]
-    return ambiguous if len(ambiguous) >= 2 else []
-
-
-def _follow_up_pick(messages: list[dict] | None, candidates: list[tuple]):
-    """Il pari che ha appena risposto: un follow-up non è un tie (#264).
-
-    Quando una persona replica alla risposta di un bot senza rifare la menzione,
-    il routing per rilevanza trova due candidati a pari merito e chiede in chat
-    con le pills. Ma la domanda ha già una risposta scritta nel canale: fra i
-    pari, uno ha appena parlato, e chi replica a lui sta continuando QUELLA
-    conversazione. Restano candidati a pari merito, quindi la scelta non è un
-    sorteggio: si prende quello con cui il thread è già aperto.
-
-    Due guardie tengono bassa la probabilità residua che la persona si stesse
-    invece rivolgendo a un bot diverso:
-
-    - decide solo l'ULTIMO turno di agente della finestra: se in mezzo ha parlato
-      un altro agente, o il dialogo del router (`author=router`), il seed non sta
-      fra i candidati e la domanda resta;
-    - quel seed deve stare FRA i candidati a pari merito: altrimenti la
-      continuità non dice nulla su QUESTO tie.
-
-    Si guarda `kind == "ai"` e non «non è umano»: l'etichetta `human` è scritta
-    dal gateway in base all'on-behalf e su un messaggio di proxy mente
-    (vedi `_from_human`), mentre `ai` è la label che questo servizio scrive da sé
-    quando posta un turno. Chiedere all'etichetta che sappiamo giusta tiene la
-    classificazione fuori dal bug di quella che sappiamo sbagliata.
-
-    La finestra è quella del routing (`recent_messages`): la continuità scade
-    con la finestra e non resta appesa a un turno di ieri.
-    """
-    if not messages or len(candidates) < 2:
-        return None
-    per_seed: dict[str, tuple] = {}
-    for spec, score in candidates:
-        seed = _seed_name(getattr(spec, "name", None)) or ""
-        per_seed.setdefault(seed, (spec, score))
-    for msg in reversed(messages):
-        if str((msg or {}).get("kind") or "").lower() != "ai":
-            continue
-        if not str((msg or {}).get("text") or "").strip():
-            continue
-        seed = _seed_name(str((msg or {}).get("author") or "")) or ""
-        return per_seed.get(seed)
-    return None
-
-
 def _routing_choices_marker(candidates: list[tuple]) -> str:
     names = []
     for spec, _score in candidates:
@@ -3129,21 +3059,24 @@ def suggest_team(tier: str, description: str) -> dict:
 
 def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     message: str = "", trace: dict | None = None,
-                    multi: bool = False, routing_message: str | None = None,
+                    routing_message: str | None = None,
                     routing_messages: list[dict] | None = None,
                     coordinator_only: bool = False):
     """Chi risponde in un canale. Priorità:
     1. agente TAGGATO (@nome), se idoneo — override esplicito;
-    2. routing per RILEVANZA: il bot il cui dominio matcha il messaggio
-       (embedding, zero turni LLM); ripiego sul COORDINATORE dichiarato se non
-       pertinente o router non disponibile;
-    2b. a pari merito, CONTINUITÀ: se fra i candidati c'è chi ha appena risposto,
-       questo è un follow-up e risponde lui invece di chiedere (#264);
+    2. il COORDINATORE dichiarato (`coordinator.pick`): dal modello nave
+       (clodia-platform#389) un messaggio non indirizzato non elegge più uno
+       specialista, la scelta è sempre sua;
     3. il più alto di RANGO fra gli idonei, se nessun coordinatore è dichiarato
        partecipante — ultima rete, e lo dice.
     Idoneità: provider scelto per il topic con SEAL ≥ tier.
 
-    `coordinator_only=True` chiede solo il punto 3 senza instradare: serve a chi
+    Il punteggio di RILEVANZA non decide più (era il punto 2, con la continuità
+    del follow-up di #264 a sciogliere i pari merito): resta calcolato e finisce
+    nella trace come segnale consultivo — `candidates` la porta, e da lì la
+    leggono la telemetria e chi coordina.
+
+    `coordinator_only=True` chiede solo il punto 2 senza instradare: serve a chi
     ha già in mano ciò che non ha matchato e cerca chi lo prende in carico."""
     specs = [registry.get_by_name(n) for n in participants]
     route_cfg = router_config.load()
@@ -3176,30 +3109,6 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                 for s, sc in (scored or [])
             ],
             "eligible": [s.name for s in ai],
-        })
-        return chosen
-
-    def _record_multi(chosen: list, scored):
-        if trace is not None:
-            trace.update({
-                "tier": tier,
-                "mode": "relevance-multi",
-                "reason": "multi-match fallback",
-                "chosen": ", ".join(s.name for s in chosen),
-                "chosen_agents": [s.name for s in chosen],
-                "threshold": route_cfg.threshold,
-                "soft_threshold": (
-                    route_cfg.threshold
-                    * responder_routing.FALLBACK_SOFT_RATIO
-                ),
-                "margin": route_cfg.margin,
-                "recent_messages": route_cfg.recent_messages,
-                "candidates": [
-                    {"name": s.name, "score": round(sc, 3),
-                     "bot": s.type == "bot", "super": False}
-                    for s, sc in (scored or [])
-                ],
-                "eligible": [s.name for s in ai],
         })
         return chosen
 
@@ -3313,11 +3222,14 @@ def _routing_plan(participants: list[str], tier: str, message: str,
             routing_messages or [], config=route_cfg
         ) or message
         picked = _pick_responder(
-            participants, tier, None, message, trace=trace, multi=True,
+            participants, tier, None, message, trace=trace,
             routing_message=semantic_message, routing_messages=routing_messages,
         )
-        responders = picked if isinstance(picked, list) else [picked]
-        return [(spec, message) for spec in responders if spec is not None]
+        # UN responder, sempre: `_pick_responder` ritorna una spec o `None`. La
+        # lista era l'eredità del multi-match per rilevanza, che dal modello
+        # nave (#389) non esiste più — e `isinstance(..., list)` su un valore
+        # che lista non è nasconde l'invariante invece di dirla.
+        return [(picked, message)] if picked is not None else []
 
     grouped: dict[str, tuple[object, list[str]]] = {}
     unmatched: list[str] = []
@@ -3333,19 +3245,21 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         semantic_message = responder_routing.compose_routing_context(
             context, config=route_cfg
         ) or intent
-        picked = _pick_responder(
+        # L'esito NON si usa, e la chiamata sì: dal modello nave (#389) un
+        # messaggio non indirizzato non elegge uno specialista, quindi il `mode`
+        # qui può valere solo `coordinator` o `rank` e il ramo che assegnava
+        # l'intent «per dominio» (`relevance|exemplar|correction|follow-up`) non
+        # poteva più matchare — ogni sotto-task è, per costruzione, da smistare.
+        # Resta la chiamata perché riempie `intent_trace`: i punteggi per
+        # sotto-task sono il segnale consultivo che finisce nella trace del piano
+        # e da lì nella telemetria.
+        _pick_responder(
             participants, tier, None, intent, trace=intent_trace,
             routing_message=semantic_message, routing_messages=context,
         )
-        mode = intent_trace.get("mode")
-        if picked is not None and mode in ("relevance", "exemplar", "correction",
-                                           "follow-up"):
-            grouped.setdefault(picked.name, (picked, []))[1].append(intent)
-            chosen = picked.name
-        else:
-            unmatched.append(intent)
-            chosen = None
-        routes.append({"intent": intent, "chosen": chosen, "mode": mode})
+        unmatched.append(intent)
+        routes.append({"intent": intent, "chosen": None,
+                       "mode": intent_trace.get("mode")})
         for row in intent_trace.get("candidates", []):
             candidate_scores[row["name"]] = max(
                 candidate_scores.get(row["name"], 0.0), row["score"]
@@ -3370,17 +3284,13 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         coordinator = _pick_responder(participants, tier, None,
                                       coordinator_only=True, trace=coord_trace)
         if coordinator is not None:
-            # Si legge PRIMA dell'extend: dopo, «aveva già roba sua» non è più
-            # distinguibile da «gli è appena arrivato il batch».
-            solo_ripiego = coordinator.name not in grouped
             grouped.setdefault(coordinator.name, (coordinator, []))[1].extend(unmatched)
-            # Se il coordinatore aveva ANCHE intent suoi per rilevanza, resta un
-            # responder normale: `[COORDINAMENTO]` gli direbbe «il router non ha
-            # trovato nessuno di pertinente», che è falso per metà del suo
-            # incarico — e i tre esiti di quella direttiva gli farebbero passare
-            # ad altri anche il lavoro che era davvero suo.
-            if solo_ripiego:
-                coordinamento_per = coordinator.name
+            # SEMPRE coordinamento: il distinguo di prima («se aveva anche
+            # intent suoi per rilevanza resta un responder normale») serviva
+            # quando la rilevanza assegnava; ora il coordinatore riceve solo il
+            # batch da smistare, che è esattamente ciò che `[COORDINAMENTO]`
+            # dice.
+            coordinamento_per = coordinator.name
             for route in routes:
                 if route["chosen"] is None:
                     route["chosen"] = coordinator.name

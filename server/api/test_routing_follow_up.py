@@ -50,10 +50,10 @@ class FollowUpBreaksTheTieTests(unittest.TestCase):
     # per rilevanza / follow-up / storia vuota») sono ritirati: modello nave
     # (clodia-platform#389), un messaggio non indirizzato non è più deciso
     # dalla rilevanza — cade sempre sul coordinatore dichiarato, mai su
-    # un'ambiguità fra specialisti né su un follow-up fra pari. La funzione
-    # `_follow_up_pick` resta viva e testata a sé in `FollowUpUnitTests` sotto
-    # (segnale consultivo, non più nel percorso decisionale di
-    # `_pick_responder`).
+    # un'ambiguità fra specialisti né su un follow-up fra pari. Con loro è
+    # caduta anche `_follow_up_pick`, che nessuno chiamava più
+    # (clodia-platform#390): restano qui i due controlli che dimostrano che il
+    # tie non si riapre, ed è quello che va tenuto fermo.
 
     def test_an_unaddressed_message_never_reopens_a_tie_between_specialists(self) -> None:
         """Regressione diretta del modello nave: stessi punteggi ravvicinati
@@ -95,43 +95,6 @@ class FollowUpBreaksTheTieTests(unittest.TestCase):
 
         self.assertEqual(visto.get("origin"), "relevance")
         self.assertEqual(visto.get("mode"), "follow-up")
-
-
-class FollowUpUnitTests(unittest.TestCase):
-    """`_follow_up_pick` da solo: la forma dei messaggi è quella del topic."""
-
-    def setUp(self) -> None:
-        self.worker = _a("worker")
-        self.accountant = _a("accountant")
-        self.candidates = [(self.worker, 0.91), (self.accountant, 0.905)]
-        self._known = channels._is_known_seed
-        channels._is_known_seed = lambda n: n in {"worker", "accountant", "clodia"}
-        self.addCleanup(lambda: setattr(channels, "_is_known_seed", self._known))
-
-    def test_the_spawn_label_resolves_to_its_seed(self) -> None:
-        for autore in ("worker-9", "worker#9", "worker"):
-            with self.subTest(autore=autore):
-                got = channels._follow_up_pick(
-                    [_msg(autore, "ai", "fatto"),
-                     _msg("davide", "human", "e poi?")],
-                    self.candidates,
-                )
-                self.assertIsNotNone(got)
-                self.assertEqual(got[0].name, "worker")
-
-    def test_a_single_candidate_is_not_a_tie(self) -> None:
-        self.assertIsNone(channels._follow_up_pick(
-            [_msg("worker-9", "ai", "fatto")], [(self.worker, 0.91)]))
-
-    def test_empty_agent_messages_are_skipped_not_trusted(self) -> None:
-        got = channels._follow_up_pick(
-            [_msg("worker-9", "ai", "fatto"),
-             _msg("accountant-1", "ai", "   "),
-             _msg("davide", "human", "e poi?")],
-            self.candidates,
-        )
-        self.assertIsNotNone(got)
-        self.assertEqual(got[0].name, "worker")
 
 
 if __name__ == "__main__":

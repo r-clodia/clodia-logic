@@ -314,7 +314,7 @@ class ResponderTests(unittest.TestCase):
         ):
             channels._pick_responder(
                 ["clodia", "worker"], "P2", None, "richiesta ambigua",
-                trace={}, multi=True,
+                trace={},
             )
 
         self.assertIn("names", seen)
@@ -325,15 +325,22 @@ class ResponderTests(unittest.TestCase):
         non assegna più sotto-task a specialisti diversi per rilevanza — ogni
         intento non trova match (nessuno lo trova più, per costruzione) e
         finisce tutto sul coordinatore dichiarato, in un solo batch."""
+        trace: dict = {}
         with patch.dict(os.environ, {"CHANNEL_MULTI_RESPONDER": "1"}):
             plan = channels._routing_plan(
                 ["clodia", "worker", "accountant"],
                 "P0",
                 "- Aggiorna il summary del topic\n"
                 "- Invia il preventivo al cliente",
+                trace=trace,
             )
 
         self.assertEqual([spec.name for spec, _prompt in plan], ["clodia"])
+        # E ci arriva COME coordinatore (#192): riceve solo il batch da
+        # smistare, quindi il distinguo «aveva anche intent suoi per rilevanza»
+        # non ha più un caso vero — senza questo nome il turno partirebbe con
+        # `[ROUTING AUTOMATICO]`, che gli direbbe il contrario.
+        self.assertEqual(trace.get("coordinator"), "clodia")
 
     def _fallback(self, participants, message="fuori dominio", scored=None,
                   trace=None):
@@ -362,7 +369,7 @@ class ResponderTests(unittest.TestCase):
         ):
             os.environ.pop("CHANNEL_MULTI_RESPONDER", None)
             picked = channels._pick_responder(
-                participants, "P0", None, message, trace=trace, multi=True,
+                participants, "P0", None, message, trace=trace,
             )
         return picked, trace
 
