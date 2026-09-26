@@ -128,7 +128,7 @@ class RelayGateTests(unittest.TestCase):
         """La richiesta arriva con la sintassi del messaggero (menzione vera del
         coordinatore + messaggio riportato), e parte il turno del coordinatore."""
         inviati, postati, turni = self._run(True)
-        atteso = ("@clodia, riporto dal gruppo telegram «-5279916551» il seguente "
+        atteso = ("@clodia, riporto dal gruppo telegram «-5279916551» (chat_id -5279916551) il seguente "
                   "messaggio di utente telegram therealdadabit: '`@clodia` riassumi'")
         self.assertTrue(any("Ricevuto" in t for t in inviati))
         self.assertEqual(postati, [atteso])
@@ -209,7 +209,7 @@ class RelayGateTests(unittest.TestCase):
         _i, postati, turni = self._run(False, testo="@clodia_topics_bot chiedi la lista delle issue",
                                        username="therealdadabit", group=True,
                                        extra={"chat_title": "Clodia Sviluppo"})
-        atteso = ("@clodia, riporto dal gruppo telegram «Clodia Sviluppo» il seguente "
+        atteso = ("@clodia, riporto dal gruppo telegram «Clodia Sviluppo» (chat_id -5279916551) il seguente "
                   "messaggio di utente telegram therealdadabit: "
                   "'`@clodia_topics_bot` chiedi la lista delle issue'")
         self.assertEqual(postati, [atteso])
@@ -219,6 +219,7 @@ class RelayGateTests(unittest.TestCase):
         self.assertEqual(kw["responder_hint"], "clodia")
         self.assertEqual(kw["directive"], channel_relay._TG_DIRECTIVE)
         self.assertIn("incarica il messaggero", kw["directive"])
+        self.assertIn("chat_id numerico", kw["directive"])
         self.assertEqual(kw["trigger_kind"], "external")
 
     def test_the_request_summons_only_the_coordinator(self):
