@@ -818,6 +818,42 @@ async def telegram_link_action(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+@router.get("/api/topics/{tier}/{name}/mailbox-link")
+async def mailbox_link_status(tier: str, name: str, request: Request):
+    """Caselle di sistema e loro stato di autorizzazione in questo topic
+    (clodia-platform#406). Solo l'owner: l'elenco nomina indirizzi email
+    dell'istanza, e chi lo legge è chi può collegarli."""
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        return await topics_client.async_mailbox_link_status(tier, name)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
+@router.post("/api/topics/{tier}/{name}/mailbox-link")
+async def mailbox_link_action(tier: str, name: str, request: Request):
+    """Collega/scollega una casella di sistema a questo canale: ingress
+    (`inbox:`) ed egress (`outbox:`) insieme, mai una sola — autorizzare la
+    lettura senza la risposta, o viceversa, è la mezza configurazione che
+    l'owner poi scopre dal verbo che fallisce."""
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    body = body or {}
+    action = body.get("action")
+    if action not in ("connect", "disconnect"):
+        raise HTTPException(400, "richiesto 'action' (connect|disconnect)")
+    if not (body.get("account") or "").strip():
+        raise HTTPException(400, "richiesto 'account'")
+    try:
+        return await topics_client.async_mailbox_link_action(
+            tier, name, action, account=body.get("account"))
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
 @router.get("/api/topics/catalog")
 async def topics_catalog(request: Request) -> list[dict]:
     """Catalogo COMPLETO dei topic (tier/name/title/kind) per il picker di export.
