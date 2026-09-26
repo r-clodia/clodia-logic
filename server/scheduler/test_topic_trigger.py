@@ -455,6 +455,10 @@ class TriggerVisibileEFermabileTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(esito["rearmed"])
         self.assertEqual(db.get_job(self.trigger["id"])["fired_count"], 0)
         register.assert_called_once()
+        # Il backup descrive lo stato DA CUI si è partiti: se riportasse già
+        # `fired_count: 0` non direbbe più l'unica cosa per cui esiste.
+        backup = db.JOBS_DIR / db.BACKUPS_DIRNAME / esito["backup"]
+        self.assertEqual(yaml.safe_load(backup.read_text())["fired_count"], 2)
 
     async def test_a_job_that_does_not_exist_is_a_404(self):
         with self.assertRaises(Exception) as ctx:

@@ -469,15 +469,17 @@ async def api_set_job_enabled(job_id: int, req: JobSetEnabled):
     job = db.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
-    rearmed = False
-    if req.enabled and job.get("repeat_count") \
-            and job.get("fired_count", 0) >= job["repeat_count"]:
-        db.update_job(job_id, fired_count=0)
-        rearmed = True
     esito = db.set_enabled(job_id, req.enabled, by=req.by, reason=req.reason)
     if esito is None:  # race: cancellato fra get_job e set_enabled
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
     updated, backup = esito
+    # Il riarmo DOPO la copia di sicurezza, non prima: un backup che riporta già
+    # `fired_count: 0` non descrive più lo stato da cui si è partiti, cioè
+    # l'unica cosa che deve dire.
+    rearmed = bool(req.enabled and job.get("repeat_count")
+                   and job.get("fired_count", 0) >= job["repeat_count"])
+    if rearmed:
+        updated = db.update_job(job_id, fired_count=0) or updated
     # Lo scheduler PRIMA del ritorno: un job che resta registrato in APScheduler
     # continua a partire anche con `enabled: false` sul file, ed è esattamente il
     # ciclo che questa rotta esiste per rompere.
