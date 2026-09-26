@@ -4,6 +4,10 @@ pydantic>=2.9.0
 pyyaml>=6.0.2
 sse-starlette>=2.1.0
 httpx>=0.27.0
+# `requests` è importato da una dozzina di moduli (topics_client, provider_store,
+# gateway_pdp, api/gate…) e non era dichiarato: arrivava come dipendenza
+# indiretta, finché la risoluzione del 26 set 2026 non l'ha più portato.
+requests>=2.31
 claude-agent-sdk>=0.1.0
 python-multipart>=0.0.12
 apscheduler>=3.10
