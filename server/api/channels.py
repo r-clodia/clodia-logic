@@ -982,6 +982,22 @@ async def _report_back(tier: str, name: str, responder: str, chat,
                     tier, name, responder, e)
 
 
+def _diagnosi(err: Exception) -> str:
+    """Cosa leggere nella stanza, di un turno caduto.
+
+    Il default resta il `repr`: per la gran parte dei guasti è l'unica cosa che
+    c'è, e riassumerlo perderebbe l'unico indizio (regola già fissata da
+    `test_turn_failure_announce`). Ma chi solleva l'eccezione a volte sa molto
+    di più di chi la stampa — `sdk_runtime.session.SessioneTerminata` sa che il
+    subprocess era morto, che il messaggio non è stato elaborato e se la
+    sessione è stata ricreata (clodia-platform#397, punto 3). Quando quella nota
+    c'è, è quella che serve: da qui non si potrebbe dedurre, e indovinarla dal
+    testo dell'eccezione sarebbe indovinare due volte.
+    """
+    nota = str(getattr(err, "nota_utente", "") or "").strip()
+    return nota if nota else f"```\n{repr(err)[:400]}\n```"
+
+
 async def _announce_failure(tier: str, name: str, responder: str, err: Exception) -> None:
     """Un turno morto si dice nel CANALE, sempre, e si passa a sysadmin.
 
@@ -999,7 +1015,7 @@ async def _announce_failure(tier: str, name: str, responder: str, err: Exception
     try:
         testo = (f"⚠️ Il turno di **@{responder}** è terminato con un errore, "
                  f"quindi nel canale non è comparsa nessuna risposta.\n\n"
-                 f"```\n{repr(err)[:400]}\n```\n")
+                 f"{_diagnosi(err)}\n")
         # ANTI-LOOP. Se a cadere è il guardiano stesso, chiamarlo lo farebbe
         # cadere di nuovo sullo stesso errore, e ogni caduta ne chiamerebbe
         # un'altra. Il messaggio resta — è la parte che serve a chi guarda — e
