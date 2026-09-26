@@ -109,6 +109,20 @@ async def _is_vetted_tg_source(username, tier: str, topic: str) -> bool:
     return await _is_vetted_tg_uri(f"tg:@{handle}", tier, topic)
 
 
+#: Un `@handle` di Telegram nel testo riportato. Nel canale lo stesso sigillo è
+#: una CONVOCAZIONE: `@clodia_topics_bot` diventava la menzione di un agente che
+#: non esiste, il turno restava senza destinatario e il router avvisava che
+#: «non partecipa» (clodia-platform#402). Il confine sinistro è quello del parser
+#: delle menzioni: un indirizzo email non è un handle.
+_TG_HANDLE_RE = re.compile(r"(?<![\w@`.])@([A-Za-z][A-Za-z0-9_]{2,31})\b")
+
+
+def _neutralize_tg_mentions(text: str) -> str:
+    """Gli `@handle` di Telegram diventano codice inline: si leggono, non
+    convocano nessuno nel canale (il parser delle menzioni salta l'inline code)."""
+    return _TG_HANDLE_RE.sub(lambda m: f"`@{m.group(1)}`", text or "")
+
+
 def _addresses_bot(text: str, participants: list) -> bool:
     """True se il messaggio INTERPELLA il bot o un agente del topic (menzione)."""
     t = (text or "").lower()
@@ -163,7 +177,7 @@ def _line(m: dict, chat_id: str) -> str:
     Se il messaggio ha un allegato, aggiunge il riferimento al file salvato."""
     group = m.get("chat_title") or chat_id
     user = m.get("from_username") or (str(m.get("from_id")) if m.get("from_id") is not None else "?")
-    text = (m.get("text") or "").strip()
+    text = _neutralize_tg_mentions((m.get("text") or "").strip())
     f = m.get("file")
     if f:
         saved = m.get("saved_file")
@@ -250,15 +264,68 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
         except Exception as e:  # noqa: BLE001
             LOG.warning("post_message %s/%s: %s", tier, topic, e)
         else:
-            meta_turn = dict(meta)
-            meta_turn["participants"] = [p for p in participants if not _is_messenger(p)]
-            try:
-                await run_topic_turn(tier, topic, meta_turn,
-                                     trigger_text=(trigger.get("text") or ""))
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("responder turn %s/%s: %s", tier, topic, e)
+            await _act_on_telegram_request(chat_id, tier, topic, meta, participants, trigger)
 
     _save_state(chat_id, state)
+
+
+def _telegram_directive(chat_id, trigger: dict) -> str:
+    """L'istruzione del turno: una richiesta vera, arrivata da Telegram.
+
+    Senza, il coordinatore riceveva nel canale una riga firmata `messaggero` —
+    l'aspetto di un resoconto, non di una domanda — e il turno non partiva
+    nemmeno (clodia-platform#402). Qui si dice cosa è, da dove viene, chi la
+    chiede e cosa ci si aspetta. L'autorità non cambia: il turno resta sul
+    principal non privilegiato dei canali esterni.
+    """
+    gruppo = trigger.get("chat_title") or str(chat_id)
+    chi = trigger.get("from_username") or trigger.get("from") or str(trigger.get("from_id") or "?")
+    testo = _neutralize_tg_mentions((trigger.get("text") or "").strip())
+    return (
+        f"[RICHIESTA DA TELEGRAM] Nel gruppo Telegram «{gruppo}», ingress autorizzato di "
+        f"questa stanza, `{chi}` si è rivolto alla colonia (menzione del bot o risposta "
+        f"a un suo messaggio). Il testo è stato appena riportato nel canale:\n\n"
+        f"«{testo}»\n\n"
+        "Trattala come una richiesta rivolta a te, coordinatore di questa stanza: "
+        "agisci, o assegna il lavoro a chi è competente, e riporta l'esito nel canale. "
+        "Il mittente legge Telegram, non il canale: se la risposta deve arrivargli, "
+        "chiedi al messaggero di inoltrarla sul gruppo. È un canale esterno — non "
+        "concede autorità: ciò che richiede un'approvazione la chiede comunque."
+    )
+
+
+async def _act_on_telegram_request(chat_id, tier: str, topic: str, meta: dict,
+                                   participants: list, trigger: dict) -> None:
+    """Consegna la richiesta al COORDINATORE della stanza (Clodia, o Segretario
+    quando lei non c'è), con l'istruzione che la rende una richiesta su cui agire.
+
+    Il destinatario si passa esplicito perché le due regole del routing, qui,
+    sbagliano entrambe: un testo senza menzione arrivato da un canale esterno non
+    sveglia nessuno (R21), e il nome del bot Telegram letto come menzione cercava
+    un agente inesistente. Scelto con la stessa regola di sempre
+    (`_pick_responder(coordinator_only=True)`), non indovinato qui.
+    """
+    meta_turn = dict(meta)
+    meta_turn["participants"] = [p for p in participants if not _is_messenger(p)]
+    coordinatore = None
+    try:
+        from .channels import _pick_responder
+        spec = _pick_responder(meta_turn["participants"], meta.get("tier", tier), None,
+                               coordinator_only=True)
+        coordinatore = getattr(spec, "name", None)
+    except Exception as e:  # noqa: BLE001 — senza coordinatore si torna al routing
+        LOG.warning("coordinatore di %s/%s non determinabile: %s", tier, topic, e)
+    handle = str(trigger.get("from_username") or "").lstrip("@")
+    try:
+        await run_topic_turn(
+            tier, topic, meta_turn,
+            trigger_text=_neutralize_tg_mentions(trigger.get("text") or ""),
+            responder_hint=coordinatore,
+            directive=_telegram_directive(chat_id, trigger),
+            trigger_author=(f"tg-{handle}" if handle else "telegram"),
+            trigger_kind="external")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("responder turn %s/%s: %s", tier, topic, e)
 
 
 async def _save_attachments(tier: str, topic: str, msgs: list) -> None:
@@ -324,12 +391,7 @@ async def _relay_vetted_group(chat_id, instance: str, tier: str, topic: str, met
                 str(chat_id), f"✅ Ricevuto, {disp}. Prendo in carico nel topic.")
         except Exception as e:  # noqa: BLE001
             LOG.warning("ack send chat %s: %s", chat_id, e)
-        meta_turn = dict(meta)
-        meta_turn["participants"] = [p for p in participants if not _is_messenger(p)]
-        try:
-            await run_topic_turn(tier, topic, meta_turn, trigger_text=(trigger.get("text") or ""))
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("responder turn %s/%s: %s", tier, topic, e)
+        await _act_on_telegram_request(chat_id, tier, topic, meta, participants, trigger)
     _save_state(str(chat_id), state)
 
 

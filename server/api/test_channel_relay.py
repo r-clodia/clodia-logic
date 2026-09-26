@@ -98,8 +98,9 @@ class RelayGateTests(unittest.TestCase):
         async def _post(tier, name, autore, testo, kind=None):
             postati.append(testo)
 
-        async def _turn(tier, name, meta, trigger_text=""):
+        async def _turn(tier, name, meta, trigger_text="", **kw):
             turni.append(trigger_text)
+            self.turn_kw = kw
 
         async def _vetted(u, tier, topic):
             return vetted
@@ -116,7 +117,9 @@ class RelayGateTests(unittest.TestCase):
                 patch.object(channel_relay.telegram_client, "send_async", _send), \
                 patch.object(channel_relay.topics_client, "async_open_topic", _open), \
                 patch.object(channel_relay.topics_client, "async_post_message", _post), \
-                patch.object(channel_relay, "run_topic_turn", _turn):
+                patch.object(channel_relay, "run_topic_turn", _turn), \
+                patch("server.api.channels._pick_responder",
+                      lambda *a, **k: type("S", (), {"name": "clodia"})()):
             asyncio.run(channel_relay._relay_chat("-5279916551", self.BINDING, msgs or [msg]))
         return inviati, postati, turni
 
@@ -124,8 +127,8 @@ class RelayGateTests(unittest.TestCase):
         inviati, postati, turni = self._run(True)
         self.assertTrue(any("Ricevuto" in t for t in inviati))
         self.assertEqual(len(postati), 1)
-        self.assertIn("@clodia riassumi", postati[0])
-        self.assertEqual(turni, ["@clodia riassumi"])
+        self.assertIn("`@clodia` riassumi", postati[0])
+        self.assertEqual(turni, ["`@clodia` riassumi"])
 
     def test_an_unvetted_sender_is_refused_and_the_topic_is_not_touched(self):
         inviati, postati, turni = self._run(False)
@@ -151,7 +154,7 @@ class RelayGateTests(unittest.TestCase):
         self.assertNotIn(channel_relay._DENY, inviati)
         self.assertTrue(any("Ricevuto" in t for t in inviati))
         self.assertEqual(len(postati), 1)
-        self.assertEqual(turni, ["@clodia riassumi"])
+        self.assertEqual(turni, ["`@clodia` riassumi"])
 
     def test_in_a_whitelisted_group_a_reply_to_the_bot_counts_as_a_mention(self):
         inviati, _postati, turni = self._run(False, testo="sì, procedi", username=None,
@@ -189,6 +192,34 @@ class RelayGateTests(unittest.TestCase):
         with patch("server.api.observe._gw", _gw):
             self.assertFalse(asyncio.run(
                 channel_relay._is_vetted_tg_group("-5411149155", "SEAL-1", "software-house")))
+
+    # ── richiesta azionabile (clodia-platform#402, seconda parte) ────────────
+    def test_the_request_goes_to_the_coordinator_with_an_explicit_directive(self):
+        """Il nome del bot non è più una menzione, il destinatario è esplicito
+        (il coordinatore) e il turno sa cosa gli si chiede e da dove viene."""
+        _i, _p, turni = self._run(False, testo="@clodia_topics_bot chiedi la lista delle issue",
+                                  username="therealdadabit", group=True,
+                                  extra={"chat_title": "Clodia Sviluppo"})
+        self.assertEqual(len(turni), 1)
+        kw = self.turn_kw
+        self.assertEqual(kw["responder_hint"], "clodia")
+        self.assertEqual(kw["trigger_kind"], "external")
+        self.assertIn("[RICHIESTA DA TELEGRAM]", kw["directive"])
+        self.assertIn("Clodia Sviluppo", kw["directive"])
+        self.assertIn("chiedi la lista delle issue", kw["directive"])
+        from . import mentions
+        self.assertEqual([], mentions.extract_tags(turni[0]))
+
+    def test_the_relayed_block_summons_nobody_in_the_channel(self):
+        from . import mentions
+        _i, postati, _t = self._run(False, testo="ricevuto @clodia_topics_bot, ciao @giocasu75",
+                                    group=True)
+        self.assertEqual([], mentions.extract_tags(postati[0]))
+        self.assertIn("`@giocasu75`", postati[0])
+
+    def test_an_email_address_is_not_touched(self):
+        self.assertEqual("scrivi a mario@cmm.it",
+                         channel_relay._neutralize_tg_mentions("scrivi a mario@cmm.it"))
 
     def test_chatter_that_does_not_address_the_bot_stays_in_the_buffer(self):
         """Nessuna regressione sulla precondizione: senza menzione non si
@@ -267,7 +298,7 @@ class ContextTests(unittest.TestCase):
         block = _context_block(buffer, "-5279916551")
         self.assertEqual(block,
                          "[tg://-5279916551/giocasu75] -> guardate il doc\n"
-                         "[tg://-5279916551/therealdadabit] -> @clodia riassumi")
+                         "[tg://-5279916551/therealdadabit] -> `@clodia` riassumi")
 
 
 if __name__ == "__main__":
