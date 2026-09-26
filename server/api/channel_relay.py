@@ -16,6 +16,14 @@ Comportamento (deciso con Davide):
 - la chiacchiera che non interpella il bot resta nel buffer (contesto), non entra
   da sola nel topic.
 
+**Gruppo in whitelist** (clodia-platform#402, decisione di Davide, 26 set 2026):
+se la CHAT stessa è un ingress autorizzato dello scope (`tg:<chat_id>`), la fonte
+vagliata è il gruppo, non il singolo mittente. Allora:
+- ogni messaggio del gruppo è riportato nel canale, chiunque lo scriva;
+- il messaggero resta SILENTE su Telegram, a meno che qualcuno la menzioni o le
+  risponda: solo allora l'ack e il turno. Mai il rifiuto, a nessuno.
+Il percorso per mittente qui sopra resta per i gruppi che NON sono in whitelist.
+
 L'autorizzazione del mittente è un INGRESS dello scope come ogni altro
 (clodia-platform#365): fino al 14 set 2026 viveva in un blocco JSON ad-hoc nella
 `MEMORY.md` del messaggero, invisibile al modello ingress/egress e non revocabile
@@ -50,6 +58,31 @@ def _is_messenger(agent: str) -> bool:
 
 
 # ── autorizzazione del mittente: un INGRESS dello scope come ogni altro ───────
+async def _is_vetted_tg_uri(uri: str, tier: str, topic: str) -> bool:
+    """True se `uri` è un ingress vagliato per `tier/topic`. Chiede al gateway,
+    fail-closed: un guasto non autorizza nessuno (vedi `_is_vetted_tg_source`)."""
+    from .observe import _gw
+    try:
+        r = await asyncio.to_thread(
+            _gw, "/internal/egress",
+            {"uri": uri, "direction": "ingress", "scope": f"{tier}/{topic}"})
+        r.raise_for_status()
+        return bool(r.json().get("vetted"))
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("ingress di %s/%s per %s non verificabile (%s) → rifiuto",
+                    tier, topic, uri, str(e)[:120])
+        return False
+
+
+async def _is_vetted_tg_group(chat_id, tier: str, topic: str) -> bool:
+    """True se il GRUPPO `chat_id` è un ingress vagliato per QUESTO topic
+    (`tg:<chat_id>`, clodia-platform#402). Lo scope è quello del binding."""
+    cid = str(chat_id or "").strip()
+    if not cid:
+        return False
+    return await _is_vetted_tg_uri(f"tg:{cid}", tier, topic)
+
+
 async def _is_vetted_tg_source(username, tier: str, topic: str) -> bool:
     """True se `@username` è una fonte vagliata PER QUESTO topic.
 
@@ -73,17 +106,7 @@ async def _is_vetted_tg_source(username, tier: str, topic: str) -> bool:
     handle = str(username or "").strip().lstrip("@")
     if not handle:
         return False
-    from .observe import _gw
-    try:
-        r = await asyncio.to_thread(
-            _gw, "/internal/egress",
-            {"uri": f"tg:@{handle}", "direction": "ingress", "scope": f"{tier}/{topic}"})
-        r.raise_for_status()
-        return bool(r.json().get("vetted"))
-    except Exception as e:  # noqa: BLE001
-        LOG.warning("ingress di %s/%s per tg:@%s non verificabile (%s) → rifiuto",
-                    tier, topic, handle, str(e)[:120])
-        return False
+    return await _is_vetted_tg_uri(f"tg:@{handle}", tier, topic)
 
 
 def _addresses_bot(text: str, participants: list) -> bool:
@@ -154,7 +177,8 @@ def _line(m: dict, chat_id: str) -> str:
 def _context_block(buffer: list, chat_id: str) -> str:
     """Blocco compatto: una riga per messaggio del buffer (contesto + richiesta).
     Le istruzioni comportamentali stanno una volta sola in _CHANNEL_CAPS, non qui."""
-    return "\n".join(_line(m, chat_id) for m in buffer if (m.get("text") or "").strip())
+    return "\n".join(_line(m, chat_id) for m in buffer
+                     if (m.get("text") or "").strip() or m.get("file"))
 
 
 # ── relay di una singola chat legata (binding) ────────────────────────────────
@@ -174,6 +198,11 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
     state = _load_state(chat_id)
     seen = set(state.get("seen", []))
     buffer = state.get("buffer", [])
+
+    if await _is_vetted_tg_group(chat_id, tier, topic):
+        await _relay_vetted_group(chat_id, instance, tier, topic, meta, participants,
+                                  state, seen, buffer, messages)
+        return
 
     trigger = None          # ultimo messaggio LEGIT che interpella il bot
     for m in messages:
@@ -212,20 +241,8 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
 
     state["buffer"] = buffer
     if trigger is not None:
-        # Allegati: scarica da Telegram e salvali nello storage del topic, così gli
-        # agenti li leggono con topic.read_document. Solo alla relay (on trigger).
-        for m in buffer:
-            f = m.get("file")
-            if not f or m.get("saved_file") is not None:
-                continue
-            try:
-                dl = await telegram_client.download_async(f["file_id"])
-                fname = _safe_filename(f.get("file_name") or f["file_id"])
-                await topics_client.async_put_file(tier, topic, fname, dl["content_b64"])
-                m["saved_file"] = f"files/{fname}"
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("download/save file %s/%s: %s", tier, topic, e)
-                m["saved_file"] = ""      # download non riuscito (marcato)
+        # Allegati: salvati nello storage del topic solo alla relay (on trigger).
+        await _save_attachments(tier, topic, buffer)
         block = _context_block(buffer, str(chat_id))
         try:
             await topics_client.async_post_message(tier, topic, instance, block, kind="telegram")
@@ -242,6 +259,78 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list) -> None:
                 LOG.warning("responder turn %s/%s: %s", tier, topic, e)
 
     _save_state(chat_id, state)
+
+
+async def _save_attachments(tier: str, topic: str, msgs: list) -> None:
+    """Scarica da Telegram gli allegati e li salva nello storage del topic, così
+    gli agenti li leggono con topic.read_document. Marca l'esito sul messaggio."""
+    for m in msgs:
+        f = m.get("file")
+        if not f or m.get("saved_file") is not None:
+            continue
+        try:
+            dl = await telegram_client.download_async(f["file_id"])
+            fname = _safe_filename(f.get("file_name") or f["file_id"])
+            await topics_client.async_put_file(tier, topic, fname, dl["content_b64"])
+            m["saved_file"] = f"files/{fname}"
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("download/save file %s/%s: %s", tier, topic, e)
+            m["saved_file"] = ""      # download non riuscito (marcato)
+
+
+async def _relay_vetted_group(chat_id, instance: str, tier: str, topic: str, meta: dict,
+                              participants: list, state: dict, seen: set, buffer: list,
+                              messages: list) -> None:
+    """Gruppo in whitelist (clodia-platform#402): la fonte vagliata è la chat.
+
+    Ogni messaggio nuovo entra nel canale, chiunque l'abbia scritto; il
+    messaggero parla su Telegram solo se interpellata (menzione o reply), e in
+    quel caso parte anche il turno. Nessun rifiuto: in un gruppo autorizzato non
+    c'è un mittente da respingere.
+    """
+    nuovi, trigger = [], None
+    for m in messages:
+        mid = m.get("message_id")
+        if mid in seen:
+            continue
+        seen.add(mid)
+        state["seen"].append(mid)
+        text = (m.get("text") or "").strip()
+        if not text and not m.get("file"):
+            continue
+        nuovi.append(m)
+        if text and (_addresses_bot(text, participants) or m.get("reply_to_bot")):
+            trigger = m
+    # Il buffer accumulato prima (quando il gruppo non era ancora in whitelist)
+    # entra insieme ai nuovi: è contesto dello stesso canale, non va perso.
+    da_riportare = buffer + nuovi
+    if not da_riportare:
+        _save_state(str(chat_id), state)
+        return
+    await _save_attachments(tier, topic, da_riportare)
+    block = _context_block(da_riportare, str(chat_id))
+    try:
+        await topics_client.async_post_message(tier, topic, instance, block, kind="telegram")
+        state["buffer"] = []
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("post_message %s/%s: %s", tier, topic, e)
+        state["buffer"] = da_riportare     # riprova al prossimo ciclo
+        _save_state(str(chat_id), state)
+        return
+    if trigger is not None:
+        disp = trigger.get("from") or trigger.get("from_username") or str(trigger.get("from_id"))
+        try:
+            await telegram_client.send_async(
+                str(chat_id), f"✅ Ricevuto, {disp}. Prendo in carico nel topic.")
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("ack send chat %s: %s", chat_id, e)
+        meta_turn = dict(meta)
+        meta_turn["participants"] = [p for p in participants if not _is_messenger(p)]
+        try:
+            await run_topic_turn(tier, topic, meta_turn, trigger_text=(trigger.get("text") or ""))
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("responder turn %s/%s: %s", tier, topic, e)
+    _save_state(str(chat_id), state)
 
 
 async def run_poll_cycle(timeout: int = 25) -> int:
