@@ -240,14 +240,27 @@ async def _lifespan(app: FastAPI):
         hard_ttl = float(os.environ.get("CLODIA_SESSION_HARD_TTL_SEC", "3600"))
         interval = float(os.environ.get("CLODIA_SESSION_REAP_TICK_SEC", "300"))  # 5 min
         if ttl <= 0:
-            LOG.info("idle reaper disabilitato (CLODIA_SESSION_IDLE_TTL_SEC<=0)")
-            return
-        LOG.info("idle reaper attivo: ttl=%.0fs hard_ttl=%.0fs tick=%.0fs",
-                 ttl, hard_ttl, interval)
+            LOG.info("idle reaper disabilitato (CLODIA_SESSION_IDLE_TTL_SEC<=0): "
+                     "resta attivo il solo controllo delle sessioni morte, "
+                     "tick=%.0fs", interval)
+        else:
+            LOG.info("idle reaper attivo: ttl=%.0fs hard_ttl=%.0fs tick=%.0fs",
+                     ttl, hard_ttl, interval)
         from .agents.workspace import sweep_orphan_spawns
         from .sdk_runtime.process_reaper import sweep_orphan_runtime_processes
         while True:
             await asyncio.sleep(interval)
+            # Sessioni col subprocess già morto (clodia-platform#397 §2). Gira
+            # PRIMA dell'eviction per idle e anche quando il TTL idle è
+            # disabilitato: «non evincere le sessioni vive» è una scelta che
+            # non dice niente sui gusci morti, e chi ha spento il reaper non ha
+            # chiesto di tenersi quelli.
+            try:
+                await manager.reap_dead()
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("reap sessioni morte: %s", e)
+            if ttl <= 0:
+                continue
             try:
                 await manager.reap_idle(ttl)
             except Exception as e:  # noqa: BLE001

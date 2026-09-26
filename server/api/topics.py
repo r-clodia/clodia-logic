@@ -947,7 +947,38 @@ async def rebuild_topic_index_endpoint(classification: str, name: str) -> dict:
     caller può invocare questo endpoint per riallineare `topics/.index/`.
     `GET /topics` fa comunque self-healing lazy se l'indice è stale.
     """
-    return rebuild_topic_index(classification, name)
+    # `rebuild_topic_index` legge il repo con `git log` sincrono: sul thread
+    # dell'event loop fermerebbe tutto il processo per la sua durata (#397 §1).
+    return await asyncio.to_thread(rebuild_topic_index, classification, name)
+
+
+def _pull_and_reindex(topic_dir: Path, classification: str, name: str) -> tuple[str, dict]:
+    """Il pezzo SINCRONO del refresh: ff-pull della working copy + reindex.
+
+    Vive in una funzione sua perché è il corpo che `refresh_topic_endpoint`
+    esegue in un thread: raccoglierlo qui costa un solo salto di thread invece
+    di cinque, e rende impossibile lasciarne indietro un pezzo sul loop.
+    """
+    pull = "skipped"
+    # ff-pull solo se working tree pulito e remote 'origin' configurato.
+    # "Sporco" = modifiche a file TRACCIATI: gli untracked NON bloccano un
+    # ff-pull (coerente con l'helper topic.sh is_dirty).
+    dirty = subprocess.run(["git", "-C", str(topic_dir), "status", "--porcelain",
+                            "--untracked-files=no"],
+                           capture_output=True, text=True, timeout=15).stdout.strip()
+    has_origin = subprocess.run(["git", "-C", str(topic_dir), "remote"],
+                                capture_output=True, text=True, timeout=15).stdout
+    if dirty:
+        pull = "skipped-dirty"
+    elif "origin" not in has_origin.split():
+        pull = "skipped-no-origin"
+    else:
+        br = subprocess.run(["git", "-C", str(topic_dir), "symbolic-ref", "--short", "HEAD"],
+                            capture_output=True, text=True, timeout=15).stdout.strip() or "main"
+        r = subprocess.run(["git", "-C", str(topic_dir), "pull", "--ff-only", "origin", br],
+                           capture_output=True, text=True, timeout=60)
+        pull = "ok" if r.returncode == 0 else f"failed: {(r.stderr or r.stdout).strip()[:200]}"
+    return pull, rebuild_topic_index(classification, name)
 
 
 @router.post("/topics/{classification}/{name}/refresh")
@@ -973,27 +1004,12 @@ async def refresh_topic_endpoint(classification: str, name: str) -> dict:
     if not (topic_dir / ".git").exists():
         raise HTTPException(404, f"topic '{classification}/{name}' non è un repo git")
 
-    pull = "skipped"
-    # ff-pull solo se working tree pulito e remote 'origin' configurato.
-    # "Sporco" = modifiche a file TRACCIATI: gli untracked NON bloccano un
-    # ff-pull (coerente con l'helper topic.sh is_dirty).
-    dirty = subprocess.run(["git", "-C", str(topic_dir), "status", "--porcelain",
-                            "--untracked-files=no"],
-                           capture_output=True, text=True, timeout=15).stdout.strip()
-    has_origin = subprocess.run(["git", "-C", str(topic_dir), "remote"],
-                                capture_output=True, text=True, timeout=15).stdout
-    if dirty:
-        pull = "skipped-dirty"
-    elif "origin" not in has_origin.split():
-        pull = "skipped-no-origin"
-    else:
-        br = subprocess.run(["git", "-C", str(topic_dir), "symbolic-ref", "--short", "HEAD"],
-                            capture_output=True, text=True, timeout=15).stdout.strip() or "main"
-        r = subprocess.run(["git", "-C", str(topic_dir), "pull", "--ff-only", "origin", br],
-                           capture_output=True, text=True, timeout=60)
-        pull = "ok" if r.returncode == 0 else f"failed: {(r.stderr or r.stdout).strip()[:200]}"
-
-    index = rebuild_topic_index(classification, name)
+    # Fuori dal thread dell'event loop: un `git pull` verso la rete arriva a
+    # `timeout=60`, e finché dura NESSUN timer asincrono del processo scatta —
+    # watchdog di turno e timeout di raccolta compresi, cioè proprio quelli che
+    # dovrebbero accorgersi di un guasto (#397 §1, misurato da core.loop_lag).
+    pull, index = await asyncio.to_thread(_pull_and_reindex, topic_dir,
+                                          classification, name)
     return {"pull": pull, "index": {"tldr": index.get("tldr"),
                                     "action_points": index.get("action_points"),
                                     "last_commit": index.get("last_commit")}}
