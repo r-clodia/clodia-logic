@@ -82,7 +82,8 @@ class RelayGateTests(unittest.TestCase):
 
     BINDING = {"instance": "messaggero-1", "tier": "SEAL-1", "topic": "software-house"}
 
-    def _run(self, vetted, testo="@clodia riassumi", username="therealdadabit"):
+    def _run(self, vetted, testo="@clodia riassumi", username="therealdadabit",
+             group=False, extra=None, msgs=None):
         import tempfile
         from pathlib import Path
         inviati, postati, turni = [], [], []
@@ -103,16 +104,20 @@ class RelayGateTests(unittest.TestCase):
         async def _vetted(u, tier, topic):
             return vetted
 
+        async def _group(c, tier, topic):
+            return group
+
         d = Path(tempfile.mkdtemp())
         msg = {"message_id": 1, "from_id": 76632169, "from_username": username,
-               "from": username, "text": testo}
+               "from": username, "text": testo, **(extra or {})}
         with patch.object(channel_relay, "_state_path", lambda c: d / "s.json"), \
                 patch.object(channel_relay, "_is_vetted_tg_source", _vetted), \
+                patch.object(channel_relay, "_is_vetted_tg_group", _group), \
                 patch.object(channel_relay.telegram_client, "send_async", _send), \
                 patch.object(channel_relay.topics_client, "async_open_topic", _open), \
                 patch.object(channel_relay.topics_client, "async_post_message", _post), \
                 patch.object(channel_relay, "run_topic_turn", _turn):
-            asyncio.run(channel_relay._relay_chat("-5279916551", self.BINDING, [msg]))
+            asyncio.run(channel_relay._relay_chat("-5279916551", self.BINDING, msgs or [msg]))
         return inviati, postati, turni
 
     def test_a_vetted_sender_triggers_the_turn(self):
@@ -127,6 +132,63 @@ class RelayGateTests(unittest.TestCase):
         self.assertEqual(inviati, [channel_relay._DENY])
         self.assertEqual(postati, [])
         self.assertEqual(turni, [])
+
+    # ── gruppo in whitelist (clodia-platform#402) ────────────────────────────
+    def test_in_a_whitelisted_group_every_message_reaches_the_channel_silently(self):
+        """Nessuna menzione, mittente sconosciuto: il messaggio entra nel canale,
+        su Telegram non si dice niente e non parte nessun turno."""
+        inviati, postati, turni = self._run(False, testo="guardate il doc",
+                                            username="estraneo", group=True)
+        self.assertEqual(inviati, [])
+        self.assertEqual(len(postati), 1)
+        self.assertIn("guardate il doc", postati[0])
+        self.assertEqual(turni, [])
+
+    def test_in_a_whitelisted_group_an_unvetted_sender_is_never_refused(self):
+        """Il caso del rifiuto: menzione da chi non è fra gli handle vagliati.
+        Il gruppo è la fonte vagliata: ack, messaggio nel canale, turno."""
+        inviati, postati, turni = self._run(False, username="estraneo", group=True)
+        self.assertNotIn(channel_relay._DENY, inviati)
+        self.assertTrue(any("Ricevuto" in t for t in inviati))
+        self.assertEqual(len(postati), 1)
+        self.assertEqual(turni, ["@clodia riassumi"])
+
+    def test_in_a_whitelisted_group_a_reply_to_the_bot_counts_as_a_mention(self):
+        inviati, _postati, turni = self._run(False, testo="sì, procedi", username=None,
+                                             group=True, extra={"reply_to_bot": True})
+        self.assertTrue(any("Ricevuto" in t for t in inviati))
+        self.assertEqual(turni, ["sì, procedi"])
+
+    def test_in_a_whitelisted_group_several_messages_are_one_block(self):
+        msgs = [{"message_id": i, "from_id": i, "from_username": f"u{i}", "from": f"u{i}",
+                 "text": f"messaggio {i}"} for i in (1, 2, 3)]
+        inviati, postati, turni = self._run(False, group=True, msgs=msgs)
+        self.assertEqual(len(postati), 1)
+        for i in (1, 2, 3):
+            self.assertIn(f"messaggio {i}", postati[0])
+        self.assertEqual((inviati, turni), ([], []))
+
+    def test_the_group_question_names_tg_chat_id_ingress_and_the_scope(self):
+        chiamate = []
+
+        def _gw(path, params=None):
+            chiamate.append((path, params))
+            return _Risposta({"vetted": True})
+
+        with patch("server.api.observe._gw", _gw):
+            ok = asyncio.run(channel_relay._is_vetted_tg_group("-5411149155", "SEAL-1", "software-house"))
+        self.assertTrue(ok)
+        self.assertEqual(chiamate, [("/internal/egress", {"uri": "tg:-5411149155",
+                                                          "direction": "ingress",
+                                                          "scope": "SEAL-1/software-house"})])
+
+    def test_a_broken_gateway_does_not_whitelist_the_group(self):
+        def _gw(path, params=None):
+            return _Risposta(boom=RuntimeError("503"))
+
+        with patch("server.api.observe._gw", _gw):
+            self.assertFalse(asyncio.run(
+                channel_relay._is_vetted_tg_group("-5411149155", "SEAL-1", "software-house")))
 
     def test_chatter_that_does_not_address_the_bot_stays_in_the_buffer(self):
         """Nessuna regressione sulla precondizione: senza menzione non si
