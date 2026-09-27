@@ -14,7 +14,7 @@ from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__, instance_profile
-from .api import admin, agent_registry, agents, auth, catalog, channel_aliases, channels, connectors, datastores, files, gate, health, human_auth, observe, packs, plugins, profile, providers, spawns, topics, transfers
+from .api import admin, agent_registry, agents, auth, catalog, channel_aliases, channels, datastores, files, gate, health, human_auth, observe, packs, plugins, profile, providers, spawns, topics, transfers
 from .config import HOST, PORT
 from .core import loop_lag
 from .scheduler import api as jobs_api
@@ -386,7 +386,6 @@ def create_app() -> FastAPI:
     app.include_router(channels.router)
     app.include_router(gate.router)
     app.include_router(observe.router)
-    app.include_router(connectors.router)
     app.include_router(agent_registry.router)
     app.include_router(files.router)
     if prof.features.topics != "off":
