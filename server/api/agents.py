@@ -143,10 +143,10 @@ async def runtime_restart_agent(body: dict) -> dict:
             "count": len(stopped)}
 
 
-def _principal_from_request(request: Request) -> str | None:
-    """Estrae e VERIFICA il principal umano dal session token (Bearer ckt1)
-    della webui. Ritorna il nome del principal (firma validata dalla CA) o None
-    se assente/non valido. Non blocca: l'identità è additiva (F2a)."""
+def _verified_claims(request: Request) -> dict | None:
+    """Claim VERIFICATI del session token (Bearer ckt1), o None se assente/non
+    valido. Un posto solo: chi deve leggere un claim diverso da `agent` non
+    riscrive la verifica, che è la copia che poi diverge."""
     auth = request.headers.get("authorization", "")
     if not auth.lower().startswith("bearer "):
         LOG.info("principal: nessun Bearer nell'header (anonimo)")
@@ -154,13 +154,45 @@ def _principal_from_request(request: Request) -> str | None:
     token = auth[7:].strip()
     try:
         from ..colony import pki
-        payload = pki.verify_session_token(token)
-        p = payload.get("agent") or None
-        LOG.info("principal: token verificato → %s", p)
-        return p
+        return pki.verify_session_token(token)
     except Exception as e:  # noqa: BLE001 — token assente/scaduto/non valido → anonimo
         LOG.warning("principal: verifica token fallita: %s", e)
         return None
+
+
+def _principal_from_request(request: Request) -> str | None:
+    """Estrae e VERIFICA il principal umano dal session token (Bearer ckt1)
+    della webui. Ritorna il nome del principal (firma validata dalla CA) o None
+    se assente/non valido. Non blocca: l'identità è additiva (F2a)."""
+    payload = _verified_claims(request)
+    if payload is None:
+        return None
+    p = payload.get("agent") or None
+    LOG.info("principal: token verificato → %s", p)
+    return p
+
+
+def _signed_actor(request: Request) -> str | None:
+    """CHI sta agendo, secondo la FIRMA: la persona quando il token è
+    on-behalf, l'agente che lo porta altrimenti. `None` senza firma valida.
+
+    `_principal_from_request` legge il claim `agent`, che su un token
+    on-behalf è il CARRIER — l'agente che porta il token di una persona, non
+    la persona. Per la webui è indifferente (i suoi token non sono
+    on-behalf); per una porta che confronta l'identità firmata con un autore
+    DICHIARATO non lo è: il body direbbe `davide`, la firma `clodia`, e una
+    persona verrebbe respinta come se stesse impersonando qualcuno
+    (clodia-platform#413). Sia `on_behalf` sia `principal` sono claim firmati
+    dal runner — leggerli qui non concede nulla che il token non provi già.
+    """
+    payload = _verified_claims(request)
+    if payload is None:
+        return None
+    if payload.get("on_behalf"):
+        umano = str(payload.get("principal") or "").strip()
+        if umano:
+            return umano
+    return str(payload.get("agent") or "").strip() or None
 
 
 #: Meta delle stanze, per decidere la visibilità di un evento senza rileggere il

@@ -141,6 +141,7 @@ tool_permissions:
   - "topic.archive"
   - "topic.delete_file"
   - "topic.migrate_storage"
+  - "topic.move_file"   # sposta/rinomina preservando la provenienza (#419)
   - "topic.new"
   - "topic.put"
   - "topic.remote_add"

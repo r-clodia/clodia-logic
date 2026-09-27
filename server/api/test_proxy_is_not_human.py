@@ -267,7 +267,7 @@ class TriggerInternalTests(unittest.IsolatedAsyncioTestCase):
 
         with patch.object(ch.registry, "get_by_name", side_effect=AGENTS.get), \
              patch.object(ch.topics_client, "open_topic", return_value={"meta": meta}), \
-             patch.object(ch, "_principal_from_request", return_value=firmato), \
+             patch.object(ch, "_signed_actor", return_value=firmato), \
              patch.object(ch, "_spawn_bg", side_effect=lambda coro: coro.close()), \
              patch.object(ch, "run_topic_turn", new=_fake_turn):
             # `new=`, non `side_effect=`: su una funzione async patch.object
