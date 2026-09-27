@@ -1,5 +1,6 @@
-"""Connettore Mailbox di un canale: lo collega solo l'owner
-(clodia-platform#406).
+"""Connettore Mailbox di un canale: lo collega solo un ADMIN della piattaforma
+(clodia-platform#406; decisione di Davide, 27 set 2026 — non basta essere owner:
+la casella di sistema è posta che non è dell'owner).
 
 Collegare una casella scrive `inbox:<addr>` fra le fonti e `outbox:<addr>` fra
 le destinazioni di questa stanza: è un atto sui MURI — da lì in poi i verbi
@@ -68,10 +69,12 @@ class _Base(unittest.TestCase):
     def setUp(self):
         self.cli = _Client()
 
+    ADMINS = {"davide"}
+
     def come(self, chi: str):
         return [patch.object(T, "topics_client", self.cli),
                 patch.object(T, "_principal_from_request", lambda r: chi),
-                patch.object(T.admin, "is_admin", lambda n: False)]
+                patch.object(T.admin, "is_admin", lambda n: n in self.ADMINS)]
 
     def esegui(self, coro, chi="davide"):
         p = self.come(chi)
@@ -84,25 +87,44 @@ class _Base(unittest.TestCase):
                 x.stop()
 
 
-class OwnerOnlyTests(_Base):
-    def test_the_owner_connects_a_mailbox(self):
+META_NON_ADMIN_OWNER = {"tier": "SEAL-1", "owner": "giovanni",
+                        "participants": {"giovanni": "owner", "davide": "member"}}
+
+
+class AdminOnlyTests(_Base):
+    def test_an_admin_connects_a_mailbox(self):
         res = self.esegui(T.mailbox_link_action(
             "SEAL-1", "acme", _Req({"action": "connect", "account": "studio"})))
         self.assertEqual(res["mailboxes"][0]["account"], "studio")
         self.assertEqual(self.cli.chiamate,
                          [("action", "SEAL-1", "acme", "connect", {"account": "studio"})])
 
-    def test_a_participant_may_not_connect_one(self):
-        with self.assertRaises(HTTPException) as e:
-            self.esegui(T.mailbox_link_action(
-                "SEAL-1", "acme", _Req({"action": "connect", "account": "studio"})),
-                chi="giovanni")
+    def test_the_owner_who_is_not_an_admin_may_not_connect_one(self):
+        """Il caso della review: l'owner non admin collegava al proprio topic la
+        posta dello studio, in lettura e in invio, senza chiedere a nessuno."""
+        global META
+        vecchio, META = META, META_NON_ADMIN_OWNER
+        try:
+            with self.assertRaises(HTTPException) as e:
+                self.esegui(T.mailbox_link_action(
+                    "SEAL-1", "acme", _Req({"action": "connect", "account": "studio"})),
+                    chi="giovanni")
+        finally:
+            META = vecchio
         self.assertEqual(e.exception.status_code, 403)
         self.assertEqual(self.cli.chiamate, [])
 
-    def test_a_participant_may_not_disconnect_one_either(self):
-        """Simmetrico, come per i partecipanti e le cartelle Drive: chi non può
-        aprire un muro non può nemmeno chiuderlo di sua iniziativa."""
+    def test_an_agent_may_not_connect_one(self):
+        """Il principal è l'identità firmata del token: per un agente è il seed,
+        che non è una persona con ruolo admin."""
+        with self.assertRaises(HTTPException) as e:
+            self.esegui(T.mailbox_link_action(
+                "SEAL-1", "acme", _Req({"action": "connect", "account": "studio"})),
+                chi="clodia")
+        self.assertEqual(e.exception.status_code, 403)
+        self.assertEqual(self.cli.chiamate, [])
+
+    def test_a_non_admin_may_not_disconnect_one_either(self):
         with self.assertRaises(HTTPException) as e:
             self.esegui(T.mailbox_link_action(
                 "SEAL-1", "acme", _Req({"action": "disconnect", "account": "studio"})),
@@ -110,7 +132,7 @@ class OwnerOnlyTests(_Base):
         self.assertEqual(e.exception.status_code, 403)
         self.assertEqual(self.cli.chiamate, [])
 
-    def test_a_participant_does_not_even_see_the_list(self):
+    def test_a_non_admin_does_not_even_see_the_list(self):
         """L'elenco nomina gli indirizzi email dell'istanza: è già una
         informazione, non solo un comando."""
         with self.assertRaises(HTTPException) as e:
@@ -118,9 +140,22 @@ class OwnerOnlyTests(_Base):
         self.assertEqual(e.exception.status_code, 403)
         self.assertEqual(self.cli.chiamate, [])
 
-    def test_the_owner_sees_the_list(self):
+    def test_an_admin_sees_the_list(self):
         res = self.esegui(T.mailbox_link_status("SEAL-1", "acme", _Req()))
         self.assertEqual(res, {"mailboxes": []})
+
+    def test_a_gateway_refusal_stays_a_refusal(self):
+        """«Casella non configurata» è un 4xx del gateway: arriva come tale, non
+        come un 502 che manda a cercare un guasto."""
+        from . import topics_client as vero
+        err = vero.TopicsClientError("x", status=404, detail="topic inesistente")
+        with patch.object(_Client, "TopicsClientError", vero.TopicsClientError), \
+                patch.object(self.cli, "mailbox_link_action", side_effect=err):
+            with self.assertRaises(HTTPException) as e:
+                self.esegui(T.mailbox_link_action(
+                    "SEAL-1", "acme", _Req({"action": "connect", "account": "studio"})))
+        self.assertEqual(e.exception.status_code, 404)
+        self.assertIn("inesistente", e.exception.detail)
 
 
 class CorpoTests(_Base):

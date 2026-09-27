@@ -818,16 +818,43 @@ async def telegram_link_action(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+def _require_platform_admin(request: Request) -> str:
+    """Il connettore Mailbox è da ADMIN della piattaforma (decisione di Davide,
+    27 set 2026): collegare a un topic una casella di sistema — la posta dello
+    studio, di Tomato — è concedere a quella stanza la lettura e l'invio di posta
+    che non è dell'owner. Non basta possedere il topic.
+
+    Il principal è l'identità FIRMATA del token (`_principal_from_request`
+    legge il claim `agent`, non l'umano della chat), e `admin.is_admin` è vero
+    solo per una persona con ruolo admin: un agente non passa per costruzione.
+    """
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "autenticazione richiesta")
+    if not admin.is_admin(principal):
+        raise HTTPException(403, "collegare una casella di sistema a un topic spetta "
+                                 "a un admin della piattaforma")
+    return principal
+
+
+def _gateway_error(e: "topics_client.TopicsClientError") -> HTTPException:
+    """Un rifiuto del gateway (4xx: casella non configurata, topic inesistente)
+    resta un rifiuto con il suo messaggio, non un 502 che sembra un guasto."""
+    if e.is_client_error:
+        return HTTPException(e.status or 400, e.detail or str(e))
+    return HTTPException(502, str(e))
+
+
 @router.get("/api/topics/{tier}/{name}/mailbox-link")
 async def mailbox_link_status(tier: str, name: str, request: Request):
     """Caselle di sistema e loro stato di autorizzazione in questo topic
-    (clodia-platform#406). Solo l'owner: l'elenco nomina indirizzi email
+    (clodia-platform#406). Solo un admin: l'elenco nomina gli indirizzi email
     dell'istanza, e chi lo legge è chi può collegarli."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    _require_platform_admin(request)
     try:
         return await topics_client.async_mailbox_link_status(tier, name)
     except topics_client.TopicsClientError as e:
-        raise HTTPException(502, str(e))
+        raise _gateway_error(e)
 
 
 @router.post("/api/topics/{tier}/{name}/mailbox-link")
@@ -835,8 +862,9 @@ async def mailbox_link_action(tier: str, name: str, request: Request):
     """Collega/scollega una casella di sistema a questo canale: ingress
     (`inbox:`) ed egress (`outbox:`) insieme, mai una sola — autorizzare la
     lettura senza la risposta, o viceversa, è la mezza configurazione che
-    l'owner poi scopre dal verbo che fallisce."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    l'owner poi scopre dal verbo che fallisce. Solo un admin (vedi
+    `_require_platform_admin`)."""
+    _require_platform_admin(request)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -851,7 +879,7 @@ async def mailbox_link_action(tier: str, name: str, request: Request):
         return await topics_client.async_mailbox_link_action(
             tier, name, action, account=body.get("account"))
     except topics_client.TopicsClientError as e:
-        raise HTTPException(502, str(e))
+        raise _gateway_error(e)
 
 
 @router.get("/api/topics/catalog")
