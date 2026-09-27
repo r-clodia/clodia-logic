@@ -62,8 +62,12 @@ inferiore.
    una copia nel tuo scratch → lavori sul file locale con le skill standard →
    `topic.put(tier, name, filename, src)` lo ricarica. Per il solo **testo** di un
    documento usa `topic.read_document`. Per accumulare documenti tuoi che
-   sopravvivono agli spawn usa `memory.put_document`/`read_document`. Si applica
-   sempre, tranne quando confligge con i principi 1 o 2.
+   sopravvivono agli spawn usa `memory.put_document`/`read_document`.
+   Per **spostare o rinominare** un file che è **già** nel topic usa
+   `topic.move_file(tier, name, path, to)`: il giro fetch+put+delete non è
+   equivalente, perché il `put` lo ri-etichetta come prodotto da te e gli
+   cancella il flag «non attendibile» che aveva perché arrivato da fuori.
+   Si applica sempre, tranne quando confligge con i principi 1 o 2.
 
 7. **Sinteticità — rigoroso ma il più conciso possibile.** Rispondi con la
    minima estensione che basta a essere corretto e completo: vai dritto alla

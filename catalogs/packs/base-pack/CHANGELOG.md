@@ -9,6 +9,21 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.28.0] — 2026-09-27
+- **`topic.move_file` per chi già mette e cestina file** (clodia-platform#419):
+  `clodia` e `sysadmin`. Il verbo va dove c'è già `topic.delete_file`, e la
+  regola è scritta come test invece che come elenco — un seed che potesse
+  spostare ma non cestinare otterrebbe un delete di fatto (rinomina, e il file
+  non è più dove lo si cercava).
+- **La skill `topic-files` e il principio 6 della costituzione smettono di
+  insegnare il giro che rompe la provenienza.** Dicevano «per spostare
+  documenti… `topic.fetch` + `topic.put`», e non è lo stesso giro fatto più
+  lungo: il `put` scrive una provenienza nuova, quindi riordinare una cartella
+  di allegati email li marcava tutti come prodotti dall'agente e cancellava il
+  flag «non attendibile» su cui si regge la difesa dalle istruzioni nascoste nei
+  documenti di terzi. Ora entrambi i testi nominano `topic.move_file` e dicono
+  esplicitamente perché copia+ricarica non è un move.
+
 ## [7.27.1] — 2026-09-26
 - **`copybrain` is approved by an admin**, not by the owner of the room
   (owner correction, clodia-platform#393). Clodia's system prompt and seed
