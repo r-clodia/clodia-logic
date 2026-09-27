@@ -801,7 +801,13 @@ async def telegram_link_status(tier: str, name: str, request: Request):
 @router.post("/api/topics/{tier}/{name}/tg-link")
 async def telegram_link_action(tier: str, name: str, request: Request):
     """Connette/disconnette la chat Telegram del topic — whitelist E binding
-    insieme, non due passi scollegati (vedi `telegram_link_status`)."""
+    insieme, non due passi scollegati (vedi `telegram_link_status`).
+
+    `accept_seal_downgrade` è la presa d'atto dell'owner sul cap SEAL del
+    channel (clodia-platform#405): su un topic sopra SEAL-1 il gateway rifiuta
+    finché non arriva, e questa rotta è l'unica strada che può fare. Si inoltra
+    SEMPRE, anche falsa: il gateway deve leggere ciò che l'owner ha dichiarato,
+    e l'assenza di un campo booleano non è una dichiarazione."""
     await asyncio.to_thread(_require_topic_owner, request, tier, name)
     try:
         body = await request.json()
@@ -813,7 +819,8 @@ async def telegram_link_action(tier: str, name: str, request: Request):
         raise HTTPException(400, "richiesto 'action' (connect|disconnect)")
     try:
         return await topics_client.async_telegram_link_action(
-            tier, name, action, chat_id=body.get("chat_id"))
+            tier, name, action, chat_id=body.get("chat_id"),
+            accept_seal_downgrade=bool(body.get("accept_seal_downgrade")))
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, str(e))
 
