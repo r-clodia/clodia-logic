@@ -4608,6 +4608,43 @@ def _chat_seed(chat_id: str, prefix: str) -> str:
     return chat_id[len(prefix):].split("#", 1)[0]
 
 
+def _interrupt_targets(
+        only: Iterable[str] | None,
+        righe: list,
+) -> tuple[set[str] | None, set[str]]:
+    """I bersagli di un'interruzione, divisi fra SEED e SPAWN.
+
+    `(None, set())` significa «tutta la stanza»: è `only=None`, l'unico valore
+    che non filtra niente. Per tutto il resto il primo insieme sono i seed da
+    fermare per intero, il secondo gli spawn da fermare uno per uno.
+
+    Sta fuori dal ciclo di `_interrupt_channel_turns` perché il ripiego ha
+    bisogno di sapere quali etichette la stanza porta DAVVERO, cioè di aver già
+    visto tutte le sessioni: dentro il ciclo la stessa decisione andrebbe presa
+    una volta per sessione, con informazione parziale.
+    """
+    if only is None:
+        return None, set()
+    seeds: set[str] = set()
+    spawns: set[str] = set()
+    for tag in only:
+        if not tag:
+            continue
+        seed, spawn = _split_target(str(tag).strip())
+        if spawn:
+            spawns.add(spawn)
+        elif seed:
+            seeds.add(seed)
+    if spawns:
+        presenti = {_spawn_label(chat, seed) for chat, _cid, seed in righe}
+        for orfano in spawns - presenti:
+            # Nessuna sessione si chiama così: o lo spawn è morto, o la sua dir
+            # non è leggibile e `_spawn_label` ha ripiegato sul seed. Nel dubbio
+            # si ripiega anche qui, invece di non fermare nulla.
+            seeds.add(_seed_name(orfano) or orfano)
+    return seeds, spawns
+
+
 async def _interrupt_channel_turns(tier: str, name: str,
                                    keep: str | None = None,
                                    only: Iterable[str] | None = None) -> list[str]:
@@ -4623,33 +4660,49 @@ async def _interrupt_channel_turns(tier: str, name: str,
     buttato — l'allocazione della menzione in `_start_turn` sa già accodarsi.
 
     `only` RESTRINGE l'insieme (#253): `None` = tutta la stanza, che è ciò che
-    significa il bottone «ferma tutti»; una lista = solo i seed elencati, che è
-    ciò che significa ri-instradare UN messaggio. Lista VUOTA = nessuno, e non è
-    un caso degenere da normalizzare a «tutti»: è lo scavalcamento che non sa di
-    chi sia il turno sbagliato, e allora non tocca il lavoro di nessuno.
+    significa il bottone «ferma tutti»; una lista = solo gli agenti elencati, che
+    è ciò che significano il ⏹ di un box (#403) e il ri-instradamento di UN
+    messaggio. Lista VUOTA = nessuno, e non è un caso degenere da normalizzare a
+    «tutti»: è lo scavalcamento che non sa di chi sia il turno sbagliato, e
+    allora non tocca il lavoro di nessuno.
 
-    Il confronto è per SEED e non per uguaglianza di stringa, in entrambe le
-    direzioni: `keep="worker"` deve risparmiare anche `worker#2` — altrimenti
-    l'istanza a cui stiamo consegnando il turno è quella che uccidiamo — e
-    fermare `accountant` deve fermare anche `accountant#2`.
+    Un'etichetta di `only` vale quanto la stessa etichetta in una menzione
+    (`_split_target`): `worker` è il SEED e ferma tutte le sue istanze,
+    `worker-221` è uno SPAWN e ferma quella sola. La distinzione è la sostanza
+    di #403 — il ⏹ sta nel box di UN'istanza, e ridurre l'etichetta al seed
+    (com'era qui) rimetterebbe l'ambiguità dentro la superficie nata per
+    toglierla, uccidendo il gemello che sta lavorando ad altro.
 
-    Se un'etichetta in `only` è di un seed che non esiste più, `_seed_name` la
-    restituisce intera e non combacia con nessuna sessione: non si interrompe
-    nulla. È la direzione giusta in cui sbagliare — non fermare un turno è
-    recuperabile con un secondo click, fermare quello sbagliato no.
+    Ripiego sul seed quando NESSUNA sessione della stanza porta quello spawn:
+    `_spawn_label` ripiega sul nome del seed se la dir non è leggibile, e senza
+    questo l'interruzione dello scavalcamento R9 — che passa l'AUTORE del
+    messaggio, cioè uno spawn — smetterebbe in silenzio di fermare alcunché.
+
+    `keep` resta per SEED in entrambe le direzioni: deve risparmiare anche
+    `worker#2`, altrimenti l'istanza a cui stiamo consegnando il turno è quella
+    che uccidiamo.
+
+    Se un'etichetta in `only` è di un agente che non esiste più non combacia con
+    nessuna sessione: non si interrompe nulla. È la direzione giusta in cui
+    sbagliare — non fermare un turno è recuperabile con un secondo click,
+    fermare quello sbagliato no.
     """
     prefix = f"chan:{tier}:{name}:"
     spared = _seed_name(keep) if keep else None
-    targets = None if only is None else {_seed_name(a) for a in only if a}
-    interrupted: list[str] = []
+    righe = []
     for chat in manager.list():
         chat_id = getattr(chat, "chat_id", "")
         if not chat_id.startswith(prefix):
             continue
-        seed = _chat_seed(chat_id, prefix)
+        righe.append((chat, chat_id, _chat_seed(chat_id, prefix)))
+    seeds, spawns = _interrupt_targets(only, righe)
+    interrupted: list[str] = []
+    for chat, chat_id, seed in righe:
         if spared and seed == spared:
             continue
-        if targets is not None and seed not in targets:
+        if seeds is not None and not (
+                seed in seeds
+                or (spawns and _spawn_label(chat, seed) in spawns)):
             continue
         try:
             if await chat.interrupt_current_turn():
@@ -4663,12 +4716,31 @@ async def _interrupt_channel_turns(tier: str, name: str,
 async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
     """Interrompe il turno in corso del/i responder di questo canale — lo user
     riprende il controllo dell'input. Cancella il task del turno (SDK); il
-    messaggio umano già registrato resta. Solo partecipanti/owner."""
+    messaggio umano già registrato resta. Solo partecipanti/owner.
+
+    `agents` nel corpo indica CHI fermare (#403): è il ⏹ che sta nel box di
+    ragionamento di un agente, quindi l'interruzione riguarda quell'agente.
+    Ogni voce è un seed (`worker`, tutte le sue istanze) o uno spawn
+    (`worker-221`, quella sola) — le stesse due forme di una menzione.
+
+    Corpo assente, non-oggetto o `agents` vuoto ⇒ tutta la stanza, che è il
+    comportamento di sempre: qui passava un client che non mandava niente, e
+    continua a valere per quelli non aggiornati. La lista vuota NON significa
+    «nessuno», al contrario di `only=[]`: un bottone premuto deve fare qualcosa,
+    e un client che chiede di fermare zero agenti sta solo omettendo il campo.
+    """
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
     _require_contributor(request, topic.get("meta", {}))
-    return {"interrupted": await _interrupt_channel_turns(tier, name)}
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001 — POST senza corpo: è il caso «ferma tutti»
+        body = None
+    voci = (body or {}).get("agents") if isinstance(body, dict) else None
+    only = [str(a).strip() for a in voci if str(a).strip()] if isinstance(voci, list) else None
+    return {"interrupted": await _interrupt_channel_turns(tier, name,
+                                                          only=only or None)}
 
 
 def _may_overrule_routing(meta: dict, principal: str, author: str) -> bool:
