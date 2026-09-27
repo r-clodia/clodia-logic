@@ -374,6 +374,39 @@ def telegram_link_action(tier: str, name: str, action: str, **params) -> dict:
     return r.json()
 
 
+def mailbox_link_status(tier: str, name: str) -> dict:
+    """Caselle email del sistema e stato di autorizzazione in questo topic →
+    gateway (clodia-platform#406).
+
+    Le caselle vivono nella vault del gateway, non qui: questo è l'unico modo
+    per conoscerne l'INDIRIZZO, che è la forma che finisce nelle liste
+    `inbox:`/`outbox:` dello scope."""
+    url = f"{_base()}/{tier}/{name}/mailbox-link"
+    try:
+        r = _gw_http.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway mailbox-link irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("mailbox-link", r)
+    return r.json()
+
+
+def mailbox_link_action(tier: str, name: str, action: str, **params) -> dict:
+    """Collega/scollega una casella di sistema a questo topic → gateway.
+
+    A differenza di `telegram_link_action` non c'è nessun binding: qui si
+    scrive solo la whitelist per-scope nelle due direzioni."""
+    url = f"{_base()}/{tier}/{name}/mailbox-link"
+    try:
+        r = _gw_http.post(url, headers=_headers(), json={"action": action, **params},
+                          timeout=60)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway mailbox-link irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("mailbox-link", r)
+    return r.json()
+
+
 def list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
     url = f"{_base()}/{tier}/{name}/files"
     try:
@@ -520,6 +553,8 @@ async_drive_folder_action = _async_of("drive_folder_action")
 async_local_folder_action = _async_of("local_folder_action")
 async_telegram_link_status = _async_of("telegram_link_status")
 async_telegram_link_action = _async_of("telegram_link_action")
+async_mailbox_link_status = _async_of("mailbox_link_status")
+async_mailbox_link_action = _async_of("mailbox_link_action")
 async_list_files = _async_of("list_files")
 async_get_file = _async_of("get_file")
 async_read_file = _async_of("read_file")
