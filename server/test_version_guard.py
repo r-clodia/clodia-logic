@@ -9,6 +9,10 @@ pubblica una release col numero di quella prima. È successo davvero sul
 
 import io
 import os
+import pathlib
+import re
+import shutil
+import subprocess
 import tempfile
 import unittest
 from contextlib import redirect_stderr, redirect_stdout
@@ -99,6 +103,150 @@ class LaRigaDiComando(unittest.TestCase):
                 ["--base", "/non/esiste/__init__.py", "--head", self._file("6.205.0")]
             )
         self.assertEqual(codice, 1)
+
+
+class PrendeLaBaseDalBranchDiDestinazione(unittest.TestCase):
+    """`--base-ref`: la versione di confronto la legge il guard, da `origin`.
+
+    Il numero contro cui confrontare deve essere quello che il branch di
+    destinazione ha **al momento della run**, non quello del commit da cui il
+    branch è partito: è proprio in quell'intervallo che entra l'altra PR con
+    lo stesso numero. Un `git show` su un checkout superficiale non basta —
+    in CI `origin/main` non è nemmeno presente — quindi il fetch fa parte del
+    controllo, e qui viene esercitato per davvero su due repository veri.
+    """
+
+    def _git(self, *args, cwd):
+        subprocess.run(
+            ["git", "-c", "user.email=t@t", "-c", "user.name=t", *args],
+            cwd=cwd,
+            check=True,
+            capture_output=True,
+        )
+
+    def _scrivi_versione(self, radice, versione):
+        path = os.path.join(radice, "server", "__init__.py")
+        os.makedirs(os.path.dirname(path), exist_ok=True)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write(f'__version__ = "{versione}"\nPLATFORM_VERSION = "8.0"\n')
+        return path
+
+    def _clone_con_origin_a(self, versione_su_main):
+        """Un `origin` con quella versione su `main`, e un clone su cui lavorare."""
+        base = tempfile.mkdtemp()
+        self.addCleanup(shutil.rmtree, base, ignore_errors=True)
+        origin = os.path.join(base, "origin")
+        os.makedirs(origin)
+        self._git("init", "--quiet", "--initial-branch=main", cwd=origin)
+        self._scrivi_versione(origin, versione_su_main)
+        self._git("add", "-A", cwd=origin)
+        self._git("commit", "--quiet", "-m", "base", cwd=origin)
+        clone = os.path.join(base, "clone")
+        self._git("clone", "--quiet", origin, clone, cwd=base)
+        return clone
+
+    def _esegui(self, clone, ref="main"):
+        out = io.StringIO()
+        with redirect_stdout(out), redirect_stderr(out):
+            codice = version_guard.main(
+                [
+                    "--base-ref",
+                    ref,
+                    "--repo",
+                    clone,
+                    "--head",
+                    os.path.join(clone, "server", "__init__.py"),
+                ]
+            )
+        return codice, out.getvalue()
+
+    def test_stesso_numero_del_branch_di_destinazione_esce_rosso(self):
+        """Il caso che git non vede: due PR sullo stesso numero."""
+        clone = self._clone_con_origin_a("6.204.0")
+        self._scrivi_versione(clone, "6.204.0")
+        codice, testo = self._esegui(clone)
+        self.assertEqual(codice, 1)
+        self.assertIn("6.204.0", testo)
+
+    def test_numero_piu_alto_esce_verde(self):
+        clone = self._clone_con_origin_a("6.204.0")
+        self._scrivi_versione(clone, "6.205.0")
+        codice, _ = self._esegui(clone)
+        self.assertEqual(codice, 0)
+
+    def test_vede_il_branch_com_e_ADESSO_non_da_dove_e_partito_il_branch(self):
+        """Il cuore del difetto: il clone è fermo a 6.204.0, ma nel frattempo
+        su `main` è entrata la PR che ha preso 6.205.0. Un confronto contro il
+        punto di partenza direbbe verde; il fetch dice rosso."""
+        clone = self._clone_con_origin_a("6.204.0")
+        self._scrivi_versione(clone, "6.205.0")
+        origin = os.path.join(os.path.dirname(clone), "origin")
+        self._scrivi_versione(origin, "6.205.0")
+        self._git("commit", "--quiet", "-am", "l'altra PR entra per prima", cwd=origin)
+        codice, testo = self._esegui(clone)
+        self.assertEqual(codice, 1)
+        self.assertIn("6.205.0", testo)
+
+    def test_ref_inesistente_esce_rosso_e_non_verde(self):
+        """Fail-closed anche qui: se il fetch non riesce, il confronto non si
+        può fare, e un guard che in quel caso dichiara verde insegna a fidarsi
+        di un controllo che non ha controllato niente."""
+        clone = self._clone_con_origin_a("6.204.0")
+        self._scrivi_versione(clone, "6.205.0")
+        codice, testo = self._esegui(clone, ref="ramo-che-non-esiste")
+        self.assertEqual(codice, 1)
+        self.assertIn("::error::", testo)
+
+
+class IlGuardEAgganciatoAllaCI(unittest.TestCase):
+    """Il guard è inerte finché qualcosa lo esegue: questo è quel qualcosa.
+
+    Prima di clodia-platform#415 il modulo esisteva, i suoi test erano verdi e
+    **nessuna macchina lo invocava** — il docstring rimandava a un
+    `.github/workflows/version.yml` che non è mai esistito. L'aggancio vive nel
+    `Makefile` e non in un workflow perché la credenziale con cui gli agenti
+    pubblicano non ha lo scope `workflow` di GitHub e il remoto rifiuta ogni
+    push che tocchi `.github/workflows/` (decisione dell'owner, 23 ago 2026):
+    `make test` è il comando che la CI esegue davvero, ed è l'unico punto
+    agganciabile da questo lato.
+
+    Questi controlli sono statici di proposito: `make` non è installato
+    ovunque giri la suite, e ciò che deve restare vero è il cablaggio.
+    """
+
+    MAKEFILE = pathlib.Path(__file__).resolve().parent.parent / "Makefile"
+
+    def _testo(self):
+        return self.MAKEFILE.read_text(encoding="utf-8")
+
+    def _ricetta(self, target):
+        """Le righe di ricetta di un target (quelle che iniziano con TAB)."""
+        testo = self._testo()
+        trovato = re.search(rf"^{target}:[^\n]*\n((?:\t[^\n]*\n?)*)", testo, re.MULTILINE)
+        self.assertIsNotNone(trovato, f"il Makefile non definisce il target `{target}`")
+        return trovato.group(1)
+
+    def test_make_test_dipende_dal_controllo_di_versione(self):
+        """Senza questa dipendenza il guard torna a non girare mai: la CI
+        invoca `make test` e nient'altro."""
+        trovato = re.search(r"^test:([^\n]*)", self._testo(), re.MULTILINE)
+        self.assertIsNotNone(trovato, "il Makefile non definisce il target `test`")
+        self.assertIn("version-check", trovato.group(1).split())
+
+    def test_il_controllo_invoca_il_guard(self):
+        self.assertIn("server.version_guard", self._ricetta("version-check"))
+
+    def test_confronta_il_branch_di_destinazione_al_momento_della_run(self):
+        """`--base-ref` e non un file preso dal punto di partenza del branch:
+        è nell'intervallo fra i due che entra la PR che collide."""
+        self.assertIn("--base-ref", self._ricetta("version-check"))
+
+    def test_fuori_da_una_pull_request_non_confronta_niente(self):
+        """`GITHUB_BASE_REF` è valorizzato solo nelle run di `pull_request`.
+        Senza questa condizione, `make test` in locale pretenderebbe la rete e
+        i push su `main` confronterebbero `main` con sé stesso, cioè rosso
+        sempre."""
+        self.assertIn("GITHUB_BASE_REF", self._ricetta("version-check"))
 
 
 class IlRepositoryPassaIlProprioControllo(unittest.TestCase):

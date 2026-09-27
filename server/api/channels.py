@@ -42,7 +42,7 @@ from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
 from . import (access_log, mentions, presence, responder_routing, router_config,
                routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
-from .agents import _principal_from_request
+from .agents import _principal_from_request, _signed_actor
 
 router = APIRouter()
 LOG = logging.getLogger("agent-server.api.channels")
@@ -5979,7 +5979,10 @@ async def channel_trigger_internal(tier: str, name: str, request: Request) -> di
         raise HTTPException(400, "text richiesto")
     if not (by == meta.get("owner") or by in (meta.get("participants") or [])):
         raise HTTPException(403, f"'{by}' non è owner/partecipante di questo canale")
-    firmato = _principal_from_request(request)
+    # `_signed_actor` e non `_principal_from_request`: su un token ON-BEHALF il
+    # claim `agent` è il carrier, e confrontarlo con `by` respingerebbe come
+    # impersonazione proprio la persona che il token porta (clodia-platform#413).
+    firmato = _signed_actor(request)
     if firmato and by and by != firmato:
         # Non è un declassamento, è un tentativo di impersonare: il token dice
         # una cosa e il body un'altra.

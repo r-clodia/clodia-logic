@@ -65,7 +65,7 @@ class TriggerDedupTests(unittest.IsolatedAsyncioTestCase):
         req.json = _body
 
         with patch.object(ch.topics_client, "open_topic", return_value={"meta": meta}), \
-             patch.object(ch, "_principal_from_request", return_value=by), \
+             patch.object(ch, "_signed_actor", return_value=by), \
              patch.object(ch, "_spawn_bg", side_effect=lambda coro: coro.close()), \
              patch.object(ch, "run_topic_turn", new=_fake_turn):
             out = await ch.channel_trigger_internal("SEAL-1", "software-house", req)

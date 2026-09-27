@@ -153,6 +153,11 @@ tool_permissions:
   - topic.write_file
   - topic.put
   - topic.delete_file
+  # Riordinare i file senza il giro fetch+put+delete, che li ri-etichettava come
+  # prodotti da lei e cancellava il flag `untrusted` degli allegati di terzi
+  # (clodia-platform#419). Va dove c'è già `delete_file`: rinominare è anche
+  # togliere un file da dove sta.
+  - topic.move_file
   - artifact.render
   - agents.list
   - agents.show
