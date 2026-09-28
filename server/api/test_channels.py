@@ -2133,3 +2133,113 @@ class LearningOnlyDoorsSaySoTests(unittest.IsolatedAsyncioTestCase):
                     "chosen": "accountant", "correct_agent": "worker"})))
 
         self.assertFalse(result["acted"])
+
+
+class StopTargetsOneAgentTests(unittest.IsolatedAsyncioTestCase):
+    """#403 · Il ⏹ sta nel box di UN agente, quindi deve fermare quell'agente.
+
+    Il bottone Stop della chat era uno solo e l'endpoint `/interrupt` non
+    leggeva alcun corpo: con quattro agenti al lavoro l'unico gesto disponibile
+    era «ferma tutti», e chi voleva zittirne uno buttava via anche il lavoro
+    degli altri tre. Il motore selettivo però esisteva già (`only`, #253) — a
+    mancare era la superficie, e la precisione sull'ISTANZA: `only` riduceva
+    ogni etichetta al seed, quindi `worker-221` fermava anche `worker-97`, che è
+    di nuovo l'ambiguità che la issue chiede di togliere.
+    """
+
+    def setUp(self) -> None:
+        self.interrupted: list[str] = []
+        self.meta = {"tier": "SEAL-1", "owner": "owner",
+                     "participants": ["owner", "worker", "accountant"]}
+
+    def _chat(self, label: str, spawn: str | None = None) -> SimpleNamespace:
+        """Sessione finta. `spawn` è la dir dello spawn, da cui `_spawn_label`
+        ricava il nome che si legge in chat (`worker-221`)."""
+        async def interrupt() -> bool:
+            self.interrupted.append(label)
+            return True
+
+        return SimpleNamespace(
+            chat_id=f"chan:SEAL-1:demo:{label}",
+            _spawn_dir=SimpleNamespace(name=spawn) if spawn else None,
+            interrupt_current_turn=interrupt)
+
+    def _request(self, body: dict | None = None) -> SimpleNamespace:
+        # `None` = client che non manda corpo: `request.json()` solleva, come fa
+        # Starlette su un POST senza payload.
+        json = (AsyncMock(side_effect=ValueError("no body")) if body is None
+                else AsyncMock(return_value=body))
+        return SimpleNamespace(headers={}, json=json)
+
+    def _enter(self, stack: ExitStack, chats: list) -> None:
+        for p in (
+            patch.object(channels.topics_client, "open_topic",
+                         return_value={"meta": self.meta}),
+            patch.object(channels, "_require_contributor"),
+            patch.object(channels.manager, "list", return_value=chats),
+            patch.object(channels, "_is_known_seed",
+                         side_effect=lambda n: n in {"worker", "accountant"}),
+        ):
+            stack.enter_context(p)
+
+    async def _interrupt(self, chats: list, body: dict | None) -> dict:
+        with ExitStack() as stack:
+            self._enter(stack, chats)
+            return await channels.channel_interrupt(
+                "SEAL-1", "demo", self._request(body))
+
+    async def test_stopping_one_spawn_leaves_its_twin_working(self) -> None:
+        """Due istanze dello STESSO seed: il ⏹ del box di `worker-221` ferma
+        quella e basta. Ridurre l'etichetta al seed le fermerebbe entrambe —
+        cioè il difetto, spostato di un livello."""
+        chats = [self._chat("worker#1", "worker-221"),
+                 self._chat("worker#2", "worker-97")]
+        result = await self._interrupt(chats, {"agents": ["worker-221"]})
+
+        self.assertEqual(self.interrupted, ["worker#1"])
+        self.assertEqual(result["interrupted"], ["chan:SEAL-1:demo:worker#1"])
+
+    async def test_stopping_a_seed_stops_all_of_its_instances(self) -> None:
+        """Il box di un seed a istanza singola è etichettato col seed: lì il
+        bersaglio è il seed, e vale per tutte le sue sessioni — mentre
+        `accountant` non c'entra e resta al lavoro."""
+        chats = [self._chat("worker#1", "worker-221"),
+                 self._chat("worker#2", "worker-97"),
+                 self._chat("accountant", "accountant-3")]
+        result = await self._interrupt(chats, {"agents": ["worker"]})
+
+        self.assertEqual(self.interrupted, ["worker#1", "worker#2"])
+        self.assertEqual(len(result["interrupted"]), 2)
+
+    async def test_without_a_body_the_whole_room_stops_as_before(self) -> None:
+        """Nessuna regressione per i client che non mandano nulla: corpo
+        assente o `agents` vuoto restano il «ferma tutti» di oggi."""
+        chats = [self._chat("worker#1", "worker-221"),
+                 self._chat("accountant", "accountant-3")]
+        for body in (None, {}, {"agents": []}):
+            self.interrupted = []
+            with self.subTest(body=body):
+                await self._interrupt(chats, body)
+                self.assertEqual(self.interrupted, ["worker#1", "accountant"])
+
+    async def test_an_unknown_label_stops_nobody(self) -> None:
+        """Etichetta di uno spawn già morto: non si interrompe nulla. È la
+        direzione giusta in cui sbagliare — un turno non fermato si ferma al
+        secondo click, il lavoro di un terzo ucciso per sbaglio no."""
+        chats = [self._chat("worker#1", "worker-221"),
+                 self._chat("accountant", "accountant-3")]
+        result = await self._interrupt(chats, {"agents": ["librarian-9"]})
+
+        self.assertEqual(self.interrupted, [])
+        self.assertEqual(result["interrupted"], [])
+
+    async def test_a_spawn_label_nobody_carries_falls_back_to_the_seed(self) -> None:
+        """Ripiego: se nessuna sessione della stanza porta quell'etichetta di
+        spawn — `_spawn_label` ripiega sul seed quando la dir non è leggibile —
+        il bersaglio torna a essere il seed. Senza, l'interruzione dello
+        scavalcamento R9 (che passa l'autore del messaggio, cioè uno spawn)
+        smetterebbe in silenzio di fermare alcunché."""
+        chats = [self._chat("worker#1"), self._chat("accountant")]
+        await self._interrupt(chats, {"agents": ["worker-221"]})
+
+        self.assertEqual(self.interrupted, ["worker#1"])
