@@ -9,6 +9,14 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.29.0] — 2026-09-28
+- `clodia` and `ophelia` get **`gdrive.update`** (clodia-platform#427): replace the content of an
+  existing Drive file with a file from the scratch, keeping the same file, id,
+  link and sharing (Drive keeps the previous revision); a .docx/.md/.txt into a
+  native Google Doc is converted. Granted wherever `gdrive.upload` already was,
+  so a document already sent can be corrected instead of re-uploaded as a copy.
+  Needs clodia-tools ≥ 2.42.0.
+
 ## [7.28.0] — 2026-09-27
 - **`topic.move_file` per chi già mette e cestina file** (clodia-platform#419):
   `clodia` e `sysadmin`. Il verbo va dove c'è già `topic.delete_file`, e la

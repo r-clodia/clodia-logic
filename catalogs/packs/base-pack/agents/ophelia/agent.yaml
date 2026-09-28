@@ -49,6 +49,7 @@ tool_permissions:
   - gdrive.search
   - gdrive.mkdir
   - gdrive.upload
+  - gdrive.update
   - gdrive.download
   - gdrive.rename
   - gdrive.move

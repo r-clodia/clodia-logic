@@ -407,6 +407,20 @@ def mailbox_link_action(tier: str, name: str, action: str, **params) -> dict:
     return r.json()
 
 
+def set_topic_tier(tier: str, name: str, new_tier: str, by: str, reason: str) -> dict:
+    """Riclassifica il topic a un nuovo livello SEAL → gateway
+    (clodia-platform#426). Chi può farlo lo verifica il chiamante."""
+    url = f"{_base()}/{tier}/{name}/tier"
+    try:
+        r = _gw_http.post(url, headers=_headers(),
+                          json={"tier": new_tier, "by": by, "reason": reason}, timeout=120)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway riclassificazione irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("tier", r)
+    return r.json()
+
+
 def list_files(tier: str, name: str, subpath: str = "") -> list[dict]:
     url = f"{_base()}/{tier}/{name}/files"
     try:
@@ -555,6 +569,7 @@ async_telegram_link_status = _async_of("telegram_link_status")
 async_telegram_link_action = _async_of("telegram_link_action")
 async_mailbox_link_status = _async_of("mailbox_link_status")
 async_mailbox_link_action = _async_of("mailbox_link_action")
+async_set_topic_tier = _async_of("set_topic_tier")
 async_list_files = _async_of("list_files")
 async_get_file = _async_of("get_file")
 async_read_file = _async_of("read_file")
