@@ -9,6 +9,7 @@ Implementa la card "FUN: Topics in sidebar" (Clodia Agency).
 from __future__ import annotations
 
 import asyncio
+import logging
 import re
 import subprocess
 from datetime import datetime, timezone
@@ -27,6 +28,7 @@ from . import access_log
 from .agents import _principal_from_request
 
 router = APIRouter()
+LOG = logging.getLogger("agent-server.api.topics")
 
 
 TOPICS_ROOT = workspace_path("topics")
@@ -887,6 +889,141 @@ async def mailbox_link_action(tier: str, name: str, request: Request):
             tier, name, action, account=body.get("account"))
     except topics_client.TopicsClientError as e:
         raise _gateway_error(e)
+
+
+# ── Riclassificazione del livello SEAL (clodia-platform#426) ─────────────────
+
+_TIERS = ("SEAL-0", "SEAL-1", "SEAL-2", "SEAL-3", "SEAL-4")
+
+
+def _require_retier_authority(request: Request, tier: str, name: str) -> tuple[str, dict]:
+    """Chi può riclassificare: una PERSONA che è owner del topic o admin della
+    piattaforma (decisione di Davide, 28 set 2026), in entrambi i versi.
+
+    Il principal è l'identità FIRMATA del token (il claim `agent`): un agente
+    owner di un topic — `contact_agent` di un topic senza owner umano — non
+    passa, perché riclassificare è una presa di responsabilità e ne risponde una
+    persona.
+    """
+    from . import channels
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "autenticazione richiesta")
+    if not channels._is_human_principal(principal):
+        raise HTTPException(403, "riclassificare un topic è una decisione di una persona")
+    try:
+        t = topics_client.open_topic(tier, name) or {}
+    except Exception:  # noqa: BLE001
+        t = {}
+    meta = t.get("meta") or {}
+    if not meta:
+        raise HTTPException(404, "topic non trovato")
+    if not (admin.is_admin(principal) or meta.get("owner") == principal):
+        raise HTTPException(403, "riclassifica l'owner del topic o un admin della piattaforma")
+    return principal, meta
+
+
+def _participants_of(meta: dict) -> list[str]:
+    raw = meta.get("participants")
+    if isinstance(raw, dict):
+        return [str(k) for k in raw]
+    return [str(x) for x in (raw or [])]
+
+
+def _tier_impact(meta: dict, new_tier: str) -> dict:
+    """Chi entra e chi esce dall'accesso al topic al nuovo livello: la regola è
+    quella di sempre (`channels._eligibility`, clearance/provider ≥ livello).
+    Informazione per chi decide: la riclassificazione non tocca i partecipanti
+    né i muri — l'accesso segue il livello da sé."""
+    from . import channels
+    from .agent_registry import registry
+    old = meta.get("tier") or ""
+    perde, guadagna = [], []
+    for nome in _participants_of(meta):
+        spec = registry.get_by_name(nome)
+        if spec is None:
+            continue
+        prima = bool(channels._eligibility(spec, old).get("eligible"))
+        dopo = bool(channels._eligibility(spec, new_tier).get("eligible"))
+        riga = {"name": nome, "type": getattr(spec, "type", "")}
+        if prima and not dopo:
+            perde.append(riga)
+        elif dopo and not prima:
+            guadagna.append(riga)
+    verso = ("up" if _TIERS.index(new_tier) > _TIERS.index(old) else "down") \
+        if old in _TIERS else "unknown"
+    return {"from": old, "to": new_tier, "direction": verso,
+            "lose_access": perde, "gain_access": guadagna}
+
+
+@router.get("/api/topics/{tier}/{name}/tier-preview")
+async def topic_tier_preview(tier: str, name: str, request: Request, to: str = Query(...)):
+    """Anteprima di una riclassificazione: cosa cambia per chi partecipa."""
+    _principal, meta = await asyncio.to_thread(_require_retier_authority, request, tier, name)
+    nuovo = (to or "").strip().upper()
+    if nuovo not in _TIERS:
+        raise HTTPException(400, f"livello non valido: {to}")
+    return await asyncio.to_thread(_tier_impact, meta, nuovo)
+
+
+@router.post("/api/topics/{tier}/{name}/tier")
+async def topic_set_tier(tier: str, name: str, request: Request):
+    """Riclassifica il topic a un nuovo livello SEAL (clodia-platform#426).
+
+    Corpo: `{tier, reason, accept_responsibility: true}`. La motivazione e la
+    presa di responsabilità sono obbligatorie: finiscono nella cronologia del
+    topic e nel messaggio di sistema del canale, in attesa dell'audit trail di
+    piattaforma (clodia-platform#425). Nessun egress/ingress viene modificato:
+    verificarli prima è responsabilità dell'owner.
+    """
+    principal, meta = await asyncio.to_thread(_require_retier_authority, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    body = body or {}
+    nuovo = str(body.get("tier") or "").strip().upper()
+    motivo = str(body.get("reason") or "").strip()
+    if nuovo not in _TIERS:
+        raise HTTPException(400, f"livello non valido: {body.get('tier')}")
+    if not motivo:
+        raise HTTPException(400, "serve una motivazione")
+    if body.get("accept_responsibility") is not True:
+        raise HTTPException(400, "serve la presa di responsabilità esplicita")
+    impatto = await asyncio.to_thread(_tier_impact, meta, nuovo)
+    try:
+        esito = await topics_client.async_set_topic_tier(tier, name, nuovo, principal, motivo)
+    except topics_client.TopicsClientError as e:
+        if e.is_client_error:
+            raise HTTPException(e.status or 400, e.detail or str(e))
+        raise HTTPException(502, str(e))
+    vecchio = esito.get("from") or tier
+    # Stato dell'agent-server legato al vecchio livello: i job del topic si
+    # riportano sul nuovo, le sessioni `chan:<vecchio>:<nome>:*` si chiudono —
+    # il prossimo turno nasce sul livello nuovo, con la clearance nuova.
+    from ..scheduler import db as jobs_db
+    from ..sdk_runtime.session import manager
+    try:
+        esito["jobs"] = await asyncio.to_thread(jobs_db.retier_topic_jobs, vecchio,
+                                                esito.get("to") or nuovo, name)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("riclassificazione %s/%s: job non riallineati: %s", tier, name, e)
+        esito["jobs_error"] = str(e)[:200]
+    prefisso = f"chan:{vecchio}:{name}:"
+    chiuse = []
+    for chat in list(manager.list()):
+        cid = getattr(chat, "chat_id", "") or ""
+        if cid.startswith(prefisso):
+            try:
+                await manager.delete(cid)
+                chiuse.append(cid)
+            except Exception:  # noqa: BLE001
+                pass
+    esito["closed_sessions"] = chiuse
+    esito["impact"] = impatto
+    LOG.warning("topic %s/%s riclassificato a %s da %s (%s)", vecchio, name,
+                esito.get("to"), principal, motivo[:200])
+    return esito
 
 
 @router.get("/api/topics/catalog")
