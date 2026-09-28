@@ -284,6 +284,22 @@ def get_job_by_name(name: str) -> Optional[dict]:
     return None
 
 
+def retier_topic_jobs(old_tier: str, new_tier: str, name: str) -> list[int]:
+    """Riporta sul nuovo livello i job legati al topic (clodia-platform#426):
+    `topic_tier` e, per il trigger, il nome `topic-trigger:<tier>/<nome>` che lo
+    identifica. Lo scheduler rilegge il job a ogni fire, quindi basta il record."""
+    spostati: list[int] = []
+    # Senza `_LOCK` qui: `_write` lo prende da sé, e il lock non è rientrante.
+    for d in _all():
+        if d.get("topic_tier") == old_tier and d.get("topic_name") == name:
+            d["topic_tier"] = new_tier
+            if str(d.get("name") or "") == f"topic-trigger:{old_tier}/{name}"[:200]:
+                d["name"] = f"topic-trigger:{new_tier}/{name}"[:200]
+            _write(d)
+            spostati.append(int(d["id"]))
+    return spostati
+
+
 def list_jobs() -> list[dict]:
     return _all()
 
