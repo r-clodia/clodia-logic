@@ -2002,6 +2002,9 @@ class ChatSession:
                 continue
 
             if isinstance(message, AssistantMessage):
+                # The model the API says it served (#435), next to the declared one.
+                self._last_response_model = getattr(message, "model", None) or getattr(
+                    self, "_last_response_model", None)
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
                         await bus.publish(Event(
@@ -3487,6 +3490,9 @@ class OpenCodeChatSession:
                                                  "input_summary": str(st.get("input"))[:200]},
                                         timestamp=datetime.now(timezone.utc)))
         info = data.get("info") or {}
+        # What opencode reports it ran (#435).
+        if info.get("modelID"):
+            self._last_response_model = info.get("modelID")
         tok = info.get("tokens") or {}
         if tok:
             cache = tok.get("cache") or {}

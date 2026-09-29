@@ -653,9 +653,20 @@ def _topic_title(tier: str, name: str) -> str | None:
         return None
 
 
+def _audit_model(chat, tier):
+    """`audit_events.model_block`, never raising into the turn."""
+    try:
+        from .. import audit_events
+        return audit_events.model_block(chat, tier)
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("audit: model block not built (%s)", type(e).__name__)
+        return None
+
+
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
                                  principal: str | None = None, hop: int = 0,
-                                 timing=None, report_back: bool = False) -> str | None:
+                                 timing=None, report_back: bool = False,
+                                 trigger: dict | None = None) -> str | None:
     """Esegue il turno in background e posta la risposta nel canale.
 
     La ChatSession serializza gia' i turni con il suo lock: se lo stesso agent
@@ -725,9 +736,27 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     # sessione misura da sé (#330).
     if timing is not None:
         timing.bind(getattr(chat, "chat_id", None))
+    # The turn on the audit trail (#433, #442): start opens its trace on the
+    # gateway, end closes it with outcome, provider and model (#434, #435, #443).
+    from .. import audit_events
+    _turn = audit_events.Turn(tier=tier, name=name, label=responder,
+                              chat_id=getattr(chat, "chat_id", None), principal=principal,
+                              trigger={"hop": hop or None, "report_back": report_back or None,
+                                       **(trigger or {})})
+    await _turn.start()
+    try:
+        chat._last_response_model = None
+    except Exception:  # noqa: BLE001
+        pass
     try:
         reply = await chat.send_user_message(prompt)
+        _st, _err = audit_events.outcome_of_reply(reply)
+        await _turn.end(status=_st, error=_err,
+                        model=_audit_model(chat, tier),
+                        usage=getattr(chat, "_last_usage", None) or None)
     except Exception as e:  # noqa: BLE001
+        await _turn.end(status="failed", error=audit_events.failure_class(e),
+                        model=_audit_model(chat, tier))
         # repr(e) oltre a str(e): alcune eccezioni (opencode/provider) hanno
         # messaggio vuoto → senza tipo+traceback la diagnosi è cieca.
         LOG.warning("errore del risponditore %s su %s/%s: %r", responder, tier, name, e,
@@ -2608,7 +2637,9 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     # occupata comunque, quindi tenerla prenotata fino alla fine non toglie nulla.
     _spawn_bg(_run_then_unclaim(chat_id, _run_and_post_response(
         tier, name, label, chat, prompt, principal=principal, hop=hop,
-        timing=timing, report_back=report_back)))
+        timing=timing, report_back=report_back,
+        trigger={"kind": kind, "origin": list(origin) if origin else None,
+                 "asked_by": principal})))
     return True
 
 
@@ -5096,8 +5127,13 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     if directive:
         prompt = prompt + "\n\n─────\n[Istruzione operativa di questo turno]\n" + directive
     timing.mark("prompt_build")
-    reply = await _run_and_post_response(tier, name, responder.name, chat, prompt,
-                                        timing=timing)
+    _routing = locals().get("routing") or {}
+    reply = await _run_and_post_response(
+        tier, name, responder.name, chat, prompt, timing=timing,
+        trigger={"kind": trigger_kind or ("hinted" if responder_hint else "routed"),
+                 "asked_by": trigger_author or principal_hint,
+                 "router_mode": _routing.get("mode"),
+                 "router_confidence": _routing.get("confidence")})
     return responder.name, reply
 
 
