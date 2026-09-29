@@ -339,6 +339,10 @@ def create_app() -> FastAPI:
             return path == "/api/agents"  # SOLO la creazione del primo superadmin
         return False
 
+    # Control-plane and session events (clodia-platform#439, #444).
+    from .api import audit_mw
+    audit_mw.install(app)
+
     @app.middleware("http")
     async def _bootstrap_gate(request, call_next):
         if admin.is_initialized() or _preclaim_allowed(request.method, request.url.path):
