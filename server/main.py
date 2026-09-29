@@ -292,12 +292,16 @@ async def _lifespan(app: FastAPI):
     # deve cogliere è raro, quindi non ci si accorgerebbe che è spento fino alla
     # notte in cui serviva.
     lag_task = asyncio.create_task(loop_lag.heartbeat())
+    # Transcripts under the retention of their tier (clodia-platform#446).
+    from .agents import transcript_retention
+    retention_task = asyncio.create_task(transcript_retention.retention_loop())
 
     yield
     # --- shutdown ---
     relay_task.cancel()
     reaper_task.cancel()
     lag_task.cancel()
+    retention_task.cancel()
     try:
         shutdown_scheduler()
     except Exception as e:  # pragma: no cover
@@ -384,6 +388,9 @@ def create_app() -> FastAPI:
 
     app.include_router(health.router)
     app.include_router(admin.router)
+    # Human door to the gateway's audit trail (clodia-platform#447): admin only.
+    from .api import audit_admin
+    app.include_router(audit_admin.router)
     app.include_router(auth.router)
     app.include_router(human_auth.router)
     app.include_router(agents.router)
