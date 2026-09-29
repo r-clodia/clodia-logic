@@ -255,3 +255,38 @@ def model_block(chat, tier: str | None) -> dict:
         "response_name": getattr(chat, "_last_response_model", None),
         "runtime": getattr(chat, "agent_sdk", None) or type(chat).__name__,
     }
+
+
+# ── human oversight and anomalies (#443) ─────────────────────────────────────
+def _bg(ev: dict) -> None:
+    """Fire-and-forget from sync or async code; never raises."""
+    import asyncio
+    try:
+        loop = asyncio.get_running_loop()
+    except RuntimeError:
+        return
+    loop.create_task(report(ev))
+
+
+def interrupt(tier: str, name: str, who: str | None, targets: list | None, stopped) -> dict:
+    return {"type": "turn.interrupt", "action": "interrupt", "resource": f"{tier}/{name}",
+            "scope": _scope(tier, name), "actor": {"type": "human", "id": who},
+            "decision": {"targets": targets or ["*"]},
+            "result": {"stopped": stopped if isinstance(stopped, (list, int)) else None}}
+
+
+def override(tier: str, name: str, who: str | None, misrouted, chosen, outcome) -> dict:
+    return {"type": "route.override", "action": outcome or "overruled",
+            "resource": f"{tier}/{name}", "scope": _scope(tier, name),
+            "actor": {"type": "human", "id": who},
+            "decision": {"misrouted": misrouted or None, "chosen": chosen}}
+
+
+def recover(chat_id: str | None, seed: str | None, spawn: str | None, cause: str,
+            ok: bool) -> dict:
+    parts = str(chat_id or "").split(":")
+    scope = _scope(parts[1], parts[2]) if len(parts) >= 3 and parts[0] == "chan" else None
+    return {"type": "turn.recover", "action": "recover" if ok else "recover_failed",
+            "resource": chat_id, "scope": scope, "agent": {"seed": seed, "spawn": spawn},
+            "actor": {"type": "service", "id": "agent-server"},
+            "result": {"cause": cause, "ok": ok}}

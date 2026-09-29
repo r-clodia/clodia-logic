@@ -1547,6 +1547,9 @@ class ChatSession:
         dal chiamante (`async with self._lock`), quindi niente deadlock."""
         if self._opts_kwargs is None:
             return False
+        # Why we are here (#443): set by the caller when it is not a failure.
+        cause = getattr(self, "_recover_cause", None) or "turn_failure"
+        self._recover_cause = None
         # un fallimento può essere un 401 da token scaduto: rinnova prima di riaprire
         self._refresh_provider_env()
         try:
@@ -1559,11 +1562,23 @@ class ChatSession:
             self._client = None
             self._client_ctx = None
             await self._open_client()
-            LOG.info("sessione %s ripristinata e pronta dopo fallimento turno", self.chat_id)
+            # The CAUSE, not always «fallimento turno»: on 29 Sep 05:35 this line
+            # followed a credential refresh and read as an unexplained failure (#443).
+            LOG.info("sessione %s ripristinata e pronta (%s)", self.chat_id, cause)
+            self._audit_recover(cause, True)
             return True
         except Exception as e:  # noqa: BLE001
             LOG.error("recovery sessione %s fallita: %s", self.chat_id, e)
+            self._audit_recover(cause, False)
             return False
+
+    def _audit_recover(self, cause: str, ok: bool) -> None:
+        try:
+            from .. import audit_events
+            audit_events._bg(audit_events.recover(
+                self.chat_id, self.kind, _execution_id(self._spawn) or None, cause, ok))
+        except Exception:  # noqa: BLE001
+            pass
 
     async def stop(self) -> None:
         if self._client_ctx is not None:
@@ -1636,6 +1651,7 @@ class ChatSession:
             # (non `or`) così entrambe le refresh girano sempre.
             if self._refresh_provider_env() | self._refresh_mcp_principal():
                 LOG.info("token rinnovato (provider/principal) → riapro il client per %s", self.chat_id)
+                self._recover_cause = "credential_refresh"
                 await self._recover_session()
             # Il lock è nostro: ogni recovery concorrente è finita. Se il client
             # manca ancora è perché quella recovery è fallita — ritenta, e solo
