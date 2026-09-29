@@ -360,12 +360,24 @@ async def approve(request: Request):
     instance = (body.get("instance") or "-").strip() or "-"
     verb = (body.get("verb") or "").strip()
     minutes = body.get("minutes", 10)
+    # Approve WITH CORRECTIONS (clodia-platform#448): the fields the approver
+    # changed. The gateway validates them against the verb's editable fields
+    # and re-judges the corrected call; here we only refuse what cannot be a
+    # correction at all.
+    modified = body.get("arguments")
+    if modified is not None and not isinstance(modified, dict):
+        return JSONResponse({"error": "arguments deve essere un oggetto"}, status_code=400)
     # Fin dove vale questo sì: solo adesso, sempre in questa stanza, ovunque.
     ricorda = (body.get("remember") or "once").strip().lower()
     if not (agent and verb):
         return JSONResponse({"error": "agent/verb richiesti"}, status_code=400)
     if ricorda not in ("once", "topic", "global"):
         return JSONResponse({"error": f"remember sconosciuto: {ricorda}"},
+                            status_code=400)
+    if modified and ricorda != "once":
+        # A correction answers THIS call (#448). Remembering it would turn one
+        # corrected message into a standing rule. Refused before anything is minted.
+        return JSONResponse({"error": "una correzione vale solo per stavolta"},
                             status_code=400)
     if verb.startswith(COPYBRAIN_PREFIX):
         # `copybrain` (clodia-platform#393): il consenso vale per QUESTO spawn
@@ -417,8 +429,10 @@ async def approve(request: Request):
     except Exception as e:  # noqa: BLE001
         LOG.error("mint_capability(gate) fallito per %s@%s:%s: %s", agent, instance, verb, e)
         return JSONResponse({"error": "mint_failed", "detail": str(e)}, status_code=500)
-    r = _gw("POST", "/grant", principal,
-            {"agent": agent, "instance": instance, "verb": verb, "token": cap["token"]})
+    grant_body = {"agent": agent, "instance": instance, "verb": verb, "token": cap["token"]}
+    if modified:
+        grant_body["modified"] = modified
+    r = _gw("POST", "/grant", principal, grant_body)
     LOG.info("gate approve %s@%s:%s da %s (jti=%s, remember=%s) → %s", agent,
              instance, verb, principal, cap.get("jti"), ricorda, r.status_code)
     memoria = None
