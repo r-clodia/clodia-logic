@@ -263,6 +263,10 @@ class Turn:
             self.trigger["parent"] = self.parent
         if self.root:
             self.trigger["root"] = self.root
+        self._t0_ns: int | None = None
+        #: W3C span links of the turn (#463): the runtime's own OTel trace,
+        #: when the runtime cannot carry this one (see `otel_export`).
+        self.links: list[dict] = []
 
     def _base(self, etype: str, action: str) -> dict:
         return {"type": etype, "action": action, "resource": self.chat_id,
@@ -286,7 +290,14 @@ class Turn:
             self.trace_id = cur
         else:
             _trace.bind(self.trace_id)
+        # The turn's span too (#463): from here every gateway call of the turn
+        # carries a W3C `traceparent` under it.
+        _trace.bind_span(self.span_id)
+        from . import otel_export
+        self._t0_ns = otel_export.now_ns()
         ev = self._base("turn.start", "start")
+        if self.links:
+            ev["links"] = self.links
         # Why this turn exists (#442): what woke it, who asked, through which
         # chain. The trigger event id links back to the message or job (#465).
         ev["decision"] = {"trigger": self.trigger or None}
@@ -311,6 +322,31 @@ class Turn:
         if model or usage:
             ev["model"] = {**(model or {}), "usage": usage or None}
         await report(ev)
+        self._export_span(status, error, ev.get("model"))
+
+    def _export_span(self, status: str, error: str | None, model: dict | None) -> None:
+        """The turn as an OTel `invoke_agent` span, if export is on (#463):
+        same trace id and span id as the audit events of the turn."""
+        from . import otel_export, otel_genai as G
+        if self._t0_ns is None or not otel_export.enabled():
+            return
+        who = _seed_and_spawn(self.label)
+        payload = otel_export.turn_span_payload(
+            trace_id=self.trace_id, span_id=self.span_id,
+            parent_span_id=getattr(self, "parent_span_id", None),
+            name=G.span_name(G.OP_INVOKE_AGENT, who["seed"]),
+            start_ns=self._t0_ns, end_ns=otel_export.now_ns(),
+            attributes=G.invoke_agent_attributes(
+                seed=who["seed"], spawn=who["spawn"], conversation=self.chat_id,
+                model=model, status=status, error=error),
+            error=status != "ok", links=self.links)
+        import asyncio
+        try:
+            task = asyncio.get_running_loop().create_task(otel_export.export(payload))
+        except RuntimeError:
+            return
+        _BG_TASKS.add(task)
+        task.add_done_callback(_BG_TASKS.discard)
 
 
 # ── hand-over from the dispatcher to the session ─────────────────────────────
@@ -355,6 +391,12 @@ async def turn_acquired(chat) -> None:
         chat._last_response_model = None
     except Exception:  # noqa: BLE001
         pass
+    # A runtime whose OTel spans cannot carry the turn's trace (claude: one
+    # trace per process) is joined by a link instead (#463).
+    rt = getattr(chat, "_otel_runtime_trace", None)
+    if isinstance(rt, str) and len(rt) == 32:
+        t.links.append({"trace_id": rt, "attributes": {"link.source": "runtime",
+                                                       "clodia.runtime": "claude"}})
     try:
         await t.start()
     except Exception as e:  # noqa: BLE001

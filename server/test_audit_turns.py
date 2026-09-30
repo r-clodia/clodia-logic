@@ -195,7 +195,9 @@ class TurnEventsTests(unittest.IsolatedAsyncioTestCase):
         start, end = self.reported
         self.assertEqual(start["trace_id"], tid)
         self.assertEqual(end["trace_id"], tid)
-        self.assertEqual(chat.headers_seen, [{trace.HEADER: tid}])
+        # #463: next to it the W3C traceparent, under the turn span
+        self.assertEqual(chat.headers_seen, [{trace.HEADER: tid,
+                                              trace.TRACEPARENT: f"00-{tid}-{start['span_id']}-01"}])
 
     async def test_without_a_dispatcher_trace_the_turn_binds_its_own(self) -> None:
         chat = _Chat(reply="ok")
@@ -204,9 +206,10 @@ class TurnEventsTests(unittest.IsolatedAsyncioTestCase):
             trace.bind(None)
             await self.run_turn(chat)
         await asyncio.create_task(bare())
-        tid = self.reported[0]["trace_id"]
+        tid, sid = self.reported[0]["trace_id"], self.reported[0]["span_id"]
         self.assertRegex(tid, r"^[0-9a-f]{32}$")
-        self.assertEqual(chat.headers_seen, [{trace.HEADER: tid}])
+        self.assertEqual(chat.headers_seen, [{trace.HEADER: tid,
+                                              trace.TRACEPARENT: f"00-{tid}-{sid}-01"}])
 
     async def test_a_watchdog_note_is_a_watchdog_end(self) -> None:
         await self.run_turn(_Chat(reply="⏱ Turno interrotto dal watchdog: subprocess silente. Riprova."))

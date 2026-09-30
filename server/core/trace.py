@@ -49,9 +49,16 @@ import secrets
 
 #: L'header con cui il trace attraversa la rete verso il gateway.
 HEADER = "X-Clodia-Trace-Id"
+#: The W3C header next to it (clodia-platform#463): `00-<trace>-<span>-01`.
+TRACEPARENT = "traceparent"
 
 _CURRENT: contextvars.ContextVar[str | None] = contextvars.ContextVar(
     "clodia_trace_id", default=None)
+#: The span of the turn, once the turn has one (`audit_events.Turn.start`).
+#: Without it there is no honest `traceparent`: a parent span must name a span
+#: that exists, and inventing one would be a correlation nobody can follow.
+_SPAN: contextvars.ContextVar[tuple[str, str] | None] = contextvars.ContextVar(
+    "clodia_trace_span", default=None)
 
 
 def new_id() -> str:
@@ -70,15 +77,42 @@ def current() -> str | None:
     return _CURRENT.get()
 
 
+def bind_span(span_id: str | None) -> None:
+    """The turn's span, for the trace currently bound (#463)."""
+    t = _CURRENT.get()
+    _SPAN.set((t, span_id) if t and span_id else None)
+
+
+def current_span() -> str | None:
+    """The turn's span id — only if it belongs to the trace bound NOW."""
+    s = _SPAN.get()
+    return s[1] if s and s[0] == _CURRENT.get() else None
+
+
+def traceparent() -> str | None:
+    """W3C `traceparent` of the turn, or None without a trace AND a span."""
+    t, s = _CURRENT.get(), current_span()
+    return f"00-{t}-{s}-01" if t and s else None
+
+
 def headers() -> dict[str, str]:
     """Gli header da aggiungere a una chiamata interna.
 
     Vuoto fuori da un turno: una chiamata della webui non appartiene a nessun
     turno, e darle l'id di quello precedente sarebbe una correlazione inventata
     — peggio di nessuna, perché la si crede.
+
+    With the turn's span also the W3C `traceparent` (#463): the gateway takes
+    the trace from it and hangs its events under the turn span.
     """
     t = _CURRENT.get()
-    return {HEADER: t} if t else {}
+    if not t:
+        return {}
+    out = {HEADER: t}
+    tp = traceparent()
+    if tp:
+        out[TRACEPARENT] = tp
+    return out
 
 
 def tag() -> str:
@@ -102,10 +136,11 @@ def own_turn(fn):
     """
     @functools.wraps(fn)
     async def wrapper(*args, **kwargs):
-        precedente = _CURRENT.get()
+        precedente, span = _CURRENT.get(), _SPAN.get()
         try:
             return await fn(*args, **kwargs)
         finally:
             _CURRENT.set(precedente)
+            _SPAN.set(span)
 
     return wrapper
