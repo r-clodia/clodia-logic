@@ -39,6 +39,7 @@ import asyncio
 import pathlib
 import re
 import tempfile
+import time
 import unittest
 from collections import deque
 from datetime import datetime, timezone
@@ -222,6 +223,67 @@ class OgniRichiestaStaNelResiduoTests(unittest.TestCase):
         senza = [n.lineno for n in post
                  if not any(k.arg == "timeout" for k in n.keywords)]
         self.assertEqual(senza, [], f"POST senza timeout residuo alle righe {senza}")
+
+
+class IlTtlDelGrantFirmatoTests(unittest.TestCase):
+    """`import time` è portante per DUE cose, non solo per `_TurnBudget`.
+
+    Trovato in review su questa PR: `_runtime_token_ttl` (riga ~1112) chiama
+    `time.time()` da sempre, ma il modulo non importava `time` — quindi su
+    `main` quella riga solleva `NameError`, non un TTL. Verificato eseguendo la
+    funzione estratta dalla versione di `main`: `NameError: name 'time' is not
+    defined` sul ramo con `expires_at`, e `86400` sul ramo senza. Ecco perché
+    nessuno se n'era accorto: il difetto vive **solo** sul percorso in cui un
+    overlay ha una scadenza, cioè quando un grant firmato andrebbe accorciato —
+    il caso in cui sbagliare costa di più.
+
+    Il mio `import time` lo ripara per effetto collaterale, e un fix per
+    effetto collaterale è un fix che il prossimo cleanup può togliere: qui c'è
+    il presidio. Complementare al controllo statico di
+    `test_clearance_follows_spawn.WiringTests`, che verifica *dove* il TTL è
+    usato ma non che sappia calcolarlo.
+    """
+
+    def test_un_overlay_con_scadenza_accorcia_il_ttl(self) -> None:
+        """Rosso su `main` (`NameError`), verde con l'import."""
+        ttl = S._runtime_token_ttl({"records": [{"expires_at": time.time() + 60}]})
+        self.assertGreater(ttl, 0)
+        self.assertLessEqual(ttl, 60)
+        self.assertLess(ttl, S._CLODIA_TOOLS_TOKEN_TTL,
+                        "la scadenza dell'overlay non ha accorciato niente")
+
+    def test_senza_scadenze_resta_il_ttl_pieno(self) -> None:
+        """Il ramo che su `main` funzionava: se passasse solo questo, il test
+        sopra sarebbe verde per il motivo sbagliato."""
+        self.assertEqual(S._runtime_token_ttl({"records": [{}]}),
+                         S._CLODIA_TOOLS_TOKEN_TTL)
+        self.assertEqual(S._runtime_token_ttl(None), S._CLODIA_TOOLS_TOKEN_TTL)
+
+    def test_limport_resta_anche_se_TurnBudget_sparisce(self) -> None:
+        """Il presidio deve sopravvivere al cleanup di #423.
+
+        Oggi togliere `import time` rompe l'import del modulo, perché
+        `_TurnBudget.__init__` lo usa come default: un rosso rumoroso ma che
+        punta al posto sbagliato. Se un giorno `_TurnBudget` andrà via, questo
+        controllo resta e nomina il vero motivo per cui l'import serve.
+        """
+        albero = ast.parse(pathlib.Path(S.__file__).read_text(encoding="utf-8"))
+        moduli = {a.name for n in albero.body if isinstance(n, ast.Import)
+                  for a in n.names}
+        self.assertIn("time", moduli,
+                      "`_runtime_token_ttl` chiama time.time(): senza import è NameError")
+        fn = next(n for n in albero.body
+                  if isinstance(n, ast.FunctionDef) and n.name == "_runtime_token_ttl")
+        self.assertIn("time", {getattr(d.func.value, "id", "") for d in ast.walk(fn)
+                               if isinstance(d, ast.Call)
+                               and isinstance(d.func, ast.Attribute)},
+                      "il motivo di questo presidio non è più in quella funzione")
+
+    def test_una_scadenza_gia_passata_non_conia_un_ttl_non_positivo(self) -> None:
+        """Stesso ramo, aritmetica opposta: un TTL ≤ 0 firmerebbe un grant già
+        morto invece di fallire subito."""
+        self.assertEqual(S._runtime_token_ttl(
+            {"records": [{"expires_at": time.time() - 3600}]}), 1)
 
 
 class IlBudgetDelTurnoTests(unittest.TestCase):
