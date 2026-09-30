@@ -142,6 +142,7 @@ def _e_ragionamento_non_filtrato(testo: str) -> bool:
     return any(f in basso for f in _REASONING_LEAK_FRAGMENTS)
 
 
+
 class _BlockFilter:
     """Classifica i text-block dello stream: trattiene i primi byte di ogni
     blocco finché non può decidere se è un'iniezione (drop) o testo vero
@@ -2258,6 +2259,38 @@ def _codex_event_error(ev: dict) -> str:
     return str(payload or "")
 
 
+
+#: Orchestrator-only secrets. `CLODIA_ORCHESTRATOR_SECRET` is the bootstrap key
+#: of the gateway's minting: whoever reads it can have the gateway mint any
+#: identity. `GIT_TOKEN` is a git PAT; agents do git through the gateway.
+_ORCHESTRATOR_ONLY = ("CLODIA_ORCHESTRATOR_SECRET", "GIT_TOKEN")
+
+
+def _inherited_spawn_env() -> dict[str, str]:
+    """The agent-server's environment as a spawn may inherit it
+    (clodia-platform#471).
+
+    The Claude runtime already dropped the orchestrator-only secrets and the
+    provider credentials from its child env; codex and opencode started from
+    `os.environ` as is, so both secrets — and any provider key in the
+    container, e.g. `ANTHROPIC_API_KEY` — reached processes that run an
+    agent's shell. Neither runtime reads a provider key from the inherited
+    env: codex authenticates through `CODEX_HOME`, opencode gets its key as
+    `OPENCODE_PROVIDER_KEY` from `_write_config`.
+    """
+    env = dict(os.environ)
+    for k in _ORCHESTRATOR_ONLY:
+        env.pop(k, None)
+    try:
+        from ..api.providers import all_provider_env_keys
+        for k in all_provider_env_keys():
+            env.pop(k, None)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("provider keys not scrubbed from the spawn env: %s", e)
+    return env
+
+
+
 class CodexChatSession:
     """Chat servita dal runtime **codex** (ophelia = clodia-su-codex).
 
@@ -2575,7 +2608,7 @@ class CodexChatSession:
         self, content: str, runtime_model: Optional[str],
     ) -> tuple[list[str], list[str], int | None, str]:
         cmd = self._codex_cmd(runtime_model)
-        env = {**os.environ, "CODEX_HOME": str(self._codex_home)}
+        env = {**_inherited_spawn_env(), "CODEX_HOME": str(self._codex_home)}
         # token gateway coniato PER-TURNO col principal corrente (utente connesso)
         # → runtime.current_user resta sempre allineato senza restart.
         try:
@@ -3006,7 +3039,7 @@ class OpenCodeChatSession:
         le credenziali (referenziate via {env:…} nel config, così non su disco)."""
         self._provider = _runtime_provider(self.kind, self._runtime_override)
         self._model = _runtime_model(self.kind, self._runtime_override)
-        env = {**os.environ}
+        env = _inherited_spawn_env()
         cfg: dict = {"$schema": "https://opencode.ai/config.json", "provider": {}, "mcp": {}}
         # credenziale del provider effettivo (apikey provider, es. scaleway)
         try:
