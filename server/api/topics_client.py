@@ -223,6 +223,24 @@ def set_deadline(tier: str, name: str, deadline: str | None) -> dict:
     return r.json()
 
 
+def set_goal(tier: str, name: str, goal: dict | None, by: str = "") -> dict:
+    """Fissa o toglie l'OBIETTIVO del canale (clodia-platform#457).
+
+    `by` è il principal di cui QUESTO servizio ha verificato la proprietà del
+    canale: il gateway non conosce i ruoli umani di uno scope e si fida di
+    questo campo, quindi non deve mai arrivare dal corpo della richiesta HTTP.
+    """
+    url = f"{_base()}/{tier}/{name}/goal"
+    try:
+        r = _gw_http.post(url, headers=_headers(), json={"goal": goal, "by": by},
+                          timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway set-goal irraggiungibile: {e}") from e
+    if r.status_code >= 400:
+        raise TopicsClientError(f"gateway set-goal → HTTP {r.status_code}: {r.text[:160]}")
+    return r.json()
+
+
 def get_agents_md(tier: str, name: str) -> tuple[str | None, str | None, bool]:
     """`(testo, versione, autorevole)` delle istruzioni di scope.
 
@@ -581,5 +599,6 @@ async_topic_logo = _async_of("topic_logo")
 async_read_topic_logo = _async_of("read_topic_logo")
 async_set_status = _async_of("set_status")
 async_set_deadline = _async_of("set_deadline")
+async_set_goal = _async_of("set_goal")
 async_export_bundle = _async_of("export_bundle")
 async_import_bundle = _async_of("import_bundle")

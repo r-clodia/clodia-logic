@@ -9,6 +9,14 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.30.0] — 2026-09-30
+- `clodia` gets **`topic.goal_progress`** (clodia-platform#457): the owner pins a
+  message as the channel's **goal** and the orchestrator declares how far it is
+  (`strategy-review`, `in-progress`, `claimed-done`). Pinning and unpinning stay
+  with the owner on purpose — an orchestrator able to pin its own goals would not
+  be executing a requirement, it would be writing one — and `done` is the owner
+  accepting the outcome. Needs clodia-tools >= 2.59.0.
+
 ## [7.29.0] — 2026-09-28
 - `clodia` and `ophelia` get **`gdrive.update`** (clodia-platform#427): replace the content of an
   existing Drive file with a file from the scratch, keeping the same file, id,

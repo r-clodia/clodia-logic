@@ -760,6 +760,53 @@ async def set_topic_deadline(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+@router.post("/api/topics/{tier}/{name}/goal")
+async def set_topic_goal(tier: str, name: str, request: Request):
+    """Fissa il messaggio dell'utente come OBIETTIVO del canale, o lo toglie
+    (`goal: null`). Solo l'owner (o admin) — clodia-platform#457.
+
+    Perché owner e non partecipante: il goal è un requisito vincolante che
+    l'orchestratore deve portare a termine e che impegna il lavoro degli agenti
+    finché resta appeso. Chi può appenderlo è chi risponde del canale.
+
+    Il pin e l'unpin lasciano una riga di sistema nella stanza: il meta dice
+    *qual è* l'obiettivo adesso, la cronologia dice *quando* qualcuno l'ha
+    cambiato — e «chi ha fermato la strategia e quando» è esattamente la domanda
+    che si fa dopo, davanti a un lavoro che si è interrotto.
+    """
+    principal = await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    goal = (body or {}).get("goal")
+    try:
+        res = await topics_client.async_set_goal(tier, name, goal, by=principal)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+    await _annuncia_goal(tier, name, principal, res.get("goal"))
+    return res
+
+
+async def _annuncia_goal(tier: str, name: str, chi: str, goal: dict | None) -> None:
+    """Riga di sistema su pin/unpin. Non fallisce mai la richiesta: l'obiettivo
+    è già scritto nel meta, e un annuncio mancato non deve far sembrare non
+    riuscita un'operazione riuscita."""
+    if goal:
+        testo = (f"🎯 Obiettivo fissato da **{chi}**: {goal.get('text', '')}\n\n"
+                 "Finché resta appeso è un requisito da portare a termine: "
+                 "l'orchestratore prepara la strategia e la sottopone all'owner. "
+                 "Togliere il pin ferma l'esecuzione.")
+    else:
+        testo = (f"🎯 Obiettivo rimosso da **{chi}**. "
+                 "L'esecuzione della strategia si ferma qui.")
+    try:
+        await topics_client.async_post_message(tier, name, "system", testo,
+                                               kind="system")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("goal %s/%s: annuncio non pubblicato (%s)", tier, name, e)
+
+
 @router.post("/api/topics/{tier}/{name}/local-folder")
 async def local_folder(tier: str, name: str, request: Request):
     """Cartella condivisa Mac↔container: aggancia/sgancia una sottocartella
