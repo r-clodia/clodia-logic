@@ -258,6 +258,12 @@ def model_block(chat, tier: str | None) -> dict:
 
 
 # ── human oversight and anomalies (#443) ─────────────────────────────────────
+#: Strong references to the fire-and-forget reports still in flight. The event
+#: loop keeps only a weak reference to a task: without this set a report could
+#: be garbage-collected mid-flight and the event silently lost.
+_BG_TASKS: set = set()
+
+
 def _bg(ev: dict) -> None:
     """Fire-and-forget from sync or async code; never raises."""
     import asyncio
@@ -265,7 +271,9 @@ def _bg(ev: dict) -> None:
         loop = asyncio.get_running_loop()
     except RuntimeError:
         return
-    loop.create_task(report(ev))
+    task = loop.create_task(report(ev))
+    _BG_TASKS.add(task)
+    task.add_done_callback(_BG_TASKS.discard)
 
 
 def interrupt(tier: str, name: str, who: str | None, targets: list | None, stopped) -> dict:

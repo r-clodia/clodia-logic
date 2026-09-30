@@ -52,5 +52,27 @@ class RecoveryCauseTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual((await self._recover())["result"]["cause"], "turn_failure")
 
 
+class BackgroundReportsAreKeptTests(unittest.IsolatedAsyncioTestCase):
+    async def test_a_fire_and_forget_report_is_referenced_until_done(self) -> None:
+        import asyncio
+        import gc
+        done = asyncio.Event()
+        seen: list[dict] = []
+
+        async def slow_report(ev):
+            await done.wait()
+            seen.append(ev)
+            return True
+        with patch.object(audit_events, "report", slow_report):
+            audit_events._bg({"type": "turn.recover"})
+            self.assertEqual(len(audit_events._BG_TASKS), 1)
+            gc.collect()
+            done.set()
+            for _ in range(3):
+                await asyncio.sleep(0)
+        self.assertEqual(seen, [{"type": "turn.recover"}])
+        self.assertEqual(len(audit_events._BG_TASKS), 0)
+
+
 if __name__ == "__main__":
     unittest.main()
