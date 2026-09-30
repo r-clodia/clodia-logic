@@ -773,6 +773,9 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         return None
     finally:
         audit_events.release(_handover)
+        # The channel's clock for the goal watcher (#457): a turn that ended
+        # here is activity even when it posted nothing.
+        _ULTIMO_TURNO[(tier, name)] = datetime.now(timezone.utc)
         await _typing(tier, name, responder, "stop")
         # Come la callback qui sotto, la consegna del cronometro vale per QUESTO
         # turno: se l'invio è fallito prima che la sessione lo ritirasse, la
@@ -5482,6 +5485,38 @@ def _active_responders(tier: str, name: str, participants: list[str]) -> list[st
     vive = _live_instances(tier, name, participants)
     return [seed for seed, righe in vive.items()
             if any(r["state"] == "working" for r in righe)]
+
+
+#: When the last turn ended in each channel, in this process (goal_watch, #457).
+_ULTIMO_TURNO: dict[tuple[str, str], datetime] = {}
+
+
+def ultimo_turno_finito(tier: str, name: str) -> datetime | None:
+    """When the last turn in `tier/name` ended here, or None if none did since
+    start-up. Complements the channel's messages: a turn may end silently."""
+    return _ULTIMO_TURNO.get((tier, name))
+
+
+def _qualcuno_al_lavoro(tier: str, name: str) -> bool:
+    """Qualche agente ha un turno in corso in QUESTA stanza, chiunque sia?
+
+    `_active_responders` risponde alla stessa domanda ma vuole la lista dei
+    partecipanti, che chi sorveglia gli obiettivi fermi (goal_watch, #457) non
+    ha sotto mano: la prende dalle sessioni vive, che sono già per stanza.
+    Domanda diversa da `_responder_busy`, che guarda UN agente: qui basta che
+    si muova qualcuno perché il canale non sia fermo.
+    """
+    prefisso = f"chan:{tier}:{name}:"
+    for chat in manager.list():
+        if not str(getattr(chat, "chat_id", "")).startswith(prefisso):
+            continue
+        # Stessa misura di `_live_instances`: il turno in corso è il task, non
+        # il lock — un seed multi-spawn ha sessioni `…:<seed>#<n>` e il lock per
+        # nome esatto non le vedrebbe.
+        t = getattr(chat, "_current_turn_task", None)
+        if t is not None and not t.done():
+            return True
+    return False
 
 
 #: Quante directory si esplorano cercando un file «portato dentro». Un albero di

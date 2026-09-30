@@ -760,6 +760,136 @@ async def set_topic_deadline(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+@router.post("/api/topics/{tier}/{name}/goal")
+async def set_topic_goal(tier: str, name: str, request: Request):
+    """Fissa il messaggio dell'utente come OBIETTIVO del canale, o lo toglie
+    (`goal: null`). Solo l'owner (o admin) — clodia-platform#457.
+
+    Perché owner e non partecipante: il goal è un requisito vincolante che
+    l'orchestratore deve portare a termine e che impegna il lavoro degli agenti
+    finché resta appeso. Chi può appenderlo è chi risponde del canale.
+
+    Il pin e l'unpin lasciano una riga di sistema nella stanza: il meta dice
+    *qual è* l'obiettivo adesso, la cronologia dice *quando* qualcuno l'ha
+    cambiato — e «chi ha fermato la strategia e quando» è esattamente la domanda
+    che si fa dopo, davanti a un lavoro che si è interrotto.
+    """
+    principal = await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    goal = (body or {}).get("goal")
+    try:
+        res = await topics_client.async_set_goal(tier, name, goal, by=principal)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+    await _annuncia_goal(tier, name, principal, res.get("goal"), res.get("previous"))
+    return res
+
+
+def _ordine_orchestratore(chi: str, goal: dict, precedente: str | None) -> str | None:
+    """L'istruzione da dare all'orchestratore per QUESTA transizione, o None se
+    la transizione non ne richiede una.
+
+    La stessa destinazione ha due significati opposti: `→ in-progress` da
+    `strategy-review` è «hai il via libera», da `claimed-done` è «l'esito non va
+    bene, rimedia». Dare lo stesso ordine a entrambe farebbe rieseguire da capo
+    un piano già eseguito invece di correggerlo.
+    """
+    stato = str(goal.get("state") or "")
+    testo = str(goal.get("text") or "")
+    piano = goal.get("strategy_path")
+    dove = f"`{piano}`" if piano else "il documento di strategia del canale"
+    if stato == "pinned":
+        return (f"🎯 **Nuovo obiettivo del canale**, fissato da {chi}:\n\n"
+                f"> {testo}\n\n"
+                "Scomponilo in una strategia e **salvala nei file del canale**, poi "
+                "dichiarala pronta con `topic.goal_progress(state=\"strategy-review\", "
+                "strategy_path=\"<path>\")`. **Non eseguire niente** prima che l'owner "
+                "l'abbia approvata: qui si decide il piano, non lo si attua. "
+                "Il metodo e il formato sono nella skill `topic-goals`.")
+    if stato == "in-progress" and precedente == "claimed-done":
+        return (f"↺ **{chi} non ha accettato l'esito**: l'obiettivo NON è raggiunto.\n\n"
+                f"> {testo}\n\n"
+                f"Rileggi {dove} e l'ultima richiesta dell'owner, individua cosa manca "
+                "davvero e rimedia — non ripartire da capo dal piano intero. "
+                "Quando hai corretto, torna a `claimed-done`.")
+    if stato == "in-progress":
+        return (f"✅ **Strategia approvata da {chi}**: esegui.\n\n"
+                f"> {testo}\n\n"
+                f"Il piano è in {dove}. Coordina gli agenti passo per passo, e i passi "
+                "indipendenti mandali avanti insieme invece che in fila. Se un passo "
+                "fallisce, indaga la causa (sysadmin per i guasti di piattaforma) e "
+                "riprendi: l'obiettivo è un requisito, non un tentativo. Quando lo "
+                "ritieni raggiunto, `topic.goal_progress(state=\"claimed-done\")` e "
+                "aspetta la verifica dell'owner.")
+    return None
+
+
+def _e_partecipante(meta: dict, chi: str) -> bool:
+    """`participants` è una mappa nome→ruolo dal 7 ago 2026, ma i topic non
+    ancora toccati conservano la lista legacy: entrambe le forme circolano."""
+    p = meta.get("participants") or []
+    return chi in (p.keys() if isinstance(p, dict) else p) or chi == meta.get("owner")
+
+
+async def _annuncia_goal(tier: str, name: str, chi: str, goal: dict | None,
+                         precedente: str | None = None) -> None:
+    """Racconta il cambiamento nella stanza e, quando la transizione lo richiede,
+    **ingaggia l'orchestratore** con un turno vero.
+
+    Il meta dice qual è l'obiettivo adesso; la stanza dice quando qualcuno l'ha
+    cambiato — la domanda che ci si fa davanti a un lavoro interrotto. E un
+    obiettivo che nessuno raccoglie è un post-it: il pin senza l'ingaggio
+    lascerebbe il requisito appeso finché una persona non si ricorda di chiedere.
+
+    Non ricorsivo per costruzione: l'ingaggio parte solo da QUESTA rotta, cioè da
+    un'azione dell'owner. Gli avanzamenti degli agenti passano dal verbo
+    `topic.goal_progress`, che scrive nel gateway e non torna mai di qui.
+
+    Non fallisce mai la richiesta: l'obiettivo è già scritto nel meta, e un
+    annuncio mancato non deve far sembrare non riuscita un'operazione riuscita.
+    """
+    ordine = _ordine_orchestratore(chi, goal, precedente) if goal else None
+    try:
+        if ordine:
+            topic = await topics_client.async_open_topic(tier, name) or {}
+            meta = topic.get("meta") or {}
+            orchestratore = str(meta.get("contact_agent") or "clodia").strip()
+            if _e_partecipante(meta, orchestratore):
+                # Stessa porta del topic trigger dello scheduler: il messaggio
+                # entra come `system` con un principal sintetico e passa dal
+                # routing normale. `skip_if_busy` evita di accavallare un turno
+                # all'orchestratore che sta già lavorando allo stesso obiettivo.
+                from . import channels
+                await channels.post_channel_message(
+                    tier, name, f"@{orchestratore} {ordine}", "system",
+                    kind="system", trusted_internal=True, skip_if_busy=True)
+                return
+            # Nessun orchestratore nella stanza: dirlo, invece di lasciare
+            # l'obiettivo appeso a un agente che non c'è.
+            ordine = (f"{ordine}\n\n⚠️ Nessun orchestratore in questa stanza "
+                      f"(`{orchestratore}` non è fra i partecipanti): l'obiettivo "
+                      "resta fissato ma non lo raccoglierà nessuno finché non lo "
+                      "inviti.")
+            await topics_client.async_post_message(tier, name, "system", ordine,
+                                                   kind="system")
+            return
+        if goal:
+            stato = str(goal.get("state") or "")
+            testo = (f"🎯 **{chi}** ha accettato l'esito: obiettivo raggiunto."
+                     if stato == "done"
+                     else f"🎯 Obiettivo aggiornato da **{chi}** → `{stato}`.")
+        else:
+            testo = (f"🎯 Obiettivo rimosso da **{chi}**. "
+                     "L'esecuzione della strategia si ferma qui.")
+        await topics_client.async_post_message(tier, name, "system", testo,
+                                               kind="system")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("goal %s/%s: annuncio non pubblicato (%s)", tier, name, e)
+
+
 @router.post("/api/topics/{tier}/{name}/local-folder")
 async def local_folder(tier: str, name: str, request: Request):
     """Cartella condivisa Mac↔container: aggancia/sgancia una sottocartella

@@ -159,6 +159,10 @@ tool_permissions:
   # (clodia-platform#419). Va dove c'è già `delete_file`: rinominare è anche
   # togliere un file da dove sta.
   - topic.move_file
+  # L'obiettivo lo fissa l'owner; l'orchestratore dichiara a che punto è
+  # (strategia da approvare, esecuzione in corso, raggiunto da verificare).
+  # Non può né pinnare né togliere: quello resta dell'owner (#457).
+  - topic.goal_progress
   - artifact.render
   - agents.list
   - agents.show

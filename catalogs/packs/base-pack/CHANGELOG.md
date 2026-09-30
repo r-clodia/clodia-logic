@@ -9,6 +9,20 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.30.0] — 2026-09-30
+- `clodia` gets **`topic.goal_progress`** (clodia-platform#457): the owner pins a
+  message as the channel's **goal** and the orchestrator declares how far it is
+  (`strategy-review`, `in-progress`, `claimed-done`). Pinning and unpinning stay
+  with the owner on purpose — an orchestrator able to pin its own goals would not
+  be executing a requirement, it would be writing one — and `done` is the owner
+  accepting the outcome. Needs clodia-tools >= 2.73.0.
+- New skill **`topic-goals`** (base-pack plugin, so every agent with
+  `base-pack/*` gets it): how a channel goal is carried to the end — write the
+  strategy and get it approved, execute it by coordinating the other agents
+  (independent steps in parallel), declare it reached for the owner to verify.
+  Includes the format of the strategy document, with per-step state and a log,
+  so another spawn can resume without redoing the work.
+
 ## [7.29.0] — 2026-09-28
 - `clodia` and `ophelia` get **`gdrive.update`** (clodia-platform#427): replace the content of an
   existing Drive file with a file from the scratch, keeping the same file, id,
