@@ -32,6 +32,8 @@ import logging
 import time
 from collections import OrderedDict, deque
 
+from . import trace
+
 LOG = logging.getLogger("agent-server.turn_timing")
 
 # SHORTCUT: consegna in memoria, per processo, con un tetto sulle chiavi.
@@ -51,10 +53,14 @@ _PENDING: "OrderedDict[str, deque[TurnTiming]]" = OrderedDict()
 class TurnTiming:
     """Le durate delle fasi di UN turno, in ordine di attraversamento."""
 
-    __slots__ = ("origin", "t0", "phases", "chat_id", "_last", "_closed")
+    __slots__ = ("origin", "t0", "phases", "chat_id", "trace", "_last", "_closed")
 
     def __init__(self, origin: str) -> None:
         self.origin = origin
+        # Il nome del turno (#455). Sta qui perché qui c'è già l'unica cosa che
+        # viaggia dal dispatcher alla sessione: chi ritira il cronometro ritira
+        # anche l'identità, e non serve una seconda consegna che si disallinea.
+        self.trace = trace.new_id()
         # `monotonic`: misura durate, e non deve poter andare indietro se
         # l'orologio di sistema viene corretto mentre un turno è in volo.
         self.t0 = time.monotonic()
@@ -105,12 +111,19 @@ class TurnTiming:
         pezzi = [f"{fase}_ms={ms:.0f}" for fase, ms in self.phases]
         pezzi.append(f"model_ms={max(totale - noto, 0.0):.0f}")
         return (f"TTFT {self.chat_id or '-'} origin={self.origin} "
-                f"ttft_ms={totale:.0f} " + " ".join(pezzi))
+                f"trace={self.trace} ttft_ms={totale:.0f} " + " ".join(pezzi))
 
 
 def begin(origin: str) -> TurnTiming:
-    """Apre il cronometro di un turno. `origin` = quale dispatcher lo avvia."""
-    return TurnTiming(origin)
+    """Apre il cronometro di un turno. `origin` = quale dispatcher lo avvia.
+
+    Lega anche il trace del turno al contesto corrente (#455): da qui in giù —
+    prompt, elenco file, lettore trifecta, task del turno — ogni chiamata al
+    gateway esce con questo nome addosso, senza che nessuna firma lo trasporti.
+    """
+    t = TurnTiming(origin)
+    trace.bind(t.trace)
+    return t
 
 
 def claim(chat_id: str | None) -> TurnTiming | None:
@@ -128,6 +141,21 @@ def claim(chat_id: str | None) -> TurnTiming | None:
     if not coda:
         _PENDING.pop(chat_id, None)  # type: ignore[arg-type]
     return t
+
+
+def adopt(t: TurnTiming | None) -> None:
+    """La sessione riprende il nome del turno che ha appena ritirato (#455).
+
+    Il contesto di solito arriva già legato — il task del turno nasce dentro
+    quello del dispatcher e se lo copia. «Di solito» non basta: i turni accodati
+    e i percorsi che passano da `send_user_message_async` nascono altrove, e lì
+    senza questa riga il turno girerebbe anonimo mentre le sue chiamate al
+    gateway portano un nome, o viceversa. Un turno senza cronometro (verbo
+    diretto sulla sessione, test) resta senza trace: non se ne inventa uno, che
+    sarebbe un nome nuovo per un turno già cominciato.
+    """
+    if t is not None and t.trace:
+        trace.bind(t.trace)
 
 
 def drop(t: TurnTiming | None) -> None:

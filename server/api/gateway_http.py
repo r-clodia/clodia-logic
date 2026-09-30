@@ -24,6 +24,8 @@ import time
 
 import requests
 
+from ..core import trace
+
 LOG = logging.getLogger("agent-server.gateway_http")
 
 _THRESHOLD = 5      # fallimenti di connessione consecutivi prima di aprire
@@ -93,12 +95,28 @@ class GatewayHTTP:
     # ── verbi ────────────────────────────────────────────────────────────────
     def request(self, method: str, url: str, **kwargs):
         self._before()
+        # Il nome del turno in corso viaggia da QUI (#455): è il punto che tutti
+        # i client interni attraversano, quindi nessuno di loro può dimenticarsi
+        # di metterlo — e una chiamata non etichettata sarebbe indistinguibile da
+        # una fatta fuori da un turno. Si AGGIUNGE agli header del chiamante,
+        # senza toccare il dizionario che ci ha passato.
+        etichette = trace.headers()
+        if etichette:
+            kwargs["headers"] = {**(kwargs.get("headers") or {}), **etichette}
         try:
             r = requests.request(method, url, **kwargs)
         except requests.RequestException:
             self._failure()
             raise
         self._success()
+        # Un 5xx non è un fallimento di connessione (il breaker non lo conta) e
+        # i client lo traducono in un'eccezione che il chiamante spesso
+        # inghiotte: il 500 di #423 arrivava nei log solo come «elenco file non
+        # disponibile», senza rotta né turno. Una riga qui, dove si sa tutte e
+        # due le cose, e il 500 diventa attribuibile al turno che lo ha chiesto.
+        if r.status_code >= 500:
+            LOG.warning("gateway '%s' %s %s → HTTP %s (trace=%s)", self.name,
+                        method, url.split("?")[0], r.status_code, trace.tag())
         return r
 
     def get(self, url: str, **kwargs):

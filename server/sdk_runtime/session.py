@@ -60,7 +60,7 @@ def _reply_text(text: str, n: int = _REPLY_MAX) -> str:
     """
     s = (text or "").strip()
     return s[:n] + ("…" if len(s) > n else "")
-from ..core import loop_lag, turn_timing
+from ..core import loop_lag, trace, turn_timing
 from ..core.events import bus
 from ..core.models import Event, ClodiaStatus
 from ..observability import langfuse_attributes, langfuse_observation, trace_io
@@ -1621,6 +1621,9 @@ class ChatSession:
             # misurata qui è proprio l'attesa in coda — che per chi guarda è
             # indistinguibile dal modello che pensa.
             self._timing = turn_timing.claim(self.chat_id)
+            # Col cronometro arriva il NOME del turno (#455): resta legato anche
+            # dove il task non eredita il contesto del dispatcher.
+            turn_timing.adopt(self._timing)
             turn_timing.mark(self._timing, "queue_wait")
             # Token OAuth long-lived: se è in scadenza, provider_env lo rinnova;
             # se è cambiato riapro il client col token fresco PRIMA del turno —
@@ -1640,7 +1643,7 @@ class ChatSession:
             await self._set_status(ClodiaStatus.THINKING)
             activity_log.append(self.kind, "run_started",
                                 {"prompt": _snippet(content), "principal": self.principal,
-                                 "chat_id": self.chat_id})
+                                 "chat_id": self.chat_id, "trace": trace.current()})
             LOG.info("turno START %s: %s", self.chat_id, _snippet(content, 80))
             self._last_usage = {}
             model_name = KIND_MODEL.get(self.kind) or "claude-cli-default"
@@ -2394,6 +2397,9 @@ class CodexChatSession:
             # Il cronometro del turno, come nel runtime claude (#330): ritirato
             # dentro il lock, così la prima fase misurata è l'attesa in coda.
             self._timing = turn_timing.claim(self.chat_id)
+            # Col cronometro arriva il NOME del turno (#455): resta legato anche
+            # dove il task non eredita il contesto del dispatcher.
+            turn_timing.adopt(self._timing)
             turn_timing.mark(self._timing, "queue_wait")
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
@@ -2453,7 +2459,7 @@ class CodexChatSession:
     async def _run_turn(self, content: str) -> str:
         activity_log.append(self.kind, "run_started",
                             {"prompt": _snippet(content), "principal": self.principal,
-                             "chat_id": self.chat_id})
+                             "chat_id": self.chat_id, "trace": trace.current()})
         runtime_model = _runtime_model(self.kind, self._runtime_override)
         original_thread_id = self._thread_id
         parts, errors, returncode, stderr = await self._run_codex_once(content, runtime_model)
@@ -3285,6 +3291,9 @@ class OpenCodeChatSession:
             # Il cronometro del turno, come nel runtime claude (#330): ritirato
             # dentro il lock, così la prima fase misurata è l'attesa in coda.
             self._timing = turn_timing.claim(self.chat_id)
+            # Col cronometro arriva il NOME del turno (#455): resta legato anche
+            # dove il task non eredita il contesto del dispatcher.
+            turn_timing.adopt(self._timing)
             turn_timing.mark(self._timing, "queue_wait")
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
@@ -3341,7 +3350,7 @@ class OpenCodeChatSession:
     async def _run_turn(self, content: str) -> str:
         activity_log.append(self.kind, "run_started",
                             {"prompt": _snippet(content), "principal": self.principal,
-                             "chat_id": self.chat_id})
+                             "chat_id": self.chat_id, "trace": trace.current()})
         import httpx
         body = {
             "model": {"providerID": self._provider, "modelID": self._model},

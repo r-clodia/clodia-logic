@@ -34,7 +34,7 @@ from ..agents import activity_log, rank as rank_mod, registry
 from ..agents import coordinator as coordinator_mod
 from ..agents import trifecta, trifecta_reset
 from .. import debug_watch
-from ..core import turn_timing
+from ..core import trace, turn_timing
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
@@ -2373,6 +2373,7 @@ def _spawn_label(chat, seed: str) -> str:
     return seed
 
 
+@trace.own_turn
 async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str,
                       user_text: str, kind: str, hop: int = 0,
                       ordinal: int | None = None,
@@ -3426,7 +3427,10 @@ def _channel_file_listing(tier: str, name: str) -> list[str] | None:
             return None
         return sorted(fuori)
     except Exception as e:  # noqa: BLE001 — un dubbio non è una rassicurazione
-        LOG.info("preambolo: elenco file di %s/%s non disponibile (%s)", tier, name, e)
+        # Il trace del turno in corso (#455): questa riga e il 500 del gateway
+        # che l'ha causata portano lo stesso nome, quindi si leggono insieme.
+        LOG.info("preambolo: elenco file di %s/%s non disponibile (%s) [trace=%s]",
+                 tier, name, e, trace.tag())
         return None
 
 
@@ -4935,6 +4939,7 @@ async def channel_drive_folder(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(502, str(e)[:300])
 
 
+@trace.own_turn
 async def run_topic_turn(tier: str, name: str, meta: dict,
                          trigger_text: str = "", principal_hint: str | None = None,
                          responder_hint: str | None = None, directive: str = "",
@@ -5513,8 +5518,8 @@ def _private_data_paths(tier: str, name: str, meta: dict) -> list[str] | None:
             return None
         return fuori
     except Exception as e:  # noqa: BLE001 — un dubbio non è una rassicurazione
-        LOG.warning("trifecta: contenuto di %s/%s non leggibile (%s)",
-                    tier, name, type(e).__name__)
+        LOG.warning("trifecta: contenuto di %s/%s non leggibile (%s) [trace=%s]",
+                    tier, name, type(e).__name__, trace.tag())
         return None
 
 
