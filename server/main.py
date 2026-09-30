@@ -125,6 +125,17 @@ async def _lifespan(app: FastAPI):
         await asyncio.to_thread(report_at_boot)
     except Exception as e:  # noqa: BLE001
         LOG.warning("confronto seed↔gateway non eseguito: %s", e)
+    # PKI changes whose audit event did not reach the gateway wait in an
+    # outbox (clodia-platform#466): deliver them now, in a thread (HTTP).
+    try:
+        from .colony.pki import flush_audit_outbox, pending_audit_events
+        await asyncio.to_thread(flush_audit_outbox)
+        left = await asyncio.to_thread(pending_audit_events)
+        if left:
+            LOG.error("audit: %d PKI change(s) still NOT on the audit trail "
+                      "(pki/audit-outbox.jsonl)", len(left))
+    except Exception as e:  # noqa: BLE001 - never blocks the boot, but is said
+        LOG.error("audit: PKI outbox not flushed at boot (%s)", type(e).__name__)
     try:
         if not admin.is_initialized():
             LOG.warning("[BOOTSTRAP] istanza NON reclamata — apri la webui e crea il "
