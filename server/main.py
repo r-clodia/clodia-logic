@@ -287,6 +287,13 @@ async def _lifespan(app: FastAPI):
                 except Exception as e:  # noqa: BLE001
                     LOG.warning("sweep processi runtime orfani: %s", e)
     reaper_task = asyncio.create_task(_idle_reaper_loop())
+    # Obiettivi di canale fermi (clodia-platform#457): se l'orchestratore muore a
+    # metà, il goal resta nel meta e non succede più niente — e il silenzio di
+    # una stanza somiglia al lavoro in corso. Task suo e non un giro dentro il
+    # reaper: cadenza diversa (10 min contro 5) e un errore qui non deve
+    # impedire la raccolta delle sessioni morte.
+    from .api import goal_watch
+    goal_task = asyncio.create_task(goal_watch.loop())
     # Battito dell'event loop (clodia-platform#358): misura la deriva e logga i
     # blocchi. Uno strumento che nessuno accende non esiste — e il guasto che
     # deve cogliere è raro, quindi non ci si accorgerebbe che è spento fino alla
@@ -300,6 +307,7 @@ async def _lifespan(app: FastAPI):
     # --- shutdown ---
     relay_task.cancel()
     reaper_task.cancel()
+    goal_task.cancel()
     lag_task.cancel()
     retention_task.cancel()
     try:

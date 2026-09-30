@@ -5484,6 +5484,28 @@ def _active_responders(tier: str, name: str, participants: list[str]) -> list[st
             if any(r["state"] == "working" for r in righe)]
 
 
+def _qualcuno_al_lavoro(tier: str, name: str) -> bool:
+    """Qualche agente ha un turno in corso in QUESTA stanza, chiunque sia?
+
+    `_active_responders` risponde alla stessa domanda ma vuole la lista dei
+    partecipanti, che chi sorveglia gli obiettivi fermi (goal_watch, #457) non
+    ha sotto mano: la prende dalle sessioni vive, che sono già per stanza.
+    Domanda diversa da `_responder_busy`, che guarda UN agente: qui basta che
+    si muova qualcuno perché il canale non sia fermo.
+    """
+    prefisso = f"chan:{tier}:{name}:"
+    for chat in manager.list():
+        if not str(getattr(chat, "chat_id", "")).startswith(prefisso):
+            continue
+        # Stessa misura di `_live_instances`: il turno in corso è il task, non
+        # il lock — un seed multi-spawn ha sessioni `…:<seed>#<n>` e il lock per
+        # nome esatto non le vedrebbe.
+        t = getattr(chat, "_current_turn_task", None)
+        if t is not None and not t.done():
+            return True
+    return False
+
+
 #: Quante directory si esplorano cercando un file «portato dentro». Un albero di
 #: lavoro può avere centinaia di cartelle, e questo calcolo sta sul percorso di
 #: APERTURA di un canale: oltre il limite si risponde «non lo so» (None), che il
