@@ -736,18 +736,18 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     # sessione misura da sé (#330).
     if timing is not None:
         timing.bind(getattr(chat, "chat_id", None))
-    # The turn on the audit trail (#433, #442): start opens its trace on the
-    # gateway, end closes it with outcome, provider and model (#434, #435, #443).
+    # The turn on the audit trail (#433, #442): built here, STARTED by the
+    # session once it holds the turn lock (`audit_events.turn_acquired`) — the
+    # gateway keeps one trace per spawn, so a start emitted while a previous
+    # turn of the same spawn still runs would take over its calls and orphan
+    # its end. `end` closes it with outcome, provider and model (#434, #435,
+    # #443).
     from .. import audit_events
     _turn = audit_events.Turn(tier=tier, name=name, label=responder,
                               chat_id=getattr(chat, "chat_id", None), principal=principal,
                               trigger={"hop": hop or None, "report_back": report_back or None,
                                        **(trigger or {})})
-    await _turn.start()
-    try:
-        chat._last_response_model = None
-    except Exception:  # noqa: BLE001
-        pass
+    _handover = audit_events.hand_over(_turn)
     try:
         reply = await chat.send_user_message(prompt)
         _st, _err = audit_events.outcome_of_reply(reply)
@@ -772,6 +772,7 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         _spawn_bg(_announce_failure(tier, name, responder, e))
         return None
     finally:
+        audit_events.release(_handover)
         await _typing(tier, name, responder, "stop")
         # Come la callback qui sotto, la consegna del cronometro vale per QUESTO
         # turno: se l'invio è fallito prima che la sessione lo ritirasse, la

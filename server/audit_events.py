@@ -15,11 +15,14 @@ line, not a failed turn.
 """
 from __future__ import annotations
 
+import contextvars
 import logging
 import os
 import secrets
 import time
 from typing import Any
+
+from .core import trace as _trace
 
 LOG = logging.getLogger("agent-server.audit")
 
@@ -81,14 +84,22 @@ def _seed_and_spawn(label: str) -> dict:
 
 
 class Turn:
-    """One turn of one spawn, from start to end, on the trail."""
+    """One turn of one spawn, from start to end, on the trail.
+
+    The trace id is the turn's operational one (`core.trace`, #455) whenever
+    there is one: the audit trail, the TTFT line and the `X-Clodia-Trace-Id`
+    header of every gateway call then carry ONE name for the turn. Only a turn
+    that reaches the session without a dispatcher-minted trace gets its own,
+    and binds it, so the same still holds.
+    """
 
     def __init__(self, *, tier: str | None, name: str | None, label: str, chat_id: str | None,
                  principal: str | None, trigger: dict | None):
-        self.trace_id, self.span_id = new_trace_id(), new_span_id()
+        self.trace_id, self.span_id = _trace.current() or new_trace_id(), new_span_id()
         self.tier, self.name, self.label, self.chat_id = tier, name, label, chat_id
         self.principal, self.trigger = principal, dict(trigger or {})
-        self._t0 = time.monotonic()
+        self.started = False
+        self._t0: float | None = None
 
     def _base(self, etype: str, action: str) -> dict:
         return {"type": etype, "action": action, "resource": self.chat_id,
@@ -98,6 +109,20 @@ class Turn:
                 "actor": {"type": "agent", "id": self.label, "on_behalf": self.principal}}
 
     async def start(self) -> None:
+        """Open the turn on the trail. Called by the session once it HOLDS the
+        turn's lock (`turn_acquired`), never before: the gateway keeps one
+        trace per spawn, so a start emitted while another turn of the same
+        spawn is still running would re-label that turn's calls and orphan its
+        end — and the queue wait would count as turn time."""
+        self.started = True
+        self._t0 = time.monotonic()
+        # Adopt the trace the session has just bound for this turn (the
+        # dispatcher's, claimed with the timing). Without one, bind ours.
+        cur = _trace.current()
+        if cur:
+            self.trace_id = cur
+        else:
+            _trace.bind(self.trace_id)
         ev = self._base("turn.start", "start")
         # Why this turn exists (#442): what woke it, who asked, through which
         # chain. The trigger event id links back to the message or job.
@@ -107,11 +132,64 @@ class Turn:
     async def end(self, *, status: str, error: str | None = None,
                   model: dict | None = None, usage: dict | None = None) -> None:
         ev = self._base("turn.end", status)
-        ev["result"] = {"status": status, "error": error,
-                        "duration_ms": int((time.monotonic() - self._t0) * 1000)}
+        # A turn that never got the session (it failed while queued) has no
+        # duration and never opened a trace: its end is still recorded — the
+        # gateway closes a trace only when the id matches, so this cannot
+        # close someone else's.
+        dur = int((time.monotonic() - self._t0) * 1000) if self._t0 is not None else None
+        ev["result"] = {"status": status, "error": error, "duration_ms": dur,
+                        "started": None if self.started else False}
         if model or usage:
             ev["model"] = {**(model or {}), "usage": usage or None}
         await report(ev)
+
+
+# ── hand-over from the dispatcher to the session ─────────────────────────────
+# The dispatcher builds the Turn; the session starts it once it holds its
+# lock. A ContextVar and not an attribute on the session: two turns queued on
+# the same session each await the lock in their OWN task, so each finds its
+# own Turn here, while an attribute would be overwritten by the second.
+_PENDING: contextvars.ContextVar["Turn | None"] = contextvars.ContextVar(
+    "clodia_audit_pending_turn", default=None)
+
+
+def hand_over(turn: Turn) -> contextvars.Token:
+    """Put `turn` in hand-over for the session this task is about to call."""
+    return _PENDING.set(turn)
+
+
+def release(tok: contextvars.Token) -> None:
+    """The hand-over is over (turn done, or failed before the session took it).
+
+    The trace the Turn may have bound stays: the rest of this turn (posting the
+    reply) still belongs to it, and the dispatchers restore their caller's
+    trace on exit (`trace.own_turn`)."""
+    try:
+        _PENDING.reset(tok)
+    except ValueError:  # reset from another context: just clear
+        _PENDING.set(None)
+
+
+async def turn_acquired(chat) -> None:
+    """Called by every runtime right after it takes its turn lock (and after
+    it has adopted the turn's trace). Starts the Turn handed over by the
+    dispatcher, if any, exactly once. Never raises into the turn."""
+    t = _PENDING.get()
+    if t is None or t.started:
+        return
+    cid = getattr(chat, "chat_id", None)
+    if t.chat_id and cid and t.chat_id != cid:
+        return  # a nested call on another session: not this turn
+    try:
+        # Reset here, not in the dispatcher: before the lock the previous turn
+        # of this session may still be running and would lose its model.
+        chat._last_response_model = None
+    except Exception:  # noqa: BLE001
+        pass
+    try:
+        await t.start()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("audit: turn.start not reported (%s)", type(e).__name__)
 
 
 def outcome_of_reply(reply: str | None) -> tuple[str, str | None]:
@@ -126,8 +204,15 @@ def outcome_of_reply(reply: str | None) -> tuple[str, str | None]:
 
 def failure_class(e: BaseException) -> str:
     """The cause of a failed turn, as a class (never the message: it can carry data)."""
+    # A runtime that knows the cause says so on the exception (`audit_cause`,
+    # e.g. `OpenCodeTurnTimeout`): classes are matched on that, not on words
+    # of a message that is written for people and gets reworded (#488 did).
+    cause = getattr(e, "audit_cause", None)
+    if isinstance(cause, str) and cause:
+        return cause
     msg = str(e).lower()
-    if "non convergente" in msg or "entro" in msg and "turno" in msg:
+    if ("turno opencode scaduto" in msg or "non convergente" in msg
+            or ("entro" in msg and "turno" in msg)):
         return "turn_timeout"
     if isinstance(e, TimeoutError) or "timeout" in msg:
         return "timeout"
