@@ -773,6 +773,9 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
         return None
     finally:
         audit_events.release(_handover)
+        # The channel's clock for the goal watcher (#457): a turn that ended
+        # here is activity even when it posted nothing.
+        _ULTIMO_TURNO[(tier, name)] = datetime.now(timezone.utc)
         await _typing(tier, name, responder, "stop")
         # Come la callback qui sotto, la consegna del cronometro vale per QUESTO
         # turno: se l'invio è fallito prima che la sessione lo ritirasse, la
@@ -5482,6 +5485,16 @@ def _active_responders(tier: str, name: str, participants: list[str]) -> list[st
     vive = _live_instances(tier, name, participants)
     return [seed for seed, righe in vive.items()
             if any(r["state"] == "working" for r in righe)]
+
+
+#: When the last turn ended in each channel, in this process (goal_watch, #457).
+_ULTIMO_TURNO: dict[tuple[str, str], datetime] = {}
+
+
+def ultimo_turno_finito(tier: str, name: str) -> datetime | None:
+    """When the last turn in `tier/name` ended here, or None if none did since
+    start-up. Complements the channel's messages: a turn may end silently."""
+    return _ULTIMO_TURNO.get((tier, name))
 
 
 def _qualcuno_al_lavoro(tier: str, name: str) -> bool:

@@ -8,11 +8,20 @@ accorge: la stanza è silenziosa e il silenzio somiglia al lavoro in corso.
 La domanda della issue, alla lettera: «is_the_goal_reached == False AND
 are_agents_working_on_it == FALSE» → risveglia l'orchestratore.
 
-**Da quanto è fermo si legge da `updated_at` del canale**, non da un timestamp
-nuovo: ogni messaggio lo muove, quindi un canale che lavora non è mai fermo, e
-il risveglio stesso — che posta — lo azzera. Aggiungere un `nudged_at` avrebbe
-voluto dire un campo di stato in più che può divergere dalla realtà; qui il
-dato è già vero per costruzione.
+**How long it has been still is measured from the channel's activity**: the
+last message in the channel (read from the gateway, so it includes what agents
+post directly through `topic.post_message`) and the last turn that ended here
+in this process. NOT from the topic list's `updated_at`: on the gateway that is
+max(meta, summary, AGENTS.md) and does not move with messages, so a busy room
+looked stale 45 minutes after its last meta change and was pinged at every
+tick. The reminder is itself a message, so it resets the clock.
+
+**Bounded by construction.** Each goal gets at most `CLODIA_GOAL_MAX_REMINDERS`
+(default 3) reminders without new human activity or a change in the goal
+itself, and the silence required before the next one doubles each time
+(45, 90, 180 min). An agent answering the reminder does not reset the counter:
+otherwise a ping → reply → silence cycle would ping forever. The counter lives
+in memory: a restart gives at most one more series, not a loop.
 """
 from __future__ import annotations
 
@@ -50,40 +59,104 @@ def _quando(valore) -> datetime | None:
     return d if d.tzinfo else d.replace(tzinfo=timezone.utc)
 
 
+def _max_promemoria() -> int:
+    return int(os.environ.get("CLODIA_GOAL_MAX_REMINDERS", "3"))
+
+
+#: Marker of the watcher's own reminder (it opens every reminder text).
+MARCA = "⏰ **Obiettivo ancora aperto**"
+
+
+def firma(goal: dict) -> tuple:
+    """What identifies the goal AND its progress: a new text, state or plan is
+    a goal that moved, and its reminder series starts over."""
+    return (str(goal.get("text") or "").strip(), str(goal.get("state") or "pinned"),
+            str(goal.get("strategy_path") or ""))
+
+
+def con_obiettivo_aperto(r: dict) -> bool:
+    """A row with an open goal whose next move belongs to the agents."""
+    goal = r.get("goal")
+    if not isinstance(goal, dict) or not str(goal.get("text") or "").strip():
+        return False
+    if str(goal.get("state") or "pinned") not in STATI_DI_LAVORO:
+        return False
+    if not str(r.get("tier") or "") or not str(r.get("name") or ""):
+        return False
+    # Archiviato o chiuso: l'obiettivo è appeso a una stanza che non è più
+    # in esercizio. Non è il watchdog a doverlo risolvere.
+    return str(r.get("status") or "active") not in ("archived", "done")
+
+
 def obiettivi_fermi(righe, *, now: datetime | None = None,
                     fermo_da_minuti: float | None = None,
-                    occupato=lambda tier, name: False) -> list[dict]:
+                    occupato=lambda tier, name: False,
+                    attivita: dict | None = None,
+                    solleciti: dict | None = None,
+                    max_promemoria: int | None = None) -> list[dict]:
     """I canali con un obiettivo aperto su cui non sta lavorando nessuno.
 
     Funzione PURA sulle righe della lista topic (più il predicato `occupato`):
     la decisione si può provare senza un server, senza un gateway e senza
     postare niente in una stanza vera.
+
+    `attivita[(tier, name)]` is the channel's last activity (message or turn
+    end); a channel without it is never declared stale — not knowing how long
+    it has been still is not evidence that it is. `solleciti[(tier, name)]` is
+    the reminder state of the goal (`firma`, `count`, `last_ping`).
     """
     now = now or datetime.now(timezone.utc)
     limite = timedelta(minutes=fermo_da_minuti if fermo_da_minuti is not None
                        else _fermo_da_minuti())
+    tetto = max_promemoria if max_promemoria is not None else _max_promemoria()
+    attivita, solleciti = attivita or {}, solleciti or {}
     out: list[dict] = []
     for r in righe or []:
-        goal = r.get("goal")
-        if not isinstance(goal, dict) or not str(goal.get("text") or "").strip():
+        if not con_obiettivo_aperto(r):
             continue
-        if str(goal.get("state") or "pinned") not in STATI_DI_LAVORO:
+        tier, name, goal = str(r["tier"]), str(r["name"]), r["goal"]
+        st = solleciti.get((tier, name))
+        if st is not None and st.get("firma") != firma(goal):
+            st = None  # the goal moved: a new series
+        count = int((st or {}).get("count") or 0)
+        if count >= tetto:
+            continue  # cap reached: wait for a human or for the goal to move
+        quando = _quando(attivita.get((tier, name)))
+        if quando is None:
             continue
-        tier, name = str(r.get("tier") or ""), str(r.get("name") or "")
-        if not tier or not name:
-            continue
-        # Archiviato o chiuso: l'obiettivo è appeso a una stanza che non è più
-        # in esercizio. Non è il watchdog a doverlo risolvere.
-        if str(r.get("status") or "active") in ("archived", "done"):
-            continue
-        quando = _quando(r.get("updated_at"))
-        if quando is None or now - quando < limite:
+        ultimo_ping = _quando((st or {}).get("last_ping"))
+        if ultimo_ping is not None and ultimo_ping > quando:
+            quando = ultimo_ping  # the wake-up resets the clock
+        # Backoff: each reminder without an answer doubles the silence needed.
+        if now - quando < limite * (2 ** count):
             continue
         if occupato(tier, name):
             continue  # qualcuno ci sta lavorando ADESSO: non è fermo
-        out.append({"tier": tier, "name": name, "goal": goal,
+        out.append({"tier": tier, "name": name, "goal": goal, "promemoria_n": count + 1,
                     "fermo_da_minuti": round((now - quando).total_seconds() / 60)})
     return out
+
+
+def attivita_da_messaggi(messaggi: list[dict]) -> tuple[datetime | None, datetime | None]:
+    """(last message of any kind, last HUMAN message) from a channel's messages.
+    The watcher's own reminders count as activity (they reset the clock) but
+    never as human activity."""
+    ultimo = umano = None
+    for m in messaggi or []:
+        t = _quando(m.get("ts") or m.get("created_at"))
+        if t is None:
+            continue
+        if ultimo is None or t > ultimo:
+            ultimo = t
+        testo = str(m.get("text") or m.get("content") or "")
+        if (str(m.get("kind") or "") == "human" and str(m.get("author") or "") != "system"
+                and MARCA not in testo and (umano is None or t > umano)):
+            umano = t
+    return ultimo, umano
+
+
+#: Reminder state per channel, in memory: {(tier, name): {firma, count, last_ping}}.
+_SOLLECITI: dict[tuple[str, str], dict] = {}
 
 
 def promemoria(voce: dict) -> str:
@@ -101,7 +174,7 @@ def promemoria(voce: dict) -> str:
         mossa = (f"Riprendi dal piano in `{piano}`" if piano
                  else "Riprendi il piano approvato") + (
             ", passo per passo. Se sei bloccato, dillo in una riga dicendo cosa ti serve.")
-    return (f"⏰ **Obiettivo ancora aperto**, e in questo canale non si muove niente "
+    return (f"{MARCA}, e in questo canale non si muove niente "
             f"da {voce['fermo_da_minuti']} minuti.\n\n"
             f"> {goal.get('text', '')}\n\n"
             f"Stato: `{stato}`. {mossa}\n\n"
@@ -109,7 +182,22 @@ def promemoria(voce: dict) -> str:
             "`topic.goal_progress(state=\"claimed-done\")` invece di lasciarlo aperto.")
 
 
-async def tick() -> dict:
+async def _attivita_del_canale(tier: str, name: str):
+    """(last activity, last human activity) of one channel, or (None, None)."""
+    from . import channels, topics_client
+    try:
+        messaggi = await topics_client.async_list_messages(tier, name, limit=50)
+    except Exception as e:  # noqa: BLE001
+        LOG.info("goal watch %s/%s: messaggi non disponibili (%s)", tier, name, e)
+        return None, None
+    ultimo, umano = attivita_da_messaggi(messaggi)
+    turno = channels.ultimo_turno_finito(tier, name)
+    if turno is not None and (ultimo is None or turno > ultimo):
+        ultimo = turno
+    return ultimo, umano
+
+
+async def tick(*, now: datetime | None = None) -> dict:
     """Un giro di sorveglianza. Ritorna cosa ha fatto (utile ai test e ai log)."""
     from . import channels, topics_client
 
@@ -119,7 +207,19 @@ async def tick() -> dict:
         LOG.warning("goal watch: lista topic non disponibile (%s)", e)
         return {"esaminati": 0, "risvegliati": []}
 
-    fermi = obiettivi_fermi(righe, occupato=channels._qualcuno_al_lavoro)
+    now = now or datetime.now(timezone.utc)
+    candidati = [r for r in (righe or []) if con_obiettivo_aperto(r)]
+    attivita: dict = {}
+    for r in candidati:
+        chiave = (str(r["tier"]), str(r["name"]))
+        ultimo, umano = await _attivita_del_canale(*chiave)
+        attivita[chiave] = ultimo
+        st = _SOLLECITI.get(chiave)
+        # A person spoke after the last reminder: the series starts over.
+        if st and umano is not None and (_quando(st.get("last_ping")) or now) < umano:
+            _SOLLECITI.pop(chiave, None)
+    fermi = obiettivi_fermi(candidati, now=now, occupato=channels._qualcuno_al_lavoro,
+                            attivita=attivita, solleciti=_SOLLECITI)
     risvegliati = []
     for voce in fermi:
         tier, name = voce["tier"], voce["name"]
@@ -137,12 +237,18 @@ async def tick() -> dict:
                 LOG.info("goal watch %s/%s: nessun orchestratore nella stanza (%s)",
                          tier, name, orchestratore)
                 continue
+            # Counted BEFORE posting: a post that fails half-way must not turn
+            # into an uncounted retry at every tick.
+            _SOLLECITI[(tier, name)] = {"firma": firma(voce["goal"]),
+                                        "count": voce["promemoria_n"],
+                                        "last_ping": now.isoformat()}
             await channels.post_channel_message(
                 tier, name, f"@{orchestratore} {promemoria(voce)}", "system",
                 kind="system", trusted_internal=True, skip_if_busy=True)
             risvegliati.append(f"{tier}/{name}")
-            LOG.info("goal watch: risvegliato %s su %s/%s (fermo da %s min)",
-                     orchestratore, tier, name, voce["fermo_da_minuti"])
+            LOG.info("goal watch: risvegliato %s su %s/%s (fermo da %s min, promemoria %s/%s)",
+                     orchestratore, tier, name, voce["fermo_da_minuti"],
+                     voce["promemoria_n"], _max_promemoria())
         except Exception as e:  # noqa: BLE001
             # Un canale che non si apre non deve fermare la sorveglianza degli
             # altri: il watchdog serve proprio quando qualcosa è rotto.
