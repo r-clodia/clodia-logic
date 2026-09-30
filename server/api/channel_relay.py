@@ -330,18 +330,29 @@ async def _act_on_telegram_request(chat_id, instance: str, tier: str, topic: str
         LOG.warning("coordinatore di %s/%s non determinabile: %s", tier, topic, e)
     richiesta = _request_message(coordinatore, trigger, chat_id)
     try:
-        await topics_client.async_post_message(tier, topic, instance, richiesta, kind="ai")
+        posted = await topics_client.async_post_message(tier, topic, instance, richiesta,
+                                                        kind="ai")
     except Exception as e:  # noqa: BLE001
         LOG.warning("post richiesta %s/%s: %s", tier, topic, e)
         return
+    # The root of the chain on the audit trail (clodia-platform#465): the
+    # Telegram message relayed and the channel message that carries it. Ids
+    # only — the text stays in the channel.
+    from .. import audit_events
+    root = {"kind": "telegram_relay",
+            "message_id": posted.get("id") if isinstance(posted, dict) else None,
+            "telegram": {"chat_id": str(chat_id),
+                         "message_id": str(trigger.get("message_id"))
+                         if trigger.get("message_id") is not None else None}}
     try:
-        await run_topic_turn(
-            tier, topic, meta_turn,
-            trigger_text=richiesta,
-            responder_hint=coordinatore,
-            directive=_TG_DIRECTIVE,
-            trigger_author=instance,
-            trigger_kind="external")
+        with audit_events.caused_by(root):
+            await run_topic_turn(
+                tier, topic, meta_turn,
+                trigger_text=richiesta,
+                responder_hint=coordinatore,
+                directive=_TG_DIRECTIVE,
+                trigger_author=instance,
+                trigger_kind="external")
     except Exception as e:  # noqa: BLE001
         LOG.warning("responder turn %s/%s: %s", tier, topic, e)
 

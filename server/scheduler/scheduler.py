@@ -114,9 +114,18 @@ async def _complete_agentic_run(job_id: int, run_id: str, chat, prompt: str) -> 
     # diniego incassato ieri — o in una chat interattiva sulla stessa sessione —
     # di far fallire il run di oggi.
     refusals.forget(chiave)
+    # The run on the audit trail (clodia-platform#465): a job turn is a turn
+    # like a channel's, with the job and its run as the event that woke it.
+    from .. import audit_events
+    turn = _audit_job_turn(job_id, run_id, chat)
+    handover = audit_events.hand_over(turn) if turn is not None else None
     try:
-        await chat.send_user_message(prompt)
+        with audit_events.caused_by({"kind": "job", "job_id": job_id, "run_id": run_id}):
+            reply = await chat.send_user_message(prompt)
     except Exception as exc:  # noqa: BLE001
+        if turn is not None:
+            await turn.end(status="failed", error=audit_events.failure_class(exc),
+                           model=_audit_model(chat))
         # Il turno è morto: qualunque cosa l'agente avesse dichiarato prima di
         # morire descrive un lavoro che non è arrivato in fondo. La si scarta,
         # altrimenti resterebbe in memoria e verrebbe letta dal PROSSIMO run.
@@ -129,6 +138,10 @@ async def _complete_agentic_run(job_id: int, run_id: str, chat, prompt: str) -> 
                         error=str(exc) or repr(exc))
         LOG.exception("Job run failed job_id=%s run_id=%s: %s", job_id, run_id, exc)
     else:
+        if turn is not None:
+            st, err = audit_events.outcome_of_reply(reply if isinstance(reply, str) else None)
+            await turn.end(status=st, error=err, model=_audit_model(chat),
+                           usage=getattr(chat, "_last_usage", None) or None)
         stato, dettaglio = run_status.take(chiave)
         stato, dettaglio = _con_i_rifiuti(stato, dettaglio, refusals.take(chiave))
         db.complete_run(job_id, run_id, status=stato, error=dettaglio)
@@ -139,6 +152,35 @@ async def _complete_agentic_run(job_id: int, run_id: str, chat, prompt: str) -> 
             # turno è finito regolarmente e il lavoro no.
             LOG.warning("Job run completed job_id=%s run_id=%s stato=%s: %s",
                         job_id, run_id, stato, dettaglio)
+    finally:
+        if handover is not None:
+            audit_events.release(handover)
+
+
+def _audit_job_turn(job_id: int, run_id: str, chat):
+    """The audit `Turn` of a job run, or None if it cannot be built (the run
+    must not depend on it)."""
+    try:
+        from .. import audit_events
+        from ..api.channels import _spawn_label
+        kind = getattr(chat, "kind", None) or "agent"
+        # Built inside the job's cause, so the Turn reads it as its root.
+        with audit_events.caused_by({"kind": "job", "job_id": job_id, "run_id": run_id}):
+            return audit_events.Turn(
+                tier=None, name=None, label=_spawn_label(chat, kind),
+                chat_id=getattr(chat, "chat_id", None),
+                principal=getattr(chat, "principal", None), trigger={})
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("audit: job turn not built (%s)", type(e).__name__)
+        return None
+
+
+def _audit_model(chat):
+    try:
+        from .. import audit_events
+        return audit_events.model_block(chat, None)
+    except Exception:  # noqa: BLE001
+        return None
 
 
 # ---------------------------------------------------------------------------
@@ -886,15 +928,22 @@ async def _fire_topic_trigger(job: dict) -> dict:
         return {"chat_id": f"topic:{tier}/{name}", "status": "skipped",
                 "topic": f"{tier}/{name}", "skipped": [agent]}
     content = f"@{agent} {prompt}" if agent else prompt
-    result = await channels.post_channel_message(
-        tier,
-        name,
-        content,
-        "scheduler",
-        kind="system",
-        trusted_internal=True,
-        skip_if_busy=True,
-    )
+    # The job and its run are the root of the chain on the audit trail
+    # (clodia-platform#465). The run is recorded by `mark_run` below, after the
+    # post; its id is the next `run_seq`, and a topic trigger never fires twice
+    # at once (`max_instances = 1`), so it is known here. Checked afterwards.
+    from .. import audit_events
+    run_id = str(int((db.get_job(job["id"]) or job).get("run_seq") or 0) + 1)
+    with audit_events.caused_by({"kind": "job", "job_id": job["id"], "run_id": run_id}):
+        result = await channels.post_channel_message(
+            tier,
+            name,
+            content,
+            "scheduler",
+            kind="system",
+            trusted_internal=True,
+            skip_if_busy=True,
+        )
     started = result.get("responders") or (
         [result["responder"]] if result.get("responder") else [])
     if not started and result.get("skipped"):
@@ -903,7 +952,10 @@ async def _fire_topic_trigger(job: dict) -> dict:
     else:
         status = "dispatched (messaggio postato nel topic)"
         outcome = "dispatched"
-    db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")
+    recorded = db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")
+    if recorded is not None and str(recorded) != run_id:
+        LOG.warning("topic trigger %s: audit trail names run %s, the run is %s",
+                    job["id"], run_id, recorded)
     esaurito = False
     if outcome == "dispatched":
         # Una ripetizione è spesa solo se il messaggio è davvero partito: uno

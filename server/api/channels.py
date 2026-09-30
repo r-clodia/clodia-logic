@@ -33,7 +33,7 @@ from fastapi import APIRouter, HTTPException, Request
 from ..agents import activity_log, rank as rank_mod, registry
 from ..agents import coordinator as coordinator_mod
 from ..agents import trifecta, trifecta_reset
-from .. import debug_watch
+from .. import audit_events, debug_watch
 from ..core import trace, turn_timing
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
@@ -663,6 +663,7 @@ def _audit_model(chat, tier):
         return None
 
 
+@audit_events.own_cause
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
                                  principal: str | None = None, hop: int = 0,
                                  timing=None, report_back: bool = False,
@@ -748,6 +749,10 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                               trigger={"hop": hop or None, "report_back": report_back or None,
                                        **(trigger or {})})
     _handover = audit_events.hand_over(_turn)
+    # From here on THIS turn is the parent of the work it starts (#465): the
+    # delegations below (`_maybe_delegate`, `_report_back`) spawn their turns
+    # from this context, and those turns record this one's trace and span.
+    audit_events.set_cause(_turn.root, parent=_turn)
     try:
         reply = await chat.send_user_message(prompt)
         _st, _err = audit_events.outcome_of_reply(reply)
@@ -4222,6 +4227,7 @@ def _responder_busy(tier: str, name: str, agent: str) -> bool:
     return _chat_busy(f"chan:{tier}:{name}:{agent}")
 
 
+@audit_events.own_cause
 async def post_channel_message(
     tier: str,
     name: str,
@@ -4271,6 +4277,8 @@ async def post_channel_message(
 
     # 1. registra il messaggio nel canale
     msg = await topics_client.async_post_message(tier, name, principal, content, kind=kind)
+    # The message is the event the turns below exist for (#465).
+    audit_events.message_posted((msg or {}).get("id") if isinstance(msg, dict) else None)
     await _channel_message(tier, name, principal, kind,
                            message=msg, topic_title=meta.get("title"))
     access_log.touch(tier, name)  # last_accessed → ordinamento lista Topics
@@ -4618,9 +4626,11 @@ async def channel_routing_choice(tier: str, name: str, request: Request) -> dict
             vec, kind="correction", chosen_agent=None, correct_agent=chosen,
             tier=tier_real, by=principal, topic=f"{tier}/{name}",
         )
-    started = await _start_turn(
-        tier, name, tier_real, responder, principal, human["text"], "routed-choice"
-    )
+    # The turn serves the ORIGINAL message, not the click that routed it (#465).
+    with audit_events.caused_by({"kind": "message", "message_id": human.get("id")}):
+        started = await _start_turn(
+            tier, name, tier_real, responder, principal, human["text"], "routed-choice"
+        )
     payload = {
         "tier": tier, "name": name, "mode": "correction",
         "reason": "routing ambiguity resolved by human",
@@ -6166,10 +6176,20 @@ async def channel_trigger_internal(tier: str, name: str, request: Request) -> di
                  "%.0fs, nessun turno avviato", tier, name, _safe_name(by),
                  _trigger_dedup_window())
         return {"triggered": False, "by": by, "kind": kind, "duplicate": True}
-    _spawn_bg(run_topic_turn(tier, name, meta, trigger_text=text,
-                             principal_hint="channel",
-                             trigger_author=_safe_name(by),
-                             trigger_kind=kind, directive=avviso))
+    # The delegating turn, when the gateway forwards it (#465): a W3C
+    # `traceparent` of the verb call that asked for this turn. Only from an
+    # authenticated caller — a parent span is evidence on the trail, and an
+    # anonymous one could graft a turn under any chain.
+    parent = None
+    if firmato or _paired_gateway_ok(request):
+        hdrs = getattr(request, "headers", None) or {}
+        parent = audit_events.parse_traceparent(hdrs.get("traceparent"))
+    with audit_events.caused_by({"kind": "internal_trigger"} if parent is None else None,
+                                parent=parent):
+        _spawn_bg(run_topic_turn(tier, name, meta, trigger_text=text,
+                                 principal_hint="channel",
+                                 trigger_author=_safe_name(by),
+                                 trigger_kind=kind, directive=avviso))
     return {"triggered": True, "by": by, "kind": kind}
 
 
@@ -6202,6 +6222,16 @@ def _paired_gateway(request: Request) -> None:
     ricevuto = (request.headers.get("x-orchestrator-secret") or "").strip()
     if not (ricevuto and hmac.compare_digest(ricevuto, atteso)):
         raise HTTPException(403, "annuncio: chiamante non accoppiato a questo server")
+
+
+def _paired_gateway_ok(request: Request) -> bool:
+    """Strict form of `_paired_gateway`: True only with a secret configured
+    AND matched. Used where the answer weighs as evidence (a parent span on
+    the audit trail, #465), so no fail-open here."""
+    atteso = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+    hdrs = getattr(request, "headers", None) or {}
+    ricevuto = (hdrs.get("x-orchestrator-secret") or "").strip()
+    return bool(atteso and ricevuto and hmac.compare_digest(ricevuto, atteso))
 
 
 @router.post("/clodia/channels/{tier}/{name}/announce/internal")
