@@ -361,13 +361,15 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
                       chat: Optional[str],
                       scoped_tools: Optional[list[str]],
                       unattended: bool = False,
-                      scope_tier: Optional[str] = None) -> str:
+                      scope_tier: Optional[str] = None,
+                      origin: Optional[list[str]] = None) -> str:
     scoped_key = tuple(scoped_tools or ())
+    origin_key = tuple(str(x) for x in (origin or ()))
     # `unattended` ENTRA nella chiave di cache: senza, un token coniato per una
     # chat umana verrebbe riusato per un job dello stesso agente e il blocco
     # salterebbe silenziosamente.
     key = (agent, execution_id, int(ttl_seconds), principal, clearance, on_behalf,
-           scope_tier,
+           scope_tier, origin_key,
            human_role, chat, scoped_key, bool(unattended))
     hit = _cached_mint(key)
     if hit is not None:
@@ -384,7 +386,8 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
         now = int(time.time())
         token = _mint_request(agent, execution_id, ttl_seconds, principal,
                               clearance, on_behalf, human_role, chat,
-                              scoped_key, unattended)
+                              scoped_key, unattended, scope_tier=scope_tier,
+                              origin=list(origin_key) or None)
         with _MINT_STATE_LOCK:
             _MINT_CACHE[key] = (token, now + int(ttl_seconds))
         return token
@@ -403,7 +406,8 @@ def _mint_request(agent: str, execution_id: str, ttl_seconds: int,
                   principal: Optional[str], clearance: Optional[str],
                   on_behalf: bool, human_role: Optional[str],
                   chat: Optional[str], scoped_key: tuple,
-                  unattended: bool) -> str:
+                  unattended: bool, scope_tier: Optional[str] = None,
+                  origin: Optional[list[str]] = None) -> str:
     """La sola chiamata al gateway (nessuna cache): la tiene fuori dal lock del
     dizionario, dentro il lock della chiave."""
     import httpx
@@ -412,7 +416,8 @@ def _mint_request(agent: str, execution_id: str, ttl_seconds: int,
             "ttl_seconds": int(ttl_seconds), "principal": principal,
             "clearance": clearance, "on_behalf": bool(on_behalf),
             "human_role": human_role, "chat": chat,
-            "scoped_tools": list(scoped_key), "unattended": bool(unattended)}
+            "scoped_tools": list(scoped_key), "unattended": bool(unattended),
+            "scope_tier": scope_tier, "origin": list(origin) if origin else None}
     r = httpx.post(_gateway_mint_url(), json=body,
                    headers={"X-Orchestrator-Secret": secret}, timeout=8.0)
     if r.status_code == 403 and "senza identità" in (r.text or ""):
@@ -491,9 +496,13 @@ def mint_session_token(agent: str, execution_id: str = "",
         raise PermissionError("scoped_tools non può concedere wildcard o tool agents.*")
     if (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip():
         try:
+            # EVERY claim of the local signer below goes to the gateway too
+            # (clodia-platform#450): `origin` and `scope_tier` were dropped here,
+            # so in production the signed token carried neither.
             return _mint_via_gateway(agent, execution_id, ttl_seconds, principal,
                                      clearance, on_behalf, human_role, chat,
-                                     scoped_tools, unattended)
+                                     scoped_tools, unattended, scope_tier=scope_tier,
+                                     origin=origin)
         except Exception as e:  # noqa: BLE001
             LOG.warning("mint via gateway fallito per %s (%s) → firma locale", agent, e)
     key_path = agent_key_path(agent)

@@ -1625,6 +1625,9 @@ class ChatSession:
             # dove il task non eredita il contesto del dispatcher.
             turn_timing.adopt(self._timing)
             turn_timing.mark(self._timing, "queue_wait")
+            # The turn opens on the audit trail only NOW that it holds the lock
+            # (#433): before, a queued turn would re-label the running one.
+            await _audit_turn_acquired(self)
             # Token OAuth long-lived: se è in scadenza, provider_env lo rinnova;
             # se è cambiato riapro il client col token fresco PRIMA del turno —
             # così un subprocess di vecchia data non dà 401 a metà sessione.
@@ -2002,6 +2005,9 @@ class ChatSession:
                 continue
 
             if isinstance(message, AssistantMessage):
+                # The model the API says it served (#435), next to the declared one.
+                self._last_response_model = getattr(message, "model", None) or getattr(
+                    self, "_last_response_model", None)
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
                         await bus.publish(Event(
@@ -2401,6 +2407,9 @@ class CodexChatSession:
             # dove il task non eredita il contesto del dispatcher.
             turn_timing.adopt(self._timing)
             turn_timing.mark(self._timing, "queue_wait")
+            # The turn opens on the audit trail only NOW that it holds the lock
+            # (#433): before, a queued turn would re-label the running one.
+            await _audit_turn_acquired(self)
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
             self._last_usage = {}
@@ -2844,6 +2853,25 @@ class _TurnBudget:
     def remaining(self) -> float:
         """Quanto resta del budget del turno. Mai negativo."""
         return max(0.0, self.total - self.elapsed())
+
+
+class OpenCodeTurnTimeout(RuntimeError):
+    """The opencode turn ran out of its budget (#488).
+
+    A RuntimeError as before, so every existing handler still catches it; the
+    type and `audit_cause` let the audit trail classify it without parsing a
+    message that is written for people and gets reworded."""
+
+    audit_cause = "turn_timeout"
+
+
+async def _audit_turn_acquired(chat) -> None:
+    """Start the dispatcher's audit Turn, if any (never raises into the turn)."""
+    try:
+        from .. import audit_events
+        await audit_events.turn_acquired(chat)
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("audit: turn not started (%s)", type(e).__name__)
 
 
 def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
@@ -3295,6 +3323,9 @@ class OpenCodeChatSession:
             # dove il task non eredita il contesto del dispatcher.
             turn_timing.adopt(self._timing)
             turn_timing.mark(self._timing, "queue_wait")
+            # The turn opens on the audit trail only NOW that it holds the lock
+            # (#433): before, a queued turn would re-label the running one.
+            await _audit_turn_acquired(self)
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
             self._last_usage = {}
@@ -3425,7 +3456,7 @@ class OpenCodeChatSession:
             activity_log.append(self.kind, "error",
                                 {"error": "opencode turn timeout", "chat_id": self.chat_id,
                                  "tentativo": tentativo, "atteso_s": round(atteso, 1)})
-            raise RuntimeError(_oc_turn_timeout_message(
+            raise OpenCodeTurnTimeout(_oc_turn_timeout_message(
                 tentativo=tentativo, atteso=atteso,
                 budget=_OPENCODE_TURN_TIMEOUT, model=self._model))
         full = await self._handle_parts(data)
@@ -3487,6 +3518,9 @@ class OpenCodeChatSession:
                                                  "input_summary": str(st.get("input"))[:200]},
                                         timestamp=datetime.now(timezone.utc)))
         info = data.get("info") or {}
+        # What opencode reports it ran (#435).
+        if info.get("modelID"):
+            self._last_response_model = info.get("modelID")
         tok = info.get("tokens") or {}
         if tok:
             cache = tok.get("cache") or {}
