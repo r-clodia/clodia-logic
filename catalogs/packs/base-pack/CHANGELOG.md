@@ -15,7 +15,13 @@ one.
   (`strategy-review`, `in-progress`, `claimed-done`). Pinning and unpinning stay
   with the owner on purpose — an orchestrator able to pin its own goals would not
   be executing a requirement, it would be writing one — and `done` is the owner
-  accepting the outcome. Needs clodia-tools >= 2.59.0.
+  accepting the outcome. Needs clodia-tools >= 2.59.1.
+- New skill **`topic-goals`** (base-pack plugin, so every agent with
+  `base-pack/*` gets it): how a channel goal is carried to the end — write the
+  strategy and get it approved, execute it by coordinating the other agents
+  (independent steps in parallel), declare it reached for the owner to verify.
+  Includes the format of the strategy document, with per-step state and a log,
+  so another spawn can resume without redoing the work.
 
 ## [7.29.0] — 2026-09-28
 - `clodia` and `ophelia` get **`gdrive.update`** (clodia-platform#427): replace the content of an

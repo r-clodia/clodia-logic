@@ -68,30 +68,80 @@ class OwnerTests(unittest.TestCase):
 
 
 class AnnuncioTests(unittest.TestCase):
-    """Il meta dice qual è l'obiettivo ADESSO; la stanza dice quando qualcuno
-    l'ha cambiato. Senza la riga di sistema, un lavoro che si ferma non ha
-    nessuna traccia del perché."""
+    """Il pin non è un post-it: deve mettere qualcuno al lavoro.
 
-    def _post(self, goal, ritorno):
+    Il meta dice qual è l'obiettivo ADESSO e la stanza dice quando qualcuno
+    l'ha cambiato — ma un obiettivo che nessuno raccoglie resta appeso finché
+    una persona non si ricorda di chiedere. Le transizioni che cambiano il
+    LAVORO da fare ingaggiano l'orchestratore con un turno vero; quelle che
+    chiudono soltanto (unpin, `done`) lasciano una riga e basta.
+    """
+
+    _META = {"owner": "davide", "contact_agent": "clodia",
+             "participants": {"davide": "owner", "clodia": "contributor"}}
+
+    def _post(self, goal, ritorno, meta=None):
         with patch.object(topics, "_require_topic_owner", return_value="davide"), \
              patch.object(topics.topics_client, "async_set_goal",
                           new=AsyncMock(return_value=ritorno)), \
+             patch.object(topics.topics_client, "async_open_topic",
+                          new=AsyncMock(return_value={"meta": meta or self._META})), \
              patch.object(topics.topics_client, "async_post_message",
-                          new=AsyncMock()) as annuncia:
+                          new=AsyncMock()) as riga, \
+             patch("server.api.channels.post_channel_message",
+                   new=AsyncMock(return_value={"posted": True})) as ingaggio:
             r = _app().post(_URL, json={"goal": goal})
-        return r, annuncia
+        return r, riga, ingaggio
 
-    def test_pin_announces_the_goal_in_the_room(self) -> None:
-        r, annuncia = self._post(_GOAL, {"goal": dict(_GOAL, pinned_by="davide")})
+    def test_pinning_puts_the_orchestrator_to_work(self) -> None:
+        """Il cuore del secondo giro: dal pin nasce un TURNO, non una riga."""
+        r, riga, ingaggio = self._post(
+            _GOAL, {"goal": dict(_GOAL, state="pinned", pinned_by="davide"),
+                    "previous": None})
         self.assertEqual(200, r.status_code)
-        testo = annuncia.await_args.args[3]
+        riga.assert_not_awaited()
+        testo = ingaggio.await_args.args[2]
+        self.assertTrue(testo.startswith("@clodia "), testo[:40])
         self.assertIn("Portare il sito in produzione", testo)
-        self.assertIn("davide", testo)
-        self.assertEqual("system", annuncia.await_args.kwargs["kind"])
+        # L'ordine dice di FERMARSI prima dell'approvazione: qui si decide il
+        # piano, non lo si attua.
+        self.assertIn("strategy-review", testo)
+        self.assertIn("Non eseguire niente", testo)
+        self.assertTrue(ingaggio.await_args.kwargs["trusted_internal"])
+        self.assertTrue(ingaggio.await_args.kwargs["skip_if_busy"])
 
-    def test_unpin_announces_that_execution_stops(self) -> None:
-        r, annuncia = self._post(None, {"goal": None, "unpinned": True})
-        self.assertIn("rimosso", annuncia.await_args.args[3].lower())
+    def test_approval_and_rejection_are_not_the_same_order(self) -> None:
+        """La stessa destinazione, due significati opposti: dare lo stesso
+        ordine a entrambe farebbe rieseguire da capo un piano già eseguito
+        invece di correggerlo."""
+        avanti = dict(_GOAL, state="in-progress", strategy_path="local/goals/s.md")
+        _, _, approvazione = self._post(avanti, {"goal": avanti, "previous": "strategy-review"})
+        _, _, correzione = self._post(avanti, {"goal": avanti, "previous": "claimed-done"})
+        ok = approvazione.await_args.args[2]
+        ko = correzione.await_args.args[2]
+        self.assertIn("Strategia approvata", ok)
+        self.assertIn("local/goals/s.md", ok)
+        self.assertIn("non ha accettato l'esito", ko)
+        self.assertIn("non ripartire da capo", ko)
+
+    def test_closing_the_goal_does_not_burn_a_turn(self) -> None:
+        """`done` e unpin non aprono lavoro: nessun agente da svegliare."""
+        for goal, ritorno, atteso in (
+            (dict(_GOAL, state="done"), {"goal": dict(_GOAL, state="done"), "previous": "claimed-done"}, "raggiunto"),
+            (None, {"goal": None, "unpinned": True, "previous": "in-progress"}, "rimosso"),
+        ):
+            _, riga, ingaggio = self._post(goal, ritorno)
+            ingaggio.assert_not_awaited()
+            self.assertIn(atteso, riga.await_args.args[3].lower())
+
+    def test_without_an_orchestrator_in_the_room_it_says_so(self) -> None:
+        """Un obiettivo appeso a un agente che non c'è resterebbe fermo senza
+        che niente lo dica: il caso va dichiarato, non subito."""
+        meta = {"owner": "davide", "contact_agent": "clodia", "participants": {"davide": "owner"}}
+        _, riga, ingaggio = self._post(
+            _GOAL, {"goal": dict(_GOAL, state="pinned"), "previous": None}, meta=meta)
+        ingaggio.assert_not_awaited()
+        self.assertIn("non è fra i partecipanti", riga.await_args.args[3])
 
     def test_a_failed_announcement_does_not_fail_the_pin(self) -> None:
         """L'obiettivo è già scritto nel meta: far fallire la richiesta
@@ -99,8 +149,8 @@ class AnnuncioTests(unittest.TestCase):
         click ripinnerebbe qualcosa che è già lì."""
         with patch.object(topics, "_require_topic_owner", return_value="davide"), \
              patch.object(topics.topics_client, "async_set_goal",
-                          new=AsyncMock(return_value={"goal": dict(_GOAL)})), \
-             patch.object(topics.topics_client, "async_post_message",
+                          new=AsyncMock(return_value={"goal": dict(_GOAL, state="pinned")})), \
+             patch.object(topics.topics_client, "async_open_topic",
                           new=AsyncMock(side_effect=RuntimeError("gateway giù"))):
             r = _app().post(_URL, json={"goal": _GOAL})
         self.assertEqual(200, r.status_code)
@@ -117,6 +167,24 @@ class GatewayErrorTests(unittest.TestCase):
             r = _app().post(_URL, json={"goal": _GOAL})
         self.assertEqual(502, r.status_code)
         annuncia.assert_not_called()  # niente annuncio di ciò che non è successo
+
+
+class SkillTests(unittest.TestCase):
+    """L'ordine del pin rimanda a una skill per il metodo. Se quella skill viene
+    rinominata o tolta, l'orchestratore riceve il puntamento a un manuale che
+    non esiste — e si vede solo dal vivo, su un obiettivo vero."""
+
+    def test_the_order_points_to_a_skill_that_exists(self) -> None:
+        import re
+        from pathlib import Path
+        ordine = topics._ordine_orchestratore(
+            "davide", {"text": "x", "state": "pinned"}, None)
+        citate = set(re.findall(r"skill `([a-z0-9-]+)`", ordine))
+        self.assertTrue(citate, "l'ordine del pin non cita nessuna skill")
+        base = Path(__file__).resolve().parents[2] / (
+            "catalogs/packs/base-pack/plugins/base-pack/skills")
+        presenti = {p.name for p in base.iterdir() if (p / "SKILL.md").is_file()}
+        self.assertLessEqual(citate, presenti, f"skill citate ma assenti: {citate - presenti}")
 
 
 class GrantTests(unittest.TestCase):
