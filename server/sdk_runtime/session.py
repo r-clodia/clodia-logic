@@ -12,6 +12,7 @@ import logging
 import os
 import re
 import subprocess
+import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
@@ -2783,18 +2784,76 @@ class CodexChatSession:
 
 
 OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
-# Timeout (s) di lettura del turno opencode `/message`. Un modello reasoning
-# verboso (es. glm-5.2) su task complessi può NON convergere e iterare finché
-# scade il read → la sessione resta "bloccata". Un cap più basso fa fallire in
-# fretta (fail-fast) con errore chiaro, e al timeout abortiamo il turno lato
-# opencode così la generazione runaway si ferma. Configurabile via env.
+# Budget (s) del TURNO opencode — non della singola richiesta HTTP: è ripartito
+# fra le POST del turno da `_TurnBudget` (clodia-platform#423). Un modello
+# reasoning verboso (es. glm-5.2) su task complessi può NON convergere e iterare
+# finché scade il read → la sessione resta "bloccata". Un cap più basso fa
+# fallire in fretta (fail-fast) con errore chiaro, e al timeout abortiamo il
+# turno lato opencode così la generazione runaway si ferma. Configurabile via env.
 _OPENCODE_TURN_TIMEOUT = float(os.environ.get("OPENCODE_TURN_TIMEOUT", "180"))
+# Margine minimo per TENTARE di nuovo dopo aver ricreato la sessione. Sotto
+# questa soglia il retry non produrrebbe una risposta: consumerebbe il residuo
+# e scadrebbe comunque, ma un secondo più tardi e con la colpa attribuita al
+# modello. Meglio fallire subito dicendo perché (clodia-platform#423).
+_OPENCODE_MIN_RETRY_BUDGET = float(os.environ.get("OPENCODE_MIN_RETRY_BUDGET", "20"))
+#: Etichette dei due tentativi che un turno opencode può fare. Stanno nel
+#: messaggio d'errore perché sono l'unica cosa che distingue «il modello non ha
+#: risposto» da «la sessione era da rifare e nemmeno la seconda ha risposto».
+_OC_TENTATIVO_PRIMO = "originale"
+_OC_TENTATIVO_RICREATA = "dopo ricreazione della sessione"
 # Prefisso degli eventi che `opencode serve` emette da sé (`server.connected`,
 # `server.heartbeat` ogni ~10s anche a sessione ferma): non sono progresso
 # dell'agente e non devono datare `last_activity` (vedi `_note_event_line`).
 _OC_IDLE_EVENT_PREFIX = "server."
 # Pausa fra due tentativi di riapertura dello stream eventi.
 _OC_EVENT_RETRY_S = 2.0
+
+
+class _TurnBudget:
+    """Il tempo di UN turno opencode, non di una singola richiesta HTTP.
+
+    `httpx.Timeout(n)` è **per-richiesta**, e `_run_turn` ne emette fino a tre
+    (`/message` → `/session` → `/message`): ognuna ripartiva da capo, quindi un
+    turno annunciato «non concluso entro 180s» poteva averne attesi fino a
+    ~540. La riga dell'incidente di clodia-platform#423 lo mostra da sé —
+    «→ ricreo» alle 09:11:09 e il fallimento alle 09:14:09, cioè 180s pieni
+    *dopo* la ricreazione.
+
+    Il budget si prende all'ingresso del turno e ogni richiesta riceve il
+    RESIDUO, così «entro 180s» torna a essere vero. Orologio monotonico: un
+    salto dell'ora di sistema non deve accorciare né allungare un turno.
+    """
+
+    __slots__ = ("total", "_clock", "_start")
+
+    def __init__(self, total: float, *, clock=time.monotonic) -> None:
+        self.total = float(total)
+        self._clock = clock
+        self._start = clock()
+
+    def elapsed(self) -> float:
+        """Secondi realmente trascorsi da quando il turno è iniziato."""
+        return max(0.0, self._clock() - self._start)
+
+    def remaining(self) -> float:
+        """Quanto resta del budget del turno. Mai negativo."""
+        return max(0.0, self.total - self.elapsed())
+
+
+def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
+                             model: str | None) -> str:
+    """Il messaggio del turno scaduto: dice cosa si è OSSERVATO.
+
+    Il testo precedente — «modello X non convergente» — era una diagnosi, non
+    un'osservazione, e su due occorrenze di clodia-platform#423 era sbagliata
+    almeno una volta: è quella frase ad aver mandato due issue a inseguire il
+    provider mentre il difetto era qui. Il modello resta citato come dato, non
+    come colpevole; quello che si afferma è quale tentativo è scaduto e quanti
+    secondi si è atteso davvero.
+    """
+    return (f"turno opencode scaduto ({tentativo}): attesi {atteso:.0f}s "
+            f"sul budget di {int(budget)}s per il turno — modello {model or '?'} "
+            f"— turno interrotto")
 
 
 def _opencode_reasoning_effort(kind: str, model: str | None) -> str | None:
@@ -2985,6 +3044,19 @@ class OpenCodeChatSession:
         import httpx
         return httpx.AsyncClient(base_url=self._base_url,
                                  timeout=httpx.Timeout(_OPENCODE_TURN_TIMEOUT))
+
+    @staticmethod
+    def _budget_timeout(budget: "_TurnBudget"):
+        """Il timeout della PROSSIMA richiesta: quel che resta del turno.
+
+        Il default del client resta il budget intero perché la prima richiesta
+        lo usa tutto; ogni richiesta successiva deve invece stare dentro il
+        residuo, o il turno dura più di quanto dichiara (clodia-platform#423).
+        """
+        import httpx
+        # Mai 0: httpx lo leggerebbe come «già scaduto» e la richiesta morirebbe
+        # prima di partire. Sotto la soglia di retry non ci arriviamo comunque.
+        return httpx.Timeout(max(budget.remaining(), 1.0))
 
     async def _abort_oc(self) -> None:
         """Abort best-effort del turno opencode in corso (ferma una generazione
@@ -3276,18 +3348,41 @@ class OpenCodeChatSession:
             "agent": "build",
             "parts": [{"type": "text", "text": content}],
         }
+        # Un budget per il TURNO, non per ogni richiesta: le POST che seguono
+        # ricevono il residuo (vedi `_TurnBudget`, clodia-platform#423).
+        budget = _TurnBudget(_OPENCODE_TURN_TIMEOUT)
+        tentativo = _OC_TENTATIVO_PRIMO
         try:
             async with await self._http() as c:
-                r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
+                r = await c.post(f"{self._base_url}/session/{self._oc_session}/message",
+                                 json=body, timeout=self._budget_timeout(budget))
                 if self._session_unusable(r):
                     # La sessione OpenCode vive solo dentro il suo processo `opencode
                     # serve`: dopo un restart dell'agent-server l'id .ocsession di un
                     # processo precedente è invalido. Ne creo una nuova e riprovo
                     # (perde la storia OpenCode-interna ma RISPONDE invece di fallire;
                     # il contesto arriva comunque dal prompt).
-                    LOG.warning("opencode %s: sessione %s inutilizzabile (HTTP %s) → ricreo",
-                                self.kind, self._oc_session, r.status_code)
-                    sr = await c.post(f"{self._base_url}/session", json={})
+                    residuo = budget.remaining()
+                    LOG.warning("opencode %s: sessione %s inutilizzabile (HTTP %s) → ricreo "
+                                "(%.0fs consumati, %.0fs di budget residuo)",
+                                self.kind, self._oc_session, r.status_code,
+                                budget.elapsed(), residuo)
+                    if residuo < _OPENCODE_MIN_RETRY_BUDGET:
+                        # Fail-fast: con questo margine il retry scadrebbe comunque,
+                        # e chi legge il log avrebbe un timeout senza la ragione.
+                        activity_log.append(self.kind, "error",
+                                            {"error": "opencode retry senza budget",
+                                             "chat_id": self.chat_id,
+                                             "residuo_s": round(residuo, 1)})
+                        raise RuntimeError(
+                            f"sessione opencode inutilizzabile (HTTP {r.status_code}) e "
+                            f"restano {residuo:.0f}s del budget di "
+                            f"{int(_OPENCODE_TURN_TIMEOUT)}s, sotto il minimo di "
+                            f"{int(_OPENCODE_MIN_RETRY_BUDGET)}s per riprovare — "
+                            f"turno interrotto senza ricreare la sessione"
+                            f"{self._stderr_hint()}")
+                    sr = await c.post(f"{self._base_url}/session", json={},
+                                      timeout=self._budget_timeout(budget))
                     nid = (sr.json() or {}).get("id") if sr.status_code < 400 else None
                     if nid:
                         self._oc_session = nid
@@ -3295,24 +3390,35 @@ class OpenCodeChatSession:
                             self._ocsession_file.write_text(nid)
                         except Exception:  # noqa: BLE001
                             pass
-                        r = await c.post(f"{self._base_url}/session/{self._oc_session}/message", json=body)
+                        tentativo = _OC_TENTATIVO_RICREATA
+                        r = await c.post(f"{self._base_url}/session/{self._oc_session}/message",
+                                         json=body, timeout=self._budget_timeout(budget))
+                        # Riga sua: nel `try` condiviso l'esito di QUESTA POST era
+                        # indistinguibile da quello della prima, e dal log non si
+                        # ricavava quale dei due invii fosse morto.
+                        LOG.info("opencode %s: tentativo %s sulla sessione %s → HTTP %s "
+                                 "(%.0fs del turno consumati)",
+                                 self.kind, tentativo, nid, r.status_code, budget.elapsed())
                 if r.status_code >= 400:
                     activity_log.append(self.kind, "error",
-                                        {"error": f"opencode {r.status_code}", "chat_id": self.chat_id})
+                                        {"error": f"opencode {r.status_code}",
+                                         "chat_id": self.chat_id, "tentativo": tentativo})
                     raise RuntimeError(
                         f"opencode HTTP {r.status_code}: {r.text[:300]}"
                         f"{self._stderr_hint()}")
                 data = r.json() or {}
         except (httpx.ReadTimeout, httpx.TimeoutException):
-            # Turno runaway: il modello non converge entro _OPENCODE_TURN_TIMEOUT.
-            # Fermo la generazione lato opencode e fallisco con errore chiaro (la
-            # sessione si recupera al prossimo messaggio) invece di restare appesa.
+            # Turno scaduto: il budget del turno è finito. Fermo la generazione
+            # lato opencode e fallisco con errore chiaro (la sessione si recupera
+            # al prossimo messaggio) invece di restare appesa.
             await self._abort_oc()
+            atteso = budget.elapsed()
             activity_log.append(self.kind, "error",
-                                {"error": "opencode turn timeout", "chat_id": self.chat_id})
-            raise RuntimeError(
-                f"turno opencode non concluso entro {int(_OPENCODE_TURN_TIMEOUT)}s "
-                f"(modello {self._model} non convergente) — turno interrotto")
+                                {"error": "opencode turn timeout", "chat_id": self.chat_id,
+                                 "tentativo": tentativo, "atteso_s": round(atteso, 1)})
+            raise RuntimeError(_oc_turn_timeout_message(
+                tentativo=tentativo, atteso=atteso,
+                budget=_OPENCODE_TURN_TIMEOUT, model=self._model))
         full = await self._handle_parts(data)
         activity_log.append(self.kind, "run_done",
                             {"reply": _reply_text(full), "chat_id": self.chat_id,
