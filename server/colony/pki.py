@@ -29,11 +29,15 @@ CLI (init una tantum / retrofit):
 from __future__ import annotations
 
 import base64
+import contextlib
+import fcntl
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -261,6 +265,10 @@ def _save_revoked(revoked: set[str]) -> None:
 # does not confirm the record, the event goes to a local outbox (delivered, in
 # order, before the next PKI event and at every server boot) and the change is
 # reported loudly: `revoke` raises, the CLI exits non-zero. Never silent.
+#
+# Consequence, intended: without CLODIA_ORCHESTRATOR_SECRET (a deployment with
+# no gateway trail, i.e. not M3++) there is nowhere to record, so EVERY CLI
+# revoke exits 2 and the outbox grows until a gateway is paired.
 
 AUDIT_OUTBOX_NAME = "audit-outbox.jsonl"
 
@@ -296,23 +304,52 @@ def _default_actor() -> dict:
 
 def _revocation_event(action: str, principal: str, *, actor: Optional[dict],
                       via: str) -> dict:
+    # `event_id`: stable across re-sends (the outbox re-sends an event whose
+    # confirmation was lost), so the gateway can deduplicate; also in `result`,
+    # so it is on the trail for an auditor.
+    eid = uuid.uuid4().hex
     return {"type": "control.pki", "action": action, "resource": principal,
+            "event_id": eid,
             "actor": dict(actor) if actor else _default_actor(),
             "result": {"principal": principal, "cert_serial": _cert_serial(principal),
-                       "via": via,
+                       "via": via, "source_event_id": eid,
                        "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds")}}
 
 
-def _outbox_append(event: dict) -> None:
+@contextlib.contextmanager
+def _outbox_lock():
+    """Exclusive lock on the outbox across PROCESSES: the server flushes it (at
+    boot, on an unrevoke) while a CLI may be queueing into it. Without it a
+    flush that rewrites the file could drop an event the CLI has just reported
+    as queued. `flock` on a separate lock file, so the outbox itself can be
+    replaced atomically underneath."""
     path = _outbox_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    with path.open("a", encoding="utf-8") as f:
-        f.write(json.dumps(event, sort_keys=True) + "\n")
-    os.chmod(path, 0o600)
+    fd = os.open(str(path.with_name(AUDIT_OUTBOX_NAME + ".lock")),
+                 os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
 
 
-def pending_audit_events() -> list[dict]:
-    """The PKI events still waiting for the trail, oldest first."""
+def _outbox_append(event: dict) -> None:
+    line = (json.dumps(event, sort_keys=True) + "\n").encode("utf-8")
+    with _outbox_lock():
+        # 0600 from the first byte: the file is created with its mode.
+        fd = os.open(str(_outbox_path()), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _read_outbox() -> list[dict]:
     path = _outbox_path()
     if not path.is_file():
         return []
@@ -328,29 +365,49 @@ def pending_audit_events() -> list[dict]:
     return out
 
 
+def pending_audit_events() -> list[dict]:
+    """The PKI events still waiting for the trail, oldest first."""
+    with _outbox_lock():
+        return _read_outbox()
+
+
 def flush_audit_outbox() -> int:
     """Deliver the queued PKI events, in order; stop at the first one the
     gateway does not confirm (a later event must not overtake an earlier one).
-    Returns how many were delivered."""
-    pending = pending_audit_events()
-    if not pending:
-        return 0
+    Returns how many were delivered.
+
+    The whole flush holds the outbox lock: two flushers cannot send the same
+    event twice, and an event queued meanwhile waits for the lock instead of
+    being overwritten by the rewrite. If the gateway records an event but its
+    answer is lost, the event is sent again: it carries a stable `event_id`
+    (minted when the event was built) for the gateway to deduplicate on."""
     from .. import audit_events
-    sent = 0
-    for ev in pending:
-        late = {**ev, "result": {**(ev.get("result") or {}), "recorded_late": True}}
-        if not audit_events.report_sync(late):
-            break
-        sent += 1
-    rest = pending[sent:]
-    path = _outbox_path()
-    tmp = path.with_suffix(".tmp")
-    tmp.write_text("".join(json.dumps(e, sort_keys=True) + "\n" for e in rest),
-                   encoding="utf-8")
-    os.chmod(tmp, 0o600)
-    os.replace(tmp, path)
-    if not rest:
-        path.unlink(missing_ok=True)
+    with _outbox_lock():
+        pending = _read_outbox()
+        if not pending:
+            return 0
+        sent = 0
+        for ev in pending:
+            late = {**ev, "result": {**(ev.get("result") or {}), "recorded_late": True}}
+            if not audit_events.report_sync(late):
+                break
+            sent += 1
+        rest = pending[sent:]
+        path = _outbox_path()
+        if rest:
+            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".audit-outbox.",
+                                       suffix=".tmp")   # mkstemp: 0600, unique name
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write("".join(json.dumps(e, sort_keys=True) + "\n" for e in rest))
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, path)
+            except BaseException:
+                Path(tmp).unlink(missing_ok=True)
+                raise
+        else:
+            path.unlink(missing_ok=True)
     if sent:
         LOG.warning("pki audit outbox: %d queued event(s) delivered to the trail", sent)
     return sent
@@ -405,14 +462,15 @@ def revoke(agent: str, *, actor: Optional[dict] = None, via: str = "revoke") -> 
 
     Returns False if it was already revoked (nothing changed, nothing to
     record). Raises `RevocationNotRecorded` if the revocation took effect but
-    the trail did not confirm it."""
+    the trail did not confirm it — always so without CLODIA_ORCHESTRATOR_SECRET,
+    where there is no trail to record on: the event waits in the outbox."""
     revoked = _load_revoked()
     if agent in revoked:
         LOG.info("Identity of '%s' already revoked: nothing changed", agent)
         return False
     revoked.add(agent)
     _save_revoked(revoked)
-    LOG.warning("Identità REVOCATA per agent '%s'", agent)
+    LOG.warning("Identity REVOKED for agent '%s'", agent)
     _record_revocation("revoke", agent, actor=actor, via=via, strict=True)
     return True
 
@@ -888,9 +946,9 @@ def _cli() -> None:  # pragma: no cover
         try:
             changed = revoke(args.agent)
         except RevocationNotRecorded as e:
-            print(f"revocato: {args.agent}\nERROR: {e}")
+            print(f"revoked: {args.agent}\nERROR: {e}")
             raise SystemExit(2)
-        print(f"revocato: {args.agent}" if changed else f"already revoked: {args.agent}")
+        print(f"revoked: {args.agent}" if changed else f"already revoked: {args.agent}")
     elif args.cmd == "flush-audit":
         n = flush_audit_outbox()
         left = len(pending_audit_events())

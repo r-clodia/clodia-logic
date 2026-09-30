@@ -122,6 +122,73 @@ class RevocationAuditTests(PkiBase):
         self.assertEqual(self.pki_events()[0]["actor"]["via"], "pki-cli")
 
 
+class OutboxRobustnessTests(PkiBase):
+    """Review of #491: concurrent writers, re-sends, file mode."""
+
+    def _event(self, i: int) -> dict:
+        return pki._revocation_event("revoke", f"p{i}", actor=None, via="test")
+
+    def test_interleaved_enqueue_and_flush_lose_no_event(self) -> None:
+        import threading
+        import random
+        delivered: list[str] = []
+        lock = threading.Lock()
+
+        def flaky(ev):
+            # Up half of the time, and slow: a flush that rewrites the file
+            # while writers keep appending is exactly the race.
+            import time
+            time.sleep(random.random() / 2000)
+            if random.random() < 0.5:
+                return False
+            with lock:
+                delivered.append(ev["event_id"])
+            return True
+        queued: list[str] = []
+
+        def writer(base):
+            for i in range(40):
+                ev = self._event(base + i)
+                with lock:
+                    queued.append(ev["event_id"])
+                pki._outbox_append(ev)
+
+        def flusher():
+            for _ in range(60):
+                pki.flush_audit_outbox()
+        with patch("server.audit_events.report_sync", flaky):
+            ts = [threading.Thread(target=writer, args=(b,)) for b in (0, 100, 200)]
+            ts += [threading.Thread(target=flusher) for _ in range(2)]
+            for t in ts:
+                t.start()
+            for t in ts:
+                t.join()
+        left = [e["event_id"] for e in pki.pending_audit_events()]
+        self.assertEqual(sorted(delivered + left), sorted(queued))   # none lost …
+        self.assertEqual(len(set(delivered)), len(delivered))        # … none sent twice
+
+    def test_a_resent_event_keeps_its_event_id(self) -> None:
+        self.audit_up = False
+        with self.assertRaises(pki.RevocationNotRecorded):
+            pki.revoke("minerva")
+        (queued,) = pki.pending_audit_events()
+        self.assertRegex(queued["event_id"], r"^[0-9a-f]{32}$")
+        self.assertEqual(queued["result"]["source_event_id"], queued["event_id"])
+        self.audit_up = True
+        pki.flush_audit_outbox()
+        self.assertEqual(self.audit[-1]["event_id"], queued["event_id"])
+
+    def test_the_outbox_is_born_0600_whatever_the_umask(self) -> None:
+        old = os.umask(0)
+        try:
+            pki._outbox_append(self._event(1))
+        finally:
+            os.umask(old)
+        self.assertEqual(os.stat(pki._outbox_path()).st_mode & 0o777, 0o600)
+        import inspect
+        self.assertNotIn("chmod", inspect.getsource(pki._outbox_append))
+
+
 class ReportSyncTests(unittest.TestCase):
     """The synchronous channel the CLI uses is the same one the turns use."""
 
