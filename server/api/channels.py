@@ -6177,11 +6177,12 @@ async def channel_trigger_internal(tier: str, name: str, request: Request) -> di
                  _trigger_dedup_window())
         return {"triggered": False, "by": by, "kind": kind, "duplicate": True}
     # The delegating turn, when the gateway forwards it (#465): a W3C
-    # `traceparent` of the verb call that asked for this turn. Only from an
-    # authenticated caller — a parent span is evidence on the trail, and an
-    # anonymous one could graft a turn under any chain.
+    # `traceparent` of the verb call that asked for this turn. Only from the
+    # paired GATEWAY — a parent span is evidence on the trail, and any other
+    # caller, signed or not (an external proxy has a certificate too), could
+    # graft its turn under an arbitrary chain.
     parent = None
-    if firmato or _paired_gateway_ok(request):
+    if _paired_gateway_ok(request):
         hdrs = getattr(request, "headers", None) or {}
         parent = audit_events.parse_traceparent(hdrs.get("traceparent"))
     with audit_events.caused_by({"kind": "internal_trigger"} if parent is None else None,

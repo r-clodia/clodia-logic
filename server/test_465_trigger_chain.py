@@ -214,7 +214,7 @@ class RootEventTests(_Reported):
         with patch.dict(os.environ, {"CLODIA_ORCHESTRATOR_SECRET": "t"}):
             self.assertFalse(channels._paired_gateway_ok(req))
         src = inspect.getsource(channels.channel_trigger_internal)
-        self.assertIn("if firmato or _paired_gateway_ok(request):", src)
+        self.assertIn("if _paired_gateway_ok(request):", src)
 
 
 class TriggerInternalParentTests(unittest.IsolatedAsyncioTestCase):
@@ -223,7 +223,7 @@ class TriggerInternalParentTests(unittest.IsolatedAsyncioTestCase):
 
     TP = f"00-{'1' * 32}-{'2' * 16}-01"
 
-    async def _trigger(self, firmato):
+    async def _trigger(self, firmato, gateway_secret=None):
         channels._TRIGGERED.clear()
         self.addCleanup(channels._TRIGGERED.clear)
         seen = {}
@@ -239,18 +239,30 @@ class TriggerInternalParentTests(unittest.IsolatedAsyncioTestCase):
             return {"text": "@clodia fai una cosa", "by": "fullstack-dev"}
         req = type("R", (), {})()
         req.json, req.headers = body, {"traceparent": self.TP}
+        if gateway_secret:
+            req.headers["x-orchestrator-secret"] = gateway_secret
         meta = {"owner": "davide", "participants": ["fullstack-dev", "clodia"], "tier": "SEAL-1"}
         with patch.object(channels.topics_client, "open_topic", return_value={"meta": meta}), \
                 patch.object(channels, "_signed_actor", return_value=firmato), \
                 patch.object(channels, "_spawn_bg", side_effect=lambda c: c.close()), \
                 patch.object(channels, "run_topic_turn", new=fake_turn), \
-                patch.dict(os.environ, {"CLODIA_ORCHESTRATOR_SECRET": ""}):
+                patch.dict(os.environ, {"CLODIA_ORCHESTRATOR_SECRET": "gw-secret"}):
             await channels.channel_trigger_internal("SEAL-1", "ch", req)
         return seen["cause"]
 
-    async def test_a_signed_caller_links_the_turn_to_the_calling_span(self) -> None:
-        c = await self._trigger("fullstack-dev")
+    async def test_the_paired_gateway_links_the_turn_to_the_calling_span(self) -> None:
+        c = await self._trigger(None, gateway_secret="gw-secret")
         self.assertEqual(c["parent"], {"trace_id": "1" * 32, "span_id": "2" * 16})
+
+    async def test_a_signed_non_gateway_actor_cannot_graft_a_parent(self) -> None:
+        # e.g. an external proxy with its own certificate
+        c = await self._trigger("fullstack-dev")
+        self.assertIsNone(c["parent"])
+        self.assertEqual(c["root"], {"kind": "internal_trigger"})
+
+    async def test_a_wrong_gateway_secret_cannot_graft_a_parent(self) -> None:
+        c = await self._trigger("fullstack-dev", gateway_secret="guess")
+        self.assertIsNone(c["parent"])
 
     async def test_an_anonymous_caller_cannot_graft_a_parent(self) -> None:
         c = await self._trigger(None)
