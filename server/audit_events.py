@@ -332,17 +332,27 @@ def call_parameters(chat) -> dict:
     Read from what the session actually used — the options of the open Claude
     client, the `opencode.json` of the spawn, the command line of the last
     `codex exec` — not from the seed, which says what was asked, not what was
-    set. `{"defaults": True}` when the platform set none of the known keys:
+    set. `{"unknown": True}` when that source is gone (e.g. the Claude
+    session's options are None). `{"defaults": True}` when the platform set
+    none of the known keys:
     the runtime's and the model's defaults applied, and that is recorded too,
     so that a change from "set" to "default" is visible."""
     from .sdk_runtime import session as S
+    # `{"unknown": True}` when the source is GONE (the session has no options,
+    # or ran no codex command): not knowing is not "defaults", and saying
+    # defaults would be a claim the trail cannot back.
     if isinstance(chat, S.CodexChatSession):
-        params = codex_parameters(getattr(chat, "_last_codex_cmd", None))
+        cmd = getattr(chat, "_last_codex_cmd", None)
+        if not cmd:
+            return {"unknown": True}
+        params = codex_parameters(cmd)
     elif isinstance(chat, S.OpenCodeChatSession):
         params = opencode_parameters(getattr(chat, "_model_options", None))
     else:
         opts = getattr(chat, "_opts_kwargs", None)
-        params = claude_parameters(opts if isinstance(opts, dict) else None)
+        if not isinstance(opts, dict):
+            return {"unknown": True}
+        params = claude_parameters(opts)
     return params or {"defaults": True}
 
 

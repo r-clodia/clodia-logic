@@ -53,6 +53,14 @@ class ClaudeParametersTests(unittest.TestCase):
         self.assertEqual(audit_events.call_parameters(chat), {"defaults": True})
 
 
+    def test_options_gone_are_unknown_not_defaults(self) -> None:
+        for chat in (SimpleNamespace(_opts_kwargs=None), SimpleNamespace()):
+            self.assertEqual(audit_events.call_parameters(chat), {"unknown": True})
+        sess = S.CodexChatSession.__new__(S.CodexChatSession)
+        sess._last_codex_cmd = []
+        self.assertEqual(audit_events.call_parameters(sess), {"unknown": True})
+
+
 class OpenCodeParametersTests(unittest.TestCase):
     def _configured(self, effort):
         sess = S.OpenCodeChatSession.__new__(S.OpenCodeChatSession)
