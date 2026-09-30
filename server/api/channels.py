@@ -4775,8 +4775,12 @@ async def channel_interrupt(tier: str, name: str, request: Request) -> dict:
         body = None
     voci = (body or {}).get("agents") if isinstance(body, dict) else None
     only = [str(a).strip() for a in voci if str(a).strip()] if isinstance(voci, list) else None
-    return {"interrupted": await _interrupt_channel_turns(tier, name,
-                                                          only=only or None)}
+    stopped = await _interrupt_channel_turns(tier, name, only=only or None)
+    # Human oversight on the trail (#443): who stopped whom.
+    from .. import audit_events
+    await audit_events.report(audit_events.interrupt(
+        tier, name, _principal_from_request(request), only, stopped))
+    return {"interrupted": stopped}
 
 
 def _may_overrule_routing(meta: dict, principal: str, author: str) -> bool:
@@ -4929,6 +4933,9 @@ async def channel_routing_overrule(tier: str, name: str, request: Request) -> di
                                 timestamp=datetime.now(timezone.utc)))
     except Exception as e:  # noqa: BLE001
         LOG.debug("routing_decision scavalcamento non pubblicato: %s", e)
+    from .. import audit_events
+    await audit_events.report(audit_events.override(
+        tier, name, principal, interrupted, chosen, "overruled"))
     return {"ok": True, "acted": True, "outcome": "overruled", "detail": None,
             "interrupted": interrupted, "queued": started,
             "responder": chosen if started else None, "learned": learned}
