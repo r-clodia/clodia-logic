@@ -2482,6 +2482,7 @@ class CodexChatSession:
         self._thinkseam = _ThinkSeam()
         self._think_n = 0
         self._last_usage: dict[str, int] = {}
+        self._last_codex_cmd: list[str] = []   # call parameters on the audit trail (#464)
         self._usage_cumulative: dict[str, int] = {}
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
         # occupazione ATTUALE della finestra di contesto (token dell'ultimo turno).
@@ -2773,6 +2774,11 @@ class CodexChatSession:
         self, content: str, runtime_model: Optional[str],
     ) -> tuple[list[str], list[str], int | None, str]:
         cmd = self._codex_cmd(runtime_model)
+        # The command line of THIS turn: its `-c` overrides are the call
+        # parameters the audit trail records (clodia-platform#464). The prompt
+        # goes through stdin, never through `cmd`. Taken before the sandbox
+        # wrapper replaces argv[0], so it records codex's own arguments.
+        self._last_codex_cmd = list(cmd)
         env = {**_inherited_spawn_env(), "CODEX_HOME": str(self._codex_home)}
         # token gateway coniato PER-TURNO col principal corrente (utente connesso)
         # → runtime.current_user resta sempre allineato senza restart.
@@ -3168,6 +3174,7 @@ class OpenCodeChatSession:
         self._provider: Optional[str] = None
         self._model: Optional[str] = None
         self._last_usage: dict[str, int] = {}
+        self._model_options: dict = {}   # call parameters on the audit trail (#464)
         self._total_tokens: dict[str, int] = {"input": 0, "output": 0, "runs": 0}
         # occupazione ATTUALE della finestra di contesto (token dell'ultimo turno).
         self._context_tokens: int = 0
@@ -3257,6 +3264,11 @@ class OpenCodeChatSession:
                 options_cfg["reasoningEffort"] = reff
         except Exception as e:  # noqa: BLE001
             LOG.warning("opencode: credenziale provider %s non risolta: %s", self._provider, e)
+        # The options the selected model runs with: what the audit trail records
+        # as this session's call parameters (clodia-platform#464).
+        self._model_options = dict(
+            (((cfg["provider"].get(self._provider or "") or {}).get("models") or {})
+             .get(self._model or "") or {}).get("options") or {})
         # gateway clodia-tools come MCP via bridge stdio `mcp-remote`. NB: il tipo
         # `remote` nativo di opencode si appende contro lo StreamableHTTP stateless
         # del gateway; `mcp-remote` (stdio↔HTTP) invece funziona. Serve --allow-http
