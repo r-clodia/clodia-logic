@@ -346,6 +346,36 @@ async def pending(request: Request):
     return JSONResponse(corpo, status_code=r.status_code)
 
 
+def _correction_unsupported(pending: list[dict]) -> str | None:
+    """Why the gateway cannot take corrections for these requests, or None.
+
+    A gateway with gate-modify (clodia-tools #339) lists `editable` on every
+    pending request (None when the call has no editable field); one without
+    it does not have the key at all."""
+    if not pending:
+        return "no pending request for this call: nothing to correct"
+    if not all("editable" in p for p in pending):
+        return ("the gateway does not support corrections (clodia-tools gate-modify "
+                "#339 not deployed): approving would run the ORIGINAL arguments")
+    if not any(p.get("editable") for p in pending):
+        return "this call has no editable field"
+    return None
+
+
+def _correction_confirmed(r, modified: dict) -> bool:
+    """The grant response says the correction was applied: it echoes the
+    validated `modified` (or at least `modified_fields`)."""
+    try:
+        corpo = r.json() or {}
+    except Exception:  # noqa: BLE001
+        return False
+    echoed = corpo.get("modified")
+    if isinstance(echoed, dict):
+        return echoed == modified
+    fields = corpo.get("modified_fields")
+    return isinstance(fields, list) and sorted(fields) == sorted(modified)
+
+
 @router.post("/api/gate/approve")
 async def approve(request: Request):
     """Approva un gate: consente a (agent, instance) l'uso di `verb`."""
@@ -360,12 +390,24 @@ async def approve(request: Request):
     instance = (body.get("instance") or "-").strip() or "-"
     verb = (body.get("verb") or "").strip()
     minutes = body.get("minutes", 10)
+    # Approve WITH CORRECTIONS (clodia-platform#448): the fields the approver
+    # changed. The gateway validates them against the verb's editable fields
+    # and re-judges the corrected call; here we only refuse what cannot be a
+    # correction at all.
+    modified = body.get("arguments")
+    if modified is not None and not isinstance(modified, dict):
+        return JSONResponse({"error": "arguments deve essere un oggetto"}, status_code=400)
     # Fin dove vale questo sì: solo adesso, sempre in questa stanza, ovunque.
     ricorda = (body.get("remember") or "once").strip().lower()
     if not (agent and verb):
         return JSONResponse({"error": "agent/verb richiesti"}, status_code=400)
     if ricorda not in ("once", "topic", "global"):
         return JSONResponse({"error": f"remember sconosciuto: {ricorda}"},
+                            status_code=400)
+    if modified and ricorda != "once":
+        # A correction answers THIS call (#448). Remembering it would turn one
+        # corrected message into a standing rule. Refused before anything is minted.
+        return JSONResponse({"error": "una correzione vale solo per stavolta"},
                             status_code=400)
     if verb.startswith(COPYBRAIN_PREFIX):
         # `copybrain` (clodia-platform#393): il consenso vale per QUESTO spawn
@@ -396,6 +438,24 @@ async def approve(request: Request):
     rifiuto = await asyncio.to_thread(_standing_error, principal, agent, instance, verb)
     if rifiuto is not None:
         return rifiuto
+    if modified:
+        # A gateway without clodia-tools gate-modify (#339) would ignore
+        # `modified` and grant the ORIGINAL call: the approver's correction
+        # would vanish and the uncorrected message would go out. Such a gateway
+        # does not list `editable` on its pending requests, so this is checked
+        # BEFORE anything is minted, and refused loudly.
+        try:
+            _pend = await asyncio.to_thread(_pending_requests, principal, agent,
+                                            instance, verb)
+        except _Unavailable as e:
+            return JSONResponse({"error": "gateway_unavailable", "detail": str(e)[:200]},
+                                status_code=503)
+        unsupported = _correction_unsupported(_pend)
+        if unsupported:
+            LOG.error("gate approve %s@%s:%s with corrections refused: %s",
+                      agent, instance, verb, unsupported)
+            return JSONResponse({"error": "correction_unsupported", "detail": unsupported},
+                                status_code=409)
     # SECONDO titolo, e più stretto del primo: chi possiede la stanza decide per
     # la stanza; per l'istanza intera decide chi possiede l'istanza.
     #
@@ -417,10 +477,29 @@ async def approve(request: Request):
     except Exception as e:  # noqa: BLE001
         LOG.error("mint_capability(gate) fallito per %s@%s:%s: %s", agent, instance, verb, e)
         return JSONResponse({"error": "mint_failed", "detail": str(e)}, status_code=500)
-    r = _gw("POST", "/grant", principal,
-            {"agent": agent, "instance": instance, "verb": verb, "token": cap["token"]})
+    grant_body = {"agent": agent, "instance": instance, "verb": verb, "token": cap["token"]}
+    if modified:
+        grant_body["modified"] = modified
+    r = _gw("POST", "/grant", principal, grant_body)
     LOG.info("gate approve %s@%s:%s da %s (jti=%s, remember=%s) → %s", agent,
              instance, verb, principal, cap.get("jti"), ricorda, r.status_code)
+    if modified and r.status_code == 200 and not _correction_confirmed(r, modified):
+        # Second line of defence: the gateway accepted the grant but does not
+        # say it applied the correction. Never report this as an approval —
+        # the call may run on the original arguments — and say so where the
+        # approver is looking.
+        LOG.error("gate approve %s@%s:%s: the gateway did NOT confirm the correction "
+                  "(fields %s) — the call may run on its original arguments",
+                  agent, instance, verb, sorted(modified))
+        await asyncio.to_thread(
+            _post_outcome, body.get("chat"), principal,
+            f"⚠️ @{agent}: {verb} approvato ma il gateway NON ha confermato la "
+            f"correzione ({', '.join(sorted(modified))}): la chiamata potrebbe "
+            f"partire con gli argomenti originali.")
+        return JSONResponse({"error": "correction_not_confirmed",
+                             "detail": "the gateway granted the call without confirming "
+                                       "the corrected arguments (clodia-tools #339)",
+                             "fields": sorted(modified)}, status_code=502)
     memoria = None
     if r.status_code == 200 and ricorda != "once":
         # La capability è già stata concessa: la chiamata in attesa procede
