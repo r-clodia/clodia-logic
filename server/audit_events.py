@@ -1,5 +1,5 @@
 """Events only the agent-server knows, deposited on the gateway's audit trail
-(clodia-platform#433, #434, #435, #442, #443, #466).
+(clodia-platform#433, #434, #435, #442, #443, #464, #466).
 
 The trail is written and signed by the gateway (clodia-tools `server/audit/`),
 on a volume this process does not mount. What the gateway cannot observe —
@@ -251,8 +251,114 @@ def failure_class(e: BaseException) -> str:
     return type(e).__name__
 
 
+# ── model-call parameters (#464) ─────────────────────────────────────────────
+# What the platform SET on the model call, per runtime: the runtime's own key →
+# the key on the trail. Known keys only, and values only: an unknown option is
+# not recorded (it could be anything, a prompt included), and a known one is
+# recorded only when its value is a plain scalar.
+_CLAUDE_OPTIONS = {"effort": "effort", "thinking": "thinking",
+                   "max_thinking_tokens": "max_thinking_tokens",
+                   "max_turns": "max_turns", "max_budget_usd": "max_budget_usd",
+                   "fallback_model": "fallback_model"}
+_CLAUDE_ENV = {"MAX_THINKING_TOKENS": "max_thinking_tokens",
+               "CLAUDE_CODE_MAX_OUTPUT_TOKENS": "max_output_tokens"}
+_OPENCODE_OPTIONS = {"reasoningEffort": "reasoning_effort",
+                     "reasoningSummary": "reasoning_summary",
+                     "textVerbosity": "verbosity", "thinking": "thinking",
+                     "temperature": "temperature", "maxOutputTokens": "max_output_tokens"}
+_CODEX_CONFIG = {"model_reasoning_effort": "reasoning_effort",
+                 "model_reasoning_summary": "reasoning_summary",
+                 "model_verbosity": "verbosity"}
+_THINKING_KEYS = {"type": "type", "budget_tokens": "budget_tokens",
+                  "budgetTokens": "budget_tokens"}
+
+
+def _param_value(v: Any) -> Any:
+    """A recordable value: a short scalar, or a thinking block reduced to its
+    known scalar keys. Anything else is not recorded."""
+    if isinstance(v, bool) or isinstance(v, (int, float)):
+        return v
+    if isinstance(v, str):
+        v = v.strip()
+        return v if v and len(v) <= 64 else None
+    if isinstance(v, dict):
+        out = {_THINKING_KEYS[k]: _param_value(x) for k, x in v.items() if k in _THINKING_KEYS}
+        out = {k: x for k, x in out.items() if x is not None}
+        return out or None
+    try:  # a dataclass/TypedDict-like object (the SDK's thinking config)
+        return _param_value(dict(vars(v)))
+    except TypeError:
+        return None
+
+
+def _known(src: dict | None, keys: dict) -> dict:
+    out = {}
+    for k, name in keys.items():
+        if src and k in src:
+            v = _param_value(src[k])
+            if v is not None:
+                out[name] = v
+    return out
+
+
+def claude_parameters(opts: dict | None) -> dict:
+    """The Claude Agent SDK options the platform built for this client."""
+    opts = opts or {}
+    env = opts.get("env") if isinstance(opts.get("env"), dict) else {}
+    out = _known(env, _CLAUDE_ENV)
+    out.update(_known(opts, _CLAUDE_OPTIONS))  # an explicit option wins over env
+    return out
+
+
+def opencode_parameters(model_options: dict | None) -> dict:
+    """The per-model `options` written in the spawn's `opencode.json`."""
+    return _known(model_options, _OPENCODE_OPTIONS)
+
+
+def codex_parameters(cmd: list | None) -> dict:
+    """The `-c key=value` overrides on the `codex exec` command line."""
+    cfg: dict = {}
+    args = list(cmd or [])
+    for flag, val in zip(args, args[1:]):
+        if flag == "-c" and isinstance(val, str) and "=" in val:
+            k, v = val.split("=", 1)
+            cfg[k.strip()] = v.strip().strip('"').strip("'")
+    return _known(cfg, _CODEX_CONFIG)
+
+
+def call_parameters(chat) -> dict:
+    """The effective model-call parameters of the turn that just ran (#464).
+
+    Read from what the session actually used — the options of the open Claude
+    client, the `opencode.json` of the spawn, the command line of the last
+    `codex exec` — not from the seed, which says what was asked, not what was
+    set. `{"unknown": True}` when that source is gone (e.g. the Claude
+    session's options are None). `{"defaults": True}` when the platform set
+    none of the known keys:
+    the runtime's and the model's defaults applied, and that is recorded too,
+    so that a change from "set" to "default" is visible."""
+    from .sdk_runtime import session as S
+    # `{"unknown": True}` when the source is GONE (the session has no options,
+    # or ran no codex command): not knowing is not "defaults", and saying
+    # defaults would be a claim the trail cannot back.
+    if isinstance(chat, S.CodexChatSession):
+        cmd = getattr(chat, "_last_codex_cmd", None)
+        if not cmd:
+            return {"unknown": True}
+        params = codex_parameters(cmd)
+    elif isinstance(chat, S.OpenCodeChatSession):
+        params = opencode_parameters(getattr(chat, "_model_options", None))
+    else:
+        opts = getattr(chat, "_opts_kwargs", None)
+        if not isinstance(opts, dict):
+            return {"unknown": True}
+        params = claude_parameters(opts)
+    return params or {"defaults": True}
+
+
 def model_block(chat, tier: str | None) -> dict:
-    """Provider, region, SEAL and model of the turn that just ran (#434, #435).
+    """Provider, region, SEAL, model and call parameters of the turn that just
+    ran (#434, #435, #464).
 
     Recorded, not inferred: the provider the SESSION was created with
     (`session_provider`), not the one the platform would pick now, and the
@@ -282,7 +388,16 @@ def model_block(chat, tier: str | None) -> dict:
         "request_name": declared,
         "response_name": getattr(chat, "_last_response_model", None),
         "runtime": getattr(chat, "agent_sdk", None) or type(chat).__name__,
+        "parameters": _safe_parameters(chat),
     }
+
+
+def _safe_parameters(chat) -> dict | None:
+    try:
+        return call_parameters(chat)
+    except Exception as e:  # noqa: BLE001 - the rest of the block still counts
+        LOG.debug("audit: call parameters not read (%s)", type(e).__name__)
+        return None
 
 
 # ── human oversight and anomalies (#443) ─────────────────────────────────────
