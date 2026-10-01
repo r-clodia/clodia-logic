@@ -14,7 +14,15 @@ Eventi correnti:
 - handoff_move   { to_inbox, sender }
 - handoff_archive { lane }
 
-Future estensioni (D in roadmap): tool_use, message_chunk, thinking_chunk.
+Il RAGIONAMENTO non sta qui, e non è una svista (clodia-platform#484). Questo
+file è indicizzato per AGENTE e **non sa in che tier** stia scrivendo: un
+`thinking_chunk` di un turno in SEAL-4 finirebbe nello stesso file di uno in
+SEAL-0, e il ragionamento cita il contenuto del canale. Lo storico del
+ragionamento vive in `agents/reasoning_log.py`, sotto
+`agent-state/reasoning/<tier>/<canale>/`, dove il tier è la prima cartella del
+percorso. Chi volesse estendere l'activity log a `tool_use`/`message_chunk` ha
+lo stesso problema davanti, e questa riga è l'avviso: prima il tier, poi il
+formato.
 """
 from __future__ import annotations
 import asyncio

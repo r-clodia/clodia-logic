@@ -30,15 +30,16 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ..agents import activity_log, rank as rank_mod, registry
+from ..agents import activity_log, rank as rank_mod, reasoning_log, registry
 from ..agents import coordinator as coordinator_mod
 from ..agents import trifecta, trifecta_reset
 from .. import audit_events, debug_watch
 from ..core import trace, turn_timing
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
-from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
-                                   topic_runtime_override, session_provider)
+from ..sdk_runtime.session import (consuma_pensiero, manager, ProviderNotConnected,
+                                   spawn_dirs_of, topic_runtime_override,
+                                   session_provider)
 from . import (access_log, mentions, presence, responder_routing, router_config,
                routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
@@ -653,6 +654,34 @@ def _topic_title(tier: str, name: str) -> str | None:
         return None
 
 
+def _conserva_ragionamento(tier: str, name: str, spawn: str, responder: str,
+                           chat, pensiero: dict | None,
+                           message_id: str | None) -> None:
+    """Appende alla BOLLA il ragionamento del turno che l'ha prodotta (#484).
+
+    L'aggancio è l'id del messaggio e non il turno, perché è la bolla l'oggetto
+    che si guarda quando ci si chiede «come ci è arrivato». Con le bolle per
+    blocco (#243) un turno vale più messaggi e il ragionamento è uno solo:
+    chiama chi lo sa, cioè chi ha appena pubblicato, passando l'ULTIMA — quella
+    che chiude il discorso che il ragionamento racconta.
+
+    Senza bolla non si scrive niente e non si inventa un messaggio per avere
+    dove appendere: il limite è dichiarato, le bolle fantasma sarebbero peggio
+    del difetto. Conservare è un di più e non deve poter far fallire il turno
+    che lo ha prodotto: ogni errore si ferma qui.
+    """
+    if not pensiero or not message_id:
+        return
+    try:
+        reasoning_log.record(tier, name, message_id=message_id, spawn=spawn,
+                             seed=_seed_name(responder),
+                             text=pensiero.get("text") or "",
+                             chat_id=getattr(chat, "chat_id", None))
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("ragionamento di %s su %s/%s non conservato: %s",
+                    responder, tier, name, e)
+
+
 def _audit_model(chat, tier):
     """`audit_events.model_block`, never raising into the turn."""
     try:
@@ -753,8 +782,16 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     # delegations below (`_maybe_delegate`, `_report_back`) spawn their turns
     # from this context, and those turns record this one's trace and span.
     audit_events.set_cause(_turn.root, parent=_turn)
+    #: Il ragionamento del turno, da appendere alla bolla che lo conclude
+    #: (clodia-platform#484). Si ritira SUBITO dopo l'invio, dentro un `finally`
+    #: suo: appartiene a questo turno, e la sessione può riceverne un altro
+    #: mentre qui si sta ancora pubblicando.
+    pensiero: dict | None = None
     try:
-        reply = await chat.send_user_message(prompt)
+        try:
+            reply = await chat.send_user_message(prompt)
+        finally:
+            pensiero = consuma_pensiero(chat)
         _st, _err = audit_events.outcome_of_reply(reply)
         await _turn.end(status=_st, error=_err,
                         model=_audit_model(chat, tier),
@@ -774,7 +811,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             f"Il turno di {responder} è terminato con un'eccezione: nel canale non "
             f"è comparso nulla, quindi dall'esterno sembra che non abbia risposto.",
             error=repr(e)[:300], hop=hop))
-        _spawn_bg(_announce_failure(tier, name, responder, e))
+        _spawn_bg(_announce_failure(tier, name, responder, e,
+                                    pensiero=pensiero, spawn=autore))
         return None
     finally:
         audit_events.release(_handover)
@@ -842,6 +880,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                                       serviti=serviti)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
+        _conserva_ragionamento(tier, name, autore, responder, chat, pensiero,
+                               posted_during_turn[-1].get("id"))
         _ultimo = posted_during_turn[-1].get("text") or reply
         if not report_back:
             _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
@@ -862,6 +902,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     # compariva in chat e non succedeva nulla, senza che l'errore nominasse la
     # delega. Separarli tiene la catena in piedi anche quando la notifica cade,
     # ed è il motivo per cui la delega non sta più dentro lo stesso try.
+    _conserva_ragionamento(tier, name, autore, responder, chat, pensiero,
+                           (msg or {}).get("id"))
     try:
         titolo = await asyncio.to_thread(_topic_title, tier, name)
         await _channel_message(tier, name, autore, "ai",
@@ -966,7 +1008,9 @@ def _diagnosi(err: Exception) -> str:
     return nota if nota else f"```\n{repr(err)[:400]}\n```"
 
 
-async def _announce_failure(tier: str, name: str, responder: str, err: Exception) -> None:
+async def _announce_failure(tier: str, name: str, responder: str, err: Exception,
+                            *, pensiero: dict | None = None,
+                            spawn: str | None = None) -> None:
     """Un turno morto si dice nel CANALE, sempre, e si passa a sysadmin.
 
     Prima esisteva solo `_watch_report`, che vive dietro `debug_watch.enabled()`
@@ -997,6 +1041,12 @@ async def _announce_failure(tier: str, name: str, responder: str, err: Exception
             testo += ("Nessuno a cui passare la diagnosi: il guasto riguarda il "
                       "guardiano stesso.")
         msg = await topics_client.async_post_message(tier, name, "system", testo, kind="system")
+        # Il ragionamento del turno morto si appende a QUESTA bolla (#484): è
+        # l'unica comparsa nel canale, ed è anche il caso in cui riaprirlo
+        # serve di più — un turno fallito è esattamente ciò che si va a
+        # rileggere.
+        _conserva_ragionamento(tier, name, spawn or responder, responder, None,
+                               pensiero, (msg or {}).get("id"))
         titolo = await asyncio.to_thread(_topic_title, tier, name)
         await _channel_message(tier, name, "system", "system",
                                message=msg, topic_title=titolo)
@@ -5350,6 +5400,43 @@ async def channel_agents_md_put(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(409, str(e)[:200])
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"gateway: {str(e)[:160]}")
+
+
+@router.get("/clodia/channels/{tier}/{name}/reasoning")
+async def channel_reasoning_index(tier: str, name: str, request: Request) -> dict:
+    """Quali bolle di questo canale hanno un ragionamento salvato (#484).
+
+    È ciò che accende il 💭 sulla bolla: la lista viene dallo store, non da una
+    congettura del client («è un messaggio di un agente, quindi avrà pensato»).
+    Un bottone che apre il vuoto è peggio di nessun bottone — e i turni senza
+    ragionamento conservato esistono, è il limite dichiarato nell'issue.
+
+    Dietro `_require_member` come i messaggi, e per la stessa ragione: il
+    ragionamento CITA il contenuto del canale, quindi è materiale del canale.
+    """
+    topic = await topics_client.async_open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    _require_member(request, topic.get("meta", {}))
+    return {"messages": await asyncio.to_thread(reasoning_log.index, tier, name)}
+
+
+@router.get("/clodia/channels/{tier}/{name}/reasoning/{message_id}")
+async def channel_reasoning_read(tier: str, name: str, message_id: str,
+                                 request: Request) -> dict:
+    """Il ragionamento di UNA bolla. 404 se non ce n'è: mai un 200 vuoto, che
+    in UI diventerebbe un riquadro aperto su niente."""
+    topic = await topics_client.async_open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    _require_member(request, topic.get("meta", {}))
+    voce = await asyncio.to_thread(reasoning_log.read, tier, name, message_id)
+    if not voce:
+        raise HTTPException(404, "nessun ragionamento salvato per questo messaggio")
+    return {"message_id": voce.get("message_id"), "spawn": voce.get("spawn"),
+            "seed": voce.get("seed"), "ts": voce.get("ts"),
+            "truncated": bool(voce.get("truncated")),
+            "text": voce.get("text") or ""}
 
 
 @router.get("/clodia/channels/{tier}/{name}/messages")
