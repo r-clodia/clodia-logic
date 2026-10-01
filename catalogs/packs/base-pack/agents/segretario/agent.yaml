@@ -45,6 +45,28 @@ rules:
 tool_permissions:
   - topic.save_summary
   - topic.suggest_team
+  # Collegare due stanze dello stesso livello SEAL (clodia-platform#477):
+  # ognuna vede i file dell'altra come una cartella in SOLA LETTURA accanto a
+  # `local/`. Nessuna copia — i byte, e con loro l'etichetta di provenienza,
+  # restano nel topic che li possiede.
+  #
+  # Perché QUI e non in `clodia`, dove stava fino all'1 ott 2026: decisione
+  # dell'owner. Il collegamento è un atto di coordinamento fra stanze, e il
+  # coordinatore dichiarato è `coordinator.py::DECLARED` — l'invariante in
+  # `server/agents/test_link_grant.py` è quella lista, non un elenco di nomi
+  # riscritto qui. È anche coerente col mestiere di questo seed: «l'ordine del
+  # topic» include dove il topic va a prendere i documenti su cui si lavora.
+  #
+  # Tre difese sotto, e nessuna delle tre è in questo file: il verbo è
+  # GATE_WALLS (l'owner approva sulla card, come per i partecipanti), il
+  # gateway pretende che chi chiede partecipi a ENTRAMBI i topic, e il mount è
+  # in sola lettura — questo seed non ha nemmeno `topic.put`, quindi non può
+  # scrivere né di qua né di là.
+  #
+  # Add e remove insieme: chi può proporre un collegamento e mai ritirarlo
+  # produce perimetri che crescono soltanto.
+  - topic.link_add
+  - topic.link_remove
 memory:
   dir: memory/
 system_prompt: system-prompt.md

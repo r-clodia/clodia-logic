@@ -59,6 +59,18 @@ PERIMETRO = {
     # ed è gated WALLS quanto `add_participant` — l'owner approva comunque.
     "topic.egress_add", "topic.egress_remove",
     "topic.ingress_add", "topic.ingress_remove",
+    # Collegamento fra due stanze dello stesso livello SEAL
+    # (clodia-platform#477, 1 ott 2026): decisione dell'owner, più recente di
+    # #192 e presa sapendo di questo perimetro — il verbo stava su `clodia` ed
+    # è stato spostato qui apposta. Non è una porta laterale a `ESECUZIONE`:
+    # non cambia chi è nella stanza, e sotto resta tutto in sola lettura (il
+    # mount del collegamento lo è, e questo seed non ha comunque nessun verbo
+    # di scrittura file). È invece la stessa porta della riga sopra: `link_add`
+    # fa letteralmente `scope_allow("ingress", …)` sulla fonte
+    # `topic:<tier>/<nome>`, cioè ciò che `topic.ingress_add` già gli concede —
+    # con due restrizioni in più, che l'altra non ha: solo pari livello SEAL, e
+    # solo stanze di cui è partecipante. Gated WALLS: l'owner approva comunque.
+    "topic.link_add", "topic.link_remove",
 }
 
 #: Verbi che eseguirebbero al posto di raccomandare. `add_participant` è quello

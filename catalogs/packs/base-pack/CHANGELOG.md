@@ -10,22 +10,41 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 ## [7.31.0] — 2026-10-01
-- `clodia` gets **`topic.link_add` / `topic.link_remove`** (clodia-platform#477):
+- `segretario` gets **`topic.link_add` / `topic.link_remove`** (clodia-platform#477):
   two topics of the same SEAL level can be joined, and from then on each one sees
   the other's data tree as a **read-only** folder next to `local/`. No copy is
   made — the bytes stay in the topic that owns them, and so does the provenance
   label, which is the whole point: copying a file relabels it, and an `untrusted`
   attachment would come out clean (clodia-platform#419).
-  The verb goes where `topic.add_participant` already is, and for the same
-  reason: it answers "who gets inside this room's perimeter", with a wider
-  answer — not an agent, a whole room. Two defences under it, neither of them in
-  the pack: the verb is `GATE_WALLS` (the owner approves, as for participants)
-  and the gateway requires the caller to participate in **both** topics.
-  Needs clodia-tools >= 2.75.0.
-- Skill **`topic-files`** gains the section on linked topics: the mount is read
-  only, copying the file over here to get around that is precisely what the link
-  exists to avoid, and the provenance label travels with the file — "it comes
-  from a friendly channel" does not clean a third party's attachment.
+  The verb goes to the **declared coordinators** (`coordinator.DECLARED`), and in
+  fact only to `segretario` — owner's ruling of 1 Oct 2026. Linking decides where
+  a channel goes to fetch the documents it works on: that is coordination between
+  rooms, not a trade. It is deliberately *not* tied to `topic.add_participant`,
+  which `segretario` does not have and should not: letting a whole room into
+  another's field of view and letting one agent into a room are two different
+  powers, and the earlier rule kept them bound with nothing requiring it.
+  Three defences under it, none of them in the pack: the verb is `GATE_WALLS`
+  (the owner approves, as for participants), the gateway requires the caller to
+  participate in **both** topics, and the mount is read-only — `segretario` has
+  no file-writing verb at all. Needs clodia-tools >= 2.75.0.
+- The reading perimeter decided in clodia-platform#192 widens by these two verbs,
+  recorded where it is enforced (`test_192_decisioni_del_coordinatore.py`). It is
+  the same door opened by #374 for the per-room egress/ingress whitelist, not a
+  side door into "recommend, don't execute": `link_add` literally does
+  `scope_allow("ingress", …)` on a `topic:<tier>/<name>` source — what
+  `topic.ingress_add` already grants him — with two restrictions that one does
+  not have: same SEAL level only, and only rooms he participates in.
+- Mandate of **`segretario`** gains the section on linking rooms, and the rule
+  **`topic-state-boundary`** lists it among the allowed domain. Without both, the
+  grant would sit in the `agent.yaml` while the agent refused the request: that
+  mandate otherwise prescribes a one-line refusal for anything that is not state
+  writing. `segretario` does not carry the `topic-files` skill, so the text had
+  to go where he actually reads it.
+- Skill **`topic-files`** gains the section on linked topics — read by whoever
+  *sees* a linked mount, i.e. every participant of the two rooms: the mount is
+  read only, copying the file over here to get around that is precisely what the
+  link exists to avoid, and the provenance label travels with the file — "it
+  comes from a friendly channel" does not clean a third party's attachment.
 
 ## [7.30.0] — 2026-09-30
 - `clodia` gets **`topic.goal_progress`** (clodia-platform#457): the owner pins a
