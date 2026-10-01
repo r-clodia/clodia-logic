@@ -61,6 +61,8 @@ def _reply_text(text: str, n: int = _REPLY_MAX) -> str:
     s = (text or "").strip()
     return s[:n] + ("…" if len(s) > n else "")
 from ..core import loop_lag, trace, turn_timing
+from .. import otel_export
+from .child_env import spawn_env
 from ..core.events import bus
 from ..core.models import Event, ClodiaStatus
 from ..observability import langfuse_attributes, langfuse_observation, trace_io
@@ -1457,6 +1459,8 @@ class ChatSession:
         # principal "cotto" nel token MCP del client attualmente avviato (per
         # capire quando ri-coniare se l'utente connesso cambia).
         self._token_principal: Optional[str] = None
+        #: The CLI process's own OTel trace id, when export is on (#463).
+        self._otel_runtime_trace: Optional[str] = None
         self._runtime_override = runtime_override or {}
 
     @property
@@ -1523,6 +1527,15 @@ class ChatSession:
         # file, .claude/ (skill+settings) caricato di default. Niente CLAUDE.md nel
         # workspace → nessun conflitto. Lo spawn è pulito a stop().
         self._spawn, spawn_dir = _materialize_spawn(self.kind, self._runtime_override)
+        # One rule for the env of every runtime (#471, #463): no
+        # orchestrator-only secret, no OTel content switch, and the proxy
+        # labelled with this spawn so the egress record joins its turn.
+        child_env = spawn_env(child_env, _execution_id(self._spawn) or None)
+        # Optional OTel export of the CLI's own spans (off by default). They
+        # carry a trace per PROCESS, recorded as a link on each turn.
+        otel_env, self._otel_runtime_trace = otel_export.claude_env(
+            seed=self.kind, spawn=_execution_id(self._spawn) or None)
+        child_env.update(otel_env)
         cwd = str(spawn_dir) if spawn_dir else str(self.cwd)
         opts_kwargs = {"cwd": cwd, "env": child_env, "include_partial_messages": True,
                        "max_buffer_size": _STREAM_LIMIT}
@@ -2530,7 +2543,9 @@ class CodexChatSession:
                 # codex forces history.jsonl to 0600: under per-spawn uids the
                 # next spawn couldn't append. The platform keeps its own
                 # transcripts; codex's global history isn't needed (#471).
-                "\n[history]\npersistence = \"none\"\n",
+                "\n[history]\npersistence = \"none\"\n"
+                # Optional OTel trace export (#463), empty when off.
+                + otel_export.codex_config_toml(),
                 encoding="utf-8")
         except Exception as e:  # noqa: BLE001
             LOG.warning("config.toml MCP per codex non scritto: %s", e)
@@ -2779,7 +2794,13 @@ class CodexChatSession:
         # goes through stdin, never through `cmd`. Taken before the sandbox
         # wrapper replaces argv[0], so it records codex's own arguments.
         self._last_codex_cmd = list(cmd)
-        env = {**_inherited_spawn_env(), "CODEX_HOME": str(self._codex_home)}
+        # Same env rule as every runtime (#471, #463): the inherited env without
+        # orchestrator secrets or provider keys, proxy labelled with the spawn,
+        # plus — when OTel export is on — the TURN's traceparent: `codex exec`
+        # is one process per turn and parents its spans under it.
+        env = spawn_env({**_inherited_spawn_env(), "CODEX_HOME": str(self._codex_home)},
+                        _execution_id(self._spawn) or None)
+        env.update(otel_export.codex_turn_env(trace.current(), trace.current_span()))
         # token gateway coniato PER-TURNO col principal corrente (utente connesso)
         # → runtime.current_user resta sempre allineato senza restart.
         try:
@@ -3222,7 +3243,10 @@ class OpenCodeChatSession:
         le credenziali (referenziate via {env:…} nel config, così non su disco)."""
         self._provider = _runtime_provider(self.kind, self._runtime_override)
         self._model = _runtime_model(self.kind, self._runtime_override)
-        env = _inherited_spawn_env()
+        # Same env rule as every runtime (#471, #463). No OTel wiring here:
+        # see `otel_export` for why opencode cannot export without content.
+        env = spawn_env(_inherited_spawn_env(),
+                        _execution_id(getattr(self, "_spawn", None)) or None)
         cfg: dict = {"$schema": "https://opencode.ai/config.json", "provider": {}, "mcp": {}}
         # credenziale del provider effettivo (apikey provider, es. scaleway)
         try:
