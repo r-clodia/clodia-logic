@@ -141,9 +141,14 @@ class RealProviderFileTests(unittest.TestCase):
         # clodia-platform#392: il default opus è Opus 5.5.
         self.assertEqual(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL"),
                          "eu.anthropic.claude-opus-5-5")
-        # clodia-platform#483: e il default sonnet è Sonnet 5.5.
+        # clodia-platform#483: il default sonnet resta DELIBERATAMENTE a
+        # Sonnet 5, l'ultimo profilo verificato con ListInferenceProfiles,
+        # anche se `sysadmin` dichiara 5.5. Questo valore è la rete di
+        # sicurezza del ripiego: appenderlo a un profilo mai osservato in
+        # regione romperebbe OGNI sonnet senza voce in mappa, non solo chi
+        # chiede 5.5. Sale a 5.5 quando il profilo è confermato in console.
         self.assertEqual(env.get("ANTHROPIC_DEFAULT_SONNET_MODEL"),
-                         "eu.anthropic.claude-sonnet-5-5")
+                         "eu.anthropic.claude-sonnet-5")
 
 
 class ContextWindowTests(unittest.TestCase):
@@ -192,6 +197,12 @@ class SonnetFiveFiveOnTheRealProviderTests(unittest.TestCase):
     `claude-sonnet-5-5` un seed su 5.5 ripiegherebbe sul default di famiglia —
     cioè girerebbe su Sonnet 5 dichiarando 5.5, che è il difetto della #361 nella
     sua forma muta.
+
+    Qui non è un'ipotesi: il default di famiglia resta a Sonnet 5 apposta
+    (profilo verificato), quindi `test_sonnet_5_5_resolves_to_its_eu_profile`
+    distingue davvero la mappa dal ripiego — se la voce sparisse, la
+    traduzione tornerebbe `eu.anthropic.claude-sonnet-5` e il test sarebbe
+    rosso.
     """
 
     def test_sonnet_5_5_resolves_to_its_eu_profile(self):
