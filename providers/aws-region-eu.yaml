@@ -19,8 +19,10 @@ extra_env:
   # guardava solo la famiglia, OGNI agent opus girava su Opus 4.6 qualunque cosa
   # dichiarasse. Dal 24 set 2026 (clodia-platform#392) il default opus è
   # Opus 5.5: ogni opus della piattaforma gira su 5.5, su ogni provider.
+  # Dall'1 ott 2026 (clodia-platform#483) vale lo stesso per sonnet: il default
+  # è Sonnet 5.5, che a parità di finestra (1M) costa meno di Sonnet 5 e 4.6.
   ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-5-5"
-  ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-5"
+  ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-5-5"
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 
 # Traduzione ESPLICITA modello-del-seed → inference-profile della regione, così
@@ -38,6 +40,13 @@ extra_env:
 #
 # `claude-opus-5-5` (24 set 2026, clodia-platform#392): solo inference profile,
 # nessun id di base in regione; il profilo EU geo `eu.` tiene i dati in UE.
+#
+# `claude-sonnet-5-5` (1 ott 2026, clodia-platform#483): NON verificata su
+# account — chi ha la console AWS deve controllare che l'inference profile
+# `eu.anthropic.claude-sonnet-5-5` esista in eu-west-1 prima del merge. Scriverla
+# comunque è la scelta prudente: senza, un seed su 5.5 ripiegherebbe sul default
+# di famiglia e girerebbe su un'altra versione IN SILENZIO; con, un profilo
+# inesistente darebbe un 400 di Bedrock, cioè un errore che si vede.
 model_ids:
   claude-opus-5-5: "eu.anthropic.claude-opus-5-5"
   claude-opus-5: "eu.anthropic.claude-opus-5"
@@ -45,6 +54,7 @@ model_ids:
   claude-opus-4-7: "eu.anthropic.claude-opus-4-7"
   claude-opus-4-6: "eu.anthropic.claude-opus-4-6-v1"
   claude-opus-4-5: "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+  claude-sonnet-5-5: "eu.anthropic.claude-sonnet-5-5"
   claude-sonnet-5: "eu.anthropic.claude-sonnet-5"
   claude-sonnet-4-6: "eu.anthropic.claude-sonnet-4-6"
   claude-sonnet-4-5: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"

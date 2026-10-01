@@ -30,6 +30,11 @@ _BY_SDK: dict[str, list[tuple[str, int]]] = {
         ("opus-4-7", 1_000_000),
         ("opus-4-8", 1_000_000),
         ("sonnet-4-6", 1_000_000),
+        # `sonnet-5-5` combacerebbe già per sottostringa con `sonnet-5`, e con lo
+        # stesso valore: la voce è esplicita per simmetria con `opus-5-5` e
+        # perché il giorno in cui una delle due finestre cambia, qui si tocca una
+        # riga invece di scoprire un ordinamento.
+        ("sonnet-5-5", 1_000_000),
         ("sonnet-5", 1_000_000),
         ("opus-4-5", 200_000),
         ("sonnet-4-5", 200_000),

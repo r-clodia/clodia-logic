@@ -9,6 +9,14 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.32.0] — 2026-10-01
+- **Sysadmin moves to Claude Sonnet 5.5** (`claude-sonnet-5-5`,
+  clodia-platform#483). It is the only seed on a Sonnet; same 1M window as
+  Sonnet 5 at a lower price. On Bedrock it resolves to the EU geo inference
+  profile `eu.anthropic.claude-sonnet-5-5`, and the Sonnet family default moved
+  there too — without that, a seed declaring 5.5 would have silently run
+  Sonnet 5.
+
 ## [7.31.0] — 2026-10-01
 - `clodia` and `segretario` get **`topic.link_add` / `topic.link_remove`** (clodia-platform#477):
   two topics of the same SEAL level can be joined, and from then on each one sees

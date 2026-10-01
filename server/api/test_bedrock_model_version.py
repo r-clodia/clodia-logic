@@ -141,6 +141,9 @@ class RealProviderFileTests(unittest.TestCase):
         # clodia-platform#392: il default opus è Opus 5.5.
         self.assertEqual(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL"),
                          "eu.anthropic.claude-opus-5-5")
+        # clodia-platform#483: e il default sonnet è Sonnet 5.5.
+        self.assertEqual(env.get("ANTHROPIC_DEFAULT_SONNET_MODEL"),
+                         "eu.anthropic.claude-sonnet-5-5")
 
 
 class ContextWindowTests(unittest.TestCase):
@@ -179,3 +182,54 @@ class OpusFiveFiveOnTheRealProviderTests(unittest.TestCase):
         from ..agents import model_context
         self.assertEqual(
             model_context.model_context_window("claude-opus-5-5", "claude"), 1_000_000)
+
+
+class SonnetFiveFiveOnTheRealProviderTests(unittest.TestCase):
+    """clodia-platform#483: ogni Sonnet gira su Claude Sonnet 5.5, anche su Bedrock.
+
+    Gemella della classe Opus qui sopra, e per la stessa ragione: la funzione può
+    essere corretta e il CATALOGO fermo. Senza la voce esplicita
+    `claude-sonnet-5-5` un seed su 5.5 ripiegherebbe sul default di famiglia —
+    cioè girerebbe su Sonnet 5 dichiarando 5.5, che è il difetto della #361 nella
+    sua forma muta.
+    """
+
+    def test_sonnet_5_5_resolves_to_its_eu_profile(self):
+        self.assertEqual("eu.anthropic.claude-sonnet-5-5",
+                         P.bedrock_model_id("aws-region-eu", "claude-sonnet-5-5"))
+
+    def test_sonnet_5_5_has_the_one_million_window(self):
+        from ..agents import model_context
+        self.assertEqual(
+            model_context.model_context_window("claude-sonnet-5-5", "claude"), 1_000_000)
+
+    def test_nessun_seed_del_base_pack_dipende_dal_ripiego_di_famiglia(self):
+        """L'invariante, non la versione del giorno.
+
+        Un seed che gira su Bedrock e dichiara un modello Claude assente da
+        `model_ids` non rompe niente: ripiega sulla famiglia e serve un modello
+        funzionante che non è quello chiesto. È successo con Opus (#361) e
+        sarebbe successo di nuovo con Sonnet 5.5 — quindi il controllo non
+        nomina una versione, confronta i seed VERI con il catalogo VERO e vale
+        anche per il modello che qualcuno dichiarerà domani.
+        """
+        import yaml
+        from pathlib import Path
+        from ..config import workspace_path
+
+        mappa = (P._CATALOG.get("aws-region-eu") or {}).get("model_ids") or {}
+        agents = Path(workspace_path("catalogs/packs/base-pack/agents"))
+        mancanti = []
+        for d in sorted(p for p in agents.iterdir() if p.is_dir()):
+            spec = yaml.safe_load((d / "agent.yaml").read_text()) or {}
+            if "aws-region-eu" not in (spec.get("providers") or []):
+                continue
+            # Il modello su Bedrock è l'override per-provider, se c'è; se non
+            # c'è, il seed ci porta quello che dichiara.
+            pm = spec.get("provider_models") or {}
+            modello = pm.get("aws-region-eu") or spec.get("model") or ""
+            if modello.startswith("claude-") and modello not in mappa:
+                mancanti.append(f"{d.name}: {modello}")
+        self.assertEqual([], mancanti,
+                         "seed su Bedrock senza voce esplicita in model_ids "
+                         "(ripiegherebbero sulla famiglia): " + ", ".join(mancanti))
