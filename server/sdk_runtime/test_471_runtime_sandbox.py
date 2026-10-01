@@ -105,6 +105,7 @@ class CodexRunsSandboxedTests(unittest.TestCase):
         sess._sandbox_env = {}
         sess._codex_cmd = lambda model: ["codex", "exec", "-"]
         seen: dict = {}
+        shared: list = []
 
         async def capture(*argv, **kw):
             seen["argv"], seen["env"] = list(argv), kw["env"]
@@ -119,6 +120,7 @@ class CodexRunsSandboxedTests(unittest.TestCase):
                "PATH": "/usr/bin"}
         with patch.object(S, "_sandbox_enabled", lambda k: True), \
                 patch.object(S, "_sandbox_prepare", lambda *a, **k: prepared) as _p, \
+                patch.object(S, "_share_codex_home", lambda h: shared.append(h)), \
                 patch.object(S.pki, "mint_session_token", lambda *a, **k: "tok"), \
                 patch.dict(os.environ, env, clear=True), \
                 patch("asyncio.create_subprocess_exec", capture):
@@ -130,6 +132,7 @@ class CodexRunsSandboxedTests(unittest.TestCase):
         self.assertEqual(seen["env"]["CLODIA_AGENT_UMASK"], "007")
         self.assertNotIn("CLODIA_ORCHESTRATOR_SECRET", seen["env"])
         self.assertNotIn("LANGFUSE_SECRET_KEY", seen["env"])
+        self.assertEqual(shared, [sess._codex_home])     # re-shared before the turn
 
     def test_opencode_serve_is_started_through_the_wrapper(self) -> None:
         src = Path(S.__file__).read_text(encoding="utf-8")
@@ -174,3 +177,72 @@ class RealPrivilegeDropTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFollowUpTests(unittest.TestCase):
+    """Follow-ups of the #496 review."""
+
+    def test_orphans_of_a_sandbox_uid_are_killed_before_it_is_reused(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        proc = Path(tmp.name)
+        mine = os.getuid()
+        (proc / "4242").mkdir()                 # owned by us → "the sandbox uid"
+        (proc / "self").mkdir()                 # not numeric → ignored
+        killed: list = []
+        with patch.object(S, "_PROC", proc), \
+                patch("os.kill", lambda pid, sig: killed.append(pid)):
+            S._kill_uid_processes(mine)
+            S._kill_uid_processes(mine + 1)     # nobody runs as that uid
+            S._kill_uid_processes(None)
+        self.assertEqual(killed, [4242])
+
+    def test_codex_home_config_is_root_owned_and_the_dir_sticky(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        home = Path(tmp.name)
+        (home / "auth.json").write_text("{}")
+        os.chmod(home / "auth.json", 0o600)
+        (home / "sessions").mkdir()
+        chowned: list = []
+        with patch.object(S, "_CODEX_HOME_GID", os.getgid()), \
+                patch("os.chown", lambda f, u, g, **k: chowned.append((Path(f).name, u))):
+            S._share_codex_home(home)
+        mode = lambda p: stat.S_IMODE(os.stat(p).st_mode)
+        self.assertEqual(mode(home / "auth.json"), 0o660)          # refresh in place works
+        self.assertTrue(mode(home) & stat.S_ISVTX)                 # no deleting others' files
+        self.assertTrue(mode(home / "sessions") & stat.S_ISGID)
+        for name in ("config.toml", "AGENTS.md"):
+            self.assertEqual(mode(home / name), 0o640)             # group read-only
+            self.assertIn((name, 0), chowned)                      # root-owned
+        self.assertFalse(mode(home / "auth.json") & 0o007)         # no world bits
+
+    def test_symlinks_are_not_followed_when_sharing(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        root = Path(tmp.name) / "shared"
+        root.mkdir()
+        outside = Path(tmp.name) / "outside"
+        outside.mkdir()
+        os.chmod(outside, 0o700)
+        (root / "planted").symlink_to(outside)
+        S._group_share(root, os.getgid(), what="test")
+        self.assertFalse(stat.S_IMODE(os.stat(outside).st_mode) & stat.S_ISGID)
+
+    def test_seed_memory_behind_the_symlink_is_shared_with_the_seed_group(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        mem = Path(tmp.name) / "seed-memory"
+        mem.mkdir()
+        (mem / "MEMORY.md").write_text("x")
+        os.chmod(mem / "MEMORY.md", 0o600)
+        spawn = Path(tmp.name) / "spawn"
+        spawn.mkdir()
+        (spawn / "memory").symlink_to(mem)
+        with patch.object(S, "_seed_gid", lambda k: os.getgid()):
+            S._share_seed_memory("fullstack-dev", spawn)
+        self.assertEqual(stat.S_IMODE(os.stat(mem / "MEMORY.md").st_mode), 0o660)
+
+    def test_codex_history_is_off(self) -> None:
+        src = Path(S.__file__).read_text(encoding="utf-8")
+        self.assertIn('[history]\\npersistence = \\"none\\"', src)

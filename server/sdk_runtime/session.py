@@ -605,6 +605,11 @@ def _sandbox_prepare(kind: str, spawn_dir: Optional[Path], real_cli: str,
             _free_uid(uid)
             raise SandboxUnavailable(
                 f"{argv[0]} of the spawn failed: {r.stderr.decode(errors='replace')[:200]}")
+    try:
+        _share_seed_memory(kind, spawn_dir)
+    except SandboxUnavailable:
+        _free_uid(uid)
+        raise
     env = {"CLODIA_AGENT_UID": str(uid), "CLODIA_AGENT_GID": str(gid),
            "CLODIA_REAL_CLI": real, "HOME": str(spawn_dir)}
     if groups:
@@ -616,38 +621,89 @@ def _sandbox_prepare(kind: str, spawn_dir: Optional[Path], real_cli: str,
     return uid, [_SANDBOX_WRAPPER], env
 
 
-def _opencode_data_home(kind: str) -> Path:
-    """Persistent opencode data dir for a seed, shared by its sandboxed spawns
-    (different uids, same seed gid): group rw, setgid, no world access."""
-    d = data_path(f"runtime/opencode-data/{kind}")
-    d.mkdir(parents=True, exist_ok=True)
+def _group_share(root: Path, gid: int, *, what: str) -> None:
+    """chgrp + group rw + setgid on the directories under `root`, never
+    following symlinks (an agent could plant one to make root chmod an
+    arbitrary directory)."""
     import subprocess as _sp
-    gid = _seed_gid(kind)
-    for argv in (["chgrp", "-R", str(gid), str(d)],
-                 ["chmod", "-R", "g+rwX,o-rwx", str(d)]):
+    for argv in (["chgrp", "-R", "-P", str(gid), str(root)],
+                 ["chmod", "-R", "g+rwX,o-rwx", str(root)]):
         r = _sp.run(argv, check=False, capture_output=True)
         if r.returncode != 0:
             raise SandboxUnavailable(
-                f"{argv[0]} of the opencode data dir failed: "
-                f"{r.stderr.decode(errors='replace')[:200]}")
-    for x in [d, *(p for p in d.rglob("*") if p.is_dir())]:
-        os.chmod(x, os.stat(x).st_mode | 0o2000)
-    return d
+                f"{argv[0]} of the {what} failed: {r.stderr.decode(errors='replace')[:200]}")
+    for d in [root, *root.rglob("*")]:
+        if d.is_symlink() or not d.is_dir():
+            continue
+        os.chmod(d, os.stat(d, follow_symlinks=False).st_mode | 0o2000)
+
+
+#: Files in CODEX_HOME that codex reads but no spawn may rewrite: a spawn that
+#: could edit config.toml (a `notify` or `mcp_servers.command`) or a global
+#: AGENTS.md would run its code in every other codex spawn, with their token.
+_CODEX_HOME_ROOT_OWNED = ("config.toml", "AGENTS.md")
 
 
 def _share_codex_home(home: Path) -> None:
-    """Make the shared CODEX_HOME usable by sandboxed codex spawns: group
-    `_CODEX_HOME_GID`, group rw, setgid directories (new files keep the group).
-    `auth.json` stays out of reach of every other uid (0660, no world bits)."""
-    import subprocess as _sp
-    for argv in (["chgrp", "-R", str(_CODEX_HOME_GID), str(home)],
-                 ["chmod", "-R", "g+rwX,o-rwx", str(home)]):
-        r = _sp.run(argv, check=False, capture_output=True)
-        if r.returncode != 0:
-            raise SandboxUnavailable(
-                f"{argv[0]} of CODEX_HOME failed: {r.stderr.decode(errors='replace')[:200]}")
-    for d in [home, *(p for p in home.rglob("*") if p.is_dir())]:
-        os.chmod(d, os.stat(d).st_mode | 0o2000)
+    """Make the shared CODEX_HOME usable by sandboxed codex spawns.
+
+    Group `_CODEX_HOME_GID` with group rw and setgid directories, so the login
+    that codex refreshes in place (`auth.json`, rewritten with truncate+write)
+    and the session rollouts work across spawns with different uids. The
+    directory is also sticky: a spawn cannot delete or rename a file it does
+    not own. `config.toml` and a (empty) global `AGENTS.md` stay root-owned and
+    read-only to the group. Idempotent and cheap: run at start and before each
+    turn, because a provider reconnect rewrites `auth.json` root-only 0600.
+    """
+    _group_share(home, _CODEX_HOME_GID, what="CODEX_HOME")
+    os.chmod(home, os.stat(home).st_mode | 0o1000)          # sticky
+    for name in _CODEX_HOME_ROOT_OWNED:
+        f = home / name
+        if f.is_symlink():
+            f.unlink()
+        if not f.exists():
+            f.write_text("", encoding="utf-8")
+        os.chown(f, 0, _CODEX_HOME_GID, follow_symlinks=False)
+        os.chmod(f, 0o640)
+
+
+def _opencode_shared_dir(kind: str, sub: str) -> Path:
+    d = data_path(f"runtime/opencode-{sub}/{kind}")
+    d.mkdir(parents=True, exist_ok=True)
+    _group_share(d, _seed_gid(kind), what=f"opencode {sub} dir")
+    return d
+
+
+def _share_seed_memory(kind: str, spawn_dir: Optional[Path]) -> None:
+    """The spawn's `memory` is a symlink to the seed's persistent memory, owned
+    by root; `chown -R` of the spawn doesn't follow it, so a sandboxed runtime
+    could no longer write its memory. Share it through the seed's gid."""
+    if spawn_dir is None:
+        return
+    link = spawn_dir / "memory"
+    if link.is_symlink():
+        target = link.resolve()
+        if target.is_dir():
+            _group_share(target, _seed_gid(kind), what="seed memory")
+
+
+_PROC = Path("/proc")
+
+
+def _kill_uid_processes(uid: Optional[int]) -> None:
+    """Kill whatever still runs under a sandbox uid before it goes back to the
+    pool: a background job or `mcp-remote` left by the runtime would otherwise
+    get the next spawn's private dir and environment (its gateway token)."""
+    if uid is None:
+        return
+    import signal
+    for pdir in _PROC.glob("[0-9]*"):
+        try:
+            if pdir.stat().st_uid == uid:
+                os.kill(int(pdir.name), signal.SIGKILL)
+        except (OSError, ValueError):
+            continue
+
 
 # Backcompat alias: alcuni call site (e codice esterno) usano ancora
 # WORKSPACE_ROOT / SESSIONS_DIR. Restano agganciati a Clodia.
@@ -1714,6 +1770,7 @@ class ChatSession:
             self._spawn = None
         # rilascia l'uid per-spawn al pool (sandbox)
         if self._sandbox_uid is not None:
+            _kill_uid_processes(self._sandbox_uid)
             _free_uid(self._sandbox_uid)
             self._sandbox_uid = None
         await self._set_status(ClodiaStatus.STOPPED)
@@ -2477,7 +2534,11 @@ class CodexChatSession:
             (self._codex_home / "config.toml").write_text(
                 "[mcp_servers.clodia-tools]\n"
                 f'url = "{CLODIA_TOOLS_MCP_URL}"\n'
-                'bearer_token_env_var = "CLODIA_TOOLS_TOKEN"\n',
+                'bearer_token_env_var = "CLODIA_TOOLS_TOKEN"\n'
+                # codex forces history.jsonl to 0600: under per-spawn uids the
+                # next spawn couldn't append. The platform keeps its own
+                # transcripts; codex's global history isn't needed (#471).
+                "\n[history]\npersistence = \"none\"\n",
                 encoding="utf-8")
         except Exception as e:  # noqa: BLE001
             LOG.warning("config.toml MCP per codex non scritto: %s", e)
@@ -2542,6 +2603,7 @@ class CodexChatSession:
         self._proc = None
         self._client = None
         if getattr(self, "_sandbox_uid", None) is not None:
+            _kill_uid_processes(self._sandbox_uid)
             _free_uid(self._sandbox_uid)
             self._sandbox_uid = None
         if self._spawn is not None:
@@ -2743,6 +2805,7 @@ class CodexChatSession:
                 self.kind, self._spawn_dir, cmd[0],
                 groups=(_CODEX_HOME_GID,), umask="007")
         if self._sandbox_uid is not None:
+            _share_codex_home(self._codex_home)   # a reconnect rewrites auth.json 0600 root
             env.update(self._sandbox_env)
             cmd = [*self._sandbox_argv, *cmd[1:]]
         proc = await asyncio.create_subprocess_exec(
@@ -3431,18 +3494,39 @@ class OpenCodeChatSession:
             self.kind, self._spawn_dir, OPENCODE_BIN)
         if self._sandbox_uid is not None:
             env.update(sb_env)
-            # opencode keeps its sessions under XDG_DATA_HOME; with HOME in the
-            # spawn they'd vanish at every stop and the chat could not resume.
-            # One persistent dir per SEED, shared through the seed's gid.
-            env["XDG_DATA_HOME"] = str(_opencode_data_home(self.kind))
+            try:
+                # opencode keeps its sessions under XDG_DATA_HOME; with HOME in
+                # the spawn they'd vanish at every stop and the chat could not
+                # resume. One persistent dir per SEED, shared via the seed gid.
+                env["XDG_DATA_HOME"] = str(_opencode_shared_dir(self.kind, "data"))
+                # cache too: opencode installs provider packages at runtime and
+                # `npx` fetches mcp-remote; per-spawn they'd be re-downloaded
+                env["XDG_CACHE_HOME"] = str(_opencode_shared_dir(self.kind, "cache"))
+                env["npm_config_cache"] = str(_opencode_shared_dir(self.kind, "npm"))
+            except BaseException:
+                _free_uid(self._sandbox_uid)
+                self._sandbox_uid = None
+                raise
             env["CLODIA_AGENT_UMASK"] = "007"
             argv = prefix
-        self._proc = await asyncio.create_subprocess_exec(
-            *argv, "serve", "--port", str(self._port), "--hostname", "127.0.0.1",
-            env=env, cwd=str(run_cwd),
-            stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE, limit=_STREAM_LIMIT)
-        self._stderr_task = asyncio.create_task(self._drain_stderr())
-        await self._wait_ready()
+        try:
+            self._proc = await asyncio.create_subprocess_exec(
+                *argv, "serve", "--port", str(self._port), "--hostname", "127.0.0.1",
+                env=env, cwd=str(run_cwd),
+                stdout=asyncio.subprocess.DEVNULL, stderr=asyncio.subprocess.PIPE,
+                limit=_STREAM_LIMIT)
+            self._stderr_task = asyncio.create_task(self._drain_stderr())
+            await self._wait_ready()
+        except BaseException:
+            if self._proc is not None and self._proc.returncode is None:
+                try:
+                    self._proc.kill()
+                except ProcessLookupError:
+                    pass
+            _kill_uid_processes(self._sandbox_uid)
+            _free_uid(self._sandbox_uid)
+            self._sandbox_uid = None
+            raise
         # Da qui il server risponde: apro lo stream eventi. È il solo punto in cui
         # questo runtime vede il progresso di un turno lungo mentre accade (#216).
         self._events_task = asyncio.create_task(self._drain_events())
@@ -3485,6 +3569,7 @@ class OpenCodeChatSession:
         self._proc = None
         self._client = None
         if getattr(self, "_sandbox_uid", None) is not None:
+            _kill_uid_processes(self._sandbox_uid)
             _free_uid(self._sandbox_uid)
             self._sandbox_uid = None
         if self._spawn is not None:
