@@ -14,15 +14,14 @@ Eventi correnti:
 - handoff_move   { to_inbox, sender }
 - handoff_archive { lane }
 
-Il RAGIONAMENTO non sta qui, e non è una svista (clodia-platform#484). Questo
-file è indicizzato per AGENTE e **non sa in che tier** stia scrivendo: un
-`thinking_chunk` di un turno in SEAL-4 finirebbe nello stesso file di uno in
-SEAL-0, e il ragionamento cita il contenuto del canale. Lo storico del
-ragionamento vive in `agents/reasoning_log.py`, sotto
-`agent-state/reasoning/<tier>/<canale>/`, dove il tier è la prima cartella del
-percorso. Chi volesse estendere l'activity log a `tool_use`/`message_chunk` ha
-lo stesso problema davanti, e questa riga è l'avviso: prima il tier, poi il
-formato.
+REASONING is not stored here, and that is not an oversight (clodia-platform#484).
+This file is indexed by AGENT and **does not know which tier** it is writing in:
+a `thinking_chunk` of a SEAL-4 turn would land in the same file as one of a
+SEAL-0 turn, and reasoning quotes the channel's content. Stored reasoning lives
+in `agents/reasoning_log.py`, under `agent-state/reasoning/<tier>/<channel>/`,
+where the tier is the first directory of the path. Whoever wants to extend the
+activity log to `tool_use`/`message_chunk` faces the same problem, and this
+paragraph is the warning: tier first, then format.
 """
 from __future__ import annotations
 import asyncio

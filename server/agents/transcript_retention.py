@@ -12,6 +12,10 @@ days per tier, `0` = keep; default 365 for every tier. A transcript whose key
 carries no tier (a direct chat, a job) falls under `CLODIA_TRANSCRIPT_RETENTION_OTHER`
 (default 365). Every run is a `control.retention` event on the trail with
 what was removed, per tier.
+
+The same loop prunes the stored turn reasoning (`reasoning_log`, #484), whose
+retention per tier is min(this policy, `reasoning_log.MAX_DAYS`), with an event
+of its own (`resource: "reasoning"`).
 """
 from __future__ import annotations
 
@@ -68,18 +72,32 @@ def apply(root: Path | None = None, now: float | None = None) -> dict[str, int]:
     return removed
 
 
-async def retention_loop(interval: int = 86400) -> None:
+async def run_once() -> None:
+    """One retention pass: transcripts, then the stored turn reasoning (#484).
+
+    Each store gets its own `control.retention` event, so the trail says what
+    was removed (`resource`), per tier (`result.removed`), under which policy.
+    A failure in one store does not skip the other.
+    """
     import asyncio
     import logging
     from .. import audit_events
+    from . import reasoning_log
     log = logging.getLogger("agent-server.transcripts")
-    while True:
+    for resource, prune, pol in (("transcripts", apply, policy),
+                                 ("reasoning", reasoning_log.purge, reasoning_log.policy)):
         try:
-            removed = await asyncio.to_thread(apply)
+            removed = await asyncio.to_thread(prune)
             await audit_events.report({
-                "type": "control.retention", "action": "apply", "resource": "transcripts",
+                "type": "control.retention", "action": "apply", "resource": resource,
                 "actor": {"type": "service", "id": "agent-server"},
-                "result": {"removed": removed or None, "policy": policy()}})
+                "result": {"removed": removed or None, "policy": pol()}})
         except Exception as e:  # noqa: BLE001 - the loop must survive
-            log.error("transcript retention failed: %s", e)
+            log.error("%s retention failed: %s", resource, e)
+
+
+async def retention_loop(interval: int = 86400) -> None:
+    import asyncio
+    while True:
+        await run_once()
         await asyncio.sleep(interval)

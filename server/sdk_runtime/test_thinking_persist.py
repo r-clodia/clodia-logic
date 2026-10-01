@@ -1,12 +1,12 @@
-"""Il ragionamento di un turno sopravvive al turno (clodia-platform#484).
+"""A turn's reasoning outlives the turn (clodia-platform#484).
 
-`thinking_chunk` era SOLO un evento sul bus: chi non era connesso mentre il
-turno girava non aveva più niente da riaprire. Qui si guarda la cucitura in cui
-il pezzo di ragionamento diventa insieme evento live e testo da conservare —
-`_pubblica_pensiero` — e la consegna di quel testo a fine turno.
+`thinking_chunk` used to be ONLY an event on the bus: whoever was not connected
+while the turn ran had nothing left to reopen. Here we look at the seam where a
+piece of reasoning becomes both a live event and text to store —
+`_publish_reasoning` — and at the hand-over of that text at the end of the turn.
 
-Il deposito su disco e il suo tetto stanno in `agents/test_reasoning_log.py`:
-qui si verifica solo che l'accumulo esista, sia per turno, e si svuoti.
+The on-disk store and its cap are in `agents/test_reasoning_log.py`: here we
+only check that the accumulator exists, is per turn, and empties.
 """
 from __future__ import annotations
 
@@ -16,8 +16,8 @@ from unittest.mock import AsyncMock, patch
 from . import session as S
 
 
-class _Finta:
-    """La parte di una sessione che il seam tocca: nient'altro serve."""
+class _Fake:
+    """The part of a session the seam touches: nothing else is needed."""
 
     def __init__(self) -> None:
         self.chat_id = "chan:SEAL-1:software-house:clodia"
@@ -28,99 +28,99 @@ def _run(coro):
     return asyncio.run(coro)
 
 
-class IlSeamPubblicaEAccumula(unittest.TestCase):
+class TheSeamPublishesAndAccumulates(unittest.TestCase):
     def setUp(self) -> None:
-        self.pubblicati: list = []
+        self.published: list = []
         p = patch.object(S.bus, "publish", new=AsyncMock(
-            side_effect=lambda ev: self.pubblicati.append(ev)))
+            side_effect=lambda ev: self.published.append(ev)))
         self.pub = p.start()
         self.addCleanup(p.stop)
 
-    def test_il_chunk_esce_sul_bus_come_prima(self) -> None:
-        s = _Finta()
-        _run(S._pubblica_pensiero(s, 0, "sto ragionando"))
-        self.assertEqual(["thinking_chunk"], [e.type for e in self.pubblicati])
-        self.assertEqual("sto ragionando", self.pubblicati[0].payload["delta"])
-        self.assertEqual(s.chat_id, self.pubblicati[0].payload["chat_id"])
+    def test_the_chunk_goes_out_on_the_bus_as_before(self) -> None:
+        s = _Fake()
+        _run(S._publish_reasoning(s, 0, "reasoning now"))
+        self.assertEqual(["thinking_chunk"], [e.type for e in self.published])
+        self.assertEqual("reasoning now", self.published[0].payload["delta"])
+        self.assertEqual(s.chat_id, self.published[0].payload["chat_id"])
 
-    def test_lo_stesso_chunk_resta_disponibile_a_turno_finito(self) -> None:
-        """IL DIFETTO SEGNALATO: finito lo streaming non restava niente."""
-        s = _Finta()
-        _run(S._pubblica_pensiero(s, 0, "primo passo"))
-        _run(S._pubblica_pensiero(s, 1, "secondo passo"))
-        raccolto = S.consuma_pensiero(s)
-        self.assertIn("primo passo", raccolto["text"])
-        self.assertIn("secondo passo", raccolto["text"])
+    def test_the_same_chunk_is_available_after_the_turn(self) -> None:
+        """THE REPORTED DEFECT: once streaming ended nothing was left."""
+        s = _Fake()
+        _run(S._publish_reasoning(s, 0, "first step"))
+        _run(S._publish_reasoning(s, 1, "second step"))
+        taken = S.take_reasoning(s)
+        self.assertIn("first step", taken["text"])
+        self.assertIn("second step", taken["text"])
 
-    def test_il_testo_conservato_e_quello_cucito(self) -> None:
-        """Non due copie con due formattazioni: lo storico è ciò che si è
-        visto scorrere, separatori fra blocchi compresi (vedi `_ThinkSeam`)."""
-        s = _Finta()
-        _run(S._pubblica_pensiero(s, 0, "fine blocco."))
-        _run(S._pubblica_pensiero(s, 1, "blocco nuovo."))
-        live = "".join(e.payload["delta"] for e in self.pubblicati)
-        self.assertEqual(live, S.consuma_pensiero(s)["text"])
+    def test_the_stored_text_is_the_stitched_one(self) -> None:
+        """Not two copies with two formats: the history is what was seen
+        streaming, block separators included (see `_ThinkSeam`)."""
+        s = _Fake()
+        _run(S._publish_reasoning(s, 0, "end of block."))
+        _run(S._publish_reasoning(s, 1, "new block."))
+        live = "".join(e.payload["delta"] for e in self.published)
+        self.assertEqual(live, S.take_reasoning(s)["text"])
         self.assertIn("\n\n", live)
 
-    def test_un_delta_vuoto_non_pubblica_niente(self) -> None:
-        s = _Finta()
-        _run(S._pubblica_pensiero(s, 0, ""))
-        self.assertEqual([], self.pubblicati)
-        self.assertIsNone(S.consuma_pensiero(s))
+    def test_an_empty_delta_publishes_nothing(self) -> None:
+        s = _Fake()
+        _run(S._publish_reasoning(s, 0, ""))
+        self.assertEqual([], self.published)
+        self.assertIsNone(S.take_reasoning(s))
 
-    def test_consumare_svuota(self) -> None:
-        """Il turno dopo non deve ereditare il ragionamento di questo: sarebbe
-        il ragionamento giusto appeso alla bolla sbagliata."""
-        s = _Finta()
-        _run(S._pubblica_pensiero(s, 0, "del turno di prima"))
-        self.assertIsNotNone(S.consuma_pensiero(s))
-        self.assertIsNone(S.consuma_pensiero(s))
+    def test_taking_empties(self) -> None:
+        """The next turn must not inherit this one's reasoning: it would be
+        the right reasoning attached to the wrong bubble."""
+        s = _Fake()
+        _run(S._publish_reasoning(s, 0, "from the previous turn"))
+        self.assertIsNotNone(S.take_reasoning(s))
+        self.assertIsNone(S.take_reasoning(s))
 
-    def test_il_tetto_vale_gia_in_memoria(self) -> None:
-        """Il buffer non cresce senza limite in attesa di essere capato su
-        disco: un turno impazzito terrebbe centinaia di MB nel processo."""
-        s = _Finta()
+    def test_the_cap_already_applies_in_memory(self) -> None:
+        """The buffer does not grow unbounded while waiting to be capped on
+        disk: a runaway turn would hold hundreds of MB in the process."""
+        s = _Fake()
         for i in range(400):
-            _run(S._pubblica_pensiero(s, i, "x" * 1000))
-        raccolto = S.consuma_pensiero(s)
-        self.assertTrue(raccolto["truncated"])
-        self.assertLess(len(raccolto["text"]), 200_000)
+            _run(S._publish_reasoning(s, i, "x" * 1000))
+        taken = S.take_reasoning(s)
+        self.assertTrue(taken["truncated"])
+        self.assertLess(len(taken["text"]), 200_000)
 
-    def test_senza_ragionamento_non_si_consuma_niente(self) -> None:
-        self.assertIsNone(S.consuma_pensiero(_Finta()))
+    def test_without_reasoning_nothing_is_taken(self) -> None:
+        self.assertIsNone(S.take_reasoning(_Fake()))
 
 
-class IPuntiDiEmissionePassanoDiLi(unittest.TestCase):
-    """Una cucitura che un runtime scavalca è un ragionamento perso a metà.
+class TheEmissionPointsGoThroughIt(unittest.TestCase):
+    """A seam that a runtime bypasses is reasoning lost halfway.
 
-    I punti sono quattro (SDK Claude, codex, opencode `reasoning`, opencode
-    `text` dirottato) e si sono già dimenticati una volta del `_ThinkSeam`
-    appena nato: lo stesso errore qui significherebbe un turno il cui
-    ragionamento c'è stato e non si ritrova.
+    There are four points (Claude SDK, codex, opencode `reasoning`, opencode
+    `text` diverted) and they already forgot the freshly born `_ThinkSeam`
+    once: the same mistake here would mean a turn whose reasoning happened and
+    cannot be found.
     """
 
-    def _sorgente(self) -> str:
+    def _source(self) -> str:
         from pathlib import Path
         return (Path(__file__).parent / "session.py").read_text(encoding="utf-8")
 
-    def test_tutti_e_quattro_chiamano_la_cucitura(self) -> None:
-        src = self._sorgente()
-        self.assertEqual(4, src.count("await _pubblica_pensiero("),
-                         "i punti di emissione del ragionamento sono quattro")
+    def test_all_four_call_the_seam(self) -> None:
+        src = self._source()
+        self.assertEqual(4, src.count("await _publish_reasoning("),
+                         "there are four reasoning emission points")
 
-    def test_nessuno_pubblica_un_thinking_chunk_per_conto_suo(self) -> None:
-        src = self._sorgente()
+    def test_none_publishes_a_thinking_chunk_on_its_own(self) -> None:
+        src = self._source()
         self.assertEqual(
             1, src.count('type="thinking_chunk"'),
-            "thinking_chunk si pubblica SOLO dentro _pubblica_pensiero: un "
-            "secondo punto sarebbe un ragionamento che non viene conservato")
+            "thinking_chunk is published ONLY inside _publish_reasoning: a "
+            "second point would be reasoning that is not stored")
 
-    def test_ogni_runtime_apre_il_proprio_accumulo_a_inizio_turno(self) -> None:
-        """Tre classi di sessione, tre `send_user_message`: se una non azzera,
-        il suo ragionamento si accumula per tutta la vita della sessione."""
-        src = self._sorgente()
-        self.assertEqual(3, src.count("_inizia_pensiero(self)"),
-                         "le classi di sessione sono tre")
+    def test_every_runtime_opens_its_accumulator_at_turn_start(self) -> None:
+        """Three session classes, three `send_user_message`: if one does not
+        reset, its reasoning accumulates for the whole life of the session."""
+        src = self._source()
+        self.assertEqual(3, src.count("_start_reasoning(self)"),
+                         "there are three session classes")
 
 
 if __name__ == "__main__":

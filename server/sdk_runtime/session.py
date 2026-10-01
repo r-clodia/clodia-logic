@@ -1106,123 +1106,123 @@ class _ThinkSeam:
         return cucitura + text
 
 
-class _PensieroDelTurno:
-    """Il ragionamento di UN turno: lo cuce, e intanto lo tiene da parte.
+class _TurnReasoning:
+    """The reasoning of ONE turn: it stitches it and, meanwhile, keeps it.
 
-    Prima `thinking_chunk` era solo un evento sul bus: finito lo streaming non
-    restava niente, e chi riapriva il topic a turno concluso — cioè il caso
-    normale — non aveva più nulla da espandere (clodia-platform#484). Il testo
-    conservato è ESATTAMENTE quello pubblicato, cuciture comprese: due
-    formattazioni diverse per la stessa cosa sono due cose che divergono.
+    `thinking_chunk` used to be only an event on the bus: once streaming ended
+    nothing was left, and whoever reopened the topic after the turn — the
+    normal case — had nothing to expand (clodia-platform#484). The stored text
+    is EXACTLY the published one, seams included: two formats for the same
+    thing are two things that drift apart.
 
-    Il tetto (`reasoning_log.TESTA`/`CODA`) si applica già qui, in memoria, e
-    non solo al momento di scrivere: un turno impazzito terrebbe altrimenti
-    centinaia di MB nel processo in attesa di essere capato su disco. Si
-    tengono i due capi, perché la coda è la conclusione e la testa è
-    l'impostazione del problema.
+    The cap (`reasoning_log.HEAD_CHARS`/`TAIL_CHARS`) is applied here already,
+    in memory, and not only when writing: a runaway turn would otherwise hold
+    hundreds of MB in the process while waiting to be capped on disk. Both ends
+    are kept, because the tail is the conclusion and the head is how the
+    problem was framed.
     """
 
     def __init__(self) -> None:
         self._seam = _ThinkSeam()
-        self._testa: list[str] = []
-        self._len_testa = 0
-        self._coda: deque = deque()
-        self._len_coda = 0
-        self._tagliati = 0
+        self._head: list[str] = []
+        self._head_len = 0
+        self._tail: deque = deque()
+        self._tail_len = 0
+        self._omitted = 0
 
     def feed(self, index: object, text: str) -> str:
-        """Il pezzo da pubblicare ORA, già cucito. Lo trattiene anche."""
-        cucito = self._seam.feed(index, text)
-        if cucito:
-            self._accumula(cucito)
-        return cucito
+        """The piece to publish NOW, already stitched. It also keeps it."""
+        stitched = self._seam.feed(index, text)
+        if stitched:
+            self._accumulate(stitched)
+        return stitched
 
-    def _accumula(self, testo: str) -> None:
-        if self._len_testa < reasoning_log.TESTA:
-            spazio = reasoning_log.TESTA - self._len_testa
-            self._testa.append(testo[:spazio])
-            self._len_testa += min(spazio, len(testo))
-            testo = testo[spazio:]
-            if not testo:
+    def _accumulate(self, text: str) -> None:
+        if self._head_len < reasoning_log.HEAD_CHARS:
+            room = reasoning_log.HEAD_CHARS - self._head_len
+            self._head.append(text[:room])
+            self._head_len += min(room, len(text))
+            text = text[room:]
+            if not text:
                 return
-        self._coda.append(testo)
-        self._len_coda += len(testo)
-        # Scarta dalla testa della coda finché il pezzo più vecchio è di troppo
-        # per intero; poi pota il residuo. In due passi, così un solo chunk
-        # enorme non resta appeso tutto.
-        while self._coda and self._len_coda - len(self._coda[0]) >= reasoning_log.CODA:
-            via = self._coda.popleft()
-            self._len_coda -= len(via)
-            self._tagliati += len(via)
-        if self._len_coda > reasoning_log.CODA:
-            eccesso = self._len_coda - reasoning_log.CODA
-            primo = self._coda.popleft()
-            self._coda.appendleft(primo[eccesso:])
-            self._len_coda -= eccesso
-            self._tagliati += eccesso
+        self._tail.append(text)
+        self._tail_len += len(text)
+        # Drop from the front of the tail while the oldest piece is entirely
+        # in excess; then trim the remainder. In two steps, so a single huge
+        # chunk is not kept whole.
+        while self._tail and self._tail_len - len(self._tail[0]) >= reasoning_log.TAIL_CHARS:
+            dropped = self._tail.popleft()
+            self._tail_len -= len(dropped)
+            self._omitted += len(dropped)
+        if self._tail_len > reasoning_log.TAIL_CHARS:
+            excess = self._tail_len - reasoning_log.TAIL_CHARS
+            first = self._tail.popleft()
+            self._tail.appendleft(first[excess:])
+            self._tail_len -= excess
+            self._omitted += excess
 
     @property
-    def troncato(self) -> bool:
-        return self._tagliati > 0
+    def truncated(self) -> bool:
+        return self._omitted > 0
 
-    def testo(self) -> str:
-        corpo = "".join(self._testa)
-        if self._tagliati:
-            corpo += (f"\n\n[… {self._tagliati} caratteri di ragionamento "
-                      f"omessi …]\n\n")
-        return corpo + "".join(self._coda)
+    def text(self) -> str:
+        body = "".join(self._head)
+        if self._omitted:
+            body += (f"\n\n[… {self._omitted} characters of reasoning "
+                     f"omitted …]\n\n")
+        return body + "".join(self._tail)
 
 
-def _inizia_pensiero(sessione) -> None:
-    """Apre l'accumulo del turno che sta per partire.
+def _start_reasoning(session) -> None:
+    """Open the accumulator of the turn that is about to start.
 
-    Va chiamato da OGNI `send_user_message` (sono tre, una per runtime): una
-    sessione è di lunga vita, e senza l'azzeramento il ragionamento si
-    accumulerebbe per tutta la sua durata e finirebbe appeso alla bolla
-    sbagliata.
+    Must be called by EVERY `send_user_message` (there are three, one per
+    runtime): a session is long-lived, and without the reset the reasoning
+    would accumulate for its whole life and end up attached to the wrong
+    bubble.
     """
-    sessione._pensiero = _PensieroDelTurno()
+    session._reasoning = _TurnReasoning()
 
 
-async def _pubblica_pensiero(sessione, index: object, testo: str) -> None:
-    """UNICO punto in cui un pezzo di ragionamento diventa evento e storico.
+async def _publish_reasoning(session, index: object, text: str) -> None:
+    """The ONLY place where a piece of reasoning becomes an event and history.
 
-    I punti di emissione sono quattro, su tre runtime diversi (SDK Claude,
-    codex, opencode `reasoning`, opencode `text` dirottato quando il provider
-    non separa il pensiero): si sono già dimenticati una volta del `_ThinkSeam`
-    appena nato, e una dimenticanza qui oggi non è più solo una riga mal
-    formattata — è un turno il cui ragionamento non si ritrova più.
+    There are four emission points across three runtimes (Claude SDK, codex,
+    opencode `reasoning`, opencode `text` diverted when the provider does not
+    separate thinking): they already forgot the freshly born `_ThinkSeam`
+    once, and forgetting here is no longer just a badly formatted line — it is
+    a turn whose reasoning can no longer be found.
     """
-    pensiero = getattr(sessione, "_pensiero", None)
-    if pensiero is None:
-        # Un turno che non è passato da `_inizia_pensiero` (fake dei test,
-        # percorsi futuri): meglio accumulare in un buffer nato qui che perdere
-        # il pezzo o sollevare dentro lo streaming.
-        pensiero = sessione._pensiero = _PensieroDelTurno()
-    cucito = pensiero.feed(index, testo)
-    if not cucito:
+    reasoning = getattr(session, "_reasoning", None)
+    if reasoning is None:
+        # A turn that did not go through `_start_reasoning` (test fakes,
+        # future paths): better to accumulate in a buffer born here than to
+        # lose the piece or raise inside the stream.
+        reasoning = session._reasoning = _TurnReasoning()
+    stitched = reasoning.feed(index, text)
+    if not stitched:
         return
     await bus.publish(Event(
         type="thinking_chunk",
-        payload={"chat_id": sessione.chat_id, "delta": cucito},
+        payload={"chat_id": session.chat_id, "delta": stitched},
         timestamp=datetime.now(timezone.utc),
     ))
 
 
-def consuma_pensiero(sessione) -> Optional[dict]:
-    """Il ragionamento del turno appena chiuso, sganciandolo dalla sessione.
+def take_reasoning(session) -> Optional[dict]:
+    """The reasoning of the turn that just ended, detaching it from the session.
 
-    `None` quando non c'è niente da conservare: il chiamante non deve
-    distinguere «turno muto» da «turno che non ha ragionato».
+    `None` when there is nothing to keep: the caller need not tell a "silent
+    turn" from a "turn that did not reason".
     """
-    pensiero = getattr(sessione, "_pensiero", None)
-    if pensiero is None:
+    reasoning = getattr(session, "_reasoning", None)
+    if reasoning is None:
         return None
-    sessione._pensiero = None
-    testo = pensiero.testo()
-    if not testo.strip():
+    session._reasoning = None
+    text = reasoning.text()
+    if not text.strip():
         return None
-    return {"text": testo, "truncated": pensiero.troncato}
+    return {"text": text, "truncated": reasoning.truncated}
 
 
 class ProviderNotConnected(RuntimeError):
@@ -1941,10 +1941,10 @@ class ChatSession:
                                  "chat_id": self.chat_id, "trace": trace.current()})
             LOG.info("turno START %s: %s", self.chat_id, _snippet(content, 80))
             self._last_usage = {}
-            # Il ragionamento di QUESTO turno comincia qui (#484): la
-            # sessione è di lunga vita, e un accumulo non azzerato
-            # finirebbe appeso alla bolla del turno sbagliato.
-            _inizia_pensiero(self)
+            # THIS turn's reasoning starts here (#484): the session is
+            # long-lived, and an accumulator that is not reset would end up
+            # attached to the wrong turn's bubble.
+            _start_reasoning(self)
             model_name = KIND_MODEL.get(self.kind) or "claude-cli-default"
             with langfuse_observation(
                 name="clodia-chat-turn",
@@ -2288,12 +2288,12 @@ class ChatSession:
                                 timestamp=datetime.now(timezone.utc),
                             ))
                     elif dtype == "thinking_delta" and delta.get("thinking"):
-                        # Come il testo visibile qui sopra: al cambio di blocco
-                        # ci vuole un confine, o le righe si saldano (vedi
-                        # `_ThinkSeam`) — e il pezzo va anche conservato, o a
-                        # turno finito non resta niente (#484). Entrambe le
-                        # cose stanno in `_pubblica_pensiero`.
-                        await _pubblica_pensiero(self, ev.get("index"),
+                        # Like the visible text above: a block change needs
+                        # a seam, or the lines stick together (see
+                        # `_ThinkSeam`) — and the piece must also be stored,
+                        # or nothing is left once the turn ends (#484). Both
+                        # happen in `_publish_reasoning`.
+                        await _publish_reasoning(self, ev.get("index"),
                                                  delta["thinking"])
                 continue
 
@@ -2609,10 +2609,10 @@ class CodexChatSession:
         self._sandbox_argv: list[str] = []
         self._sandbox_env: dict[str, str] = {}
         self._thread_id: Optional[str] = None   # session id codex per il resume
-        # Cucitura e accumulo del ragionamento stanno in `_PensieroDelTurno`,
-        # aperto a ogni turno da `_inizia_pensiero`: un item `reasoning` è un
-        # paragrafo intero, e senza confine si salda al precedente sulla stessa
-        # riga. Qui resta solo il contatore, che fa da indice di blocco.
+        # Stitching and accumulation of the reasoning live in `_TurnReasoning`,
+        # opened at every turn by `_start_reasoning`: a `reasoning` item is a
+        # whole paragraph, and without a seam it would stick to the previous
+        # one on the same line. Only the counter stays here, as block index.
         self._think_n = 0
         self._last_usage: dict[str, int] = {}
         self._last_codex_cmd: list[str] = []   # call parameters on the audit trail (#464)
@@ -2763,10 +2763,10 @@ class CodexChatSession:
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
             self._last_usage = {}
-            # Il ragionamento di QUESTO turno comincia qui (#484): la
-            # sessione è di lunga vita, e un accumulo non azzerato
-            # finirebbe appeso alla bolla del turno sbagliato.
-            _inizia_pensiero(self)
+            # THIS turn's reasoning starts here (#484): the session is
+            # long-lived, and an accumulator that is not reset would end up
+            # attached to the wrong turn's bubble.
+            _start_reasoning(self)
             self._current_turn_task = asyncio.create_task(self._run_turn(content))
             try:
                 full = await self._current_turn_task
@@ -3069,7 +3069,7 @@ class CodexChatSession:
                     # Qui `text` è un paragrafo INTERO, non un delta: ogni item
                     # è un blocco nuovo, quindi il contatore basta come indice.
                     self._think_n += 1
-                    await _pubblica_pensiero(self, self._think_n, text)
+                    await _publish_reasoning(self, self._think_n, text)
             elif itype in ("command_execution", "mcp_tool_call", "local_shell_call",
                            "file_change", "web_search", "patch_apply"):
                 summary = (item.get("command") or item.get("query")
@@ -3306,10 +3306,10 @@ class OpenCodeChatSession:
         self._base_url: Optional[str] = None
         self._oc_session: Optional[str] = None   # id sessione OpenCode (per il resume)
         self._sandbox_uid: Optional[int] = None   # per-spawn uid (#471)
-        # Cucitura e accumulo del ragionamento stanno in `_PensieroDelTurno`,
-        # aperto a ogni turno da `_inizia_pensiero`: un item `reasoning` è un
-        # paragrafo intero, e senza confine si salda al precedente sulla stessa
-        # riga. Qui resta solo il contatore, che fa da indice di blocco.
+        # Stitching and accumulation of the reasoning live in `_TurnReasoning`,
+        # opened at every turn by `_start_reasoning`: a `reasoning` item is a
+        # whole paragraph, and without a seam it would stick to the previous
+        # one on the same line. Only the counter stays here, as block index.
         self._think_n = 0
         self._provider: Optional[str] = None
         self._model: Optional[str] = None
@@ -3748,10 +3748,10 @@ class OpenCodeChatSession:
             await self._record({"role": "user", "content": content})
             await self._set_status(ClodiaStatus.THINKING)
             self._last_usage = {}
-            # Il ragionamento di QUESTO turno comincia qui (#484): la
-            # sessione è di lunga vita, e un accumulo non azzerato
-            # finirebbe appeso alla bolla del turno sbagliato.
-            _inizia_pensiero(self)
+            # THIS turn's reasoning starts here (#484): the session is
+            # long-lived, and an accumulator that is not reset would end up
+            # attached to the wrong turn's bubble.
+            _start_reasoning(self)
             self._current_turn_task = asyncio.create_task(self._run_turn(content))
             try:
                 full = await self._current_turn_task
@@ -3916,7 +3916,7 @@ class OpenCodeChatSession:
                                "(kind=%s, chat_id=%s, %d char)",
                                self.kind, self.chat_id, len(testo))
                     self._think_n += 1
-                    await _pubblica_pensiero(self, self._think_n, testo)
+                    await _publish_reasoning(self, self._think_n, testo)
                 else:
                     parts_out.append(testo)
                     await bus.publish(Event(type="message_chunk",
@@ -3926,7 +3926,7 @@ class OpenCodeChatSession:
             elif t == "reasoning" and p.get("text"):
                 # Stesso caso di codex: una part `reasoning` è un blocco intero.
                 self._think_n += 1
-                await _pubblica_pensiero(self, self._think_n, p["text"])
+                await _publish_reasoning(self, self._think_n, p["text"])
             elif t == "tool":
                 st = p.get("state") or {}
                 await bus.publish(Event(type="tool_use",

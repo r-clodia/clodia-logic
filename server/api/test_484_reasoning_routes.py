@@ -1,13 +1,13 @@
-"""Le due rotte che rendono consultabile il ragionamento di un turno finito.
+"""The two routes that make the reasoning of a finished turn readable.
 
-clodia-platform#484. L'indice dice QUALI bolle hanno un ragionamento salvato
-(è ciò che accende il 💭 in UI, e senza di lui il bottone aprirebbe il vuoto);
-la lettura restituisce il testo di una bolla sola.
+clodia-platform#484. The index says WHICH bubbles have stored reasoning (it is
+what lights the 💭 in the UI; without it the button would open nothing); the
+read returns the text of a single bubble.
 
-La proprietà che conta più del formato: il ragionamento cita il contenuto del
-canale, quindi **si legge solo da dentro il canale**. Non è una rotta
-amministrativa né una rotta pubblica: sta dietro `_require_member`, la stessa
-guardia dei messaggi, e la guardia scatta PRIMA di toccare lo store.
+The property that matters more than the format: reasoning quotes the channel's
+content, so **it can be read only from inside the channel**. It is neither an
+admin route nor a public one: it sits behind `_require_member`, the same guard
+as the messages, and the guard fires BEFORE the store is touched.
 """
 from __future__ import annotations
 
@@ -26,39 +26,39 @@ def _app() -> TestClient:
     return TestClient(app)
 
 
-_INDICE = "/clodia/channels/SEAL-2/preventivi-tomato/reasoning"
-_UNO = _INDICE + "/m1"
+_INDEX = "/clodia/channels/SEAL-2/preventivi-tomato/reasoning"
+_ONE = _INDEX + "/m1"
 _TOPIC = {"meta": {"tier": "SEAL-2", "participants": ["davide"]}}
 
 
-class SoloDaDentroIlCanale(unittest.TestCase):
-    def test_lindice_e_per_i_partecipanti(self) -> None:
+class OnlyFromInsideTheChannel(unittest.TestCase):
+    def test_the_index_is_for_participants(self) -> None:
         with patch.object(channels.topics_client, "async_open_topic",
                           new=AsyncMock(return_value=_TOPIC)), \
              patch.object(channels, "_require_member",
-                          side_effect=HTTPException(403, "non sei partecipante")), \
-             patch.object(channels.reasoning_log, "index") as leggi:
-            r = _app().get(_INDICE)
+                          side_effect=HTTPException(403, "not a participant")), \
+             patch.object(channels.reasoning_log, "index") as reader:
+            r = _app().get(_INDEX)
         self.assertEqual(403, r.status_code)
-        leggi.assert_not_called()
+        reader.assert_not_called()
 
-    def test_la_lettura_e_per_i_partecipanti(self) -> None:
+    def test_the_read_is_for_participants(self) -> None:
         with patch.object(channels.topics_client, "async_open_topic",
                           new=AsyncMock(return_value=_TOPIC)), \
              patch.object(channels, "_require_member",
-                          side_effect=HTTPException(403, "non sei partecipante")), \
-             patch.object(channels.reasoning_log, "read") as leggi:
-            r = _app().get(_UNO)
+                          side_effect=HTTPException(403, "not a participant")), \
+             patch.object(channels.reasoning_log, "read") as reader:
+            r = _app().get(_ONE)
         self.assertEqual(403, r.status_code)
-        leggi.assert_not_called()
+        reader.assert_not_called()
 
-    def test_un_canale_che_non_esiste_e_404(self) -> None:
+    def test_a_channel_that_does_not_exist_is_404(self) -> None:
         with patch.object(channels.topics_client, "async_open_topic",
                           new=AsyncMock(return_value=None)):
-            self.assertEqual(404, _app().get(_INDICE).status_code)
+            self.assertEqual(404, _app().get(_INDEX).status_code)
 
 
-class CosaRestituisce(unittest.TestCase):
+class WhatItReturns(unittest.TestCase):
     def setUp(self) -> None:
         self._p = [
             patch.object(channels.topics_client, "async_open_topic",
@@ -69,43 +69,43 @@ class CosaRestituisce(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def test_lindice_e_la_lista_dei_messaggi_che_ne_hanno_uno(self) -> None:
+    def test_the_index_lists_the_messages_that_have_one(self) -> None:
         with patch.object(channels.reasoning_log, "index",
                           return_value=["m1", "m7"]):
-            r = _app().get(_INDICE)
+            r = _app().get(_INDEX)
         self.assertEqual(200, r.status_code)
         self.assertEqual(["m1", "m7"], r.json()["messages"])
 
-    def test_la_lettura_porta_il_testo_e_se_e_troncato(self) -> None:
-        voce = {"message_id": "m1", "spawn": "clodia-7", "text": "ci penso",
-                "truncated": False, "ts": "2026-10-01T10:00:00+00:00"}
-        with patch.object(channels.reasoning_log, "read", return_value=voce):
-            r = _app().get(_UNO)
+    def test_the_read_carries_the_text_and_whether_it_was_cut(self) -> None:
+        entry = {"message_id": "m1", "spawn": "clodia-7", "text": "thinking",
+                 "truncated": False, "ts": "2026-10-01T10:00:00+00:00"}
+        with patch.object(channels.reasoning_log, "read", return_value=entry):
+            r = _app().get(_ONE)
         self.assertEqual(200, r.status_code)
-        self.assertEqual("ci penso", r.json()["text"])
+        self.assertEqual("thinking", r.json()["text"])
         self.assertEqual("clodia-7", r.json()["spawn"])
         self.assertIs(False, r.json()["truncated"])
 
-    def test_una_bolla_senza_ragionamento_e_404(self) -> None:
-        """Mai una risposta vuota con 200: in UI diventerebbe un riquadro
-        aperto su niente, che è la bolla fantasma che non vogliamo."""
+    def test_a_bubble_without_reasoning_is_404(self) -> None:
+        """Never an empty 200: in the UI it would become a box opened on
+        nothing, which is the ghost bubble we do not want."""
         with patch.object(channels.reasoning_log, "read", return_value=None):
-            self.assertEqual(404, _app().get(_UNO).status_code)
+            self.assertEqual(404, _app().get(_ONE).status_code)
 
-    def test_lo_store_viene_interrogato_sul_canale_della_rotta(self) -> None:
+    def test_the_store_is_queried_on_the_route_channel(self) -> None:
         with patch.object(channels.reasoning_log, "index",
-                          return_value=[]) as leggi:
-            _app().get(_INDICE)
-        self.assertEqual(("SEAL-2", "preventivi-tomato"), leggi.call_args.args[:2])
+                          return_value=[]) as reader:
+            _app().get(_INDEX)
+        self.assertEqual(("SEAL-2", "preventivi-tomato"), reader.call_args.args[:2])
 
 
-class LeRotteStannoNellApp(unittest.TestCase):
-    """Montate davvero sull'app assemblata, non solo nel modulo: una rotta
-    dichiarata in un router che nessuno include non esiste (cfr.
-    `test_no_hook_surface`, stesso motivo per cui si guarda l'OpenAPI e non
+class TheRoutesAreInTheApp(unittest.TestCase):
+    """Actually mounted on the assembled app, not only in the module: a route
+    declared in a router nobody includes does not exist (cf.
+    `test_no_hook_surface`, same reason the OpenAPI is checked and not
     `app.routes`)."""
 
-    def test_entrambe_le_rotte_sono_servite(self) -> None:
+    def test_both_routes_are_served(self) -> None:
         from .. import main
         paths = main.create_app().openapi()["paths"]
         self.assertIn("/clodia/channels/{tier}/{name}/reasoning", paths)

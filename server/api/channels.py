@@ -37,7 +37,7 @@ from .. import audit_events, debug_watch
 from ..core import trace, turn_timing
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
-from ..sdk_runtime.session import (consuma_pensiero, manager, ProviderNotConnected,
+from ..sdk_runtime.session import (take_reasoning, manager, ProviderNotConnected,
                                    spawn_dirs_of, topic_runtime_override,
                                    session_provider)
 from . import (access_log, mentions, presence, responder_routing, router_config,
@@ -654,31 +654,31 @@ def _topic_title(tier: str, name: str) -> str | None:
         return None
 
 
-def _conserva_ragionamento(tier: str, name: str, spawn: str, responder: str,
-                           chat, pensiero: dict | None,
-                           message_id: str | None) -> None:
-    """Appende alla BOLLA il ragionamento del turno che l'ha prodotta (#484).
+def _store_reasoning(tier: str, name: str, spawn: str, responder: str,
+                     chat, reasoning: dict | None,
+                     message_id: str | None) -> None:
+    """Attach to the BUBBLE the reasoning of the turn that produced it (#484).
 
-    L'aggancio è l'id del messaggio e non il turno, perché è la bolla l'oggetto
-    che si guarda quando ci si chiede «come ci è arrivato». Con le bolle per
-    blocco (#243) un turno vale più messaggi e il ragionamento è uno solo:
-    chiama chi lo sa, cioè chi ha appena pubblicato, passando l'ULTIMA — quella
-    che chiude il discorso che il ragionamento racconta.
+    The key is the message id and not the turn, because the bubble is what one
+    looks at when asking "how did it get there". With per-block bubbles (#243)
+    a turn yields several messages and a single reasoning: whoever knows —
+    i.e. whoever just posted — calls this with the LAST one, the bubble that
+    closes the argument the reasoning tells.
 
-    Senza bolla non si scrive niente e non si inventa un messaggio per avere
-    dove appendere: il limite è dichiarato, le bolle fantasma sarebbero peggio
-    del difetto. Conservare è un di più e non deve poter far fallire il turno
-    che lo ha prodotto: ogni errore si ferma qui.
+    Without a bubble nothing is written, and no message is invented just to
+    have somewhere to attach it: the limit is stated, ghost bubbles would be
+    worse than the defect. Storing is an extra and must never fail the turn
+    that produced it: every error stops here.
     """
-    if not pensiero or not message_id:
+    if not reasoning or not message_id:
         return
     try:
         reasoning_log.record(tier, name, message_id=message_id, spawn=spawn,
                              seed=_seed_name(responder),
-                             text=pensiero.get("text") or "",
+                             text=reasoning.get("text") or "",
                              chat_id=getattr(chat, "chat_id", None))
     except Exception as e:  # noqa: BLE001
-        LOG.warning("ragionamento di %s su %s/%s non conservato: %s",
+        LOG.warning("reasoning of %s on %s/%s not stored: %s",
                     responder, tier, name, e)
 
 
@@ -782,16 +782,16 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     # delegations below (`_maybe_delegate`, `_report_back`) spawn their turns
     # from this context, and those turns record this one's trace and span.
     audit_events.set_cause(_turn.root, parent=_turn)
-    #: Il ragionamento del turno, da appendere alla bolla che lo conclude
-    #: (clodia-platform#484). Si ritira SUBITO dopo l'invio, dentro un `finally`
-    #: suo: appartiene a questo turno, e la sessione può riceverne un altro
-    #: mentre qui si sta ancora pubblicando.
-    pensiero: dict | None = None
+    #: The turn's reasoning, to attach to the bubble that concludes it
+    #: (clodia-platform#484). It is taken RIGHT after the send, in its own
+    #: `finally`: it belongs to this turn, and the session may receive another
+    #: one while this one is still posting.
+    reasoning: dict | None = None
     try:
         try:
             reply = await chat.send_user_message(prompt)
         finally:
-            pensiero = consuma_pensiero(chat)
+            reasoning = take_reasoning(chat)
         _st, _err = audit_events.outcome_of_reply(reply)
         await _turn.end(status=_st, error=_err,
                         model=_audit_model(chat, tier),
@@ -812,7 +812,7 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             f"è comparso nulla, quindi dall'esterno sembra che non abbia risposto.",
             error=repr(e)[:300], hop=hop))
         _spawn_bg(_announce_failure(tier, name, responder, e,
-                                    pensiero=pensiero, spawn=autore))
+                                    reasoning=reasoning, spawn=autore))
         return None
     finally:
         audit_events.release(_handover)
@@ -880,8 +880,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                                       serviti=serviti)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
-        _conserva_ragionamento(tier, name, autore, responder, chat, pensiero,
-                               posted_during_turn[-1].get("id"))
+        _store_reasoning(tier, name, autore, responder, chat, reasoning,
+                         posted_during_turn[-1].get("id"))
         _ultimo = posted_during_turn[-1].get("text") or reply
         if not report_back:
             _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
@@ -902,8 +902,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     # compariva in chat e non succedeva nulla, senza che l'errore nominasse la
     # delega. Separarli tiene la catena in piedi anche quando la notifica cade,
     # ed è il motivo per cui la delega non sta più dentro lo stesso try.
-    _conserva_ragionamento(tier, name, autore, responder, chat, pensiero,
-                           (msg or {}).get("id"))
+    _store_reasoning(tier, name, autore, responder, chat, reasoning,
+                     (msg or {}).get("id"))
     try:
         titolo = await asyncio.to_thread(_topic_title, tier, name)
         await _channel_message(tier, name, autore, "ai",
@@ -1009,7 +1009,7 @@ def _diagnosi(err: Exception) -> str:
 
 
 async def _announce_failure(tier: str, name: str, responder: str, err: Exception,
-                            *, pensiero: dict | None = None,
+                            *, reasoning: dict | None = None,
                             spawn: str | None = None) -> None:
     """Un turno morto si dice nel CANALE, sempre, e si passa a sysadmin.
 
@@ -1041,12 +1041,12 @@ async def _announce_failure(tier: str, name: str, responder: str, err: Exception
             testo += ("Nessuno a cui passare la diagnosi: il guasto riguarda il "
                       "guardiano stesso.")
         msg = await topics_client.async_post_message(tier, name, "system", testo, kind="system")
-        # Il ragionamento del turno morto si appende a QUESTA bolla (#484): è
-        # l'unica comparsa nel canale, ed è anche il caso in cui riaprirlo
-        # serve di più — un turno fallito è esattamente ciò che si va a
-        # rileggere.
-        _conserva_ragionamento(tier, name, spawn or responder, responder, None,
-                               pensiero, (msg or {}).get("id"))
+        # The reasoning of the dead turn is attached to THIS bubble (#484): it
+        # is the only one that appeared in the channel, and it is also the case
+        # where reopening it matters most — a failed turn is exactly what one
+        # comes back to read.
+        _store_reasoning(tier, name, spawn or responder, responder, None,
+                         reasoning, (msg or {}).get("id"))
         titolo = await asyncio.to_thread(_topic_title, tier, name)
         await _channel_message(tier, name, "system", "system",
                                message=msg, topic_title=titolo)
@@ -5404,19 +5404,19 @@ async def channel_agents_md_put(tier: str, name: str, request: Request) -> dict:
 
 @router.get("/clodia/channels/{tier}/{name}/reasoning")
 async def channel_reasoning_index(tier: str, name: str, request: Request) -> dict:
-    """Quali bolle di questo canale hanno un ragionamento salvato (#484).
+    """Which bubbles of this channel have stored reasoning (#484).
 
-    È ciò che accende il 💭 sulla bolla: la lista viene dallo store, non da una
-    congettura del client («è un messaggio di un agente, quindi avrà pensato»).
-    Un bottone che apre il vuoto è peggio di nessun bottone — e i turni senza
-    ragionamento conservato esistono, è il limite dichiarato nell'issue.
+    This is what lights the 💭 on a bubble: the list comes from the store, not
+    from a guess by the client ("it is an agent's message, so it must have
+    thought"). A button that opens nothing is worse than no button — and turns
+    without stored reasoning do exist, the limit stated in the issue.
 
-    Dietro `_require_member` come i messaggi, e per la stessa ragione: il
-    ragionamento CITA il contenuto del canale, quindi è materiale del canale.
+    Behind `_require_member` like the messages, and for the same reason:
+    reasoning QUOTES the channel's content, so it is channel material.
     """
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
-        raise HTTPException(404, "canale non trovato")
+        raise HTTPException(404, "channel not found")
     _require_member(request, topic.get("meta", {}))
     return {"messages": await asyncio.to_thread(reasoning_log.index, tier, name)}
 
@@ -5424,19 +5424,19 @@ async def channel_reasoning_index(tier: str, name: str, request: Request) -> dic
 @router.get("/clodia/channels/{tier}/{name}/reasoning/{message_id}")
 async def channel_reasoning_read(tier: str, name: str, message_id: str,
                                  request: Request) -> dict:
-    """Il ragionamento di UNA bolla. 404 se non ce n'è: mai un 200 vuoto, che
-    in UI diventerebbe un riquadro aperto su niente."""
+    """The reasoning of ONE bubble. 404 when there is none: never an empty
+    200, which in the UI would become a box opened on nothing."""
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
-        raise HTTPException(404, "canale non trovato")
+        raise HTTPException(404, "channel not found")
     _require_member(request, topic.get("meta", {}))
-    voce = await asyncio.to_thread(reasoning_log.read, tier, name, message_id)
-    if not voce:
-        raise HTTPException(404, "nessun ragionamento salvato per questo messaggio")
-    return {"message_id": voce.get("message_id"), "spawn": voce.get("spawn"),
-            "seed": voce.get("seed"), "ts": voce.get("ts"),
-            "truncated": bool(voce.get("truncated")),
-            "text": voce.get("text") or ""}
+    entry = await asyncio.to_thread(reasoning_log.read, tier, name, message_id)
+    if not entry:
+        raise HTTPException(404, "no reasoning stored for this message")
+    return {"message_id": entry.get("message_id"), "spawn": entry.get("spawn"),
+            "seed": entry.get("seed"), "ts": entry.get("ts"),
+            "truncated": bool(entry.get("truncated")),
+            "text": entry.get("text") or ""}
 
 
 @router.get("/clodia/channels/{tier}/{name}/messages")
