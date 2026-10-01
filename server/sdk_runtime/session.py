@@ -1597,23 +1597,14 @@ class ChatSession:
         # Contenimento runtime (opt-in per-kind): fa girare il CLI come non-root
         # via wrapper. uid UNICO per questo spawn (isola l'istanza), gid del SEED
         # (famiglia). Lo scratch è chownato uid:gid mode 700 → privato dell'istanza.
-        if _sandbox_enabled(self.kind) and spawn_dir is not None:
-            uid = _alloc_uid()
-            gid = _seed_gid(self.kind)
+        if _sandbox_enabled(self.kind):
+            # Fail closed (#474): with the sandbox on, a missing spawn or a
+            # failed chown refuses to start instead of running the CLI as root.
+            uid, prefix, sb_env = _sandbox_prepare(
+                self.kind, spawn_dir, _bundled_cli_path())
             self._sandbox_uid = uid
-            opts_kwargs["cli_path"] = _SANDBOX_WRAPPER
-            child_env["CLODIA_AGENT_UID"] = str(uid)
-            child_env["CLODIA_AGENT_GID"] = str(gid)
-            child_env["CLODIA_REAL_CLI"] = _bundled_cli_path()
-            child_env["HOME"] = str(spawn_dir)  # HOME scrivibile dal non-root
-            try:
-                import subprocess as _sp
-                # lo spawn è di proprietà del solo uid dell'istanza, modo 700
-                _sp.run(["chown", "-R", f"{uid}:{gid}", str(spawn_dir)], check=False)
-                _sp.run(["chmod", "-R", "700", str(spawn_dir)], check=False)
-                LOG.info("sandbox runtime kind=%s uid=%s gid=%s (spawn 700)", self.kind, uid, gid)
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("chown/chmod spawn per sandbox fallito (kind=%s): %s", self.kind, e)
+            opts_kwargs["cli_path"] = prefix[0]
+            child_env.update(sb_env)
         self._opts_kwargs = opts_kwargs
         await self._open_client()
         # Auto-intro fire-and-forget: se il kind ne ha uno definito, lo

@@ -246,3 +246,14 @@ class ReviewFollowUpTests(unittest.TestCase):
     def test_codex_history_is_off(self) -> None:
         src = Path(S.__file__).read_text(encoding="utf-8")
         self.assertIn('[history]\\npersistence = \\"none\\"', src)
+
+
+class ClaudeFailsClosedTests(unittest.TestCase):
+    """clodia-platform#474: the Claude runtime goes through the same fail-closed
+    preparation; no `spawn_dir is not None` escape to root."""
+
+    def test_claude_uses_the_fail_closed_prepare(self) -> None:
+        src = Path(S.__file__).read_text(encoding="utf-8")
+        self.assertIn("uid, prefix, sb_env = _sandbox_prepare(\n"
+                      "                self.kind, spawn_dir, _bundled_cli_path())", src)
+        self.assertNotIn("if _sandbox_enabled(self.kind) and spawn_dir is not None:", src)
