@@ -22,17 +22,22 @@ valida firma → certificato → catena CA → revoche → scadenza.
 CLI (init una tantum / retrofit):
     python3 -m server.colony.pki init-ca
     python3 -m server.colony.pki issue <agent> | issue-all
-    python3 -m server.colony.pki revoke <agent>
+    python3 -m server.colony.pki revoke <agent> [--by <person>]
+    python3 -m server.colony.pki flush-audit
     python3 -m server.colony.pki status
 """
 from __future__ import annotations
 
 import base64
+import contextlib
+import fcntl
 import json
 import logging
 import os
+import tempfile
 import threading
 import time
+import uuid
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 from typing import Optional
@@ -181,11 +186,8 @@ def issue_agent_identity(agent: str, force: bool = False) -> Path:
     _write_private(agent_key_path(agent), key)
     CERTS_DIR.mkdir(parents=True, exist_ok=True)
     agent_cert_path(agent).write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    # se era revocato, una nuova emissione lo riabilita
-    revoked = _load_revoked()
-    if agent in revoked:
-        revoked.discard(agent)
-        _save_revoked(revoked)
+    # If it was revoked, a new issuance re-enables it — and that is recorded (#466).
+    _clear_revocation(agent, via="issue_agent_identity")
     LOG.info("Identità emessa per agent '%s'", agent)
     return agent_cert_path(agent)
 
@@ -231,10 +233,7 @@ def issue_cert_for_pubkey(name: str, pubkey_pem: str, force: bool = False) -> Pa
             .sign(ca_key, algorithm=None))
     CERTS_DIR.mkdir(parents=True, exist_ok=True)
     agent_cert_path(name).write_bytes(cert.public_bytes(serialization.Encoding.PEM))
-    revoked = _load_revoked()
-    if name in revoked:
-        revoked.discard(name)
-        _save_revoked(revoked)
+    _clear_revocation(name, via="issue_cert_for_pubkey")
     LOG.info("Cert emesso per principal esterno '%s'", name)
     return agent_cert_path(name)
 
@@ -253,11 +252,227 @@ def _save_revoked(revoked: set[str]) -> None:
     REVOKED_FILE.write_text(json.dumps({"revoked": sorted(revoked)}, indent=2))
 
 
-def revoke(agent: str) -> None:
+# ── Audit of revocation (clodia-platform#466) ────────────────────────────────
+# `revoked.json` is a rule of the reference monitor: a principal in it is
+# refused everywhere. Changing it is a control-plane change like any other, and
+# it happens here, through the CLI, where no HTTP middleware can see it. So the
+# two functions that change the file — `revoke` and `_clear_revocation` — each
+# record a `control.pki` event on the gateway's trail, through the same
+# agent-server → gateway channel the turns use (`audit_events`).
+#
+# Order: the revocation takes effect FIRST, then it is recorded. A compromised
+# identity must not stay valid because the trail is unreachable. If the gateway
+# does not confirm the record, the event goes to a local outbox (delivered, in
+# order, before the next PKI event and at every server boot) and the change is
+# reported loudly: `revoke` raises, the CLI exits non-zero. Never silent.
+#
+# Consequence, intended: without CLODIA_ORCHESTRATOR_SECRET (a deployment with
+# no gateway trail, i.e. not M3++) there is nowhere to record, so EVERY CLI
+# revoke exits 2 and the outbox grows until a gateway is paired.
+
+AUDIT_OUTBOX_NAME = "audit-outbox.jsonl"
+
+#: The person behind a CLI invocation (`--by`), set by `_cli`. None in the
+#: server, where a PKI change without an explicit actor is the service's own.
+_CLI_ACTOR: Optional[dict] = None
+
+
+class RevocationNotRecorded(RuntimeError):
+    """The revocation change is IN EFFECT but the trail did not confirm it: the
+    event waits in the outbox. Raised so that the caller cannot miss it."""
+
+
+def _outbox_path() -> Path:
+    return PKI_DIR / AUDIT_OUTBOX_NAME
+
+
+def _cert_serial(name: str) -> Optional[str]:
+    """Serial of the certificate currently on file for `name`, as hex (the
+    gateway's `control.pki` issue events use the same form)."""
+    try:
+        cert = x509.load_pem_x509_certificate(agent_cert_path(name).read_bytes())
+        return format(cert.serial_number, "x")
+    except Exception:  # noqa: BLE001 - no cert, or unreadable: no serial
+        return None
+
+
+def _default_actor() -> dict:
+    if _CLI_ACTOR:
+        return dict(_CLI_ACTOR)
+    return {"type": "service", "id": "agent-server"}
+
+
+def _revocation_event(action: str, principal: str, *, actor: Optional[dict],
+                      via: str) -> dict:
+    # `event_id`: stable across re-sends (the outbox re-sends an event whose
+    # confirmation was lost), so the gateway can deduplicate; also in `result`,
+    # so it is on the trail for an auditor.
+    eid = uuid.uuid4().hex
+    return {"type": "control.pki", "action": action, "resource": principal,
+            "event_id": eid,
+            "actor": dict(actor) if actor else _default_actor(),
+            "result": {"principal": principal, "cert_serial": _cert_serial(principal),
+                       "via": via, "source_event_id": eid,
+                       "at": datetime.now(timezone.utc).isoformat(timespec="milliseconds")}}
+
+
+@contextlib.contextmanager
+def _outbox_lock():
+    """Exclusive lock on the outbox across PROCESSES: the server flushes it (at
+    boot, on an unrevoke) while a CLI may be queueing into it. Without it a
+    flush that rewrites the file could drop an event the CLI has just reported
+    as queued. `flock` on a separate lock file, so the outbox itself can be
+    replaced atomically underneath."""
+    path = _outbox_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(str(path.with_name(AUDIT_OUTBOX_NAME + ".lock")),
+                 os.O_CREAT | os.O_RDWR, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX)
+        yield
+    finally:
+        try:
+            fcntl.flock(fd, fcntl.LOCK_UN)
+        finally:
+            os.close(fd)
+
+
+def _outbox_append(event: dict) -> None:
+    line = (json.dumps(event, sort_keys=True) + "\n").encode("utf-8")
+    with _outbox_lock():
+        # 0600 from the first byte: the file is created with its mode.
+        fd = os.open(str(_outbox_path()), os.O_CREAT | os.O_WRONLY | os.O_APPEND, 0o600)
+        try:
+            os.write(fd, line)
+            os.fsync(fd)
+        finally:
+            os.close(fd)
+
+
+def _read_outbox() -> list[dict]:
+    path = _outbox_path()
+    if not path.is_file():
+        return []
+    out = []
+    for line in path.read_text(encoding="utf-8").splitlines():
+        line = line.strip()
+        if not line:
+            continue
+        try:
+            out.append(json.loads(line))
+        except ValueError:
+            LOG.error("pki audit outbox: unreadable line kept out of the trail")
+    return out
+
+
+def pending_audit_events() -> list[dict]:
+    """The PKI events still waiting for the trail, oldest first."""
+    with _outbox_lock():
+        return _read_outbox()
+
+
+def flush_audit_outbox() -> int:
+    """Deliver the queued PKI events, in order; stop at the first one the
+    gateway does not confirm (a later event must not overtake an earlier one).
+    Returns how many were delivered.
+
+    The whole flush holds the outbox lock: two flushers cannot send the same
+    event twice, and an event queued meanwhile waits for the lock instead of
+    being overwritten by the rewrite. If the gateway records an event but its
+    answer is lost, the event is sent again: it carries a stable `event_id`
+    (minted when the event was built) for the gateway to deduplicate on."""
+    from .. import audit_events
+    with _outbox_lock():
+        pending = _read_outbox()
+        if not pending:
+            return 0
+        sent = 0
+        for ev in pending:
+            late = {**ev, "result": {**(ev.get("result") or {}), "recorded_late": True}}
+            if not audit_events.report_sync(late):
+                break
+            sent += 1
+        rest = pending[sent:]
+        path = _outbox_path()
+        if rest:
+            fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".audit-outbox.",
+                                       suffix=".tmp")   # mkstemp: 0600, unique name
+            try:
+                with os.fdopen(fd, "w", encoding="utf-8") as f:
+                    f.write("".join(json.dumps(e, sort_keys=True) + "\n" for e in rest))
+                    f.flush()
+                    os.fsync(f.fileno())
+                os.replace(tmp, path)
+            except BaseException:
+                Path(tmp).unlink(missing_ok=True)
+                raise
+        else:
+            path.unlink(missing_ok=True)
+    if sent:
+        LOG.warning("pki audit outbox: %d queued event(s) delivered to the trail", sent)
+    return sent
+
+
+def _record_revocation(action: str, principal: str, *, actor: Optional[dict],
+                       via: str, strict: bool) -> bool:
+    """Record a change of `revoked.json` on the trail. True if recorded.
+
+    Not recorded → queued in the outbox, and then either raised (`strict`) or
+    logged as an ERROR: the change itself is never undone."""
+    event = _revocation_event(action, principal, actor=actor, via=via)
+    try:
+        flush_audit_outbox()
+    except Exception as e:  # noqa: BLE001 - a stuck outbox must not hide THIS event
+        LOG.error("pki audit outbox not flushed (%s)", type(e).__name__)
+    from .. import audit_events
+    if not pending_audit_events() and audit_events.report_sync(event):
+        return True
+    # Behind a queue that did not drain, this event queues too: order matters.
+    _outbox_append(event)
+    msg = (f"control.pki {action} of '{principal}' is IN EFFECT but NOT recorded on "
+           f"the audit trail (gateway unreachable, or no CLODIA_ORCHESTRATOR_SECRET): "
+           f"queued in {_outbox_path()}, delivered at the next PKI change or server boot")
+    if strict:
+        raise RevocationNotRecorded(msg)
+    LOG.error(msg)
+    return False
+
+
+def _clear_revocation(name: str, *, via: str, actor: Optional[dict] = None) -> bool:
+    """A new certificate re-enables a revoked principal: remove it from
+    `revoked.json` and record the `unrevoke`. No-op if it was not revoked.
+
+    Strict only from the CLI, where a person is watching: in the server the
+    issuance must not fail because the trail is down — the event is queued and
+    the error logged."""
     revoked = _load_revoked()
+    if name not in revoked:
+        return False
+    revoked.discard(name)
+    _save_revoked(revoked)
+    LOG.warning("Revocation CLEARED for '%s' (new certificate issued)", name)
+    _record_revocation("unrevoke", name, actor=actor, via=via,
+                       strict=_CLI_ACTOR is not None)
+    return True
+
+
+def revoke(agent: str, *, actor: Optional[dict] = None, via: str = "revoke") -> bool:
+    """Revoke `agent`'s identity and record it on the trail (`control.pki`
+    `revoke`: principal, actor, serial of the revoked certificate).
+
+    Returns False if it was already revoked (nothing changed, nothing to
+    record). Raises `RevocationNotRecorded` if the revocation took effect but
+    the trail did not confirm it — always so without CLODIA_ORCHESTRATOR_SECRET,
+    where there is no trail to record on: the event waits in the outbox."""
+    revoked = _load_revoked()
+    if agent in revoked:
+        LOG.info("Identity of '%s' already revoked: nothing changed", agent)
+        return False
     revoked.add(agent)
     _save_revoked(revoked)
-    LOG.warning("Identità REVOCATA per agent '%s'", agent)
+    LOG.warning("Identity REVOKED for agent '%s'", agent)
+    _record_revocation("revoke", agent, actor=actor, via=via, strict=True)
+    return True
 
 
 def is_revoked(agent: str) -> bool:
@@ -693,7 +908,22 @@ def _cli() -> None:  # pragma: no cover
     p_rev = sub.add_parser("revoke")
     p_rev.add_argument("agent")
     sub.add_parser("status")
+    sub.add_parser("flush-audit")
+    for p in (p_issue, p_rev):
+        # Who is doing this, for the audit trail (#466). The OS user of a
+        # container is `root` for everyone: say who you are.
+        p.add_argument("--by", default=None,
+                       help="who performs the change (recorded on the audit trail)")
     args = parser.parse_args()
+    global _CLI_ACTOR
+    import getpass
+    by = (getattr(args, "by", None) or os.environ.get("CLODIA_ACTOR") or "").strip()
+    try:
+        os_user = getpass.getuser()
+    except Exception:  # noqa: BLE001
+        os_user = None
+    _CLI_ACTOR = {"type": "human" if by else "operator", "id": by or os_user,
+                  "via": "pki-cli", "os_user": os_user}
 
     if args.cmd == "init-ca":
         print(f"CA: {init_ca()}")
@@ -713,8 +943,18 @@ def _cli() -> None:  # pragma: no cover
                 continue
             print(f"cert: {issue_agent_identity(spec.name)}")
     elif args.cmd == "revoke":
-        revoke(args.agent)
-        print(f"revocato: {args.agent}")
+        try:
+            changed = revoke(args.agent)
+        except RevocationNotRecorded as e:
+            print(f"revoked: {args.agent}\nERROR: {e}")
+            raise SystemExit(2)
+        print(f"revoked: {args.agent}" if changed else f"already revoked: {args.agent}")
+    elif args.cmd == "flush-audit":
+        n = flush_audit_outbox()
+        left = len(pending_audit_events())
+        print(f"audit events delivered: {n}, still queued: {left}")
+        if left:
+            raise SystemExit(2)
     elif args.cmd == "status":
         print(f"CA inizializzata: {ca_initialized()}")
         if CERTS_DIR.is_dir():

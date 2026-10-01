@@ -73,7 +73,12 @@ def main() -> int:
         check("token scaduto rifiutato", True)
 
     # revoca del principal → token cade
-    pki.revoke("admin")
+    # No gateway here: the revocation takes effect and is queued for the trail
+    # (clodia-platform#466), and says so.
+    try:
+        pki.revoke("admin")
+    except pki.RevocationNotRecorded:
+        pass
     try:
         pki.verify_session_token(sign_token(browser_key, "admin"))
         check("revoca admin → token cade", False)

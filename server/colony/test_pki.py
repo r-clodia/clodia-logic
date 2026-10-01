@@ -28,6 +28,20 @@ class PkiBase(unittest.TestCase):
         pki.PKI_DIR = root / "pki"
         pki.CERTS_DIR = pki.PKI_DIR / "certs"
         pki.REVOKED_FILE = pki.PKI_DIR / "revoked.json"
+        # The trail is the gateway's: here every PKI audit event is recorded in
+        # a list instead (clodia-platform#466).
+        from unittest.mock import patch
+        from .. import audit_events
+        self.audit: list[dict] = []
+        self.audit_up = True
+
+        def _report(ev):
+            if self.audit_up:
+                self.audit.append(ev)
+            return self.audit_up
+        p = patch.object(audit_events, "report_sync", _report)
+        p.start()
+        self.addCleanup(p.stop)
 
     def tearDown(self) -> None:
         for k, v in self._saved.items():

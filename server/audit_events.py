@@ -1,5 +1,5 @@
 """Events only the agent-server knows, deposited on the gateway's audit trail
-(clodia-platform#433, #434, #435, #442, #443).
+(clodia-platform#433, #434, #435, #442, #443, #466).
 
 The trail is written and signed by the gateway (clodia-tools `server/audit/`),
 on a volume this process does not mount. What the gateway cannot observe —
@@ -69,6 +69,34 @@ async def report(event: dict) -> bool:
             return False
         return True
     except Exception as e:  # noqa: BLE001 - the turn must not depend on it
+        LOG.warning("audit: %s not reported (%s)", event.get("type"), type(e).__name__)
+        return False
+
+
+def report_sync(event: dict) -> bool:
+    """`report` for code that has no event loop to await on: the PKI CLI
+    (`python3 -m server.colony.pki revoke`) runs outside the server, and a
+    revocation must reach the trail from there too (clodia-platform#466).
+
+    Same channel, same authentication, same outcome: True only if the gateway
+    answered that it recorded the event. It blocks for at most the report
+    timeout, which is the price of knowing."""
+    secret = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
+    if not secret:
+        return False
+    try:
+        import httpx
+        with httpx.Client(timeout=_TIMEOUT) as c:
+            r = c.post(_url(), json=_prune(event), headers={"X-Orchestrator-Secret": secret})
+        if r.status_code != 200:
+            LOG.warning("audit: %s not recorded by the gateway (%s)",
+                        event.get("type"), r.status_code)
+            return False
+        try:
+            return bool(r.json().get("recorded", True))
+        except Exception:  # noqa: BLE001 - a 200 without a body is a record
+            return True
+    except Exception as e:  # noqa: BLE001
         LOG.warning("audit: %s not reported (%s)", event.get("type"), type(e).__name__)
         return False
 
