@@ -29,10 +29,13 @@ class InheritedSpawnEnvTests(unittest.TestCase):
 
     def test_both_runtimes_build_their_env_from_it(self) -> None:
         src = open(session.__file__, encoding="utf-8").read()
-        self.assertIn('env = {**_inherited_spawn_env(), "CODEX_HOME"', src)   # codex
-        self.assertIn("        env = _inherited_spawn_env()\n", src)            # opencode
+        # codex and opencode start from the scrubbed env, then the shared
+        # spawn_env (orchestrator secrets, LANGFUSE, proxy label) on top (#463)
+        self.assertIn('spawn_env({**_inherited_spawn_env(), "CODEX_HOME"', src)
+        self.assertIn("env = spawn_env(_inherited_spawn_env(),", src)
         self.assertNotIn('env = {**os.environ, "CODEX_HOME"', src)
         self.assertNotIn("        env = {**os.environ}\n", src)
+        self.assertNotIn("spawn_env(os.environ", src)
 
 
 if __name__ == "__main__":

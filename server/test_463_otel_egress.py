@@ -76,8 +76,8 @@ class EveryRuntimeUsesTheSpawnEnvTests(unittest.TestCase):
     def test_the_three_runtimes(self) -> None:
         src = (Path(__file__).parent / "sdk_runtime" / "session.py").read_text(encoding="utf-8")
         self.assertIn("child_env = spawn_env(child_env,", src)            # claude
-        self.assertIn('env = spawn_env({**os.environ, "CODEX_HOME"', src)  # codex
-        self.assertIn("env = spawn_env(os.environ,", src)                  # opencode
+        self.assertIn('env = spawn_env({**_inherited_spawn_env(), "CODEX_HOME"', src)  # codex
+        self.assertIn("env = spawn_env(_inherited_spawn_env(),", src)                  # opencode
         self.assertNotIn("env = {**os.environ}", src)
         self.assertNotIn('env = {**os.environ, "CODEX_HOME"', src)
 
