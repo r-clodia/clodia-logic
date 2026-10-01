@@ -159,6 +159,17 @@ tool_permissions:
   # (clodia-platform#419). Va dove c'è già `delete_file`: rinominare è anche
   # togliere un file da dove sta.
   - topic.move_file
+  # Collegare due stanze dello stesso livello SEAL (clodia-platform#477):
+  # ognuna vede i file dell'altra come una cartella in SOLA LETTURA. Va dove c'è
+  # già `topic.add_participant` perché è la stessa domanda guardata dall'altro
+  # verso — chi entra nel perimetro di una stanza — e la risposta è più larga:
+  # non un agente, una stanza intera. Due difese sotto, e nessuna delle due è
+  # qui: il verbo è GATE_WALLS (l'owner approva, come per i partecipanti) e il
+  # gateway pretende che chi chiede partecipi a ENTRAMBI i topic.
+  # Add e remove insieme: chi può proporre un collegamento e mai ritirarlo
+  # produce perimetri che crescono soltanto.
+  - topic.link_add
+  - topic.link_remove
   # L'obiettivo lo fissa l'owner; l'orchestratore dichiara a che punto è
   # (strategia da approvare, esecuzione in corso, raggiunto da verificare).
   # Non può né pinnare né togliere: quello resta dell'owner (#457).

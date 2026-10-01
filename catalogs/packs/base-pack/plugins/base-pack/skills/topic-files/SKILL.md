@@ -102,6 +102,25 @@ dall'altro. Si legge e si scrive con gli **stessi verbi** di ogni altro file
 del topic — `topic.fetch`/`put` per i binari, `topic.read_file`/`write_file`
 per il testo — nessun meccanismo diverso da imparare.
 
+## Topic collegato (`<nome>/`, sola lettura)
+
+Se `topic.files` mostra una cartella che non è `local/` e che ha accanto
+l'etichetta del topic a cui appartiene, è un **topic collegato**
+(clodia-platform#477): due stanze dello stesso livello SEAL si vedono i file a
+vicenda. Si legge con i verbi di sempre (`topic.fetch`, `topic.read_file`) e i
+path si citano come li restituisce `topic.files`, cioè `<nome>/…`.
+
+**Non ci si scrive.** `put`, `write_file`, `delete_file` e `move_file` su quel
+path vengono rifiutati, e la risposta non è girarci intorno copiando il file
+qui: i file di un'altra stanza si modificano **da dentro quella stanza**. Se ti
+serve una copia qui, è una decisione, non un passaggio tecnico — dillo in chat
+invece di farla di nascosto: il collegamento esiste proprio per evitare che lo
+stesso documento viva in due posti e diverga.
+
+L'etichetta di provenienza **viaggia col file**: un allegato `untrusted` nella
+stanza di origine resta `untrusted` anche letto da qui. Non è ripulito dal fatto
+di arrivare da un canale amico.
+
 ## Completezza dei dati
 Prima di compilare, **raccogli TUTTE le voci dal topic**, non solo quelle citate in
 chat: leggi il `summary.md` e i file in `files/` (ricevute, conferme). Es. per un

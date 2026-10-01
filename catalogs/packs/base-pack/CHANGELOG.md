@@ -9,6 +9,24 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.31.0] — 2026-10-01
+- `clodia` gets **`topic.link_add` / `topic.link_remove`** (clodia-platform#477):
+  two topics of the same SEAL level can be joined, and from then on each one sees
+  the other's data tree as a **read-only** folder next to `local/`. No copy is
+  made — the bytes stay in the topic that owns them, and so does the provenance
+  label, which is the whole point: copying a file relabels it, and an `untrusted`
+  attachment would come out clean (clodia-platform#419).
+  The verb goes where `topic.add_participant` already is, and for the same
+  reason: it answers "who gets inside this room's perimeter", with a wider
+  answer — not an agent, a whole room. Two defences under it, neither of them in
+  the pack: the verb is `GATE_WALLS` (the owner approves, as for participants)
+  and the gateway requires the caller to participate in **both** topics.
+  Needs clodia-tools >= 2.75.0.
+- Skill **`topic-files`** gains the section on linked topics: the mount is read
+  only, copying the file over here to get around that is precisely what the link
+  exists to avoid, and the provenance label travels with the file — "it comes
+  from a friendly channel" does not clean a third party's attachment.
+
 ## [7.30.0] — 2026-09-30
 - `clodia` gets **`topic.goal_progress`** (clodia-platform#457): the owner pins a
   message as the channel's **goal** and the orchestrator declares how far it is
