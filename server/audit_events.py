@@ -1,5 +1,5 @@
 """Events only the agent-server knows, deposited on the gateway's audit trail
-(clodia-platform#433, #434, #435, #442, #443, #464, #466).
+(clodia-platform#433, #434, #435, #442, #443, #464, #465, #466).
 
 The trail is written and signed by the gateway (clodia-tools `server/audit/`),
 on a volume this process does not mount. What the gateway cannot observe —
@@ -15,9 +15,12 @@ line, not a failed turn.
 """
 from __future__ import annotations
 
+import contextlib
 import contextvars
+import functools
 import logging
 import os
+import re
 import secrets
 import time
 from typing import Any
@@ -101,6 +104,118 @@ def report_sync(event: dict) -> bool:
         return False
 
 
+# ── what started the chain (#465) ─────────────────────────────────────────────
+# A turn records WHICH event woke it — the id of the human message, the job and
+# its run, the Telegram message relayed — and, when another turn delegated it
+# (handoff, report-back, disambiguation), that turn's trace and span as its
+# parent. From any `tool.call` an auditor follows `trace_id` to its
+# `turn.start`, then `parent_span_id` / `decision.trigger.parent` to the
+# delegating turn, and so on to the root event.
+#
+# It travels like the trace (`core.trace`): a ContextVar, set where the event
+# enters (the message post, the job fire, the relay) and by every turn for the
+# work it starts. `asyncio.create_task` copies it, so the delegate's task,
+# spawned from inside the delegating turn, finds that turn as its parent.
+#
+# Shape: {"root": {kind, message_id?, job_id?, run_id?, telegram?},
+#         "parent": <Turn> | {"trace_id", "span_id", "spawn"?} | None}
+_CAUSE: contextvars.ContextVar["dict | None"] = contextvars.ContextVar(
+    "clodia_audit_cause", default=None)
+
+#: Root kinds the turn itself reports as its trigger kind when it is the first
+#: of the chain (#465): the dispatch path alone says `external` or `system`.
+ROOT_TRIGGER_KINDS = ("job", "telegram_relay")
+
+_TRACE_RE = re.compile(r"^[0-9a-f]{32}$")
+_SPAN_RE = re.compile(r"^[0-9a-f]{16}$")
+
+
+def cause() -> dict | None:
+    """The chain the current task belongs to, or None."""
+    return _CAUSE.get()
+
+
+def set_cause(root: dict | None = None, *, parent=None, keep_root: bool = False):
+    """Bind the chain for the work this task starts from here on. Returns the
+    token to `reset_cause`. `keep_root`: merge `root` into the current one
+    (a job's message: the job stays the root, the message id is added)."""
+    cur = _CAUSE.get() or {}
+    r = dict(root or {})
+    if keep_root and cur.get("root"):
+        r = {**cur["root"], **{k: v for k, v in r.items() if k != "kind"}}
+    return _CAUSE.set({"root": _prune(r) or None, "parent": parent})
+
+
+def reset_cause(tok) -> None:
+    try:
+        _CAUSE.reset(tok)
+    except ValueError:
+        _CAUSE.set(None)
+
+
+@contextlib.contextmanager
+def caused_by(root: dict | None = None, *, parent=None, keep_root: bool = False):
+    """`with caused_by({"kind": "job", "job_id": 7, "run_id": "3"}): ...`"""
+    tok = set_cause(root, parent=parent, keep_root=keep_root)
+    try:
+        yield
+    finally:
+        reset_cause(tok)
+
+
+def own_cause(fn):
+    """The chain bound INSIDE a dispatcher does not survive it (like
+    `trace.own_turn`): a turn that sets itself as the parent of the work it
+    starts must not stay the parent of its caller's next one."""
+    @functools.wraps(fn)
+    async def wrapper(*args, **kwargs):
+        before = _CAUSE.get()
+        try:
+            return await fn(*args, **kwargs)
+        finally:
+            _CAUSE.set(before)
+    return wrapper
+
+
+def message_posted(message_id: str | None) -> None:
+    """A message entered the channel and turns are about to serve it: bind it
+    as the root of their chain. A job's message stays under the job (the job
+    and its run are the root, the message id is added); anything else starts
+    a new chain with no parent."""
+    cur = (_CAUSE.get() or {}).get("root") or {}
+    if cur.get("kind") in ROOT_TRIGGER_KINDS:
+        set_cause({"message_id": message_id}, keep_root=True)
+    else:
+        set_cause({"kind": "message", "message_id": message_id})
+
+
+def parse_traceparent(value: str | None) -> dict | None:
+    """W3C `traceparent` (`00-<32 hex trace>-<16 hex span>-<2 hex flags>`) →
+    `{"trace_id", "span_id"}`, or None if it is not one."""
+    parts = str(value or "").strip().lower().split("-")
+    if len(parts) != 4 or parts[0] == "ff" or len(parts[0]) != 2:
+        return None
+    t, sp = parts[1], parts[2]
+    if not (_TRACE_RE.match(t) and _SPAN_RE.match(sp)) or set(t) == {"0"} or set(sp) == {"0"}:
+        return None
+    return {"trace_id": t, "span_id": sp}
+
+
+def _parent_ids(parent) -> dict | None:
+    if parent is None:
+        return None
+    if isinstance(parent, Turn):
+        return {"trace_id": parent.trace_id, "span_id": parent.span_id,
+                "spawn": parent.label}
+    if isinstance(parent, dict) and parent.get("trace_id") and parent.get("span_id"):
+        return {k: parent.get(k) for k in ("trace_id", "span_id", "spawn")}
+    return None
+
+
+def _root_of(parent) -> dict | None:
+    return parent.root if isinstance(parent, Turn) else None
+
+
 # ── the turn ──────────────────────────────────────────────────────────────────
 def _scope(tier: str | None, name: str | None) -> dict | None:
     return {"tier": tier, "topic": name} if tier and name else None
@@ -128,6 +243,26 @@ class Turn:
         self.principal, self.trigger = principal, dict(trigger or {})
         self.started = False
         self._t0: float | None = None
+        # The chain this turn belongs to (#465), read where the turn is built:
+        # the parent is the turn (or the remote span) that delegated it, the
+        # root the event that started the whole chain.
+        c = _CAUSE.get() or {}
+        self.parent = _parent_ids(c.get("parent"))
+        self.root = c.get("root") or _root_of(c.get("parent"))
+        if self.parent is None and self.root:
+            # The first turn of the chain: the event that woke it IS the root.
+            for k in ("message_id", "job_id", "run_id", "telegram"):
+                if self.root.get(k) is not None:
+                    self.trigger.setdefault(k, self.root[k])
+            if self.root.get("kind") in ROOT_TRIGGER_KINDS:
+                # `job` and `telegram_relay` by name: the dispatch path alone
+                # says `system` or `external`, which it keeps as `dispatch`.
+                self.trigger["dispatch"] = self.trigger.get("kind")
+                self.trigger["kind"] = self.root["kind"]
+        if self.parent:
+            self.trigger["parent"] = self.parent
+        if self.root:
+            self.trigger["root"] = self.root
 
     def _base(self, etype: str, action: str) -> dict:
         return {"type": etype, "action": action, "resource": self.chat_id,
@@ -153,8 +288,14 @@ class Turn:
             _trace.bind(self.trace_id)
         ev = self._base("turn.start", "start")
         # Why this turn exists (#442): what woke it, who asked, through which
-        # chain. The trigger event id links back to the message or job.
+        # chain. The trigger event id links back to the message or job (#465).
         ev["decision"] = {"trigger": self.trigger or None}
+        if self.parent:
+            # A delegated turn hangs under the delegating one. Its own trace
+            # stays its own (the gateway keeps one trace per spawn, and the
+            # operational trace of #455 names ONE turn); the parent's trace id
+            # is in `decision.trigger.parent`.
+            ev["parent_span_id"] = self.parent["span_id"]
         await report(ev)
 
     async def end(self, *, status: str, error: str | None = None,
