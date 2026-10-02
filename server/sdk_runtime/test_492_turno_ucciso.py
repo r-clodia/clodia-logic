@@ -96,10 +96,21 @@ class TheKilledTurnSaysSoTests(unittest.TestCase):
         """Senza questo numero il canale non può decidere se ritentare: è
         l'unica prova che il turno non aveva ancora eseguito nessun tool."""
         self.assertEqual(
-            0, S._sessione_terminata(ProcessError("x", exit_code=-9), True).eventi)
+            0, S._sessione_terminata(ProcessError("x", exit_code=-9), True,
+                                     eventi=0).eventi)
         self.assertEqual(
             7, S._sessione_terminata(ProcessError("x", exit_code=-9), True,
                                      eventi=7).eventi)
+
+    def test_chi_non_sa_quanti_eventi_dice_non_so_e_non_zero(self) -> None:
+        """Il default è `None`, non `0`. Zero significa «non ha fatto niente,
+        rimandalo pure»: dirlo per difetto regalerebbe il rimando proprio nel
+        caso in cui manca la prova che lo rende innocuo. Oggi l'unico
+        costruttore passa sempre il valore — è una trappola per il prossimo,
+        non un difetto attivo, e si chiude adesso che costa una riga."""
+        self.assertIsNone(
+            S._sessione_terminata(ProcessError("x", exit_code=-9), True).eventi)
+        self.assertIsNone(S.SessioneTerminata(RuntimeError("x"), True).eventi)
 
     def test_una_cancellazione_resta_una_cancellazione(self) -> None:
         """Guardia preesistente, qui perché il riconoscimento nuovo non deve
@@ -121,6 +132,26 @@ class TheEventCounterIsPerTurnTests(unittest.IsolatedAsyncioTestCase):
         sess._client = _Due()
         await sess._collect_response()
         self.assertEqual(2, sess._eventi_turno)
+
+    async def test_il_contatore_non_uccide_il_turno_su_cui_gira(self) -> None:
+        """Una sessione costruita senza `__init__` non ha l'attributo: con
+        `+= 1` il turno morirebbe di `AttributeError` nel cuore della raccolta
+        della risposta. Un contatore diagnostico non può costare il turno che
+        sta misurando — e il fake di `_make_session` è esattamente una sessione
+        così, come lo sarà il prossimo modo di istanziarla."""
+        sess = _make_session()
+        self.assertFalse(hasattr(sess, "_eventi_turno"),
+                         "il fake ha l'attributo: il test non misura più niente")
+
+        class _Uno:
+            def receive_response(self):
+                async def _gen():
+                    yield object()
+                return _gen()
+
+        sess._client = _Uno()
+        await sess._collect_response()
+        self.assertEqual(1, sess._eventi_turno)
 
     async def test_il_conto_riparte_a_ogni_turno(self) -> None:
         """Se restasse quello del turno precedente, un turno ucciso prima di

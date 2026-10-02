@@ -328,11 +328,15 @@ class SessioneTerminata(RuntimeError):
     `eventi` è il conto degli eventi SDK ricevuti dal turno caduto, ed è
     l'unico dato che permette di decidere se ritentarlo: zero eventi = nessun
     tool può essere stato eseguito, quindi rimandare il messaggio non rifà
-    niente (clodia-platform#492).
+    niente (clodia-platform#492). Il default è `None` = «non so», e NON zero:
+    oggi l'unico costruttore passa sempre il valore, ma un default di zero
+    direbbe «non ha fatto niente, rimandalo pure» al primo che costruirà questa
+    eccezione senza saperlo — cioè concederebbe il rimando proprio nel caso in
+    cui manca la prova che lo rende innocuo.
     """
 
     def __init__(self, causa: BaseException, ripristinata: bool, *,
-                 segnale: "int | None" = None, eventi: int = 0,
+                 segnale: "int | None" = None, eventi: "int | None" = None,
                  blocco_loop: str = "") -> None:
         self.causa = causa
         self.ripristinata = ripristinata
@@ -366,7 +370,7 @@ class SessioneTerminata(RuntimeError):
 
 
 def _sessione_terminata(err: BaseException, ripristinata: bool, *,
-                        eventi: int = 0, blocco_loop: str = ""):
+                        eventi: "int | None" = None, blocco_loop: str = ""):
     """`SessioneTerminata` se il turno è morto con il subprocess, altrimenti
     `None` — e in quel caso l'eccezione originale va rilanciata com'è.
 
@@ -2086,7 +2090,8 @@ class ChatSession:
                         # sa cosa dire a chi ha scritto, e un `raise` nudo la
                         # butterebbe via (#397 punto 3, come già #358).
                         parlante = _sessione_terminata(
-                            e, ripristinata, eventi=self._eventi_turno,
+                            e, ripristinata,
+                            eventi=getattr(self, "_eventi_turno", None),
                             blocco_loop=loop_lag.nota_blocco())
                         if parlante is not None:
                             raise parlante from e
@@ -2161,7 +2166,8 @@ class ChatSession:
                         # Gli eventi già ricevuti viaggiano con l'eccezione: sono
                         # ciò che dice al canale se il turno è ritentabile.
                         parlante = _sessione_terminata(
-                            e, ripristinata, eventi=self._eventi_turno,
+                            e, ripristinata,
+                            eventi=getattr(self, "_eventi_turno", None),
                             blocco_loop=loop_lag.nota_blocco())
                         if parlante is not None:
                             raise parlante from e
@@ -2336,7 +2342,12 @@ class ChatSession:
                     self._silence_diagnosis(chunk_timeout)) from None
 
             self._last_event_at = asyncio.get_event_loop().time()  # progresso → watchdog quieto
-            self._eventi_turno += 1
+            # `getattr` e non `+=`: un contatore diagnostico non deve poter
+            # uccidere il turno su cui gira. Una sessione costruita senza
+            # `__init__` (i fake dei test, e domani qualunque altro modo di
+            # istanziarla) non ha l'attributo, e `+=` solleverebbe
+            # `AttributeError` nel cuore della raccolta della risposta.
+            self._eventi_turno = getattr(self, "_eventi_turno", 0) + 1
             # E anche `last_activity`, che è ciò che l'API legge per dire se una
             # sessione è viva (`_live_status`: `thinking` + silenzio > 180s =
             # `blocked`). Prima si muoveva solo in `_record`, cioè quando un

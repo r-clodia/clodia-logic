@@ -27,7 +27,8 @@ from . import channels
 from ..sdk_runtime.session import SessioneTerminata
 
 
-def _ucciso(*, ripristinata: bool = True, eventi: int = 0) -> SessioneTerminata:
+def _ucciso(*, ripristinata: bool = True,
+            eventi: "int | None" = 0) -> SessioneTerminata:
     """L'eccezione esatta della #492: ProcessError exit -9, cioè SIGKILL."""
     return SessioneTerminata(
         ProcessError("Command failed with exit code -9", exit_code=-9),
@@ -115,6 +116,15 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, chat.chiamate)
         self.assertEqual(1, len(self.annunci))
         self.assertFalse(self.annunci[0]["ritentato"])
+
+    async def test_non_sapere_quanti_eventi_vale_quanto_averne_avuti(self) -> None:
+        """«Non so» non è «zero». Il rimando è innocuo solo quando la prova
+        c'è, e l'assenza della prova non è una prova: chi costruisce
+        l'eccezione senza il conto non deve ottenere il rimando per difetto."""
+        chat = _Chat([_ucciso(eventi=None)])
+        await self._run(chat)
+        self.assertEqual(1, chat.chiamate)
+        self.assertEqual(1, len(self.annunci))
 
     async def test_senza_sessione_ricreata_non_si_ritenta(self) -> None:
         """Il secondo tentativo finirebbe nello stesso subprocess morto."""

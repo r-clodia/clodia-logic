@@ -1026,12 +1026,15 @@ def _turno_ritentabile(err: BaseException) -> bool:
        rifarebbe quegli effetti. Zero eventi significa che il modello non ha
        ancora detto niente, quindi nulla è stato fatto in nome di nessuno.
 
+    `eventi is None` («non so») vale quanto «aveva già agito»: il rimando è
+    innocuo solo quando la prova c'è, e l'assenza della prova non è una prova.
+
     Fuori da qui il comportamento resta quello di prima: l'errore si annuncia
     nella stanza e la decisione di rimandare è di chi ha scritto.
     """
     return (isinstance(err, SessioneTerminata)
             and bool(getattr(err, "ripristinata", False))
-            and not getattr(err, "eventi", 0))
+            and getattr(err, "eventi", None) == 0)
 
 
 def _diagnosi(err: Exception) -> str:
