@@ -69,19 +69,32 @@ def _routing_request_marker(owner: str, source_id: str) -> str:
 
 
 def _elenco_or(nomi: list[str]) -> str:
-    """`[a]` → `@a` · `[a, b]` → `@a o @b` · `[a, b, c]` → `@a, @b o @c`.
+    """`[a]` → `**a**` · `[a, b]` → `**a** o **b**` · `[a, b, c]` → `**a**, **b** o **c**`.
 
     Deduplica, in ordine di prima apparizione: questa è la funzione che STAMPA,
-    e «scegli fra @worker e @worker» non è una scelta (#256). I chiamanti passano
+    e «scegli fra worker e worker» non è una scelta (#256). I chiamanti passano
     già target distinti — la soglia si decide sull'identità risolta, non qui —
     ma la cintura sta nel punto che compone la frase perché copre anche il
     chiamante che verrà, che ricadrà nello stesso errore: due etichette diverse
     (`worker-2`, `worker-3`) collassate a un nome solo dal `_seed_name`.
+
+    **Grassetto e non sigillo (clodia-platform#480).** Qui si RACCONTA chi è
+    stato taggato, chi è stato negato, fra chi scegliere: nessuno di questi
+    nomi va convocato dalla frase che lo nomina. Finché il sigillo c'era, il
+    testo composto qui era una menzione viva ogni volta che qualcuno lo
+    incollava indietro — ed è così che #480 ha aperto una disambiguazione a tre
+    vie su un messaggio che ne chiedeva una. È la stessa regola che la
+    piattaforma impone ai suoi agenti: in un resoconto il nome si scrive senza
+    `@`.
+
+    Le pill continuano a funzionare perché vivono nel marcatore
+    `<!-- choices=… -->`, non nella prosa, e `_routing_dialog_reply` legge i
+    nomi con il `@` opzionale: i dialoghi già in cronologia restano cliccabili.
     """
     tag: list[str] = []
     for n in nomi:
-        if f"@{n}" not in tag:
-            tag.append(f"@{n}")
+        if f"**{n}**" not in tag:
+            tag.append(f"**{n}**")
     if len(tag) <= 1:
         return "".join(tag)
     return ", ".join(tag[:-1]) + " o " + tag[-1]
@@ -977,7 +990,7 @@ async def _report_back(tier: str, name: str, responder: str, chat,
         tier_real = meta.get("tier", tier)
         if not _provider_seal_ok(spec, tier_real):
             return
-        testo = (f"[turno concluso] @{responder} ha terminato il compito che gli "
+        testo = (f"[turno concluso] **{responder}** ha terminato il compito che gli "
                  f"avevi assegnato. Esito riportato:\n\n{(esito or '').strip()[:2000]}")
         # `report_back=True` (router-notebook R22): QUESTO turno è una notifica
         # di cortesia, non una nuova delega. Se la reazione del chiamante non
@@ -1027,7 +1040,7 @@ async def _announce_failure(tier: str, name: str, responder: str, err: Exception
     produrre un secondo.
     """
     try:
-        testo = (f"⚠️ Il turno di **@{responder}** è terminato con un errore, "
+        testo = (f"⚠️ Il turno di **{responder}** è terminato con un errore, "
                  f"quindi nel canale non è comparsa nessuna risposta.\n\n"
                  f"{_diagnosi(err)}\n")
         # ANTI-LOOP. Se a cadere è il guardiano stesso, chiamarlo lo farebbe
@@ -2919,7 +2932,7 @@ def _ineligibility_reason(spec, tier: str | None) -> str:
         return (f"la clearance di {nome} ({_norm(getattr(spec, 'clearance', None)) or 'ignota'}) "
                 f"non arriva a {_norm(tier)}")
     massimo = _declared_seal(spec) or "nessun provider noto"
-    return (f"lo stack dichiarato di @{nome} non arriva a {_norm(tier)} "
+    return (f"lo stack dichiarato di **{nome}** non arriva a {_norm(tier)} "
             f"(massimo dichiarato: {massimo})")
 
 
@@ -2953,7 +2966,7 @@ def _announce_membership_removal(tier: str, name: str, agent: str, motivo: str) 
     try:
         topics_client.post_message(
             tier, name, "system",
-            f"👥 **@{agent}** non è più partecipante di questo canale: {motivo}.\n\n"
+            f"👥 **{agent}** non è più partecipante di questo canale: {motivo}.\n\n"
             f"Non è una pausa: è l'idoneità DICHIARATA dal seed a non reggere il "
             f"tier della stanza. Torna partecipante quando il suo stack dichiara "
             f"un provider adeguato — e può essere reinvitato allora.",
