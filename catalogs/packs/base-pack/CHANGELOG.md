@@ -9,6 +9,17 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.33.0] — 2026-10-02
+- **`ophelia` runs on the ChatGPT subscription again** (clodia-platform#490): model
+  `gpt-5-codex` → `gpt-5.6-sol`, and `providers: [codex]` explicitly. The
+  subscription rejects the `-codex` family with a 400; since #333 that model was
+  routed to the paid `openai-api` provider, while the codex runtime kept using the
+  ChatGPT login — so every turn failed. Owner's decision: subscription only, no
+  pay-per-use API. `gpt-5.6-sol` is the model `fullstack-dev` already runs on the
+  subscription in production.
+- New invariant: no seed bound to the subscription (`providers: [codex]`, or codex
+  sdk with no providers) declares a `*-codex*` model.
+
 ## [7.32.0] — 2026-10-01
 - **Sysadmin moves to Claude Sonnet 5.5** (`claude-sonnet-5-5`,
   clodia-platform#483). It is the only seed on a Sonnet; same 1M window as

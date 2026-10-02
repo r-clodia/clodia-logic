@@ -14,7 +14,15 @@ parents: [archseed]
 # anzianità (tie-break rango): Ophelia nasce subito dopo Clodia
 created_at: "2026-01-01T00:00:01Z"
 agent_sdk: codex
-model: gpt-5-codex
+# The ChatGPT SUBSCRIPTION, explicitly and only (owner's decision, 2 Oct 2026:
+# no extra pay-per-use API cost). The subscription rejects the "-codex" model
+# family with a 400 ("not supported when using Codex with a ChatGPT account",
+# clodia-platform#333, #490), so the model is one the subscription accepts —
+# the same fullstack-dev runs on it. Without `providers`, `gpt-5-codex` was
+# routed to the paid `openai-api` provider, while the codex runtime still used
+# the ChatGPT login: the 400 on every turn.
+model: gpt-5.6-sol
+providers: [codex]
 avatar_color: "#14b8a6"
 
 sandbox:
