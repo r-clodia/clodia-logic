@@ -134,12 +134,18 @@ class IPuntiDiEmissioneLaUsano(unittest.TestCase):
                          f"thinking_chunk pubblicato senza cucitura alle righe {grezzi}")
 
     def test_tutti_i_punti_di_emissione_cuciono(self) -> None:
+        """The seam is now applied in ONE place only, and all four go through it.
+
+        Since clodia-platform#484 the four call `_publish_reasoning`, which
+        stitches, publishes and stores: the count that matters is that of the
+        callers (`test_thinking_persist`); what remains here is the property
+        that `_ThinkSeam` is applied exactly once — two applications would
+        mean two seams on the same text.
+        """
         from pathlib import Path
         src = (Path(__file__).parent / "session.py").read_text()
-        self.assertEqual(4, src.count("seam.feed("),
-                         "i punti che pubblicano thinking_chunk sono quattro: "
-                         "SDK Claude, codex, opencode (reasoning), opencode "
-                         "(text non filtrato dal provider)")
+        self.assertEqual(1, src.count("seam.feed("),
+                         "il seam si applica solo dentro _publish_reasoning")
 
 
 if __name__ == "__main__":

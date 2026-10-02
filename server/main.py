@@ -310,7 +310,8 @@ async def _lifespan(app: FastAPI):
     # deve cogliere è raro, quindi non ci si accorgerebbe che è spento fino alla
     # notte in cui serviva.
     lag_task = asyncio.create_task(loop_lag.heartbeat())
-    # Transcripts under the retention of their tier (clodia-platform#446).
+    # Transcripts and stored turn reasoning under the retention of their tier
+    # (clodia-platform#446, #484).
     from .agents import transcript_retention
     retention_task = asyncio.create_task(transcript_retention.retention_loop())
 

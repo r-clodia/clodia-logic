@@ -30,15 +30,16 @@ from datetime import datetime, timezone
 
 from fastapi import APIRouter, HTTPException, Request
 
-from ..agents import activity_log, rank as rank_mod, registry
+from ..agents import activity_log, rank as rank_mod, reasoning_log, registry
 from ..agents import coordinator as coordinator_mod
 from ..agents import trifecta, trifecta_reset
 from .. import audit_events, debug_watch
 from ..core import trace, turn_timing
 from ..core.events import bus
 from ..core.models import Event, MessageRequest
-from ..sdk_runtime.session import (manager, ProviderNotConnected, spawn_dirs_of,
-                                   topic_runtime_override, session_provider)
+from ..sdk_runtime.session import (take_reasoning, manager, ProviderNotConnected,
+                                   spawn_dirs_of, topic_runtime_override,
+                                   session_provider)
 from . import (access_log, mentions, presence, responder_routing, router_config,
                routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
@@ -653,6 +654,34 @@ def _topic_title(tier: str, name: str) -> str | None:
         return None
 
 
+def _store_reasoning(tier: str, name: str, spawn: str, responder: str,
+                     chat, reasoning: dict | None,
+                     message_id: str | None) -> None:
+    """Attach to the BUBBLE the reasoning of the turn that produced it (#484).
+
+    The key is the message id and not the turn, because the bubble is what one
+    looks at when asking "how did it get there". With per-block bubbles (#243)
+    a turn yields several messages and a single reasoning: whoever knows —
+    i.e. whoever just posted — calls this with the LAST one, the bubble that
+    closes the argument the reasoning tells.
+
+    Without a bubble nothing is written, and no message is invented just to
+    have somewhere to attach it: the limit is stated, ghost bubbles would be
+    worse than the defect. Storing is an extra and must never fail the turn
+    that produced it: every error stops here.
+    """
+    if not reasoning or not message_id:
+        return
+    try:
+        reasoning_log.record(tier, name, message_id=message_id, spawn=spawn,
+                             seed=_seed_name(responder),
+                             text=reasoning.get("text") or "",
+                             chat_id=getattr(chat, "chat_id", None))
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("reasoning of %s on %s/%s not stored: %s",
+                    responder, tier, name, e)
+
+
 def _audit_model(chat, tier):
     """`audit_events.model_block`, never raising into the turn."""
     try:
@@ -753,8 +782,16 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     # delegations below (`_maybe_delegate`, `_report_back`) spawn their turns
     # from this context, and those turns record this one's trace and span.
     audit_events.set_cause(_turn.root, parent=_turn)
+    #: The turn's reasoning, to attach to the bubble that concludes it
+    #: (clodia-platform#484). It is taken RIGHT after the send, in its own
+    #: `finally`: it belongs to this turn, and the session may receive another
+    #: one while this one is still posting.
+    reasoning: dict | None = None
     try:
-        reply = await chat.send_user_message(prompt)
+        try:
+            reply = await chat.send_user_message(prompt)
+        finally:
+            reasoning = take_reasoning(chat)
         _st, _err = audit_events.outcome_of_reply(reply)
         await _turn.end(status=_st, error=_err,
                         model=_audit_model(chat, tier),
@@ -774,7 +811,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             f"Il turno di {responder} è terminato con un'eccezione: nel canale non "
             f"è comparso nulla, quindi dall'esterno sembra che non abbia risposto.",
             error=repr(e)[:300], hop=hop))
-        _spawn_bg(_announce_failure(tier, name, responder, e))
+        _spawn_bg(_announce_failure(tier, name, responder, e,
+                                    reasoning=reasoning, spawn=autore))
         return None
     finally:
         audit_events.release(_handover)
@@ -842,6 +880,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
                                       serviti=serviti)
             except Exception as e:  # noqa: BLE001
                 LOG.warning("delega a catena %s/%s da %s fallita: %s", tier, name, responder, e)
+        _store_reasoning(tier, name, autore, responder, chat, reasoning,
+                         posted_during_turn[-1].get("id"))
         _ultimo = posted_during_turn[-1].get("text") or reply
         if not report_back:
             _spawn_bg(_report_back(tier, name, responder, chat, _ultimo, hop))
@@ -862,6 +902,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     # compariva in chat e non succedeva nulla, senza che l'errore nominasse la
     # delega. Separarli tiene la catena in piedi anche quando la notifica cade,
     # ed è il motivo per cui la delega non sta più dentro lo stesso try.
+    _store_reasoning(tier, name, autore, responder, chat, reasoning,
+                     (msg or {}).get("id"))
     try:
         titolo = await asyncio.to_thread(_topic_title, tier, name)
         await _channel_message(tier, name, autore, "ai",
@@ -966,7 +1008,9 @@ def _diagnosi(err: Exception) -> str:
     return nota if nota else f"```\n{repr(err)[:400]}\n```"
 
 
-async def _announce_failure(tier: str, name: str, responder: str, err: Exception) -> None:
+async def _announce_failure(tier: str, name: str, responder: str, err: Exception,
+                            *, reasoning: dict | None = None,
+                            spawn: str | None = None) -> None:
     """Un turno morto si dice nel CANALE, sempre, e si passa a sysadmin.
 
     Prima esisteva solo `_watch_report`, che vive dietro `debug_watch.enabled()`
@@ -997,6 +1041,12 @@ async def _announce_failure(tier: str, name: str, responder: str, err: Exception
             testo += ("Nessuno a cui passare la diagnosi: il guasto riguarda il "
                       "guardiano stesso.")
         msg = await topics_client.async_post_message(tier, name, "system", testo, kind="system")
+        # The reasoning of the dead turn is attached to THIS bubble (#484): it
+        # is the only one that appeared in the channel, and it is also the case
+        # where reopening it matters most — a failed turn is exactly what one
+        # comes back to read.
+        _store_reasoning(tier, name, spawn or responder, responder, None,
+                         reasoning, (msg or {}).get("id"))
         titolo = await asyncio.to_thread(_topic_title, tier, name)
         await _channel_message(tier, name, "system", "system",
                                message=msg, topic_title=titolo)
@@ -5350,6 +5400,43 @@ async def channel_agents_md_put(tier: str, name: str, request: Request) -> dict:
         raise HTTPException(409, str(e)[:200])
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"gateway: {str(e)[:160]}")
+
+
+@router.get("/clodia/channels/{tier}/{name}/reasoning")
+async def channel_reasoning_index(tier: str, name: str, request: Request) -> dict:
+    """Which bubbles of this channel have stored reasoning (#484).
+
+    This is what lights the 💭 on a bubble: the list comes from the store, not
+    from a guess by the client ("it is an agent's message, so it must have
+    thought"). A button that opens nothing is worse than no button — and turns
+    without stored reasoning do exist, the limit stated in the issue.
+
+    Behind `_require_member` like the messages, and for the same reason:
+    reasoning QUOTES the channel's content, so it is channel material.
+    """
+    topic = await topics_client.async_open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "channel not found")
+    _require_member(request, topic.get("meta", {}))
+    return {"messages": await asyncio.to_thread(reasoning_log.index, tier, name)}
+
+
+@router.get("/clodia/channels/{tier}/{name}/reasoning/{message_id}")
+async def channel_reasoning_read(tier: str, name: str, message_id: str,
+                                 request: Request) -> dict:
+    """The reasoning of ONE bubble. 404 when there is none: never an empty
+    200, which in the UI would become a box opened on nothing."""
+    topic = await topics_client.async_open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "channel not found")
+    _require_member(request, topic.get("meta", {}))
+    entry = await asyncio.to_thread(reasoning_log.read, tier, name, message_id)
+    if not entry:
+        raise HTTPException(404, "no reasoning stored for this message")
+    return {"message_id": entry.get("message_id"), "spawn": entry.get("spawn"),
+            "seed": entry.get("seed"), "ts": entry.get("ts"),
+            "truncated": bool(entry.get("truncated")),
+            "text": entry.get("text") or ""}
 
 
 @router.get("/clodia/channels/{tier}/{name}/messages")

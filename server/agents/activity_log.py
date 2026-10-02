@@ -14,7 +14,14 @@ Eventi correnti:
 - handoff_move   { to_inbox, sender }
 - handoff_archive { lane }
 
-Future estensioni (D in roadmap): tool_use, message_chunk, thinking_chunk.
+REASONING is not stored here, and that is not an oversight (clodia-platform#484).
+This file is indexed by AGENT and **does not know which tier** it is writing in:
+a `thinking_chunk` of a SEAL-4 turn would land in the same file as one of a
+SEAL-0 turn, and reasoning quotes the channel's content. Stored reasoning lives
+in `agents/reasoning_log.py`, under `agent-state/reasoning/<tier>/<channel>/`,
+where the tier is the first directory of the path. Whoever wants to extend the
+activity log to `tool_use`/`message_chunk` faces the same problem, and this
+paragraph is the warning: tier first, then format.
 """
 from __future__ import annotations
 import asyncio
