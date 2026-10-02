@@ -67,7 +67,7 @@ colony:
   # Configurare con gli username Trello della propria organizzazione.
   board_members: []
   strategy:
-    model: claude-sonnet-4-6     # modello dello Strategy Agent (SDK stateless)
+    model: claude-sonnet-5-5     # modello dello Strategy Agent (SDK stateless)
     timeout_s: 180
   approval_gates:
     # Token (substring, case-insensitive) che marcano un side-effect come

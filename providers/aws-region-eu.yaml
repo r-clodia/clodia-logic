@@ -19,6 +19,15 @@ extra_env:
   # guardava solo la famiglia, OGNI agent opus girava su Opus 4.6 qualunque cosa
   # dichiarasse. Dal 24 set 2026 (clodia-platform#392) il default opus è
   # Opus 5.5: ogni opus della piattaforma gira su 5.5, su ogni provider.
+  # Sonnet NON segue (clodia-platform#483): il default di famiglia resta a
+  # Sonnet 5, l'ultimo profilo VERIFICATO con ListInferenceProfiles. È la rete
+  # di sicurezza di `bedrock_model_id()` — ciò che gira quando un seed chiede
+  # una versione che la mappa non conosce — e una rete non si appende a un
+  # profilo che nessuno ha ancora visto esistere in regione: se
+  # `eu.anthropic.claude-sonnet-5-5` non ci fosse, il ripiego fallirebbe per
+  # OGNI sonnet invece che per il solo seed che dichiara 5.5.
+  # Va portato a 5.5 in un follow-up di una riga, appena il profilo è
+  # confermato in console su eu-west-1.
   ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-5-5"
   ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-5"
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
@@ -38,6 +47,16 @@ extra_env:
 #
 # `claude-opus-5-5` (24 set 2026, clodia-platform#392): solo inference profile,
 # nessun id di base in regione; il profilo EU geo `eu.` tiene i dati in UE.
+#
+# `claude-sonnet-5-5` (1 ott 2026, clodia-platform#483): NON verificata su
+# account — chi ha la console AWS deve controllare che l'inference profile
+# `eu.anthropic.claude-sonnet-5-5` esista in eu-west-1. Scriverla comunque è la
+# scelta prudente: senza, un seed su 5.5 ripiegherebbe sul default di famiglia
+# e girerebbe su un'altra versione IN SILENZIO; con, un profilo inesistente
+# darebbe un 400 di Bedrock, cioè un errore che si vede.
+# Il rischio è CIRCOSCRITTO proprio perché sta qui e non nel default di
+# famiglia: tocca solo chi dichiara `claude-sonnet-5-5` (oggi il solo
+# `sysadmin`), e `aws-region-eu` è l'ultimo provider della sua catena.
 model_ids:
   claude-opus-5-5: "eu.anthropic.claude-opus-5-5"
   claude-opus-5: "eu.anthropic.claude-opus-5"
@@ -45,6 +64,7 @@ model_ids:
   claude-opus-4-7: "eu.anthropic.claude-opus-4-7"
   claude-opus-4-6: "eu.anthropic.claude-opus-4-6-v1"
   claude-opus-4-5: "eu.anthropic.claude-opus-4-5-20251101-v1:0"
+  claude-sonnet-5-5: "eu.anthropic.claude-sonnet-5-5"
   claude-sonnet-5: "eu.anthropic.claude-sonnet-5"
   claude-sonnet-4-6: "eu.anthropic.claude-sonnet-4-6"
   claude-sonnet-4-5: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
