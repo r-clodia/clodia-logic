@@ -4068,16 +4068,7 @@ def subprocess_morto(chat) -> Optional[bool]:
               sbagliata, che è l'errore costoso. Quando l'SDK esporrà uno stato
               pubblico del processo, questa funzione diventa una riga sola.
     """
-    proc = getattr(chat, "_proc", None)            # codex / opencode
-    if proc is not None:
-        return getattr(proc, "returncode", None) is not None
-    client = getattr(chat, "_client", None)        # claude-agent-sdk
-    if client is None:
-        # Mai avviata, già ferma, o in mezzo a una recovery: non è una morte
-        # da constatare, ed evincerla qui ruberebbe il lavoro a chi la sta
-        # ricreando in questo istante.
-        return None
-    processo = getattr(getattr(client, "_transport", None), "_process", None)
+    processo = runtime_process_of(chat)
     if processo is None:
         return None
     sentinella = object()
@@ -4085,6 +4076,32 @@ def subprocess_morto(chat) -> Optional[bool]:
     if rc is sentinella:
         return None
     return rc is not None
+
+
+def runtime_process_of(chat):
+    """Il subprocess persistente di questa sessione, o `None` se non c'è.
+
+    Un solo lettore degli attributi interni dell'SDK, perché i consumatori sono
+    due e tiravano la stessa verità da posti diversi: `subprocess_morto` per
+    sapere se è morto, `ChatManager.live_runtime_pids` per sapere quale pid NON
+    si tocca (clodia-platform#478). Due letture della stessa cosa sono due posti
+    in cui una resta indietro — lezione già pagata con `spawn_dirs_of`.
+
+    SHORTCUT: legge `_proc` (codex/opencode) e `_client._transport._process`
+              (claude-agent-sdk). Se un aggiornamento li rinomina si degrada a
+              `None`, cioè «non so»: la probe non constata morti e il reaper non
+              riceve pid da proteggere, tornando alla sola regola sulla cwd.
+    """
+    proc = getattr(chat, "_proc", None)            # codex / opencode
+    if proc is not None:
+        return proc
+    client = getattr(chat, "_client", None)        # claude-agent-sdk
+    if client is None:
+        # Mai avviata, già ferma, o in mezzo a una recovery: non è una morte
+        # da constatare, ed evincerla qui ruberebbe il lavoro a chi la sta
+        # ricreando in questo istante.
+        return None
+    return getattr(getattr(client, "_transport", None), "_process", None)
 
 
 class ChatManager:
@@ -4110,6 +4127,30 @@ class ChatManager:
         for c in self._chats.values():
             for d in spawn_dirs_of(c):
                 out.add(str(d))
+        return out
+
+    def live_runtime_pids(self) -> set:
+        """I pid dei subprocess che le sessioni vive dichiarano PROPRI.
+
+        È la prova diretta di proprietà che al reaper mancava: fino al 1 ott
+        2026 l'unica era la cwd, cioè un'inferenza, e quando ha sbagliato ha
+        preso un SIGTERM il CLI di un turno in corso (clodia-platform#478).
+        Qui non c'è niente da risolvere e niente che possa divergere: il pid lo
+        tiene in mano chi ha aperto il processo.
+
+        Best-effort per costruzione: una sessione che non espone il processo non
+        contribuisce, e un errore su una non deve privare le altre della
+        protezione — questo set gira dentro il tick del reaper.
+        """
+        out: set = set()
+        for c in self._chats.values():
+            try:
+                proc = runtime_process_of(c)
+                pid = getattr(proc, "pid", None) if proc is not None else None
+                if isinstance(pid, int) and pid > 0:
+                    out.add(pid)
+            except Exception:  # noqa: BLE001 — mai rompere il tick
+                continue
         return out
 
     async def create(self, chat_id: Optional[str] = None, kind: str = DEFAULT_KIND,
