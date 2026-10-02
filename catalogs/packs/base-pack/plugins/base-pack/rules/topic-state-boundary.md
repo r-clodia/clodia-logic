@@ -10,6 +10,9 @@ un topic.
 - Mantenere la sezione dei prossimi passi.
 - Depositare file di supporto strettamente legati allo stato del topic.
 - Leggere lo stato corrente del topic solo per aggiornarlo senza duplicazioni.
+- Collegare e scollegare il topic da un'altra stanza, dove il seed ha il verbo:
+  è dove il topic va a prendere i documenti, cioè ordine del topic — e la
+  decisione resta dell'owner, che approva sulla card (clodia-platform#477).
 
 ## Fuori dominio
 
