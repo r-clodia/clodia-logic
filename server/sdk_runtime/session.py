@@ -1129,6 +1129,19 @@ class _TurnReasoning:
         self._tail: deque = deque()
         self._tail_len = 0
         self._omitted = 0
+        #: The tool actions of the turn, as the live box shows them (#484):
+        #: {"tool", "input_summary"}. The runtimes in use emit no thinking text
+        #: today (measured 2 Oct 2026 on claude and codex: 0 thinking_chunk),
+        #: so without these the stored box was always empty.
+        self.tools: list[dict] = []
+        self.tools_omitted = 0
+
+    def add_tool(self, tool: str, summary: str) -> None:
+        if len(self.tools) >= reasoning_log.MAX_TOOLS:
+            self.tools_omitted += 1
+            return
+        self.tools.append({"tool": str(tool or "tool")[:80],
+                           "input_summary": str(summary or "")[:reasoning_log.TOOL_SUMMARY_CHARS]})
 
     def feed(self, index: object, text: str) -> str:
         """The piece to publish NOW, already stitched. It also keeps it."""
@@ -1209,6 +1222,23 @@ async def _publish_reasoning(session, index: object, text: str) -> None:
     ))
 
 
+async def _publish_tool_use(session, tool: str, summary: str) -> None:
+    """The ONLY place where a tool action becomes an event AND history (#484).
+
+    Three runtimes publish tool actions (Claude SDK, codex, opencode); the live
+    box shows them, so the stored box must keep them too.
+    """
+    reasoning = getattr(session, "_reasoning", None)
+    if reasoning is None:
+        reasoning = session._reasoning = _TurnReasoning()
+    reasoning.add_tool(tool, summary)
+    await bus.publish(Event(
+        type="tool_use",
+        payload={"chat_id": session.chat_id, "tool": tool, "input_summary": summary},
+        timestamp=datetime.now(timezone.utc),
+    ))
+
+
 def take_reasoning(session) -> Optional[dict]:
     """The reasoning of the turn that just ended, detaching it from the session.
 
@@ -1220,9 +1250,11 @@ def take_reasoning(session) -> Optional[dict]:
         return None
     session._reasoning = None
     text = reasoning.text()
-    if not text.strip():
+    tools = list(getattr(reasoning, "tools", []) or [])
+    if not text.strip() and not tools:
         return None
-    return {"text": text, "truncated": reasoning.truncated}
+    return {"text": text if text.strip() else "", "truncated": reasoning.truncated,
+            "tools": tools, "tools_omitted": getattr(reasoning, "tools_omitted", 0)}
 
 
 class ProviderNotConnected(RuntimeError):
@@ -2303,15 +2335,8 @@ class ChatSession:
                     self, "_last_response_model", None)
                 for block in message.content:
                     if isinstance(block, ToolUseBlock):
-                        await bus.publish(Event(
-                            type="tool_use",
-                            payload={
-                                "chat_id": self.chat_id,
-                                "tool": block.name,
-                                "input_summary": _summarize_input(block.input),
-                            },
-                            timestamp=datetime.now(timezone.utc),
-                        ))
+                        await _publish_tool_use(self, block.name,
+                                                _summarize_input(block.input))
                 # Se lo SDK ha già emesso text_delta, `parts` contiene il testo
                 # visibile in UI. Alcune versioni non ripetono quel testo nel
                 # messaggio finale: affidarsi solo ad AssistantMessage può
@@ -3074,12 +3099,7 @@ class CodexChatSession:
                            "file_change", "web_search", "patch_apply"):
                 summary = (item.get("command") or item.get("query")
                            or item.get("server") or item.get("name") or "")
-                await bus.publish(Event(
-                    type="tool_use",
-                    payload={"chat_id": self.chat_id, "tool": itype,
-                             "input_summary": str(summary)[:200]},
-                    timestamp=datetime.now(timezone.utc),
-                ))
+                await _publish_tool_use(self, itype, str(summary)[:200])
             elif itype == "error" and errors is not None:
                 message = _codex_event_error(ev)
                 if message:
@@ -3929,10 +3949,8 @@ class OpenCodeChatSession:
                 await _publish_reasoning(self, self._think_n, p["text"])
             elif t == "tool":
                 st = p.get("state") or {}
-                await bus.publish(Event(type="tool_use",
-                                        payload={"chat_id": self.chat_id, "tool": p.get("tool") or "tool",
-                                                 "input_summary": str(st.get("input"))[:200]},
-                                        timestamp=datetime.now(timezone.utc)))
+                await _publish_tool_use(self, p.get("tool") or "tool",
+                                        str(st.get("input"))[:200])
         info = data.get("info") or {}
         # What opencode reports it ran (#435).
         if info.get("modelID"):

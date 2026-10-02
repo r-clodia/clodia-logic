@@ -43,6 +43,9 @@ from ..config import data_path
 LOG = logging.getLogger("agent-server.agents.reasoning")
 
 REASONING_DIR = data_path("agent-state") / "reasoning"
+#: Tool actions kept per turn, and characters of each action's summary (#484).
+MAX_TOOLS = 200
+TOOL_SUMMARY_CHARS = 200
 
 #: Per-turn cap: 32k head + 32k tail (owner's decision, #484). BOTH ends are
 #: kept, not just one: the tail is the conclusion — the part one comes back to
@@ -100,11 +103,16 @@ def _today_file(tier: str, name: str, when: Optional[datetime] = None) -> Path:
 
 
 def record(tier: str, name: str, *, message_id: str, spawn: str, seed: str,
-           text: str, chat_id: str | None = None) -> None:
-    """Attach to a bubble the reasoning of the turn that produced it."""
-    if not (text or "").strip():
+           text: str, chat_id: str | None = None,
+           tools: list | None = None, tools_omitted: int = 0) -> None:
+    """Attach to a bubble the reasoning of the turn that produced it: its
+    thinking text and/or its tool actions, i.e. what the live box showed."""
+    tools = [{"tool": str(t.get("tool") or "tool")[:80],
+              "input_summary": str(t.get("input_summary") or "")[:TOOL_SUMMARY_CHARS]}
+             for t in (tools or [])[:MAX_TOOLS] if isinstance(t, dict)]
+    if not (text or "").strip() and not tools:
         return
-    body, truncated = cap(text)
+    body, truncated = cap(text or "")
     path = _today_file(tier, name)
     _ensure_private_dir(tier, name)
     line = {
@@ -116,6 +124,8 @@ def record(tier: str, name: str, *, message_id: str, spawn: str, seed: str,
         "chars": len(body),
         "truncated": truncated,
         "text": body,
+        "tools": tools,
+        "tools_omitted": int(tools_omitted or 0),
     }
     fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, FILE_MODE)
     with os.fdopen(fd, "a", encoding="utf-8") as f:
