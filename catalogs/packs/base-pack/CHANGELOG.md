@@ -10,22 +10,23 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 ## [7.31.0] — 2026-10-01
-- `segretario` gets **`topic.link_add` / `topic.link_remove`** (clodia-platform#477):
+- `clodia` and `segretario` get **`topic.link_add` / `topic.link_remove`** (clodia-platform#477):
   two topics of the same SEAL level can be joined, and from then on each one sees
   the other's data tree as a **read-only** folder next to `local/`. No copy is
   made — the bytes stay in the topic that owns them, and so does the provenance
   label, which is the whole point: copying a file relabels it, and an `untrusted`
   attachment would come out clean (clodia-platform#419).
-  The verb goes to the **declared coordinators** (`coordinator.DECLARED`), and in
-  fact only to `segretario` — owner's ruling of 1 Oct 2026. Linking decides where
+  The verb goes to the **declared coordinators** (`coordinator.DECLARED`): both
+  `clodia` and `segretario` — owner's decision of 2 Oct 2026. Linking decides where
   a channel goes to fetch the documents it works on: that is coordination between
   rooms, not a trade. It is deliberately *not* tied to `topic.add_participant`,
   which `segretario` does not have and should not: letting a whole room into
   another's field of view and letting one agent into a room are two different
   powers, and the earlier rule kept them bound with nothing requiring it.
   Three defences under it, none of them in the pack: the verb is `GATE_WALLS`
-  (the owner approves, as for participants), the gateway requires the caller to
-  participate in **both** topics, and the mount is read-only — `segretario` has
+  and the gateway requires the consent of the owner of **each** topic (two
+  approvals when they differ; the link stays pending until then), the reader of a
+  linked mount must be entitled to the other topic on its own, and the mount is read-only — `segretario` has
   no file-writing verb at all. Needs clodia-tools >= 2.75.0.
 - The reading perimeter decided in clodia-platform#192 widens by these two verbs,
   recorded where it is enforced (`test_192_decisioni_del_coordinatore.py`). It is

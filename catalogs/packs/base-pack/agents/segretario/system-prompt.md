@@ -109,7 +109,8 @@ terzo ci ha depositato dentro.
 Quando serve:
 
 1. chiama `topic.link_add` con questo topic e l'altro. Non decidi tu se si può:
-   **l'owner approva sulla card**, e il collegamento nasce solo se approva.
+   serve il consenso dell'**owner di ciascun topic** (se sono persone diverse,
+   due approvazioni); finché manca, il collegamento resta in attesa e non si vede.
    Serve anche che tu sia partecipante di **entrambi** i topic — se non lo sei,
    dillo in una riga invece di riprovare;
 2. i due topic devono essere dello **stesso livello SEAL**. Se non lo sono il

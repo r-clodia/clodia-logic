@@ -159,10 +159,12 @@ tool_permissions:
   # (clodia-platform#419). Va dove c'è già `delete_file`: rinominare è anche
   # togliere un file da dove sta.
   - topic.move_file
-  # NON `topic.link_add`/`link_remove` (clodia-platform#477): collegare due
-  # stanze è del `segretario`, per decisione dell'owner dell'1 ott 2026. Qui
-  # resta scritto perché è il posto in cui lo si cercherebbe — la ragione sta
-  # nell'agent.yaml di segretario, e l'invariante in `test_link_grant.py`.
+  # Linking two rooms (clodia-platform#477): granted to both declared
+  # coordinators, `clodia` and `segretario` — owner's decision of 2 Oct 2026.
+  # The gateway still requires the consent of the owner of EACH topic, and the
+  # linked mount is read-only. Invariant in `test_link_grant.py`.
+  - topic.link_add
+  - topic.link_remove
   # L'obiettivo lo fissa l'owner; l'orchestratore dichiara a che punto è
   # (strategia da approvare, esecuzione in corso, raggiunto da verificare).
   # Non può né pinnare né togliere: quello resta dell'owner (#457).
