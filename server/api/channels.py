@@ -676,7 +676,9 @@ def _store_reasoning(tier: str, name: str, spawn: str, responder: str,
         reasoning_log.record(tier, name, message_id=message_id, spawn=spawn,
                              seed=_seed_name(responder),
                              text=reasoning.get("text") or "",
-                             chat_id=getattr(chat, "chat_id", None))
+                             chat_id=getattr(chat, "chat_id", None),
+                             tools=reasoning.get("tools"),
+                             tools_omitted=reasoning.get("tools_omitted") or 0)
     except Exception as e:  # noqa: BLE001
         LOG.warning("reasoning of %s on %s/%s not stored: %s",
                     responder, tier, name, e)

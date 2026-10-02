@@ -10,7 +10,9 @@ only check that the accumulator exists, is per turn, and empties.
 """
 from __future__ import annotations
 
+import asyncio
 import unittest
+from pathlib import Path
 from unittest.mock import AsyncMock, patch
 
 from . import session as S
@@ -125,3 +127,44 @@ class TheEmissionPointsGoThroughIt(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolActionsAreKeptTests(unittest.TestCase):
+    """clodia-platform#484, reopened 2 Oct 2026: the runtimes in use emit no
+    thinking text (measured: 0 thinking_chunk on claude and codex), and the live
+    box is filled by tool actions. Storing only thinking stored nothing."""
+
+    def _session(self):
+        from types import SimpleNamespace
+        s = SimpleNamespace(chat_id="c1")
+        S._start_reasoning(s)
+        return s
+
+    def test_a_turn_with_only_tool_actions_is_kept(self) -> None:
+        s = self._session()
+        with patch.object(S.bus, "publish", new=AsyncMock()) as pub:
+            asyncio.run(S._publish_tool_use(s, "Bash", "ls -la"))
+            asyncio.run(S._publish_tool_use(s, "mcp__clodia-tools__topic.read_file", "files/x.md"))
+        self.assertEqual(pub.await_count, 2)
+        self.assertEqual(pub.await_args_list[0].args[0].type, "tool_use")
+        r = S.take_reasoning(s)
+        self.assertIsNotNone(r)
+        self.assertEqual(r["text"], "")
+        self.assertEqual([t["tool"] for t in r["tools"]],
+                         ["Bash", "mcp__clodia-tools__topic.read_file"])
+
+    def test_tool_actions_are_capped(self) -> None:
+        s = self._session()
+        with patch.object(S.bus, "publish", new=AsyncMock()):
+            for i in range(S.reasoning_log.MAX_TOOLS + 5):
+                asyncio.run(S._publish_tool_use(s, "Bash", "x" * 1000))
+        r = S.take_reasoning(s)
+        self.assertEqual(len(r["tools"]), S.reasoning_log.MAX_TOOLS)
+        self.assertEqual(r["tools_omitted"], 5)
+        self.assertLessEqual(len(r["tools"][0]["input_summary"]),
+                             S.reasoning_log.TOOL_SUMMARY_CHARS)
+
+    def test_every_runtime_publishes_tool_actions_through_the_one_helper(self) -> None:
+        src = Path(S.__file__).read_text(encoding="utf-8")
+        self.assertEqual(src.count('type="tool_use"'), 1)      # only inside the helper
+        self.assertGreaterEqual(src.count("await _publish_tool_use(self,"), 3)

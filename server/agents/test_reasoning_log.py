@@ -299,3 +299,31 @@ class NoLongerInTheActivityLog(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ToolActionsRecordTests(unittest.TestCase):
+    """#484 reopened: a bubble whose turn only used tools still gets its 💭."""
+
+    def test_tools_only_entry_is_stored_indexed_and_read(self) -> None:
+        import tempfile
+        from unittest.mock import patch as _patch
+        from pathlib import Path as _P
+        with tempfile.TemporaryDirectory() as d, \
+                _patch.object(reasoning_log, "REASONING_DIR", _P(d) / "reasoning"):
+            reasoning_log.record("SEAL-1", "t", message_id="m1", spawn="clodia-1",
+                                 seed="clodia", text="",
+                                 tools=[{"tool": "Bash", "input_summary": "ls"}])
+            self.assertEqual(reasoning_log.index("SEAL-1", "t"), ["m1"])
+            e = reasoning_log.read("SEAL-1", "t", "m1")
+            self.assertEqual(e["tools"], [{"tool": "Bash", "input_summary": "ls"}])
+            self.assertEqual(e["text"], "")
+
+    def test_nothing_at_all_writes_nothing(self) -> None:
+        import tempfile
+        from unittest.mock import patch as _patch
+        from pathlib import Path as _P
+        with tempfile.TemporaryDirectory() as d, \
+                _patch.object(reasoning_log, "REASONING_DIR", _P(d) / "reasoning"):
+            reasoning_log.record("SEAL-1", "t", message_id="m1", spawn="s", seed="s",
+                                 text="", tools=[])
+            self.assertEqual(reasoning_log.index("SEAL-1", "t"), [])
