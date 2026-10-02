@@ -39,7 +39,7 @@ from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import (take_reasoning, manager, ProviderNotConnected,
                                    spawn_dirs_of, topic_runtime_override,
-                                   session_provider)
+                                   session_provider, SessioneTerminata)
 from . import (access_log, mentions, presence, responder_routing, router_config,
                routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
@@ -789,11 +789,26 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     #: `finally`: it belongs to this turn, and the session may receive another
     #: one while this one is still posting.
     reasoning: dict | None = None
+    #: Il turno è già stato ritentato una volta? Lo legge `_announce_failure`:
+    #: un secondo fallimento annunciato come il primo farebbe credere che
+    #: rimandare il messaggio basti, quando è già stato fatto.
+    ritentato = False
     try:
-        try:
-            reply = await chat.send_user_message(prompt)
-        finally:
-            reasoning = take_reasoning(chat)
+        while True:
+            try:
+                try:
+                    reply = await chat.send_user_message(prompt)
+                finally:
+                    reasoning = take_reasoning(chat)
+            except Exception as e:  # noqa: BLE001
+                if ritentato or not _turno_ritentabile(e):
+                    raise
+                ritentato = True
+                LOG.warning("turno di %s su %s/%s ucciso prima di produrre "
+                            "qualunque evento: lo ritento una volta (%r)",
+                            responder, tier, name, e)
+                continue
+            break
         _st, _err = audit_events.outcome_of_reply(reply)
         await _turn.end(status=_st, error=_err,
                         model=_audit_model(chat, tier),
@@ -814,7 +829,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
             f"è comparso nulla, quindi dall'esterno sembra che non abbia risposto.",
             error=repr(e)[:300], hop=hop))
         _spawn_bg(_announce_failure(tier, name, responder, e,
-                                    reasoning=reasoning, spawn=autore))
+                                    reasoning=reasoning, spawn=autore,
+                                    ritentato=ritentato))
         return None
     finally:
         audit_events.release(_handover)
@@ -994,6 +1010,30 @@ async def _report_back(tier: str, name: str, responder: str, chat,
                     tier, name, responder, e)
 
 
+def _turno_ritentabile(err: BaseException) -> bool:
+    """Un turno morto si rimanda da solo? (clodia-platform#492)
+
+    Tre condizioni, e nessuna è prudenza generica:
+
+    1. il processo è morto **dall'esterno** o con la sessione
+       (`SessioneTerminata`): su un guasto che si ripara da sé non c'è niente da
+       ritentare, e su uno che non si ripara il secondo tentativo muore uguale;
+    2. la sessione è stata **ricreata** — se non lo è, rimandare il messaggio
+       finirebbe nello stesso subprocess morto;
+    3. il turno caduto non ha ricevuto **nemmeno un evento SDK**. È il vincolo
+       che conta: dal primo evento in poi il turno può aver già chiamato dei
+       tool — mail spedite, file scritti, messaggi postati — e ripeterlo
+       rifarebbe quegli effetti. Zero eventi significa che il modello non ha
+       ancora detto niente, quindi nulla è stato fatto in nome di nessuno.
+
+    Fuori da qui il comportamento resta quello di prima: l'errore si annuncia
+    nella stanza e la decisione di rimandare è di chi ha scritto.
+    """
+    return (isinstance(err, SessioneTerminata)
+            and bool(getattr(err, "ripristinata", False))
+            and not getattr(err, "eventi", 0))
+
+
 def _diagnosi(err: Exception) -> str:
     """Cosa leggere nella stanza, di un turno caduto.
 
@@ -1012,7 +1052,8 @@ def _diagnosi(err: Exception) -> str:
 
 async def _announce_failure(tier: str, name: str, responder: str, err: Exception,
                             *, reasoning: dict | None = None,
-                            spawn: str | None = None) -> None:
+                            spawn: str | None = None,
+                            ritentato: bool = False) -> None:
     """Un turno morto si dice nel CANALE, sempre, e si passa a sysadmin.
 
     Prima esisteva solo `_watch_report`, che vive dietro `debug_watch.enabled()`
@@ -1030,6 +1071,14 @@ async def _announce_failure(tier: str, name: str, responder: str, err: Exception
         testo = (f"⚠️ Il turno di **@{responder}** è terminato con un errore, "
                  f"quindi nel canale non è comparsa nessuna risposta.\n\n"
                  f"{_diagnosi(err)}\n")
+        if ritentato:
+            # Senza questa riga la nota della sessione terminata dice «basta
+            # rimandarlo» a chi lo ha già visto rimandare: il secondo
+            # fallimento sembrerebbe il primo, e la cura suggerita è quella
+            # appena fallita.
+            testo += ("\nÈ già stato **ritentato una volta** in automatico ed è "
+                      "caduto di nuovo: rimandare lo stesso messaggio non è la "
+                      "cura.\n")
         # ANTI-LOOP. Se a cadere è il guardiano stesso, chiamarlo lo farebbe
         # cadere di nuovo sullo stesso errore, e ogni caduta ne chiamerebbe
         # un'altra. Il messaggio resta — è la parte che serve a chi guarda — e

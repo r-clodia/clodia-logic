@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import os
 import time
 from collections import deque
 
@@ -74,6 +75,59 @@ def stall_since(inizio: float) -> float:
     manderebbe la diagnosi successiva a cercare nel posto sbagliato.
     """
     return sum(d for fine, d in _STALLS if fine >= inizio)
+
+
+#: Quanto indietro si guarda quando il guasto da correlare NON ha un istante di
+#: inizio proprio — una sessione trovata invalida, un subprocess ucciso: cose
+#: che si scoprono, non che si cronometrano.
+#:
+#: Due ore perché i due casi misurati hanno proprio questa forma: in
+#: clodia-platform#473 il blocco finisce alle 05:58 e la sessione opencode
+#: risulta invalida alle 06:52 (54 minuti dopo); in #492 il blocco finisce alle
+#: 18:06 e il SIGKILL arriva alle 18:57 (51 minuti dopo). Un'ora li prenderebbe
+#: entrambi per pochi minuti, cioè per caso.
+FINESTRA_CORRELAZIONE = float(os.environ.get("CLODIA_LAG_CORRELAZIONE", "7200"))
+
+
+def ultimo_blocco(entro: float = FINESTRA_CORRELAZIONE, *,
+                  clock=time.monotonic) -> "tuple[float, float] | None":
+    """L'ultimo blocco **concluso** negli ultimi `entro` secondi, come
+    `(durata, quanti secondi fa è finito)`. `None` se non ce n'è.
+
+    Diverso da `stall_since`, e la differenza è la domanda. `stall_since`
+    risponde a «il loop si è fermato DURANTE questa cosa», e vuole l'istante in
+    cui la cosa è cominciata. Qui la domanda è «il loop si era fermato poco
+    PRIMA», che è quella che si pone davanti a una sessione trovata invalida o a
+    un processo ucciso: lì un istante di inizio non c'è.
+    """
+    ora = clock()
+    for fine, durata in reversed(_STALLS):
+        if 0 <= ora - fine <= entro:
+            return durata, ora - fine
+    return None
+
+
+def nota_blocco(entro: float = FINESTRA_CORRELAZIONE, *,
+                clock=time.monotonic) -> str:
+    """La correlazione in una frase, pronta da appendere a un messaggio, o `""`.
+
+    Esiste perché clodia-platform#473 chiede esattamente questo: i blocchi del
+    loop e le sessioni invalidate «andrebbero loggate come causa-effetto
+    esplicita, non dedotte a mano dal timestamp». Dedurle a mano ha richiesto
+    un'indagine su due notti di log, e chi legge il messaggio d'errore non la fa.
+
+    La frase dichiara una CONCOMITANZA e i suoi numeri, non una causa: il loop
+    bloccato poco prima è compatibile con un riavvio o una sospensione della
+    piattaforma, e per decidere servono gli altri indizi. Dirlo come causa certa
+    sarebbe l'errore che la #358 ha già pagato con sette ore cercate dalla parte
+    sbagliata.
+    """
+    b = ultimo_blocco(entro, clock=clock)
+    if b is None:
+        return ""
+    durata, fa = b
+    return (f"l'event loop si era bloccato {durata:.0f}s, finito {fa:.0f}s prima: "
+            f"nella stessa finestra la piattaforma può essersi fermata o riavviata")
 
 
 async def heartbeat(tick: float = LAG_TICK, threshold: float = LAG_THRESHOLD,

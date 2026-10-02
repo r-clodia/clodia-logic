@@ -49,6 +49,7 @@ def _make_session() -> ChatSession:
     sess._lock = asyncio.Lock()
     sess._current_turn_task = None
     sess._last_event_at = 0.0
+    sess._eventi_turno = 0
     sess._watchdog_fired = False
     sess._last_usage = {}
     sess._total_tokens = {"input": 0, "output": 0, "runs": 0}
