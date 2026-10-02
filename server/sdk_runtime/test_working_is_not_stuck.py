@@ -25,11 +25,21 @@ class LastActivityMovesOnProgressTests(unittest.TestCase):
     def test_the_claude_loop_touches_last_activity_next_to_the_watchdog(self) -> None:
         """Il progresso è già misurato per il watchdog (`_last_event_at`): la
         correzione è aggiornare lì anche ciò che l'API legge, senza introdurre
-        una seconda nozione di «vivo» che potrebbe divergere dalla prima."""
+        una seconda nozione di «vivo» che potrebbe divergere dalla prima.
+
+        Dal #492 l'aggiornamento del watchdog passa da `_segna_evento_sdk()`,
+        che registra l'evento una volta sola per i suoi due lettori (il quando,
+        per il watchdog; il se, per il ritentativo automatico). L'invariante
+        misurata qui non cambia — il ciclo tocca entrambe le misure — ma il
+        nome da cercare sì, e seguirlo è il punto: due scritture separate
+        sarebbero di nuovo due verità che possono divergere.
+        """
         import inspect
         from . import session as s
         src = inspect.getsource(s.ChatSession._collect_response)
-        self.assertIn("_last_event_at", src)
+        self.assertIn("_segna_evento_sdk()", src)
+        self.assertIn("self._last_event_at = ",
+                      inspect.getsource(s.ChatSession._segna_evento_sdk))
         self.assertIn("self.last_activity = datetime.now(timezone.utc)", src,
                       "il ciclo eventi non aggiorna last_activity: un turno "
                       "silenzioso tornerà a sembrare piantato")

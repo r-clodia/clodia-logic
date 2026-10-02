@@ -39,7 +39,7 @@ from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import (take_reasoning, manager, ProviderNotConnected,
                                    spawn_dirs_of, topic_runtime_override,
-                                   session_provider)
+                                   session_provider, SessioneTerminata)
 from . import (access_log, mentions, presence, responder_routing, router_config,
                routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
@@ -694,6 +694,66 @@ def _audit_model(chat, tier):
         return None
 
 
+def _rimandabile(err: BaseException) -> bool:
+    """Questo turno si può rimandare senza rischiare di rifare ciò che ha già fatto?
+
+    Tre condizioni, e tutte e tre per lo stesso motivo — il rimando dev'essere
+    *sicuro*, non *probabile*:
+
+    - il subprocess è morto sotto il turno (`SessioneTerminata`): il messaggio
+      non è stato elaborato, non è una risposta che non ci piace;
+    - la sessione è ripartita, se no il secondo invio fallirebbe uguale e
+      sarebbe solo un errore in più e un'attesa in più per chi guarda;
+    - **nessun evento SDK** era arrivato. È la condizione che conta: con anche
+      un solo evento il modello può già aver chiamato un tool, e rimandare
+      significherebbe eseguirlo due volte. `eventi is None` («non so») vale
+      quanto «aveva già agito»: non si rimanda.
+    """
+    return (isinstance(err, SessioneTerminata)
+            and bool(err.ripristinata)
+            and err.eventi == 0)
+
+
+async def _invia_con_un_ritentativo(chat, prompt: str, *, tier: str, name: str,
+                                    responder: str):
+    """Invia il turno alla sessione, e lo rimanda UNA volta se è stato ucciso
+    prima di produrre qualcosa (clodia-platform#492).
+
+    Il 2 ott 2026 quattro turni sono morti con `exit -9` in sette minuti — il
+    subprocess ucciso da fuori, la sessione ricreata subito dal self-heal, e
+    nessuno che rimandasse il messaggio. Chi aveva scritto ha visto un banner
+    d'errore al posto della risposta che stava aspettando.
+
+    Una volta sola, ed è una decisione, non una taratura: se la causa è di host
+    (pressione di risorse, OOM killer, un reaper), riprovare in cerchio
+    moltiplica proprio il carico che ha ucciso il turno. Un tentativo recupera
+    l'incidente isolato; il secondo andrebbe deciso su una causa misurata, e la
+    causa qui è dichiarata non determinabile nella issue stessa.
+
+    Ogni altro invio alla sessione da questo modulo va fatto passare di qui —
+    un `chat.send_user_message` diretto è un turno che non verrà mai rimandato,
+    e lo presidia una guardia statica in `test_492_ritenta_una_volta`.
+    """
+    try:
+        return await chat.send_user_message(prompt)
+    except Exception as e:  # noqa: BLE001
+        if not _rimandabile(e):
+            raise
+        LOG.warning("turno di %s su %s/%s ucciso prima di qualunque evento SDK "
+                    "(%s): lo rimando una volta", responder, tier, name,
+                    getattr(e, "causa", e))
+        try:
+            return await chat.send_user_message(prompt)
+        except Exception as e2:  # noqa: BLE001
+            # Chi legge il canale deve sapere che «rimandalo» è già stato fatto,
+            # o la prima mossa che gli viene in mente è quella già consumata.
+            try:
+                e2.gia_ritentato = True
+            except Exception:  # noqa: BLE001 — eccezione che non accetta attributi
+                pass
+            raise
+
+
 @audit_events.own_cause
 async def _run_and_post_response(tier: str, name: str, responder: str, chat, prompt: str,
                                  principal: str | None = None, hop: int = 0,
@@ -791,7 +851,8 @@ async def _run_and_post_response(tier: str, name: str, responder: str, chat, pro
     reasoning: dict | None = None
     try:
         try:
-            reply = await chat.send_user_message(prompt)
+            reply = await _invia_con_un_ritentativo(
+                chat, prompt, tier=tier, name=name, responder=responder)
         finally:
             reasoning = take_reasoning(chat)
         _st, _err = audit_events.outcome_of_reply(reply)
@@ -1007,7 +1068,15 @@ def _diagnosi(err: Exception) -> str:
     testo dell'eccezione sarebbe indovinare due volte.
     """
     nota = str(getattr(err, "nota_utente", "") or "").strip()
-    return nota if nota else f"```\n{repr(err)[:400]}\n```"
+    testo = nota if nota else f"```\n{repr(err)[:400]}\n```"
+    # Il turno è già stato rimandato da solo (#492): senza questa riga il
+    # messaggio sembra il primo, e la mossa che viene in mente a chi legge
+    # («riprova a mandarlo») è proprio quella appena consumata.
+    if getattr(err, "gia_ritentato", False):
+        testo += ("\n\nIl turno era **già stato ritentato una volta** in "
+                  "automatico: il primo tentativo era morto senza produrre "
+                  "nessun evento, il secondo è morto anche lui.")
+    return testo
 
 
 async def _announce_failure(tier: str, name: str, responder: str, err: Exception,

@@ -76,6 +76,23 @@ def stall_since(inizio: float) -> float:
     return sum(d for fine, d in _STALLS if fine >= inizio)
 
 
+def recent_stall(entro: float, *, clock=time.monotonic) -> float:
+    """Secondi di blocco del loop finiti negli **ultimi `entro` secondi**.
+
+    `stall_since` vuole l'inizio di una finestra, e chi la chiama ce l'ha già
+    (il turno sa quando è partito). Chi deve solo chiedersi «è appena successo
+    qualcosa di anomalo qui intorno?» no: deve guardare indietro di un tratto.
+    È il caso di clodia-platform#473, dove la sessione opencode cade e la
+    domanda è se il loop fosse fermo poco prima.
+
+    Limite dichiarato: `_STALLS` vive in memoria e si azzera al riavvio del
+    processo. Un blocco che ha ucciso l'agent-server non è leggibile dal
+    processo successivo — per quello servono i log, che la riga di `note_stall`
+    ha già scritto.
+    """
+    return stall_since(clock() - entro)
+
+
 async def heartbeat(tick: float = LAG_TICK, threshold: float = LAG_THRESHOLD,
                     giri: int | None = None, sleep=asyncio.sleep,
                     clock=time.monotonic) -> None:
