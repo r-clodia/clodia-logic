@@ -5163,6 +5163,12 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     # turno.
     timing.mark("routing")
     chat_id = f"chan:{tier}:{name}:{responder.name}"
+    # Secondo dispatcher, stessa prenotazione (clodia-platform#456). Da qui al
+    # `send_user_message` dentro `_run_and_post_response` ci sono l'annuncio, il
+    # ricontrollo del provider, la sessione e un `list_messages` al gateway: la
+    # finestra è anzi più larga che in `_start_turn`, e serve tutta ai turni che
+    # arrivano da Telegram, dai trigger e dai workflow.
+    manager.reserve(chat_id)
     # Secondo dispatcher, stesso annuncio (clodia-platform#345): questo percorso
     # non passa da `_start_turn`, e coprirne uno solo lascerebbe muti i turni di
     # Telegram, trigger e workflow. Qui i partecipanti sono già in mano: si

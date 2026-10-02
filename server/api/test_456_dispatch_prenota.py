@@ -1,15 +1,21 @@
-"""Il dispatcher di canale prenota la sessione PRIMA di prepararla (#456).
+"""I dispatcher di canale prenotano la sessione PRIMA di prepararla (#456).
 
 Seconda finestra della stessa corsa (la prima è dentro `ChatManager.create()`,
 coperta da `sdk_runtime/test_456_prenotazione_dispatch.py`): quando la sessione
-è già viva, `_start_turn` la recupera con `manager.get` e poi annuncia il
+è già viva, il dispatcher la recupera con `manager.get` e poi annuncia il
 cambio coordinatore, ricontrolla il provider e costruisce il prompt — tutto
 prima di `chat.send_user_message`, cioè prima che esista il
 `_current_turn_task` che il reaper guarda.
 
+**I dispatcher sono due**, ed è la lezione già pagata da #345, scritta nei
+commenti di `run_topic_turn`: `_start_turn` serve la webui, `run_topic_turn`
+serve Telegram, i trigger e i workflow. Coprirne uno lascia l'altro nella
+finestra, e la finestra di `run_topic_turn` è pure più larga — c'è un
+`list_messages` al gateway dentro la costruzione del prompt.
+
 L'asserzione che conta non è «reserve è stato chiamato», è **quando**: dopo gli
-await della preparazione sarebbe già tardi, ed è proprio la forma del difetto
-che #311 ha lasciato aperta.
+await della preparazione sarebbe già tardi, ed è esattamente la forma del
+difetto che #311 ha lasciato aperta.
 """
 from __future__ import annotations
 
@@ -21,6 +27,7 @@ from . import channels
 
 TIER = "SEAL-1"
 STANZA = "software-house"
+PARTECIPANTI = ["davide", "clodia", "segretario"]
 ATTESO = f"chan:{TIER}:{STANZA}:segretario"
 
 
@@ -35,7 +42,9 @@ class _Spec:
         self.clearance = "SEAL-4"
 
 
-class DispatchPrenotaTests(unittest.TestCase):
+class DueDispatcherPrenotanoTests(unittest.TestCase):
+    """Entrambi i punti che avviano un turno di canale, come in #345."""
+
     def setUp(self) -> None:
         self.ordine: list[str] = []
 
@@ -61,10 +70,23 @@ class DispatchPrenotaTests(unittest.TestCase):
             p.start()
             self.addCleanup(p.stop)
 
-    def test_prenota_prima_di_preparare_il_turno(self) -> None:
+    def test_start_turn_prenota_prima_di_preparare_il_turno(self) -> None:
         avviato = _esegui(channels._start_turn(
             TIER, STANZA, "SEAL-4", _Spec("segretario"), "davide", "ciao", "direct"))
         self.assertFalse(avviato)
+        self.assertEqual(self.ordine[0], f"reserve:{ATTESO}",
+                         f"la prenotazione non viene per prima: {self.ordine}")
+        self.assertIn("provider", self.ordine)
+
+    def test_run_topic_turn_prenota_prima_di_preparare_il_turno(self) -> None:
+        """Il dispatcher di Telegram/trigger/workflow non passa da `_start_turn`:
+        senza questa riga la finestra resta aperta proprio dove il prompt costa
+        una lettura al gateway."""
+        meta = {"tier": "SEAL-4", "participants": PARTECIPANTI}
+        responder, reply = _esegui(channels.run_topic_turn(
+            TIER, STANZA, meta, trigger_text="ciao", responder_hint="segretario"))
+        self.assertIsNone(responder)
+        self.assertIsNone(reply)
         self.assertEqual(self.ordine[0], f"reserve:{ATTESO}",
                          f"la prenotazione non viene per prima: {self.ordine}")
         self.assertIn("provider", self.ordine)
