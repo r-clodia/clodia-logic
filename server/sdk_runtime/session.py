@@ -4087,12 +4087,62 @@ def subprocess_morto(chat) -> Optional[bool]:
     return rc is not None
 
 
+#: Quanto resta prenotata una chat il cui turno è in preparazione
+#: (clodia-platform#456). Deve coprire il tratto fra «questo chat_id riceverà un
+#: turno» e il `send_user_message` che crea `_current_turn_task`: risoluzione
+#: della sessione, `start()` (skill_sync + workspace effimero + sandbox: ~950 ms
+#: nell'incidente del 30/09), annunci di canale e costruzione del prompt. Due
+#: minuti sono un ordine di grandezza sopra il caso lento osservato; il costo di
+#: sbagliare per eccesso è un'evizione rimandata di due minuti, quello di
+#: sbagliare per difetto è un turno perso.
+DISPATCH_GRACE_SEC = 120.0
+
+
 class ChatManager:
     """Multi-chat: dict {chat_id → ChatSession}. Una chat 'default' al boot."""
 
     def __init__(self) -> None:
         self._chats: dict[str, "ChatSession | CodexChatSession | OpenCodeChatSession"] = {}
         self._lock = asyncio.Lock()
+        #: {chat_id → istante monotòno di scadenza}. Vedi `reserve`.
+        self._reserved: dict[str, float] = {}
+
+    def reserve(self, chat_id: str, grace: Optional[float] = None) -> None:
+        """Dichiara che `chat_id` sta per ricevere un turno: non si evince.
+
+        Il reaper riconosce un turno in corso da `_current_turn_task`, che però
+        nasce dentro `send_user_message` — l'ultimo atto di una preparazione che
+        comincia molto prima e dura quasi un secondo. In quella finestra la chat
+        è nel registro, `last_activity` è quella vecchia letta dalla history, e
+        `_evict` la giudica idle in piena buona fede: la ferma, `stop()` azzera
+        `_opts_kwargs`, e il dispatcher raccoglie `RuntimeError("session not
+        started")` (clodia-platform#456, gap residuo di #311).
+
+        La prenotazione è sul CHAT_ID e non sull'oggetto chat apposta: va presa
+        anche quando la sessione non esiste ancora, perché la finestra più lunga
+        sta proprio dentro `create()`.
+
+        NON esiste un `release()`, ed è una scelta: la grazia scade da sé. Un
+        dispatcher che muore fra la prenotazione e il turno — eccezione, task
+        cancellato, processo riavviato — lascerebbe altrimenti una sessione
+        immortale, cioè scambierebbe un turno perso ogni tanto con RAM e spawn
+        trattenuti per sempre. A grazia scaduta si torna esattamente al
+        comportamento di prima, che è il peggio possibile qui.
+        """
+        self._reserved[str(chat_id)] = time.monotonic() + (
+            DISPATCH_GRACE_SEC if grace is None else float(grace))
+
+    def _prenotazioni_vive(self) -> set:
+        """Le prenotazioni non scadute, buttando le altre.
+
+        Lo sfoltimento sta qui perché il solo lettore è il tick del reaper: una
+        prenotazione scaduta è indistinguibile da una mai presa, e tenerla
+        significherebbe far crescere il dizionario a ogni turno.
+        """
+        ora = time.monotonic()
+        for cid in [k for k, scadenza in self._reserved.items() if scadenza <= ora]:
+            self._reserved.pop(cid, None)
+        return set(self._reserved)
 
     def list(self) -> list[ChatSession]:
         # Ordina per ultima attività decrescente
@@ -4126,6 +4176,14 @@ class ChatManager:
             _ensure_runtime_provider(kind, runtime_override)
             if cid in self._chats:
                 raise ValueError(f"chat '{cid}' already exists")
+            # PRENOTAZIONE (clodia-platform#456). `start()` gira fuori da questo
+            # lock, con la chat già nel registro e `last_activity` presa dalla
+            # history — vecchia quanto l'ultima volta che qualcuno ha parlato.
+            # È la finestra dell'incidente del 30/09: il reaper ha evinto una
+            # sessione mentre il suo workspace finiva di nascere. Sta qui e non
+            # solo nel dispatcher di canale perché `create()` ha altri chiamanti
+            # (job, API chat) e la finestra appartiene a lei.
+            self.reserve(cid)
             cls = _runtime_class(kind, runtime_override)
             chat = cls(cid, kind=kind, runtime_override=runtime_override)
             # NON PRESIDIATA (clodia-platform#104, blocco job asincroni). Un job
@@ -4209,6 +4267,10 @@ class ChatManager:
         protect = set(protect) if protect else set()
         victims = []
         async with self._lock:
+            # Un turno PRENOTATO non ha ancora il suo task: `_current_turn_task`
+            # da solo non sa distinguere «ferma da un'ora» da «sta partendo
+            # adesso» (clodia-platform#456).
+            protect |= self._prenotazioni_vive()
             for cid, chat in list(self._chats.items()):
                 if cid in protect:
                     continue

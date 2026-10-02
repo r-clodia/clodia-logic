@@ -2552,6 +2552,14 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                  label, tier, name)
         await _announce_refusal(tier, name, label)
         return False
+    # IL TURNO COMINCIA QUI, per il reaper (clodia-platform#456). Da questa riga
+    # al `send_user_message` che crea `_current_turn_task` ci sono annunci,
+    # ricontrollo del provider, `create()` con il suo `start()` e la costruzione
+    # del prompt: tutta roba che await-a, e durante la quale una sessione idle da
+    # più del TTL risulta evincibile pur avendo un turno già assegnato. La
+    # prenotazione è sul chat_id e scade da sé — se il dispatch muore qui sotto,
+    # la sessione torna normalmente evincibile dopo la grazia.
+    manager.reserve(chat_id)
     # Il tier della stanza può essere cambiato dall'ultimo turno: il provider
     # della sessione viva lo sa già (sotto), il coordinamento passava di mano in
     # silenzio (clodia-platform#345). L'annuncio precede l'avvio: chi legge la
