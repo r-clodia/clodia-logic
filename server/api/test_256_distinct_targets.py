@@ -112,9 +112,12 @@ class ADisplayNeverRepeatsANameTests(_Base):
     def test_the_list_of_names_is_deduplicated(self) -> None:
         """Cintura da una riga nel punto che compone la frase: copre anche i
         chiamanti futuri che ricadranno nello stesso errore."""
-        self.assertEqual("@worker", channels._elenco_or(["worker", "worker"]))
+        # Il rendering è passato dal sigillo al grassetto (#480): un elenco
+        # RACCONTA chi è stato taggato e non deve convocarlo. Qui si misura
+        # il dedup, che è invariato.
+        self.assertEqual("**worker**", channels._elenco_or(["worker", "worker"]))
         self.assertEqual(
-            "@worker o @accountant",
+            "**worker** o **accountant**",
             channels._elenco_or(["worker", "accountant", "worker"]))
 
 
@@ -161,9 +164,9 @@ class TheQuestionDistinguishesTheInstancesTests(_Base):
             "clodia", "ci pensano @worker-2 e @worker-3")
 
         domanda = posts[-1]["text"]
-        self.assertIn("@worker-2", domanda)
-        self.assertIn("@worker-3", domanda)
-        self.assertNotIn("@worker o @worker", domanda)
+        self.assertIn("**worker-2**", domanda)
+        self.assertIn("**worker-3**", domanda)
+        self.assertNotIn("**worker** o **worker**", domanda)
         # la domanda torna all'autore, che è l'unico a sapere cosa intendeva
         self.assertEqual("clodia", start.await_args.args[3].name)
 
@@ -175,7 +178,7 @@ class TheQuestionDistinguishesTheInstancesTests(_Base):
 
         avviso = posts[-1]["text"]
         self.assertIn("limite di", avviso)
-        self.assertEqual(1, avviso.count("@worker"),
+        self.assertEqual(1, avviso.count("**worker**"),
                          f"nome ripetuto nell'avviso: {avviso!r}")
 
 

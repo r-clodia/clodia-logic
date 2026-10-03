@@ -9,7 +9,10 @@ azionabili interroga una lista di destinatari e non fa regex sul testo raw.
 Regole (falsi positivi esclusi per costruzione):
 - il testo dentro i fenced code block (```...```) e l'inline code (`...`)
   non produce mention;
-- le righe citate (prefisso `>`) non producono mention;
+- le righe citate (prefisso `>`) non producono mention, e nemmeno il testo di
+  sistema RIPORTATO senza quel prefisso — un messaggio della piattaforma
+  incollato o trascritto da uno screenshot (#480): una `@` conta per il
+  messaggio in cui è stata scritta, non per quello in cui è stata riportata;
 - `$nome` NON è una mention (#391): il `$` appartiene soltanto agli alias del
   composer (`$recap`), che la webui espande prima dell'invio. Fino a #391
   esisteva la «citazione» `$nome`, che da R12 non apriva più nessun turno:
@@ -73,6 +76,39 @@ _FENCE_RE = re.compile(r"```.*?```", re.DOTALL)
 _INLINE_CODE_RE = re.compile(r"`[^`\n]*`")
 _QUOTED_LINE_RE = re.compile(r"^[ \t]{0,3}>.*$", re.MULTILINE)
 
+# Testo RIPORTATO che la piattaforma ha composto lei stessa — un messaggio di
+# sistema incollato, trascritto da uno screenshot, inoltrato — non convoca
+# nessuno: una `@` conta per il messaggio in cui è stata SCRITTA, non per
+# quello in cui è stata riportata (issue#480). Il prefisso `>` resta la forma
+# canonica della citazione; questi marcatori coprono il caso in cui chi incolla
+# non lo mette, che è la norma proprio quando si riporta un messaggio per
+# segnalarlo — ed è l'incidente del 1 ott 2026, dove un messaggio con UNA
+# convocazione ne ha prodotte tre e il router ha aperto un dialogo spurio.
+#
+# L'elenco contiene SOLO stringhe che la piattaforma emette lei stessa. Il
+# vincolo è di sicurezza, non di stile: un marcatore che un umano possa
+# scrivere per caso sarebbe un modo per rendere muta una menzione vera —
+# «routing lento, @clodia guarda» deve continuare a convocare. Per questo si
+# richiede la frase di apertura del template, non la parola.
+#
+# La copertura è parziale per costruzione, e va bene così: questa è la cintura
+# di una correzione che sta a monte (in clodia-logic i RESOCONTI non emettono
+# più il sigillo vivo, #480 parte (c)). Qui si tiene lo storico già scritto,
+# che il sigillo ce l'ha, e il testo trascritto da uno screenshot.
+_RIPORTI = (
+    "Routing: scegli ",        # dialogo di disambiguazione del router
+    "[turno concluso]",        # resoconto di fine turno delegato
+    "⚠️ Il turno di ",         # annuncio di turno fallito
+    "ℹ Sistema",               # intestazione di una bolla di sistema copiata dalla webui
+    "<!-- choices=",           # pill di scelta
+    "<!-- routing-request=",   # marcatore del dialogo di routing
+)
+# Il taglio arriva a fine RIGA (`[^\n]*`), non a fine messaggio: quello che
+# l'autore scrive DOPO il blocco incollato è farina sua e convoca davvero.
+# È la differenza fra una cintura e una museruola.
+_RIPORTO_RE = re.compile(
+    "(?:" + "|".join(re.escape(m) for m in _RIPORTI) + ")[^\n]*")
+
 
 def _scan(text: str) -> list[str]:
     """Nomi menzionati con `@`, nell'ordine di apparizione, in minuscolo.
@@ -84,6 +120,7 @@ def _scan(text: str) -> list[str]:
     clean = _FENCE_RE.sub(" ", text)
     clean = _INLINE_CODE_RE.sub(" ", clean)
     clean = _QUOTED_LINE_RE.sub(" ", clean)
+    clean = _RIPORTO_RE.sub(" ", clean)
     return [m.group("nome").lower() for m in _MENTION_RE.finditer(clean)]
 
 
@@ -142,6 +179,21 @@ GOLDEN_CASES: tuple[tuple[str, list[str]], ...] = (
     ("usa `@clodia` come placeholder", []),
     ("> @clodia aveva scritto così\nrispondo io: @luca", ["luca"]),
     ("il letterale $$davide non conta", []),
+    # ── #480: il testo di sistema RIPORTATO non convoca nessuno ────────────
+    ("@sysadmin ciao, apri una issue: ℹ Sistema\n"
+     "Routing: scegli @clodia o @clodia-354.", ["sysadmin"]),
+    ("Routing: scegli @clodia o @clodia-354.", []),
+    ("[turno concluso] @clodia-405 ha terminato il compito.", []),
+    ("⚠️ Il turno di **@fullstack-dev-271** è terminato con un errore.", []),
+    ("<!-- choices=@clodia,@mario -->", []),
+    ("@clodia guarda cosa è successo:\n"
+     "[turno concluso] @sysadmin ha terminato il compito.", ["clodia"]),
+    # il taglio è di riga: quello che l'autore scrive dopo è suo
+    ("Routing: scegli @clodia o @mario.\nvabbè, fai tu @sysadmin", ["sysadmin"]),
+    # e una parola comune non è un marcatore, se no si zittiscono i vivi
+    ("sistema a posto, @clodia vai", ["clodia"]),
+    ("routing lento, @clodia guarda", ["clodia"]),
+    ("@clodia e @sysadmin, chi prende la issue?", ["clodia", "sysadmin"]),
     # ── #391: `$` è degli alias del composer, non è una menzione ───────────
     ("ciao @davide, senti $mario", ["davide"]),
     ("$mario avvisa, poi @davide decide", ["davide"]),
