@@ -30,6 +30,8 @@ import logging
 import os
 from datetime import datetime, timedelta, timezone
 
+from . import mentions
+
 LOG = logging.getLogger("agent-server.api.goal_watch")
 
 #: Stati in cui il lavoro è degli AGENTI. Negli altri l'obiettivo aspetta
@@ -176,7 +178,7 @@ def promemoria(voce: dict) -> str:
             ", passo per passo. Se sei bloccato, dillo in una riga dicendo cosa ti serve.")
     return (f"{MARCA}, e in questo canale non si muove niente "
             f"da {voce['fermo_da_minuti']} minuti.\n\n"
-            f"> {goal.get('text', '')}\n\n"
+            f"{mentions.cita(goal.get('text', ''))}\n\n"
             f"Stato: `{stato}`. {mossa}\n\n"
             "Se l'obiettivo è già raggiunto, dichiaralo con "
             "`topic.goal_progress(state=\"claimed-done\")` invece di lasciarlo aperto.")
@@ -226,7 +228,12 @@ async def tick(*, now: datetime | None = None) -> dict:
         try:
             topic = await topics_client.async_open_topic(tier, name) or {}
             meta = topic.get("meta") or {}
-            orchestratore = str(meta.get("contact_agent") or "clodia").strip()
+            # L'indirizzo è quello della piattaforma (#501): se il meta porta
+            # un'etichetta di spawn (`clodia-354`), il `@` deve comunque andare
+            # al seed — e anche il controllo «è nella stanza» qui sotto, che
+            # confronta coi partecipanti, che sono seed.
+            orchestratore = channels.indirizzo(
+                str(meta.get("contact_agent") or "clodia").strip())
             partecipanti = meta.get("participants") or []
             dentro = (orchestratore in (partecipanti.keys()
                                         if isinstance(partecipanti, dict) else partecipanti)

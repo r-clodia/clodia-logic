@@ -927,7 +927,10 @@ async def _fire_topic_trigger(job: dict) -> dict:
         db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")
         return {"chat_id": f"topic:{tier}/{name}", "status": "skipped",
                 "topic": f"{tier}/{name}", "skipped": [agent]}
-    content = f"@{agent} {prompt}" if agent else prompt
+    # Indirizzo della piattaforma (#501): un job configurato su `clodia-354`
+    # scrive `@clodia`, perché un seed a istanza unica non ha un `-N` a cui
+    # girare il turno — e un `@` che non risolve è un job che non parte.
+    content = f"@{channels.indirizzo(agent)} {prompt}" if agent else prompt
     # The job and its run are the root of the chain on the audit trail
     # (clodia-platform#465). The run is recorded by `mark_run` below, after the
     # post; its id is the next `run_seq`, and a topic trigger never fires twice
