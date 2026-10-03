@@ -286,15 +286,29 @@ async def _lifespan(app: FastAPI):
                 LOG.warning("sweep spawn orfani (reaper): %s", e)
             # Fallback sul process table: recupera subprocess Claude sfuggiti
             # al registry dopo crash o stop incompleto. La policy è volutamente
-            # stretta (discendenti del server + cwd non appartenente a chat vive).
+            # stretta (discendenti del server + pid non rivendicato da una chat
+            # viva + cwd leggibile e non appartenente a chat vive).
+            # `protected_pids` NON è opzionale nei fatti: senza, l'unica prova di
+            # proprietà torna a essere la cwd ed è il difetto di #478. Un guard
+            # AST su questo file lo esige (test_478_reaper_turni_vivi).
             if hard_ttl > 0:
                 try:
                     stats = await asyncio.to_thread(
-                        sweep_orphan_runtime_processes, live, hard_ttl
+                        sweep_orphan_runtime_processes, live, hard_ttl,
+                        protected_pids=manager.live_runtime_pids(),
                     )
+                    # Gli INPUT della decisione, non solo il verdetto: #478 non
+                    # si è potuto diagnosticare dai log proprio perché il kill
+                    # stampava quanti e non in base a cosa.
+                    LOG.debug("runtime reaper: claude=%d protetti=%d orfani=%d "
+                              "live_cwds=%s", stats["live_processes"],
+                              stats["protected_processes"], stats["orphan_processes"],
+                              stats["live_cwds"])
                     if stats["reaped"]:
-                        LOG.warning("runtime reaper: terminati %d processi orfani",
-                                    stats["reaped"])
+                        LOG.warning("runtime reaper: terminati %d processi orfani "
+                                    "(bersagli: %s)", stats["reaped"],
+                                    ", ".join(f"pid={o['pid']} age={o['age_seconds']:.0f}s "
+                                              f"cwd={o['cwd']}" for o in stats["orphans"]))
                 except Exception as e:  # noqa: BLE001
                     LOG.warning("sweep processi runtime orfani: %s", e)
     reaper_task = asyncio.create_task(_idle_reaper_loop())
