@@ -279,34 +279,98 @@ _PROCESSO_MORTO_RE = re.compile(
     r"terminated process|process (?:has )?exited|closed pipe|broken pipe",
     re.IGNORECASE)
 
+#: Uscite che dicono «qualcuno l'ha ucciso», non «è andata male».
+#:
+#: POSIX: un exit NEGATIVO è il subprocess terminato dal segnale |N|; 128+N è la
+#: stessa cosa raccontata da una shell. 9 = SIGKILL, 15 = SIGTERM.
+#:
+#: Serve perché il guasto di clodia-platform#492 arriva come
+#: `ProcessError: Command failed with exit code -9`: non è una
+#: `CLIConnectionError` e non contiene nessuna delle frasi di
+#: `_PROCESSO_MORTO_RE`, quindi finiva in canale come `repr` nudo —
+#: indistinguibile da un errore del modello o del provider. L'exit 143 del
+#: reaper (#478) si salvava per CASO, perché il runtime lo riveste in
+#: «Cannot write to terminated process (exit code: 143)»: era la frase, non il
+#: codice, a essere riconosciuta.
+_USCITE_PER_SEGNALE = {-9: 9, 137: 9, -15: 15, 143: 15}
+_NOME_SEGNALE = {9: "SIGKILL", 15: "SIGTERM"}
+
+#: Il codice d'uscita quando l'eccezione non è una `ProcessError` ma lo dice nel
+#: testo (succede quando un runtime riveste l'errore di un altro).
+_EXIT_CODE_RE = re.compile(r"exit code:?\s*(-?\d+)")
+
+
+def _segnale_di_kill(err: BaseException) -> "int | None":
+    """Il numero del segnale che ha ucciso il subprocess, o `None`.
+
+    Prima l'attributo strutturato (`ProcessError.exit_code`), poi il testo: la
+    prima è una lettura, la seconda un'inferenza, e in quest'ordine l'inferenza
+    si usa solo dove la lettura non c'è.
+    """
+    code = getattr(err, "exit_code", None)
+    if not isinstance(code, int) or isinstance(code, bool):
+        m = _EXIT_CODE_RE.search(str(err))
+        code = int(m.group(1)) if m else None
+    return _USCITE_PER_SEGNALE.get(code)
+
 
 class SessioneTerminata(RuntimeError):
     """Il turno è caduto perché il subprocess CLI era già morto, non per ciò
     che il turno conteneva (clodia-platform#397, punto 3).
 
-    Esiste per una cosa sola: portare fino alla stanza le due informazioni che
+    Esiste per una cosa sola: portare fino alla stanza le informazioni che
     `repr(CLIConnectionError(...))` non dà — che il messaggio **non è stato
-    elaborato**, e se la sessione è stata ricreata (quindi se rimandarlo basta).
-    `_announce_failure` legge `nota_utente`; l'eccezione originale resta in
-    `causa` e in `__cause__` per chi indaga.
+    elaborato**, se la sessione è stata ricreata (quindi se rimandarlo basta),
+    se il processo è stato ucciso **dall'esterno** e quanto lavoro il turno
+    morto aveva già prodotto. `_announce_failure` legge `nota_utente`;
+    l'eccezione originale resta in `causa` e in `__cause__` per chi indaga.
+
+    `eventi` è il conto degli eventi SDK ricevuti dal turno caduto, ed è
+    l'unico dato che permette di decidere se ritentarlo: zero eventi = nessun
+    tool può essere stato eseguito, quindi rimandare il messaggio non rifà
+    niente (clodia-platform#492). Il default è `None` = «non so», e NON zero:
+    oggi l'unico costruttore passa sempre il valore, ma un default di zero
+    direbbe «non ha fatto niente, rimandalo pure» al primo che costruirà questa
+    eccezione senza saperlo — cioè concederebbe il rimando proprio nel caso in
+    cui manca la prova che lo rende innocuo.
     """
 
-    def __init__(self, causa: BaseException, ripristinata: bool) -> None:
+    def __init__(self, causa: BaseException, ripristinata: bool, *,
+                 segnale: "int | None" = None, eventi: "int | None" = None,
+                 blocco_loop: str = "") -> None:
         self.causa = causa
         self.ripristinata = ripristinata
+        self.segnale = segnale
+        self.eventi = eventi
         esito = ("È stata ricreata subito: il messaggio non è andato perso per "
                  "sempre, basta rimandarlo."
                  if ripristinata else
                  "**Non è stato possibile ricrearla**: serve un intervento "
                  "prima di riprovare.")
+        if segnale is None:
+            apertura = ("La sessione dell'agente era terminata in modo inatteso, "
+                        "quindi il messaggio non è stato elaborato.")
+        else:
+            # Il punto della #492: questo NON è un timeout del modello né un
+            # rifiuto. Un turno ucciso a metà letto come «il provider non ha
+            # risposto» manda a cercare dalla parte sbagliata, ed è la ragione
+            # per cui questo testo è diverso da quello del timeout.
+            apertura = (
+                f"Il processo dell'agente è stato **terminato dall'esterno** "
+                f"({_NOME_SEGNALE.get(segnale, f'segnale {segnale}')}), quindi il "
+                f"messaggio non è stato elaborato: il turno è stato interrotto a "
+                f"metà, non è un timeout del modello né un rifiuto. Lo mandano "
+                f"l'OOM killer dell'host, il reaper delle sessioni inattive o un "
+                f"riavvio della piattaforma.")
+        coda = f"\n\n{blocco_loop.capitalize()}." if blocco_loop else ""
         self.nota_utente = (
-            "La sessione dell'agente era terminata in modo inatteso, quindi il "
-            f"messaggio non è stato elaborato. {esito}\n\n"
+            f"{apertura} {esito}{coda}\n\n"
             f"Dettaglio tecnico: `{type(causa).__name__}: {causa}`")
         super().__init__(self.nota_utente)
 
 
-def _sessione_terminata(err: BaseException, ripristinata: bool):
+def _sessione_terminata(err: BaseException, ripristinata: bool, *,
+                        eventi: "int | None" = None, blocco_loop: str = ""):
     """`SessioneTerminata` se il turno è morto con il subprocess, altrimenti
     `None` — e in quel caso l'eccezione originale va rilanciata com'è.
 
@@ -315,8 +379,11 @@ def _sessione_terminata(err: BaseException, ripristinata: bool):
     """
     if isinstance(err, asyncio.CancelledError):
         return None
-    if isinstance(err, CLIConnectionError) or _PROCESSO_MORTO_RE.search(str(err)):
-        return SessioneTerminata(err, ripristinata)
+    segnale = _segnale_di_kill(err)
+    if (segnale is not None or isinstance(err, CLIConnectionError)
+            or _PROCESSO_MORTO_RE.search(str(err))):
+        return SessioneTerminata(err, ripristinata, segnale=segnale,
+                                 eventi=eventi, blocco_loop=blocco_loop)
     return None
 
 
@@ -1584,6 +1651,11 @@ class ChatSession:
         self._lock = asyncio.Lock()
         self._current_turn_task: Optional[asyncio.Task] = None
         self._last_event_at: float = 0.0   # ts ultimo evento SDK del turno (per il watchdog)
+        #: Eventi SDK ricevuti da QUESTO turno. Non è una statistica: è ciò che
+        #: distingue un turno morto senza aver fatto niente — ritentabile — da
+        #: uno che aveva già chiamato dei tool, dove ritentare rifarebbe gli
+        #: effetti (clodia-platform#492). Azzerato all'inizio di ogni turno.
+        self._eventi_turno: int = 0
         self._watchdog_fired: bool = False  # il watchdog ha ucciso il subprocess di questo turno
         #: Perché l'ha ucciso, nelle parole che leggerà la persona nel canale.
         self._watchdog_reason: str = ""
@@ -1973,6 +2045,10 @@ class ChatSession:
                                  "chat_id": self.chat_id, "trace": trace.current()})
             LOG.info("turno START %s: %s", self.chat_id, _snippet(content, 80))
             self._last_usage = {}
+            # Stesso motivo del reasoning qui sotto: il conto è di QUESTO turno,
+            # e se restasse quello del precedente un turno morto subito
+            # risulterebbe «aveva già lavorato» e non verrebbe ritentato.
+            self._eventi_turno = 0
             # THIS turn's reasoning starts here (#484): the session is
             # long-lived, and an accumulator that is not reset would end up
             # attached to the wrong turn's bubble.
@@ -2013,7 +2089,10 @@ class ChatSession:
                         # La recovery è appena successa o fallita: è QUI che si
                         # sa cosa dire a chi ha scritto, e un `raise` nudo la
                         # butterebbe via (#397 punto 3, come già #358).
-                        parlante = _sessione_terminata(e, ripristinata)
+                        parlante = _sessione_terminata(
+                            e, ripristinata,
+                            eventi=getattr(self, "_eventi_turno", None),
+                            blocco_loop=loop_lag.nota_blocco())
                         if parlante is not None:
                             raise parlante from e
                         raise
@@ -2084,7 +2163,12 @@ class ChatSession:
                             await self._set_status(ClodiaStatus.ERROR)
                         # Il subprocess può morire anche DOPO l'invio, mentre si
                         # raccoglie la risposta: stessa sostanza, stesso messaggio.
-                        parlante = _sessione_terminata(e, ripristinata)
+                        # Gli eventi già ricevuti viaggiano con l'eccezione: sono
+                        # ciò che dice al canale se il turno è ritentabile.
+                        parlante = _sessione_terminata(
+                            e, ripristinata,
+                            eventi=getattr(self, "_eventi_turno", None),
+                            blocco_loop=loop_lag.nota_blocco())
                         if parlante is not None:
                             raise parlante from e
                         raise
@@ -2258,6 +2342,12 @@ class ChatSession:
                     self._silence_diagnosis(chunk_timeout)) from None
 
             self._last_event_at = asyncio.get_event_loop().time()  # progresso → watchdog quieto
+            # `getattr` e non `+=`: un contatore diagnostico non deve poter
+            # uccidere il turno su cui gira. Una sessione costruita senza
+            # `__init__` (i fake dei test, e domani qualunque altro modo di
+            # istanziarla) non ha l'attributo, e `+=` solleverebbe
+            # `AttributeError` nel cuore della raccolta della risposta.
+            self._eventi_turno = getattr(self, "_eventi_turno", 0) + 1
             # E anche `last_activity`, che è ciò che l'API legge per dire se una
             # sessione è viva (`_live_status`: `thinking` + silenzio > 180s =
             # `blocked`). Prima si muoveva solo in `_record`, cioè quando un
@@ -3265,7 +3355,7 @@ async def _audit_turn_acquired(chat) -> None:
 
 
 def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
-                             model: str | None) -> str:
+                             model: str | None, correlazione: str = "") -> str:
     """Il messaggio del turno scaduto: dice cosa si è OSSERVATO.
 
     Il testo precedente — «modello X non convergente» — era una diagnosi, non
@@ -3274,10 +3364,17 @@ def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
     provider mentre il difetto era qui. Il modello resta citato come dato, non
     come colpevole; quello che si afferma è quale tentativo è scaduto e quanti
     secondi si è atteso davvero.
+
+    `correlazione` aggiunge, quando c'è, il blocco dell'event loop appena
+    precedente. È la domanda che la #473 lascia senza risposta — «provider lento
+    o sessione appena ricreata dopo un'interruzione di piattaforma?» — e che chi
+    legge il messaggio non può sciogliere senza un'indagine manuale sui log: qui
+    ci sono i numeri per porsela.
     """
+    coda = f" — {correlazione}" if correlazione else ""
     return (f"turno opencode scaduto ({tentativo}): attesi {atteso:.0f}s "
             f"sul budget di {int(budget)}s per il turno — modello {model or '?'} "
-            f"— turno interrotto")
+            f"— turno interrotto{coda}")
 
 
 def _opencode_reasoning_effort(kind: str, model: str | None) -> str | None:
@@ -3846,10 +3943,16 @@ class OpenCodeChatSession:
                     # (perde la storia OpenCode-interna ma RISPONDE invece di fallire;
                     # il contesto arriva comunque dal prompt).
                     residuo = budget.remaining()
+                    # La correlazione con i blocchi del loop è nella RIGA, non
+                    # da dedurre confrontando due log a mano (#473): una
+                    # sessione opencode invalida è la firma di un riavvio, e il
+                    # blocco poco prima è l'indizio che dice quale riavvio.
+                    correlazione = loop_lag.nota_blocco()
                     LOG.warning("opencode %s: sessione %s inutilizzabile (HTTP %s) → ricreo "
-                                "(%.0fs consumati, %.0fs di budget residuo)",
+                                "(%.0fs consumati, %.0fs di budget residuo)%s",
                                 self.kind, self._oc_session, r.status_code,
-                                budget.elapsed(), residuo)
+                                budget.elapsed(), residuo,
+                                f" — {correlazione}" if correlazione else "")
                     if residuo < _OPENCODE_MIN_RETRY_BUDGET:
                         # Fail-fast: con questo margine il retry scadrebbe comunque,
                         # e chi legge il log avrebbe un timeout senza la ragione.
@@ -3901,7 +4004,13 @@ class OpenCodeChatSession:
                                  "tentativo": tentativo, "atteso_s": round(atteso, 1)})
             raise OpenCodeTurnTimeout(_oc_turn_timeout_message(
                 tentativo=tentativo, atteso=atteso,
-                budget=_OPENCODE_TURN_TIMEOUT, model=self._model))
+                budget=_OPENCODE_TURN_TIMEOUT, model=self._model,
+                # Solo sul tentativo dopo la ricreazione: lì la domanda «è il
+                # provider o è la piattaforma?» è aperta davvero, perché la
+                # sessione era appena stata rifatta. Sul primo tentativo la
+                # correlazione sarebbe rumore attaccato a ogni timeout.
+                correlazione=(loop_lag.nota_blocco()
+                              if tentativo == _OC_TENTATIVO_RICREATA else "")))
         full = await self._handle_parts(data)
         activity_log.append(self.kind, "run_done",
                             {"reply": _reply_text(full), "chat_id": self.chat_id,
