@@ -105,18 +105,39 @@ class ConiiDiSessioneTests(TestCase):
                 self.assertEqual(trovati[0][1], atteso)
 
 
+#: Le tre classi di sessione. NON ereditano l'una dall'altra: condividono
+#: l'interfaccia e nient'altro, quindi un attributo dichiarato sulla prima non
+#: arriva alle altre due. È la ragione per cui ognuna dichiara il proprio
+#: `_timing`, ed è la stessa ragione per cui deve dichiarare `unattended`.
+CLASSI_DI_SESSIONE = (S.ChatSession, S.CodexChatSession, S.OpenCodeChatSession)
+
+
 class SessioneDiJobTests(TestCase):
     """Il valore che il claim trasporta, letto dalla sessione e non dedotto.
 
-    `ChatSession.unattended` è un attributo di CLASSE con default `False` — una
-    sessione è presidiata finché non si dimostra il contrario — e i conii lo
-    leggono con `getattr(self, "unattended", False)`. Se un giorno sparisse, il
-    `getattr` resterebbe verde restituendo sempre `False`: cioè il blocco dei
-    job si spegnerebbe senza che nulla fallisca.
+    `unattended` è un attributo di CLASSE con default `False` — una sessione è
+    presidiata finché non si dimostra il contrario — e i conii lo leggono con
+    `getattr(self, "unattended", False)`. Su una classe che non lo dichiara quel
+    `getattr` risponde `False` per sempre: il blocco dei job si spegnerebbe in
+    silenzio, senza che nulla fallisca. Vale per tutte e tre, e la prima
+    stesura di questo file controllava solo `ChatSession` — cioè l'unica su cui
+    l'attributo c'era già, mentre il claim si perdeva su `OpenCodeChatSession`.
     """
 
-    def test_una_sessione_nasce_presidiata(self):
-        self.assertIs(S.ChatSession.unattended, False)
+    def test_ogni_classe_di_sessione_nasce_presidiata(self):
+        for cls in CLASSI_DI_SESSIONE:
+            with self.subTest(classe=cls.__name__):
+                self.assertIs(cls.unattended, False)
 
-    def test_l_attributo_esiste_e_non_e_solo_un_getattr_ottimista(self):
-        self.assertIn("unattended", vars(S.ChatSession))
+    def test_ognuna_lo_dichiara_e_non_e_solo_un_getattr_ottimista(self):
+        for cls in CLASSI_DI_SESSIONE:
+            with self.subTest(classe=cls.__name__):
+                self.assertIn("unattended", vars(cls))
+
+    def test_le_tre_classi_non_ereditano_l_una_dall_altra(self):
+        """Se un giorno ereditassero, il test sopra andrebbe riscritto invece
+        che cancellato: `vars(cls)` su una sottoclasse direbbe «manca» su un
+        attributo che c'è ed è giusto. Qui si rompe, e si rilegge il perché."""
+        for cls in CLASSI_DI_SESSIONE:
+            with self.subTest(classe=cls.__name__):
+                self.assertEqual(cls.__bases__, (object,))

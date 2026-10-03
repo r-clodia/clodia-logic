@@ -2616,6 +2616,13 @@ class CodexChatSession:
     #: Vedi `ChatSession._timing` (clodia-platform#330).
     _timing: "turn_timing.TurnTiming | None" = None
 
+    #: Vedi `ChatSession.unattended` (clodia-platform#104, #418 §4). Dichiarato
+    #: su OGNI classe di sessione e non solo sulla prima: le tre non ereditano
+    #: l'una dall'altra, e il conio legge il claim con `getattr(self,
+    #: "unattended", False)` — che su una classe senza l'attributo risponde
+    #: «presidiata» per sempre, senza che nulla fallisca.
+    unattended: bool = False
+
     def __init__(self, chat_id: str, kind: str = "ophelia", title: str = "",
                  runtime_override: Optional[dict] = None) -> None:
         if not known_kind(kind):
@@ -3308,6 +3315,12 @@ class OpenCodeChatSession:
 
     #: Vedi `ChatSession._timing` (clodia-platform#330).
     _timing: "turn_timing.TurnTiming | None" = None
+
+    #: Vedi `ChatSession.unattended` (clodia-platform#104, #418 §4). È la classe
+    #: su cui il claim si perdeva davvero: il conio di `opencode` non lo passava,
+    #: e senza l'attributo dichiarato qui il `getattr` del conio avrebbe
+    #: risposto «presidiata» anche dopo la correzione.
+    unattended: bool = False
 
     def __init__(self, chat_id: str, kind: str = "messaggero", title: str = "",
                  runtime_override: Optional[dict] = None) -> None:
