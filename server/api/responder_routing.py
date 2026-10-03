@@ -125,7 +125,11 @@ def _profile_pieces(spec) -> list[str]:
     exp = (getattr(spec, "expertise", "") or "").strip()
     if exp:
         pieces += [c.strip() for c in re.split(r"[;,.\n]", exp) if len(c.strip()) >= 4]
-    for cap in (getattr(spec, "capabilities", None) or []):
+    # Skill EFFETTIVE: quelle ereditate dai `parents` sono mestiere a tutti gli
+    # effetti, e un seed derivato senza pezzi di profilo prende score 0 ovunque
+    # — cioè non viene instradato mai (clodia-platform#496).
+    from ..agents.inheritance import effective_capabilities_of
+    for cap in effective_capabilities_of(spec):
         cap = str(cap)
         if cap.endswith("/*"):
             # Wildcard di pack (standard per gli agenti installati da pack):

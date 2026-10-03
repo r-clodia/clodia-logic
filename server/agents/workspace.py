@@ -20,6 +20,7 @@ from typing import Optional
 
 from ..config import data_path
 from ..sdk_runtime import native_tools as _nt
+from .inheritance import effective_capabilities_of
 from .models import AgentSpec
 
 LOG = logging.getLogger("agent-server.agents.workspace")
@@ -269,20 +270,14 @@ class EphemeralWorkspace:
         # da skills-catalog/<name>/ in .agent/skills/<name>/. Vedi
         # skills-catalog/README.md per il modello "single source + copy".
         from . import skill_sync
-        # Eredità di specie: un agent riceve dai suoi `parents` (1-2 ancestor) le
-        # loro skill come attributi innati. Capabilities effettive = proprie +
-        # union delle capabilities dei parents (un livello). La wildcard "*" è
-        # gestita a valle da materialize_capabilities.
-        caps = list(self.spec.capabilities) + self.extra_capabilities
-        if self.spec.parents:
-            from .loader import registry as _registry
-            for pname in self.spec.parents:
-                anc = _registry.get_by_name(pname)
-                if anc is not None:
-                    caps.extend(anc.capabilities)
-                else:
-                    LOG.warning("ancestor '%s' di %s non risolto nel registry", pname, self.spec.name)
-        caps = list(dict.fromkeys(caps))  # dedup, ordine preservato
+        # Eredità di specie: un agent riceve dai suoi `parents` le loro skill
+        # come attributi innati. La risoluzione sta in `inheritance`, insieme a
+        # quella dei verbi: qui c'era una union scritta a mano **a un livello
+        # solo**, che perdeva i nonni senza dire niente (clodia-platform#496).
+        # La wildcard "*" resta tale ed è gestita a valle da
+        # materialize_capabilities.
+        caps = list(dict.fromkeys(
+            effective_capabilities_of(self.spec) + self.extra_capabilities))
         copied, unresolved = skill_sync.materialize_capabilities(caps, skills_target)
         if copied or unresolved:
             LOG.info(
@@ -460,7 +455,12 @@ def _build_codex_agents_md(spec: AgentSpec, agent_root: Path) -> str:
     rules = _rel_paths(agent_root / "rules", "*.md")
     skill_lines = "\n".join(f"- `{p}`" for p in skills) or "- (nessuna skill materializzata)"
     rule_lines = "\n".join(f"- `{p}`" for p in rules) or "- (nessuna rule materializzata)"
-    capabilities = ", ".join(spec.capabilities) if spec.capabilities else "(nessuna)"
+    # EFFETTIVE, non dichiarate: un seed derivato ha `capabilities: []` nel
+    # proprio file e le skill del padre in `.agent/skills`. Stampare la
+    # dichiarazione gli farebbe leggere «(nessuna)» sopra l'elenco delle skill
+    # che ha davvero — la contraddizione la risolverebbe a caso.
+    caps = effective_capabilities_of(spec)
+    capabilities = ", ".join(caps) if caps else "(nessuna)"
     return f"""# Agent Runtime Context
 
 Sei `{spec.name}` (`{spec.display_name}`), un agente Clodia eseguito tramite `{spec.agent_sdk}`.
