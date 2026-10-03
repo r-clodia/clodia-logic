@@ -1835,7 +1835,8 @@ class ChatSession:
                 principal=self.principal, clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
                                               scope_tier=getattr(self, "scope_tier", None),
                                               origin=getattr(self, "origin", None),
-                scoped_tools=self._runtime_override.get("tools"))
+                scoped_tools=self._runtime_override.get("tools"),
+                unattended=getattr(self, "unattended", False))
         except Exception as e:  # noqa: BLE001 — un re-mint fallito non rompe il turno
             LOG.warning("re-mint token MCP (principal) fallito per kind=%s: %s", self.kind, e)
             return False
@@ -3445,7 +3446,8 @@ class OpenCodeChatSession:
                                          clearance=_effective_clearance(self.kind, self._runtime_override), chat=self.chat_id,
                                               scope_tier=getattr(self, "scope_tier", None),
                                               origin=getattr(self, "origin", None),
-                                         scoped_tools=self._runtime_override.get("tools"))
+                                         scoped_tools=self._runtime_override.get("tools"),
+                                         unattended=getattr(self, "unattended", False))
             cfg["mcp"]["clodia-tools"] = {
                 "type": "local",
                 "command": ["npx", "-y", "mcp-remote", CLODIA_TOOLS_MCP_URL,
