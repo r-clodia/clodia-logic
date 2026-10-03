@@ -99,8 +99,15 @@ class ResolveOrdinalTests(unittest.TestCase):
             self.assertEqual(ch._resolve_ordinal("SEAL-1", "ch", _spec(cap=2), 7), 1)
 
     def test_a_spawn_name_addresses_that_spawn_a_channel_ordinal_does_not(self) -> None:
-        """Le due forme numeriche hanno smesso di essere equivalenti."""
-        with patch.object(ch, "_is_known_seed", lambda n: n == "fullstack-dev"):
+        """Le due forme numeriche hanno smesso di essere equivalenti.
+
+        Il `-N` indirizza un'istanza **dove le istanze esistono**, cioè su un
+        seed `multi_spawn` (#501): per questo il registry finto lo dichiara.
+        Su un seed a istanza unica vale `('fullstack-dev', None)`, ed è il caso
+        misurato in `test_501_indirizzo_del_seed`.
+        """
+        with patch.object(ch, "_is_known_seed", lambda n: n == "fullstack-dev"), \
+                patch.object(ch, "_is_multi_spawn", lambda n: n == "fullstack-dev"):
             self.assertEqual(ch._split_target("fullstack-dev-124"),
                              ("fullstack-dev", "fullstack-dev-124"))
             self.assertEqual(ch._split_target("fullstack-dev#2"),
