@@ -2604,6 +2604,14 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
                  label, tier, name)
         await _announce_refusal(tier, name, label)
         return False
+    # IL TURNO COMINCIA QUI, per il reaper (clodia-platform#456). Da questa riga
+    # al `send_user_message` che crea `_current_turn_task` ci sono annunci,
+    # ricontrollo del provider, `create()` con il suo `start()` e la costruzione
+    # del prompt: tutta roba che await-a, e durante la quale una sessione idle da
+    # più del TTL risulta evincibile pur avendo un turno già assegnato. La
+    # prenotazione è sul chat_id e scade da sé — se il dispatch muore qui sotto,
+    # la sessione torna normalmente evincibile dopo la grazia.
+    manager.reserve(chat_id)
     # Il tier della stanza può essere cambiato dall'ultimo turno: il provider
     # della sessione viva lo sa già (sotto), il coordinamento passava di mano in
     # silenzio (clodia-platform#345). L'annuncio precede l'avvio: chi legge la
@@ -5207,6 +5215,12 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     # turno.
     timing.mark("routing")
     chat_id = f"chan:{tier}:{name}:{responder.name}"
+    # Secondo dispatcher, stessa prenotazione (clodia-platform#456). Da qui al
+    # `send_user_message` dentro `_run_and_post_response` ci sono l'annuncio, il
+    # ricontrollo del provider, la sessione e un `list_messages` al gateway: la
+    # finestra è anzi più larga che in `_start_turn`, e serve tutta ai turni che
+    # arrivano da Telegram, dai trigger e dai workflow.
+    manager.reserve(chat_id)
     # Secondo dispatcher, stesso annuncio (clodia-platform#345): questo percorso
     # non passa da `_start_turn`, e coprirne uno solo lascerebbe muti i turni di
     # Telegram, trigger e workflow. Qui i partecipanti sono già in mano: si
