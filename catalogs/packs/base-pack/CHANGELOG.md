@@ -9,6 +9,23 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.34.0] — 2026-10-04
+- **`ophelia` moves to `gpt-6-astra`** (clodia-platform#493): the best model the
+  ChatGPT subscription serves, verified with a real turn on the owner's account.
+  `providers: [codex]` unchanged — still subscription only, no pay-per-use API.
+- **Bound to the image, not just to the seed.** Astra declares
+  `minimal_client_version` 0.153.0 in the catalog the Codex CLI ships, and the
+  running image pins 0.149.0: on that CLI every turn answers 400 "requires a
+  newer version of Codex". This pack version must not be deployed before
+  clodia-platform's bump of `OPENAI_CODEX_NPM_VERSION` to 0.160.0.
+- Fallback if Astra's quota on the owner's plan turns out to be too tight (not
+  measurable from the colony): `gpt-5.6-sol`, the previous value, or `gpt-6-sol`,
+  which OpenAI's catalog marks as Sol's successor.
+- `model_context.py` gains the `gpt-6*` window (272k, from the same catalog) and
+  corrects `gpt-5.6*`, which matched `gpt-5` and showed 200k. New invariant: every
+  model a seed declares resolves to a window — an unmapped model made the context
+  bar disappear in the room without anything saying so.
+
 ## [7.33.0] — 2026-10-02
 - **`ophelia` runs on the ChatGPT subscription again** (clodia-platform#490): model
   `gpt-5-codex` → `gpt-5.6-sol`, and `providers: [codex]` explicitly. The
