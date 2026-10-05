@@ -9,6 +9,21 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.35.0] — 2026-10-05
+- **`messaggero` no longer promises a mail relay that does not exist**
+  (clodia-platform#503). Its prompt equated an email sender with a Telegram
+  handle — «un ingress di quello scope, esattamente come un mittente email» —
+  and the Telegram paragraph right below describes a relay that refuses
+  unlisted senders. Read together, the two taught that `mailfrom:<address>`
+  makes that sender's mail arrive in the channel. Nothing of the sort exists:
+  nobody forwards mail into a topic, and `mailfrom:` normally only decides
+  whether the content is trusted (taint). New section that states the three
+  facts separately: `inbox:`/`outbox:` = which mailbox, `mailfrom:` = whose
+  mail is trusted, and the one exception — **strict-ingress channels**, where
+  `mailfrom:` really does filter listing, reading, attachments and replies
+  (clodia-tools 2.80.0). Same passage tells it not to call a sender "blocked"
+  outside a strict channel, and not to guess a channel's configuration.
+
 ## [7.34.0] — 2026-10-04
 - **`ophelia` moves to `gpt-6-astra`** (clodia-platform#493): the best model the
   ChatGPT subscription serves, verified with a real turn on the owner's account.
