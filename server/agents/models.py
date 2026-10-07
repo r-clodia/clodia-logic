@@ -376,6 +376,17 @@ class AgentSpec(BaseModel):
     # provider. None = default del modello (reasoning attivo su glm-5.2).
     reasoning_effort: Optional[str] = None
 
+    # Budget (secondi) del TURNO per i runtime che ne hanno uno — oggi opencode
+    # (`_TurnBudget`): il tempo entro cui l'INTERO turno deve concludersi, non
+    # quello della singola richiesta HTTP. None = default di piattaforma
+    # (`OPENCODE_TURN_TIMEOUT`, 180s). Esiste perché la soglia giusta dipende
+    # dall'agente e non dall'istanza: un esecutore di tool su modello lento
+    # (glm-5.2 su Scaleway, clodia-platform#514) scade a 180s su lavori che
+    # un altro seed chiude in venti, e l'unica leva era una variabile
+    # d'ambiente comune a TUTTI gli agenti — alzarla per uno la alzava per
+    # tutti, compresi quelli su cui il fail-fast è il comportamento voluto.
+    turn_timeout: Optional[int] = Field(default=None, gt=0)
+
     # Timestamp di creazione (ISO 8601). Usato come tie-break di ANZIANITÀ nel
     # rango (a parità di tier, parla il più anziano: es. Clodia prima di Ophelia).
     created_at: Optional[str] = None
