@@ -545,6 +545,12 @@ class AgentPatch(BaseModel):
     email: Optional[str] = None
     telegram: Optional[str] = None          # opzionale
     mailbox_parent: Optional[str] = None    # parent mailbox per il subaddress dei bot
+    # Budget (s) del turno per questo agente (clodia-platform#514). `0` è il
+    # `""` degli scalari stringa: rimuove il campo, cioè torna al default di
+    # piattaforma. Il minimo lo valida `patch_agent` PRIMA di scrivere: qui un
+    # `gt=0` renderebbe lo zero irraggiungibile e toglierebbe il modo di
+    # tornare indietro.
+    turn_timeout: Optional[int] = None
 
 
 def _telegram_or_400(value: Optional[str]) -> Optional[str]:
@@ -571,10 +577,13 @@ def _is_immutable(spec) -> bool:
     return bool(getattr(spec, "immutable", False))
 
 
-def _set_yaml_scalar(text: str, key: str, value: str) -> str:
+def _set_yaml_scalar(text: str, key: str, value: "str | int") -> str:
     """Sostituisce/aggiunge un campo scalare top-level in YAML preservando
     commenti e formattazione del resto."""
-    val = json.dumps(value)  # double-quoted, yaml-safe per scalari stringa
+    # `json.dumps` è yaml-safe per entrambi: una stringa esce fra virgolette, un
+    # intero esce nudo — cioè come intero anche dopo la rilettura dello YAML
+    # (`turn_timeout: 300`, non `"300"`).
+    val = json.dumps(value)
     pat = re.compile(rf"^{re.escape(key)}:.*$", re.MULTILINE)
     if pat.search(text):
         return pat.sub(f"{key}: {val}", text, count=1)
@@ -911,6 +920,13 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
                                  "modificabile solo via codice/rebuild del seed")
     if patch.clearance is not None and patch.clearance and _norm_clearance(patch.clearance) not in _CLR_VALID:
         raise HTTPException(400, f"clearance invalida: {patch.clearance} (SEAL-0..4)")
+    # Stessa ragione del recapito qui sotto (clodia-platform#200): un budget che
+    # lo schema di `AgentSpec` rifiuta, scritto sul disco e poi riletto, uscirebbe
+    # da qui come 500 lasciando un agent.yaml che non carica più. Si rifiuta prima
+    # di scrivere.
+    if patch.turn_timeout is not None and patch.turn_timeout < 0:
+        raise HTTPException(400, f"turn_timeout invalido: {patch.turn_timeout} "
+                                 "(secondi > 0, oppure 0 per tornare al default)")
     # `""` resta `""` (= rimuovi il campo); qualunque altro valore passa dalla
     # forma canonica prima di toccare il disco.
     telegram = patch.telegram if patch.telegram in (None, "") else _telegram_or_400(patch.telegram)
@@ -926,6 +942,9 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
         "avatar_color": patch.avatar_color, "clearance": patch.clearance,
         "email": patch.email, "telegram": telegram,
         "mailbox_parent": patch.mailbox_parent,
+        # `0` → `""` → `_remove_yaml_scalar`: tornare al default è togliere il
+        # campo, non scriverci dentro uno zero che fermerebbe ogni turno.
+        "turn_timeout": "" if patch.turn_timeout == 0 else patch.turn_timeout,
     }
     if any(v is not None for v in _scalars.values()):
         yaml_path = agent_dir / "agent.yaml"

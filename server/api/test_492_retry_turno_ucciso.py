@@ -52,7 +52,14 @@ class _Chat:
         return self.reply
 
 
-class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
+class _RetryHarness(unittest.IsolatedAsyncioTestCase):
+    """Il montaggio di `_run_and_post_response` con tutte le cuciture finte.
+
+    Separato dai test perché lo riusa anche il turno opencode scaduto
+    (`test_514_retry_turno_scaduto`): è lo stesso percorso, con un'altra
+    eccezione in ingresso.
+    """
+
     def setUp(self) -> None:
         self.posts: list[tuple[str, str]] = []
         self.messages: list[dict] = []
@@ -96,6 +103,9 @@ class RetryPolicyTests(unittest.IsolatedAsyncioTestCase):
         if self.bg:
             await asyncio.gather(*self.bg)
         return esito
+
+
+class RetryPolicyTests(_RetryHarness):
 
     async def test_un_turno_ucciso_a_vuoto_viene_ritentato(self) -> None:
         """IL DIFETTO, in forma di test: oggi il turno muore e basta — una
