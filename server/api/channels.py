@@ -1006,8 +1006,13 @@ async def _report_back(tier: str, name: str, responder: str, chat,
         tier_real = meta.get("tier", tier)
         if not _provider_seal_ok(spec, tier_real):
             return
+        # L'esito è il testo di un ALTRO, riportato qui dentro: va citato per
+        # intero (#501). `[turno concluso]` zittisce la sua riga e basta, quindi
+        # senza `cita()` una `@` scritta alla terza riga del resoconto convoca
+        # un terzo agente da un messaggio che la piattaforma firma come proprio.
         testo = (f"[turno concluso] **{responder}** ha terminato il compito che gli "
-                 f"avevi assegnato. Esito riportato:\n\n{(esito or '').strip()[:2000]}")
+                 f"avevi assegnato. Esito riportato:\n\n"
+                 f"{mentions.cita((esito or '').strip()[:2000])}")
         # `report_back=True` (router-notebook R22): QUESTO turno è una notifica
         # di cortesia, non una nuova delega. Se la reazione del chiamante non
         # tagga nessuno esplicitamente, il suo proprio `_report_back` non deve
@@ -1720,19 +1725,17 @@ def _split_ord(tag: str | None) -> tuple[str | None, int | None]:
     return tag, None
 
 
-def _split_target(tag: str | None) -> tuple[str | None, str | None]:
-    """`(seed, spawn indirizzato o None)` — a chi va questa menzione.
+def _split_label(tag: str | None) -> tuple[str | None, str | None]:
+    """`(seed, etichetta di spawn o None)` — che cosa NOMINA questa etichetta.
 
-    Le due forme numeriche NON sono più equivalenti (regola di Davide, 18 ago):
+    È il taglio LESSICALE, e risponde a «di chi è questa sessione»: `worker-221`
+    è l'istanza 221 di `worker` perché `worker` è un seed registrato. Non dice
+    se quell'istanza sia indirizzabile — quella è un'altra domanda, e ha una
+    funzione sua (`_split_target`).
 
-        `@clodia-124`  → indirizza QUEL spawn: è il nome che si legge in chat,
-                         quindi è il nome con cui si scrive;
-        `@clodia#2`    → forma STORICA. Si capisce ancora (sta scritta nei
-                         messaggi già inviati e nella memoria degli agenti) ma
-                         non indirizza più nulla: l'istanza la scegle
-                         l'allocazione. Prima steerava, e veniva clampata in
-                         silenzio — `@clodia#124` risvegliava l'istanza 4;
-        `@clodia`      → allocazione secondo la regola delle menzioni.
+    Serve dov'è in gioco una sessione VIVA e non un destinatario: il ⏹ nel box
+    di un'istanza (#403) ferma quel processo, che esiste quale che sia la
+    configurazione del seed.
     """
     if not tag:
         return tag, None
@@ -1740,6 +1743,65 @@ def _split_target(tag: str | None) -> tuple[str | None, str | None]:
     if m and _is_known_seed(m.group(1)):
         return m.group(1), tag
     return _split_ord(tag)[0], None
+
+
+def _split_target(tag: str | None) -> tuple[str | None, str | None]:
+    """`(seed, spawn indirizzato o None)` — a chi va questa menzione.
+
+    Le due forme numeriche NON sono più equivalenti (regola di Davide, 18 ago):
+
+        `@clodia-124`  → indirizza QUEL spawn **se il seed è `multi_spawn`**:
+                         è il nome che si legge in chat, quindi è il nome con
+                         cui si scrive. Dove le istanze indirizzabili non
+                         esistono (#501) vale `@clodia`, vedi sotto;
+        `@clodia#2`    → forma STORICA. Si capisce ancora (sta scritta nei
+                         messaggi già inviati e nella memoria degli agenti) ma
+                         non indirizza più nulla: l'istanza la scegle
+                         l'allocazione. Prima steerava, e veniva clampata in
+                         silenzio — `@clodia#124` risvegliava l'istanza 4;
+        `@clodia`      → allocazione secondo la regola delle menzioni.
+    """
+    seed, spawn = _split_label(tag)
+    if spawn and not _is_multi_spawn(seed):
+        # Seed a ISTANZA UNICA: `@seed-N` non indirizza niente (#501). Il `-N`
+        # è un'etichetta di spawn che si legge in chat, non un destinatario —
+        # un'altra istanza non esiste, quindi il turno va comunque al seed.
+        # Tenerlo distinto produceva DUE destinatari per un agente solo: nel
+        # promemoria del goal watch `@clodia` + `@clodia-354` → R3 vedeva due
+        # menzioni, e il messaggio non apriva nessun turno.
+        return seed, None
+    return seed, spawn
+
+
+def _is_multi_spawn(seed: str | None) -> bool:
+    """Il seed ha istanze indirizzabili (`multi_spawn`, #94)?
+
+    Su errore — e su un seed che non esiste — risponde False: è la direzione
+    che non inventa un'istanza a cui nessuno risponderebbe.
+    """
+    try:
+        return bool(getattr(registry.get_by_name(seed or ""), "multi_spawn", False))
+    except Exception:  # noqa: BLE001
+        return False
+
+
+def indirizzo(label: str | None) -> str:
+    """La forma con cui la PIATTAFORMA indirizza un agente (issue#501).
+
+    Nome del seed per i seed a istanza unica, `seed-N` solo dove il seed è
+    `multi_spawn` e quell'istanza è davvero indirizzabile. È l'unico posto in
+    cui la regola è scritta: il router la usa per l'identità di un bersaglio
+    (`_target_identity`) e chi COMPONE un testo di sistema — promemoria del
+    goal watch, ordine all'orchestratore, trigger dello scheduler — per
+    scrivere il `@`. Una regola per template sarebbe la stessa decisione presa
+    in cinque posti, cioè quattro occasioni di divergere.
+
+    La riduzione passa dalla mappa seed/spawn del registry, mai dal confronto
+    fra stringhe (#260, #286, #294): `security-engineer-1` è l'istanza 1 di
+    `security-engineer` e non il seed `security` con una coda.
+    """
+    seed, want_spawn = _split_target(label)
+    return str(want_spawn or seed or label or "").strip()
 
 
 def _target_identity(tag: str | None) -> str:
@@ -1757,10 +1819,10 @@ def _target_identity(tag: str | None) -> str:
     `@worker` e `@worker-3` restano DUE identità di proposito: la prima chiede
     un'istanza qualsiasi secondo l'allocazione, la seconda quella. Collassarle
     sarebbe più silenzioso, ma deciderebbe al posto dell'autore proprio dove ha
-    espresso una differenza.
+    espresso una differenza — **se** `worker` è `multi_spawn`. Dove non lo è,
+    la differenza non esiste e il collasso lo fa `indirizzo` (#501).
     """
-    seed, want_spawn = _split_target(tag)
-    return str(want_spawn or seed or tag or "").strip().lower()
+    return indirizzo(tag).lower()
 
 
 def _distinct_by(items: list, chiave) -> list:
@@ -4840,7 +4902,11 @@ def _interrupt_targets(
     for tag in only:
         if not tag:
             continue
-        seed, spawn = _split_target(str(tag).strip())
+        # `_split_label` e non `_split_target`: qui il bersaglio è una SESSIONE
+        # viva, che porta la sua etichetta anche quando il seed non ha istanze
+        # indirizzabili (#501). Ridurre al seed fermerebbe il gemello che sta
+        # lavorando ad altro — il difetto che #403 ha chiuso.
+        seed, spawn = _split_label(str(tag).strip())
         if spawn:
             spawns.add(spawn)
         elif seed:

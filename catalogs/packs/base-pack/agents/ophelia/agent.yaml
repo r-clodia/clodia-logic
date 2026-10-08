@@ -17,11 +17,24 @@ agent_sdk: codex
 # The ChatGPT SUBSCRIPTION, explicitly and only (owner's decision, 2 Oct 2026:
 # no extra pay-per-use API cost). The subscription rejects the "-codex" model
 # family with a 400 ("not supported when using Codex with a ChatGPT account",
-# clodia-platform#333, #490), so the model is one the subscription accepts —
-# the same fullstack-dev runs on it. Without `providers`, `gpt-5-codex` was
-# routed to the paid `openai-api` provider, while the codex runtime still used
-# the ChatGPT login: the 400 on every turn.
-model: gpt-5.6-sol
+# clodia-platform#333, #490), so the model is one the subscription accepts.
+# Without `providers`, `gpt-5-codex` was routed to the paid `openai-api`
+# provider, while the codex runtime still used the ChatGPT login: the 400 on
+# every turn.
+#
+# `gpt-6-astra` since clodia-platform#493 (4 Oct 2026): the best model the
+# subscription serves, measured on the owner's account with a real turn. It
+# requires Codex CLI >= 0.153.0 (`minimal_client_version` in the catalog the CLI
+# ships), so it is bound to the 0.160.0 pin in clodia-platform's
+# `docker/base.Dockerfile` — on the previous 0.149.0 image every turn answers
+# 400 "requires a newer version of Codex". A seed moved to a `gpt-6*` model
+# before that image is deployed does not start.
+#
+# If Astra's quota on the owner's plan turns out to be too tight (not readable
+# from here, the risk is written in #493), the fallback is `gpt-5.6-sol` — the
+# previous value of this line — or `gpt-6-sol`, which OpenAI's own catalog
+# marks as the successor of Sol.
+model: gpt-6-astra
 providers: [codex]
 avatar_color: "#14b8a6"
 

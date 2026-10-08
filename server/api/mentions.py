@@ -110,6 +110,27 @@ _RIPORTO_RE = re.compile(
     "(?:" + "|".join(re.escape(m) for m in _RIPORTI) + ")[^\n]*")
 
 
+def _spazi(m: "re.Match") -> str:
+    """Il testo coperto, sostituito da ALTRETTANTI spazi."""
+    return " " * len(m.group(0))
+
+
+def _inerti(text: str) -> str:
+    """Il testo con le zone che non producono mention azzerate a spazi.
+
+    La maschera conserva la LUNGHEZZA, quindi gli offset dei match valgono tali
+    e quali sul testo originale: è ciò che permette a `normalizza` di riscrivere
+    esattamente le mention che `_scan` legge, con la stessa nozione di «zona
+    inerte». Due scansioni separate — una per leggere e una per riscrivere —
+    divergerebbero al primo caso limite, ed è proprio il caso limite (un `@` in
+    un blocco di codice) quello in cui una riscrittura sbagliata fa danno.
+    """
+    clean = _FENCE_RE.sub(_spazi, text)
+    clean = _INLINE_CODE_RE.sub(_spazi, clean)
+    clean = _QUOTED_LINE_RE.sub(_spazi, clean)
+    return _RIPORTO_RE.sub(_spazi, clean)
+
+
 def _scan(text: str) -> list[str]:
     """Nomi menzionati con `@`, nell'ordine di apparizione, in minuscolo.
 
@@ -117,11 +138,7 @@ def _scan(text: str) -> list[str]:
     """
     if not text:
         return []
-    clean = _FENCE_RE.sub(" ", text)
-    clean = _INLINE_CODE_RE.sub(" ", clean)
-    clean = _QUOTED_LINE_RE.sub(" ", clean)
-    clean = _RIPORTO_RE.sub(" ", clean)
-    return [m.group("nome").lower() for m in _MENTION_RE.finditer(clean)]
+    return [m.group("nome").lower() for m in _MENTION_RE.finditer(_inerti(text))]
 
 
 def extract_mentions(text: str) -> list[str]:
@@ -143,6 +160,57 @@ def extract_tags(text: str) -> list[str]:
     misura entrambi.
     """
     return extract_mentions(text)
+
+
+def cita(testo: str) -> str:
+    """Il testo come CITAZIONE: `> ` su OGNI riga (issue clodia-platform#501).
+
+    Serve a chi RIPORTA il testo di un altro dentro un messaggio della
+    piattaforma — l'obiettivo del canale nel promemoria del goal watch,
+    la richiesta dell'owner nell'ordine all'orchestratore. Il prefisso su una
+    riga sola non basta: `f"> {testo}"` cita la prima riga e lascia VIVE tutte
+    le `@` delle righe 2..N, che è l'incidente del 3 ott 2026 — un promemoria
+    con un `@clodia-354` dentro il goal ha prodotto due destinatari per un
+    agente solo, e nessun turno.
+
+    Una riga vuota diventa `>` e non resta vuota: così il blocco citato è UNO,
+    invece di spezzarsi in due citazioni separate da testo normale — e il testo
+    normale è esattamente lo stato in cui una `@` torna a convocare.
+    """
+    return "\n".join(f"> {r}" if r else ">" for r in str(testo or "").split("\n"))
+
+
+def normalizza(testo: str, indirizzo) -> str:
+    """Riscrive le mention VIVE del testo nella forma decisa da `indirizzo`.
+
+    `indirizzo(nome)` riceve il nome come è scritto (senza `@`) e torna il nome
+    da usare al suo posto: è il chiamante a conoscere la mappa seed/spawn — qui
+    non si confrontano stringhe e non si indovina quale coda `-N` sia un
+    ordinale (#260, #286, #294). Tornare lo stesso nome, `None` o `""` lascia il
+    testo com'è.
+
+    Si riscrive solo dove `_scan` leggerebbe una mention: dentro un blocco di
+    codice, in una riga citata o in un riporto di sistema il testo non si tocca
+    — lì la `@` non convoca nessuno e riscriverla cambierebbe un esempio, una
+    citazione o la trascrizione di un messaggio altrui.
+    """
+    if not testo:
+        return testo
+    maschera = _inerti(testo)
+    pezzi: list[str] = []
+    pos = 0
+    for m in _MENTION_RE.finditer(maschera):
+        nome = m.group("nome")
+        nuovo = str(indirizzo(nome) or "").strip()
+        if not nuovo or nuovo == nome:
+            continue
+        pezzi.append(testo[pos:m.start("nome")])
+        pezzi.append(nuovo)
+        pos = m.end("nome")
+    if not pezzi:
+        return testo
+    pezzi.append(testo[pos:])
+    return "".join(pezzi)
 
 
 #: Casi di riferimento delle due copie: `(testo, attesi)`, dove `attesi` è
@@ -194,6 +262,15 @@ GOLDEN_CASES: tuple[tuple[str, list[str]], ...] = (
     ("sistema a posto, @clodia vai", ["clodia"]),
     ("routing lento, @clodia guarda", ["clodia"]),
     ("@clodia e @sysadmin, chi prende la issue?", ["clodia", "sysadmin"]),
+    # ── #501: la citazione vale per TUTTE le righe che ha ──────────────────
+    # (è `cita()` a produrle: il promemoria del goal watch riporta un obiettivo
+    #  di N righe, e il `>` su una riga sola lasciava vive le altre N-1)
+    ("> riga uno, @mario\n> riga due, @anna", []),
+    (">\n> @mario", []),
+    ("@clodia ⏰ **Obiettivo ancora aperto**, e qui non si muove niente.\n\n"
+     "> clodia-354: i due articoli sono scritti e in cablaggio\n"
+     "> @clodia-354 riprendiamo il lavoro e pubblichiamo i due articoli\n\n"
+     "Stato: `pinned`.", ["clodia"]),
     # ── #391: `$` è degli alias del composer, non è una menzione ───────────
     ("ciao @davide, senti $mario", ["davide"]),
     ("$mario avvisa, poi @davide decide", ["davide"]),

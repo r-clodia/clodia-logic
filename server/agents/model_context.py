@@ -44,7 +44,24 @@ _BY_SDK: dict[str, list[tuple[str, int]]] = {
         ("claude", 200_000),
     ],
     # OpenAI Codex CLI: cappa il contesto per-modello (indipendente dal nativo).
+    #
+    # Le voci `gpt-6*` e `gpt-5.6*` non sono stimate: sono il `context_window`
+    # che la CLI stessa porta nel suo catalogo (`codex-rs/models-manager/
+    # models.json`, letto al tag rust-v0.160.0), lo stesso file da cui viene il
+    # `minimal_client_version` che decide se un modello parte. Astra, Sol e Luna
+    # — 6.x e 5.6 — dichiarano tutti 272k (872k con il contesto esteso, che qui
+    # non usiamo). Finché non c'erano, `gpt-6-astra` non combaciava con NIENTE,
+    # nemmeno col fallback, e la barra in stanza spariva (clodia-platform#493);
+    # `gpt-5.6-sol` combaciava invece con `gpt-5` e mostrava 200k, cioè il
+    # difetto peggiore dei due — un numero sbagliato che nessuno vede.
     "codex": [
+        # 272k vale per l'intera generazione: -astra, -sol, -luna, 6.1.
+        ("gpt-6", 272_000),
+        ("gpt-5.6", 272_000),
+        # NON verificata contro il catalogo: a 0.160.0 `gpt-5.5` risulta 272k,
+        # non 400k. Nessun seed la dichiara, quindi non è un difetto vivo e non
+        # la tocco qui dentro una PR sul bump di Codex — ma il giorno in cui un
+        # seed ci finisce sopra, il numero da ricontrollare è questo.
         ("gpt-5.5", 400_000),      # nativo ~1.05M, in Codex 400k
         ("gpt-5.3", 128_000),      # codex-spark
         ("gpt-5-codex", 200_000),  # confermato
@@ -71,6 +88,7 @@ _BY_SDK: dict[str, list[tuple[str, int]]] = {
 # Fallback per SDK ignoto: mappa sul solo modello (best-effort, harness-agnostica).
 _GENERIC: list[tuple[str, int]] = [
     ("opus", 200_000), ("sonnet", 200_000), ("haiku", 200_000), ("claude", 200_000),
+    ("gpt-6", 272_000), ("gpt-5.6", 272_000),
     ("gpt-5.5", 400_000), ("gpt-5", 200_000), ("codex", 200_000),
     ("glm-5.2", 1_000_000), ("glm", 200_000),
     ("gemma-4", 256_000), ("gemma", 128_000),

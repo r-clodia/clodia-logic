@@ -376,6 +376,48 @@ class EngineDeclarationTests(unittest.TestCase):
             "finestra non mappata per questo modello: aggiorna model_context, "
             "non lasciare che ripieghi sul fallback di famiglia")
 
+    def test_la_finestra_di_ophelia_e_quella_del_modello_dichiarato(self) -> None:
+        """#493: `gpt-6-astra`. Il numero è quello che la CLI stessa dichiara per
+        lo slug (`context_window` in `codex-rs/models-manager/models.json`), non
+        una stima — ed è lo stesso di `gpt-5.6-sol`, che la tabella invece dava a
+        200k ripiegando su `gpt-5`."""
+        from .model_context import model_context_window
+        self.assertEqual(
+            272_000,
+            model_context_window(self.seeds["ophelia"].get("model"),
+                                 self.seeds["ophelia"].get("agent_sdk")))
+
+    def test_ogni_seed_ha_una_finestra_per_il_modello_che_dichiara(self) -> None:
+        """Il controllo che vale al PROSSIMO cambio di modello, non solo a questo.
+
+        I due test qui sopra pinnano un numero per un seed ciascuno, e sono la
+        forma forte; questa è la rete sotto, per i seed che nessuno ha pinnato e
+        per quelli che non esistono ancora. Prende la classe di difetto che si è
+        presentata con #493: `gpt-6-astra` non combacia con NESSUNA voce della
+        tabella codex — nemmeno con un fallback — quindi `model_context_window`
+        torna `None` e la barra del contesto in stanza semplicemente sparisce
+        (#398), senza che niente lo dica.
+
+        Limite dichiarato: per la famiglia claude il fallback (`opus`, `sonnet`,
+        `claude`) combacia sempre, quindi qui un modello claude nuovo passerebbe
+        con un numero di famiglia eventualmente sbagliato. È esattamente perché
+        la presenza non basta che i due test sopra pinnano il numero.
+        """
+        from .model_context import model_context_window
+        for nome, y in self.seeds.items():
+            modello = y.get("model")
+            if not modello:
+                continue          # archseed: astratto, non gira
+            for m in [modello] + [st.get("model") for st in (y.get("stacks") or [])]:
+                if not m:
+                    continue
+                with self.subTest(seed=nome, model=m):
+                    self.assertIsNotNone(
+                        model_context_window(m, y.get("agent_sdk")),
+                        f"'{nome}' dichiara {m}, che non combacia con nessuna "
+                        "voce di model_context: in stanza la barra del contesto "
+                        "sparisce. Aggiungi la finestra vera del modello.")
+
     def test_ogni_seed_e_servibile_da_almeno_un_suo_provider(self) -> None:
         """Il glob sta nel catalogo dei provider e il confronto pure: qui si
         riusa `provider_supports_model`, non se ne riscrive una seconda copia."""
