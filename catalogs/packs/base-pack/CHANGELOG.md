@@ -9,6 +9,21 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.36.0] — 2026-10-08
+- **`staff` and `deputy` are now seed attributes** (clodia-platform#497):
+  `segretario`, `messaggero` and `sysadmin` declare `staff: true`, and
+  `segretario` also `deputy: true`. The participants panel used to read
+  `contributor` for everyone, so a room never said who owns it, who runs it and
+  who is there for a platform role. The flags live in the seed file and **not**
+  in a list inside the webui: a list in the frontend is a list no new seed ever
+  updates.
+- Display only, and the line matters: neither flag grants anything. Clearance,
+  participation and the technical `role` (`contributor`/`reader`) are untouched —
+  a flag that decorated *and* authorised would be a permission a seed could take
+  by editing its own file. Who actually coordinates is still decided in one place,
+  `agents/coordinator.py`; `deputy` only says whose badge reads «acting manager»
+  when the declared coordinator is not in the room.
+
 ## [7.35.0] — 2026-10-05
 - **`messaggero` no longer promises a mail relay that does not exist**
   (clodia-platform#503). Its prompt equated an email sender with a Telegram

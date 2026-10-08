@@ -4250,6 +4250,42 @@ def _coordinatore_al_tier(participants: list[str], tier: str) -> str | None:
                                    coordinator_only=True), "name", None)
 
 
+def _ruoli_mostrati(meta: dict, tier: str) -> list[dict]:
+    """Le righe «chi è chi» di questa stanza, già ordinate (#497).
+
+    Derivate QUI e non in ogni client: webui, PWA e chiunque legga il canale via
+    API guardano lo stesso badge, e tre derivazioni della stessa cosa divergono
+    al primo seed nuovo.
+
+    Chi conduce lo chiede a `_coordinatore_al_tier`, cioè in fondo a
+    `coordinator.pick`: la precedenza resta scritta in una riga sola, e il caso
+    A4 — stanza di tier superiore a quello che clodia può servire — produce
+    «segretario acting manager» senza che qui ci sia un ramo per dirlo.
+
+    Best-effort sul manager: se l'idoneità non si può calcolare (registry a
+    metà, provider non raggiungibile) la stanza resta senza badge di manager
+    invece di non aprirsi. Una lista di partecipanti che sparisce per un
+    dettaglio decorativo è peggio di un badge mancante.
+    """
+    from ..agents.display_roles import display_roles
+    raw = meta.get("participants")
+    partecipanti = list(raw.keys()) if isinstance(raw, dict) else list(raw or [])
+    tier_real = meta.get("tier", tier)
+    try:
+        manager = _coordinatore_al_tier(partecipanti, tier_real)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("coordinatore non calcolabile al tier %s: %s", tier_real, e)
+        manager = None
+    seeds = {}
+    for nome in partecipanti + [meta.get("owner")]:
+        if not nome or nome in seeds:
+            continue
+        spec = registry.get_by_name(nome)
+        if spec is not None:
+            seeds[nome] = spec
+    return display_roles(meta, manager=manager, seeds=seeds)
+
+
 async def _annuncia_cambio_coordinatore(tier: str, name: str, tier_real: str,
                                         participants: list[str] | None = None) -> None:
     """Il tier della stanza è cambiato e con esso chi coordina: lo dice in chat.
@@ -5949,6 +5985,12 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     topic["active_responders"] = [
         seed for seed, righe in topic["participant_instances"].items()
         if any(r["state"] == "working" for r in righe)]
+    # Il primo bit del vettore viene dal gateway insieme al topic: senza, il
+    # punteggio conterebbe solo i due bit statici — cioè quelli che non cambiano.
+    # Chi è chi: owner, manager, staff, contributor (#497). Sta nella stessa
+    # risposta che la pagina già chiede — un endpoint a parte raddoppierebbe le
+    # richieste per un dato che cambia esattamente quando cambia la composizione.
+    topic["display_roles"] = _ruoli_mostrati(topic.get("meta", {}), tier)
     # Il primo bit del vettore viene dal gateway insieme al topic: senza, il
     # punteggio conterebbe solo i due bit statici — cioè quelli che non cambiano.
     _t = topic.get("taint") or {}

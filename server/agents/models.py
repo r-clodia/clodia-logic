@@ -217,6 +217,29 @@ class AgentSpec(BaseModel):
     # cambiare con un override/provider, mentre questo è un contratto del ruolo.
     all_tier: bool = False
 
+    # ── Ruolo nella COLONIA, non nella singola stanza ────────────────────────
+    #
+    # `staff`: ruolo di piattaforma. Segretario, messaggero e sysadmin non sono
+    # «contributor» di una stanza — ci stanno per un mestiere che è della
+    # colonia e vale in ogni topic. Il badge lo leggeva la webui da una lista
+    # hardcoded, e una lista nel frontend è una lista che nessun seed nuovo
+    # aggiorna: il posto dove si dichiara «sono staff» è il file del seed
+    # (clodia-platform#497).
+    #
+    # Deliberatamente SOLO display: nessuna di queste due righe concede niente.
+    # I permessi restano dove sono — clearance, partecipazione, `role` tecnico —
+    # e un flag che decorasse E autorizzasse sarebbe un permesso che si prende
+    # modificando il proprio file.
+    staff: bool = False
+
+    # `deputy`: il vice. Oggi è il segretario e lo è SEMPRE, in aggiunta a
+    # staff. Non è «il coordinatore»: chi coordina dipende da chi c'è nella
+    # stanza e lo decide `agents/coordinator.py`, che resta l'unico posto in cui
+    # quella regola è scritta. Questo dice solo chi subentra quando il
+    # coordinatore dichiarato non c'è — la stessa ruling dell'11 ago 2026, letta
+    # dal lato di chi la eredita invece che dal lato della precedenza.
+    deputy: bool = False
+
     # Riferimento alla costituzione (genoma) fuso in testa al system prompt al
     # render. Risolto da constitution-catalog/<ref>.md (data-over-logic). None
     # o "none" = nessuna costituzione (es. worker minimali). Es. "platform-core".
