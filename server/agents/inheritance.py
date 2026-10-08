@@ -34,8 +34,27 @@ ARCHSEED = "archseed"
 _MAX_ANCESTRY = 8
 
 
-def effective_tool_permissions(name: str, specs: dict) -> list[str]:
-    """Verbi di `name` risolvendo la catena `parents`. `specs` = {nome: spec}."""
+def _campo(spec, nome: str) -> list:
+    """Il campo `nome` di una spec, letta per attributo o per chiave."""
+    return list(getattr(spec, nome, None)
+                or (spec.get(nome) if isinstance(spec, dict) else None)
+                or [])
+
+
+def _ereditato(name: str, specs: dict, campo: str) -> list[str]:
+    """Union di `campo` lungo la catena `parents`, dal seed ai suoi antenati.
+
+    UNA camminata per tutti i campi ereditabili, e non per risparmiare righe:
+    verbi e skill avevano due risoluzioni diverse — questa, e un'union a un
+    livello solo scritta a mano in `EphemeralWorkspace` — e la seconda perdeva i
+    nonni senza dirlo (clodia-platform#496). Due copie della stessa regola
+    divergono, ed era già la tesi del docstring in testa a questo modulo: la
+    differenza è che adesso la copia divergente non c'è più.
+
+    L'ordine è «prima i propri, poi gli antenati in ampiezza»: è l'ordine in cui
+    legge chi materializza le skill, e invertirlo farebbe vincere l'antenato
+    dove il figlio ha detto qualcosa di suo.
+    """
     visti: set = set()
     fuori: list[str] = []
     coda = [(str(name or ""), 0)]
@@ -50,15 +69,11 @@ def effective_tool_permissions(name: str, specs: dict) -> list[str]:
         spec = specs.get(chi)
         if spec is None:
             continue
-        for v in (getattr(spec, "tool_permissions", None)
-                  or (spec.get("tool_permissions") if isinstance(spec, dict) else None)
-                  or []):
+        for v in _campo(spec, campo):
             v = str(v).strip()
             if v and v not in fuori:
                 fuori.append(v)
-        genitori = list(getattr(spec, "parents", None)
-                        or (spec.get("parents") if isinstance(spec, dict) else None)
-                        or [])
+        genitori = _campo(spec, "parents")
         if chi != ARCHSEED and ARCHSEED not in genitori:
             genitori.append(ARCHSEED)
         for g in genitori:
@@ -66,9 +81,70 @@ def effective_tool_permissions(name: str, specs: dict) -> list[str]:
     return fuori
 
 
-def resolve_for(name: str, specs: Iterable) -> list[str]:
-    """Comodità: accetta un iterabile di spec con `.name`."""
+def effective_tool_permissions(name: str, specs: dict) -> list[str]:
+    """Verbi di `name` risolvendo la catena `parents`. `specs` = {nome: spec}."""
+    return _ereditato(name, specs, "tool_permissions")
+
+
+def effective_capabilities(name: str, specs: dict) -> list[str]:
+    """Skill di `name` risolvendo la catena `parents`. `specs` = {nome: spec}.
+
+    Decisione dell'owner del 2 ott 2026: un seed che discende da un altro ne
+    eredita TUTTE le skill. Prima `parents` concedeva solo verbi, e un seed
+    derivato nasceva senza mestiere — `tomato.officer` con `capabilities: []`
+    non materializzava niente di `officer`.
+
+    **Le wildcard restano wildcard.** `anthropic-pack/*` non si espande qui:
+    la espande `skill_sync.materialize_capabilities` leggendo il catalog nel
+    momento in cui copia. Espanderla in questa funzione vorrebbe dire
+    fotografare il catalog al momento della risoluzione e consegnare al figlio
+    una lista che invecchia — col padre che riceve una skill nuova dal pack e il
+    figlio no.
+
+    Le `rules` NON passano di qui, ed è una scelta: una rule è scritta per un
+    mestiere e un figlio che la eredita se la porta dove non vale (il caso
+    `topic-state-boundary` nel seed di ophelia). Se un giorno si decide
+    diversamente, il posto è questo — `_ereditato(name, specs, "rules")` — e si
+    vedrà che è stato deciso.
+    """
+    return _ereditato(name, specs, "capabilities")
+
+
+def _per_nome(specs: Iterable) -> dict:
     m = {getattr(s, "name", None) or (s.get("name") if isinstance(s, dict) else None): s
          for s in specs}
     m.pop(None, None)
-    return effective_tool_permissions(name, m)
+    return m
+
+
+def resolve_for(name: str, specs: Iterable) -> list[str]:
+    """Comodità: accetta un iterabile di spec con `.name`."""
+    return effective_tool_permissions(name, _per_nome(specs))
+
+
+def capabilities_for(name: str, specs: Iterable) -> list[str]:
+    """Come `resolve_for`, per le skill."""
+    return effective_capabilities(name, _per_nome(specs))
+
+
+def effective_capabilities_of(spec) -> list[str]:
+    """Skill effettive di una spec, risolte contro il registry caricato.
+
+    È la forma che serve ai chiamanti veri — lo spawn, le pill, il profilo di
+    routing, la scheda dell'agente — e sta qui invece che in ognuno di loro
+    perché erano cinque letture della stessa cosa e una sola risolveva i
+    `parents`. Chi ha già la mappa delle spec usi `effective_capabilities`:
+    questa la va a prendere.
+
+    Import locale del loader: `loader` costruisce le spec e questo modulo le
+    legge, quindi importarlo in testa chiuderebbe il cerchio.
+    """
+    nome = getattr(spec, "name", None) or (spec.get("name") if isinstance(spec, dict) else None)
+    if not nome:
+        return []
+    from .loader import registry
+    specs = {s.name: s for s in registry.list() if getattr(s, "name", None)}
+    # La spec passata VINCE su quella del registry: un override di scope o una
+    # spec appena modificata non devono essere riscritte da una copia vecchia.
+    specs[str(nome)] = spec
+    return effective_capabilities(str(nome), specs)

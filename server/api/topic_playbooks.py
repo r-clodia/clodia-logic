@@ -57,7 +57,10 @@ def _agent_skill_names(agent: str) -> set[str]:
         spec = registry.get(agent)
     except KeyError:
         return set()
-    caps = list(getattr(spec, "capabilities", None) or [])
+    # Effettive: una pill filtrata sulle capabilities DICHIARATE sparirebbe per
+    # un seed derivato che la skill ce l'ha dal padre (clodia-platform#496).
+    from ..agents.inheritance import effective_capabilities_of
+    caps = effective_capabilities_of(spec)
     if any(c in WILDCARDS for c in caps):
         return set(_all_skill_names())
     out: set[str] = set()
