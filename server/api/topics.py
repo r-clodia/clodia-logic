@@ -23,7 +23,7 @@ from fastapi import APIRouter, HTTPException, Query, Request
 from fastapi.responses import FileResponse, PlainTextResponse, Response
 
 from ..config import workspace_path
-from . import admin, topics_client
+from . import admin, mentions, topics_client
 from . import access_log
 from .agents import _principal_from_request
 
@@ -779,13 +779,40 @@ async def set_topic_goal(tier: str, name: str, request: Request):
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
-    goal = (body or {}).get("goal")
+    goal = _goal_indirizzato((body or {}).get("goal"))
     try:
         res = await topics_client.async_set_goal(tier, name, goal, by=principal)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, str(e))
     await _annuncia_goal(tier, name, principal, res.get("goal"), res.get("previous"))
     return res
+
+
+def _goal_indirizzato(goal):
+    """L'obiettivo come va SALVATO: niente `@spawn-N` vivo di un seed a istanza
+    unica nel testo (issue clodia-platform#501).
+
+    Il goal è la copia di un messaggio dell'owner, e un owner scrive `@clodia-354`
+    perché è il nome che legge in chat. Quel testo poi viene riportato dalla
+    piattaforma — nel promemoria del goal watch, nell'ordine all'orchestratore —
+    e lì `clodia-354` diventa un secondo destinatario per un agente solo. La
+    citazione di `cita()` copre i goal già scritti; questa riga copre quelli
+    nuovi anche quando qualcuno li legge senza citarli.
+
+    Non è una censura del testo: `@clodia-354` diventa `@clodia`, cioè lo stesso
+    destinatario scritto nella forma che la piattaforma usa. Per un seed
+    `multi_spawn` l'istanza resta, perché lì indirizza davvero.
+    """
+    if not isinstance(goal, dict):
+        return goal
+    from . import channels
+    testo = str(goal.get("text") or "")
+    nuovo = mentions.normalizza(testo, channels.indirizzo)
+    if nuovo == testo:
+        return goal
+    fuori = dict(goal)
+    fuori["text"] = nuovo
+    return fuori
 
 
 def _ordine_orchestratore(chi: str, goal: dict, precedente: str | None) -> str | None:
@@ -803,7 +830,7 @@ def _ordine_orchestratore(chi: str, goal: dict, precedente: str | None) -> str |
     dove = f"`{piano}`" if piano else "il documento di strategia del canale"
     if stato == "pinned":
         return (f"🎯 **Nuovo obiettivo del canale**, fissato da {chi}:\n\n"
-                f"> {testo}\n\n"
+                f"{mentions.cita(testo)}\n\n"
                 "Scomponilo in una strategia e **salvala nei file del canale**, poi "
                 "dichiarala pronta con `topic.goal_progress(state=\"strategy-review\", "
                 "strategy_path=\"<path>\")`. **Non eseguire niente** prima che l'owner "
@@ -811,13 +838,13 @@ def _ordine_orchestratore(chi: str, goal: dict, precedente: str | None) -> str |
                 "Il metodo e il formato sono nella skill `topic-goals`.")
     if stato == "in-progress" and precedente == "claimed-done":
         return (f"↺ **{chi} non ha accettato l'esito**: l'obiettivo NON è raggiunto.\n\n"
-                f"> {testo}\n\n"
+                f"{mentions.cita(testo)}\n\n"
                 f"Rileggi {dove} e l'ultima richiesta dell'owner, individua cosa manca "
                 "davvero e rimedia — non ripartire da capo dal piano intero. "
                 "Quando hai corretto, torna a `claimed-done`.")
     if stato == "in-progress":
         return (f"✅ **Strategia approvata da {chi}**: esegui.\n\n"
-                f"> {testo}\n\n"
+                f"{mentions.cita(testo)}\n\n"
                 f"Il piano è in {dove}. Coordina gli agenti passo per passo, e i passi "
                 "indipendenti mandali avanti insieme invece che in fila. Se un passo "
                 "fallisce, indaga la causa (sysadmin per i guasti di piattaforma) e "
@@ -856,13 +883,15 @@ async def _annuncia_goal(tier: str, name: str, chi: str, goal: dict | None,
         if ordine:
             topic = await topics_client.async_open_topic(tier, name) or {}
             meta = topic.get("meta") or {}
-            orchestratore = str(meta.get("contact_agent") or "clodia").strip()
+            from . import channels
+            # Indirizzo della piattaforma, non etichetta di spawn (#501).
+            orchestratore = channels.indirizzo(
+                str(meta.get("contact_agent") or "clodia").strip())
             if _e_partecipante(meta, orchestratore):
                 # Stessa porta del topic trigger dello scheduler: il messaggio
                 # entra come `system` con un principal sintetico e passa dal
                 # routing normale. `skip_if_busy` evita di accavallare un turno
                 # all'orchestratore che sta già lavorando allo stesso obiettivo.
-                from . import channels
                 await channels.post_channel_message(
                     tier, name, f"@{orchestratore} {ordine}", "system",
                     kind="system", trusted_internal=True, skip_if_busy=True)
