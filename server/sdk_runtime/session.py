@@ -3334,6 +3334,18 @@ class _TurnBudget:
         self._clock = clock
         self._start = clock()
 
+    @property
+    def start(self) -> float:
+        """L'istante di inizio del turno, sulla scala di `clock`.
+
+        Esposto perché è la FINESTRA del turno: ciò che è successo altrove
+        (un blocco del loop, un gateway che non risponde) riguarda questo turno
+        solo se cade dopo questo istante. Un orologio monotonico rende la
+        domanda esatta, dove una finestra a stima — «nelle ultime due ore» —
+        resta un'euristica (clodia-platform#514).
+        """
+        return self._start
+
     def elapsed(self) -> float:
         """Secondi realmente trascorsi da quando il turno è iniziato."""
         return max(0.0, self._clock() - self._start)
@@ -3375,8 +3387,36 @@ async def _audit_turn_acquired(chat) -> None:
         LOG.debug("audit: turn not started (%s)", type(e).__name__)
 
 
+def _oc_nota_eventi(eventi: "int | None") -> str:
+    """Dove stava il turno quando il budget è finito, detto con il conto che il
+    runtime ha già (clodia-platform#514).
+
+    È la metà osservabile della domanda «modello lento o gateway bloccato»:
+    zero eventi significa che dal runtime non è tornato NIENTE, quindi nessuna
+    tool call era partita e l'attesa sta a monte, fra opencode e il provider;
+    un conto maggiore di zero significa che il turno aveva già cominciato a
+    lavorare, e lì il tempo può esserselo preso un tool appeso tanto quanto il
+    modello. Due situazioni che fino a qui arrivavano in chat con la stessa
+    identica frase, mandando a indagare sul provider anche nel caso in cui il
+    provider aveva già risposto.
+
+    `None` = il conto non c'è (chi solleva l'eccezione non lo ha passato): si
+    tace, perché un «nessun evento» inventato sposterebbe la ricerca di chi
+    legge, ed è l'errore che questo messaggio ha già pagato una volta.
+    """
+    if eventi is None:
+        return ""
+    if eventi <= 0:
+        return ("nessun evento dal runtime in tutto il turno: l'attesa è a monte "
+                "della prima risposta del modello, nessuna tool call era partita")
+    return (f"{eventi} eventi dal runtime prima della scadenza: il turno aveva già "
+            f"cominciato a lavorare, quindi il tempo può esserselo preso tanto il "
+            f"modello quanto una tool call rimasta appesa")
+
+
 def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
-                             model: str | None, correlazione: str = "") -> str:
+                             model: str | None, eventi: "int | None" = None,
+                             gateway: str = "", correlazione: str = "") -> str:
     """Il messaggio del turno scaduto: dice cosa si è OSSERVATO.
 
     Il testo precedente — «modello X non convergente» — era una diagnosi, non
@@ -3386,13 +3426,24 @@ def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
     come colpevole; quello che si afferma è quale tentativo è scaduto e quanti
     secondi si è atteso davvero.
 
-    `correlazione` aggiunge, quando c'è, il blocco dell'event loop appena
-    precedente. È la domanda che la #473 lascia senza risposta — «provider lento
-    o sessione appena ricreata dopo un'interruzione di piattaforma?» — e che chi
-    legge il messaggio non può sciogliere senza un'indagine manuale sui log: qui
-    ci sono i numeri per porsela.
+    Alla frase si appendono, quando ci sono, tre osservazioni indipendenti, in
+    ordine di vicinanza al turno:
+
+    - `eventi` — dove stava il turno alla scadenza (vedi `_oc_nota_eventi`);
+    - `gateway` — le chiamate al gateway non servite nella finestra del turno
+      (`api/gateway_http.nota_gateway`): la #514 chiede di distinguere «modello
+      lento» da «gateway bloccato», e questa è la parte di risposta che il
+      processo può dare da sé;
+    - `correlazione` — il blocco dell'event loop appena precedente. È la domanda
+      che la #473 lascia senza risposta — «provider lento o sessione appena
+      ricreata dopo un'interruzione di piattaforma?» — e che chi legge il
+      messaggio non può sciogliere senza un'indagine manuale sui log.
+
+    Nessuna delle tre afferma una causa: sono numeri messi accanto, perché chi
+    legge possa porsi la domanda giusta invece di ereditarne una già scelta.
     """
-    coda = f" — {correlazione}" if correlazione else ""
+    coda = "".join(f" — {nota}" for nota in
+                   (_oc_nota_eventi(eventi), gateway, correlazione) if nota)
     return (f"turno opencode scaduto ({tentativo}): attesi {atteso:.0f}s "
             f"sul budget di {int(budget)}s per il turno — modello {model or '?'} "
             f"— turno interrotto{coda}")
@@ -4068,15 +4119,31 @@ class OpenCodeChatSession:
             # lato opencode e fallisco con errore chiaro (la sessione si recupera
             # al prossimo messaggio) invece di restare appesa.
             await self._abort_oc()
+            # Import locale come per gli altri `..api.*` di questo modulo: il
+            # registro dei guasti sta dove li si conosce, cioè nel client del
+            # gateway, e non c'è ragione di legare l'import del runtime a quello.
+            from ..api import gateway_http
             atteso = budget.elapsed()
             eventi = getattr(self, "_eventi_turno", None)
             activity_log.append(self.kind, "error",
                                 {"error": "opencode turn timeout", "chat_id": self.chat_id,
                                  "tentativo": tentativo, "atteso_s": round(atteso, 1),
-                                 "eventi": eventi})
+                                 "eventi": eventi,
+                                 # Lo stesso fatto che finisce nel messaggio, qui
+                                 # come numero: la stanza vede una frase, chi
+                                 # indaga a posteriori ha bisogno di filtrarci
+                                 # sopra.
+                                 "gateway_giu": len(gateway_http.guasti_da(budget.start))})
             raise OpenCodeTurnTimeout(_oc_turn_timeout_message(
                 tentativo=tentativo, atteso=atteso,
                 budget=budget.total, model=self._model,
+                eventi=eventi,
+                # Il gateway va su ENTRAMBI i tentativi, al contrario della
+                # correlazione col loop: non è un'euristica sul passato recente
+                # ma un fatto datato dentro la finestra di QUESTO turno, e il
+                # primo tentativo è anzi quello in cui serve di più — è lì che
+                # si è perso il budget intero senza che nessuno sapesse dove.
+                gateway=gateway_http.nota_gateway(budget.start),
                 # Solo sul tentativo dopo la ricreazione: lì la domanda «è il
                 # provider o è la piattaforma?» è aperta davvero, perché la
                 # sessione era appena stata rifatta. Sul primo tentativo la
