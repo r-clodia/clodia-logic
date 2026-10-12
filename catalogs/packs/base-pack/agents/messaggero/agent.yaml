@@ -13,6 +13,13 @@ display_name: Messaggero
 description: "Agente messaggero: email e Telegram per conto della colonia. Clearance SEAL-2 (le comunicazioni attraversano documenti di più topic)."
 type: bot
 clearance: SEAL-2
+
+# Ruolo di PIATTAFORMA, non della singola stanza (clodia-platform#497): nella
+# lista dei partecipanti si legge «staff» invece di «contributor». Si dichiara
+# qui e non in una lista della webui, così un seed di piattaforma nuovo porta il
+# proprio badge senza che nessuno tocchi il frontend. Display e basta: non
+# concede niente, i permessi restano clearance + partecipazione + `role`.
+staff: true
 constitution: platform-core
 # Runtime segue il provider effettivo: scaleway→opencode, aws-region-eu→claude.
 # agent_sdk è il default/fallback quando nessun provider risolve.

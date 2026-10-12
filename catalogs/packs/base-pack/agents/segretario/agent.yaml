@@ -12,6 +12,20 @@ display_name: Segretario
 description: "Segretario del topic: verbalizza minute e stato; se Clodia non è disponibile introduce il topic e propone la squadra."
 type: bot
 clearance: SEAL-2
+
+# Ruolo di PIATTAFORMA, non della singola stanza (clodia-platform#497): nella
+# lista dei partecipanti si legge «staff» invece di «contributor». Si dichiara
+# qui e non in una lista della webui, così un seed di piattaforma nuovo porta il
+# proprio badge senza che nessuno tocchi il frontend. Display e basta: non
+# concede niente, i permessi restano clearance + partecipazione + `role`.
+staff: true
+
+# Il VICE. Subentra quando il coordinatore dichiarato non è nella stanza — la
+# stessa ruling dell'11 ago 2026 che `agents/coordinator.py` tiene in una riga
+# (`DECLARED`), qui letta dal lato di chi la eredita. Non decide niente: chi
+# coordina lo sceglie sempre `coordinator.pick`, questo flag dice solo che il
+# badge va scritto «acting manager» quando capita.
+deputy: true
 constitution: platform-core
 agent_sdk: opencode
 routing_mode: state_writer_only

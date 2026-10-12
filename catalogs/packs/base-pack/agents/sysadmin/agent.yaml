@@ -7,6 +7,13 @@ immutable: true
 # Clearance minima interna: SEAL-1. Sotto la soglia del confidenziale (SEAL-2+):
 # per costruzione non può accedere a dati confidenziali. Nessun canale utente.
 clearance: SEAL-1
+
+# Ruolo di PIATTAFORMA, non della singola stanza (clodia-platform#497): nella
+# lista dei partecipanti si legge «staff» invece di «contributor». Si dichiara
+# qui e non in una lista della webui, così un seed di piattaforma nuovo porta il
+# proprio badge senza che nessuno tocchi il frontend. Display e basta: non
+# concede niente, i permessi restano clearance + partecipazione + `role`.
+staff: true
 constitution: platform-core
 # ANTENATO. `parents` è una relazione di AUTORITÀ: ciò che vi compare concede
 # verbi per ereditarietà. Non è genealogia — le due cose erano confuse finché

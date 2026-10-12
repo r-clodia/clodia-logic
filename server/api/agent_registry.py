@@ -269,6 +269,21 @@ def _success_stats(name: str) -> dict | None:
     return None
 
 
+def _effective_caps(spec) -> list[str]:
+    """Le skill che l'agente ha DAVVERO: le sue più quelle dei `parents`.
+
+    Campo a parte e non al posto di `capabilities`: la dichiarazione è ciò che
+    sta scritto nel seed, e sovrascriverla farebbe leggere nella scheda una riga
+    che nel file non c'è. Qui si vedono entrambe, e la differenza fra le due è
+    esattamente l'eredità (clodia-platform#496).
+    """
+    try:
+        from ..agents.inheritance import effective_capabilities_of
+        return effective_capabilities_of(spec)
+    except Exception:  # noqa: BLE001 — la scheda non sparisce per questo campo
+        return list(getattr(spec, "capabilities", None) or [])
+
+
 @router.get("")
 async def list_agents() -> dict:
     paused = set(pause_mod.list_paused())
@@ -287,6 +302,7 @@ async def list_agents() -> dict:
         # tutte insieme, ed è lì che una persona irraggiungibile deve leggersi
         # come tale invece di sembrare uguale alle altre (clodia-platform#200).
         d["contact_channels"] = contacts.channels(a)
+        d["effective_capabilities"] = _effective_caps(a)
         d.update(_provider_fields(a, connected))
         agents.append(d)
     return {
@@ -312,6 +328,7 @@ async def get_agent(name: str, request: Request) -> dict:
     d["rank_tier"] = rank_mod.rank_tier(spec)
     d["rank_label"] = rank_mod.rank_label(spec)
     d["contact_channels"] = contacts.channels(spec)
+    d["effective_capabilities"] = _effective_caps(spec)
     d["native_tools_info"] = _native_tools_info(spec)
     d["sandbox_info"] = _sandbox_info(spec)
     # Le incoerenze del seed viaggiano con la scheda: una capacità che un agente
