@@ -39,7 +39,8 @@ from ..core.events import bus
 from ..core.models import Event, MessageRequest
 from ..sdk_runtime.session import (take_reasoning, manager, ProviderNotConnected,
                                    spawn_dirs_of, topic_runtime_override,
-                                   session_provider, SessioneTerminata)
+                                   session_provider, SessioneTerminata,
+                                   OpenCodeTurnTimeout)
 from . import (access_log, mentions, presence, responder_routing, router_config,
                routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
@@ -1049,7 +1050,18 @@ def _turno_ritentabile(err: BaseException) -> bool:
 
     Fuori da qui il comportamento resta quello di prima: l'errore si annuncia
     nella stanza e la decisione di rimandare è di chi ha scritto.
+
+    **Il turno opencode scaduto** (`OpenCodeTurnTimeout`, clodia-platform#514)
+    entra per la sola condizione 3, perché le altre due non lo riguardano: il
+    processo `opencode serve` è vivo e la sessione è utilizzabile — è la
+    RISPOSTA a non essere arrivata entro il budget. A zero eventi di progresso
+    vale la stessa garanzia di sopra: il runtime non ha emesso niente, quindi
+    nessun tool è stato eseguito e rimandare non rifà nulla. Il turno scaduto è
+    già stato abortito lato opencode (`_abort_oc`), quindi il secondo tentativo
+    non concorre col primo.
     """
+    if isinstance(err, OpenCodeTurnTimeout):
+        return getattr(err, "eventi", None) == 0
     return (isinstance(err, SessioneTerminata)
             and bool(getattr(err, "ripristinata", False))
             and getattr(err, "eventi", None) == 0)

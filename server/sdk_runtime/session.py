@@ -3334,6 +3334,18 @@ class _TurnBudget:
         self._clock = clock
         self._start = clock()
 
+    @property
+    def start(self) -> float:
+        """L'istante di inizio del turno, sulla scala di `clock`.
+
+        Esposto perché è la FINESTRA del turno: ciò che è successo altrove
+        (un blocco del loop, un gateway che non risponde) riguarda questo turno
+        solo se cade dopo questo istante. Un orologio monotonico rende la
+        domanda esatta, dove una finestra a stima — «nelle ultime due ore» —
+        resta un'euristica (clodia-platform#514).
+        """
+        return self._start
+
     def elapsed(self) -> float:
         """Secondi realmente trascorsi da quando il turno è iniziato."""
         return max(0.0, self._clock() - self._start)
@@ -3348,9 +3360,22 @@ class OpenCodeTurnTimeout(RuntimeError):
 
     A RuntimeError as before, so every existing handler still catches it; the
     type and `audit_cause` let the audit trail classify it without parsing a
-    message that is written for people and gets reworded."""
+    message that is written for people and gets reworded.
+
+    `eventi` conta gli eventi di PROGRESSO ricevuti dal turno scaduto, con la
+    stessa semantica di `SessioneTerminata.eventi` e per lo stesso uso: zero
+    eventi = il runtime non ha prodotto niente, quindi nessun tool può essere
+    stato eseguito e rimandare il messaggio non rifà nulla
+    (`api/channels._turno_ritentabile`, clodia-platform#514). Default `None` =
+    «non so», e NON zero: chi solleverà questa eccezione senza il conto non
+    deve ottenere il rimando per difetto, cioè proprio dove manca la prova che
+    lo rende innocuo."""
 
     audit_cause = "turn_timeout"
+
+    def __init__(self, *args, eventi: "int | None" = None) -> None:
+        super().__init__(*args)
+        self.eventi = eventi
 
 
 async def _audit_turn_acquired(chat) -> None:
@@ -3362,8 +3387,36 @@ async def _audit_turn_acquired(chat) -> None:
         LOG.debug("audit: turn not started (%s)", type(e).__name__)
 
 
+def _oc_nota_eventi(eventi: "int | None") -> str:
+    """Dove stava il turno quando il budget è finito, detto con il conto che il
+    runtime ha già (clodia-platform#514).
+
+    È la metà osservabile della domanda «modello lento o gateway bloccato»:
+    zero eventi significa che dal runtime non è tornato NIENTE, quindi nessuna
+    tool call era partita e l'attesa sta a monte, fra opencode e il provider;
+    un conto maggiore di zero significa che il turno aveva già cominciato a
+    lavorare, e lì il tempo può esserselo preso un tool appeso tanto quanto il
+    modello. Due situazioni che fino a qui arrivavano in chat con la stessa
+    identica frase, mandando a indagare sul provider anche nel caso in cui il
+    provider aveva già risposto.
+
+    `None` = il conto non c'è (chi solleva l'eccezione non lo ha passato): si
+    tace, perché un «nessun evento» inventato sposterebbe la ricerca di chi
+    legge, ed è l'errore che questo messaggio ha già pagato una volta.
+    """
+    if eventi is None:
+        return ""
+    if eventi <= 0:
+        return ("nessun evento dal runtime in tutto il turno: l'attesa è a monte "
+                "della prima risposta del modello, nessuna tool call era partita")
+    return (f"{eventi} eventi dal runtime prima della scadenza: il turno aveva già "
+            f"cominciato a lavorare, quindi il tempo può esserselo preso tanto il "
+            f"modello quanto una tool call rimasta appesa")
+
+
 def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
-                             model: str | None, correlazione: str = "") -> str:
+                             model: str | None, eventi: "int | None" = None,
+                             gateway: str = "", correlazione: str = "") -> str:
     """Il messaggio del turno scaduto: dice cosa si è OSSERVATO.
 
     Il testo precedente — «modello X non convergente» — era una diagnosi, non
@@ -3373,13 +3426,24 @@ def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
     come colpevole; quello che si afferma è quale tentativo è scaduto e quanti
     secondi si è atteso davvero.
 
-    `correlazione` aggiunge, quando c'è, il blocco dell'event loop appena
-    precedente. È la domanda che la #473 lascia senza risposta — «provider lento
-    o sessione appena ricreata dopo un'interruzione di piattaforma?» — e che chi
-    legge il messaggio non può sciogliere senza un'indagine manuale sui log: qui
-    ci sono i numeri per porsela.
+    Alla frase si appendono, quando ci sono, tre osservazioni indipendenti, in
+    ordine di vicinanza al turno:
+
+    - `eventi` — dove stava il turno alla scadenza (vedi `_oc_nota_eventi`);
+    - `gateway` — le chiamate al gateway non servite nella finestra del turno
+      (`api/gateway_http.nota_gateway`): la #514 chiede di distinguere «modello
+      lento» da «gateway bloccato», e questa è la parte di risposta che il
+      processo può dare da sé;
+    - `correlazione` — il blocco dell'event loop appena precedente. È la domanda
+      che la #473 lascia senza risposta — «provider lento o sessione appena
+      ricreata dopo un'interruzione di piattaforma?» — e che chi legge il
+      messaggio non può sciogliere senza un'indagine manuale sui log.
+
+    Nessuna delle tre afferma una causa: sono numeri messi accanto, perché chi
+    legge possa porsi la domanda giusta invece di ereditarne una già scelta.
     """
-    coda = f" — {correlazione}" if correlazione else ""
+    coda = "".join(f" — {nota}" for nota in
+                   (_oc_nota_eventi(eventi), gateway, correlazione) if nota)
     return (f"turno opencode scaduto ({tentativo}): attesi {atteso:.0f}s "
             f"sul budget di {int(budget)}s per il turno — modello {model or '?'} "
             f"— turno interrotto{coda}")
@@ -3442,6 +3506,17 @@ class OpenCodeChatSession:
         # whole paragraph, and without a seam it would stick to the previous
         # one on the same line. Only the counter stays here, as block index.
         self._think_n = 0
+        #: Eventi di PROGRESSO ricevuti dal turno in corso (vedi
+        #: `_note_event_line`): distingue un turno scaduto senza aver fatto
+        #: niente — ritentabile — da uno che aveva già chiamato dei tool, dove
+        #: ritentare rifarebbe quegli effetti (clodia-platform#514).
+        self._eventi_turno: int = 0
+        #: Continuity of the SSE reader that feeds `_eventi_turno`: `connesso`
+        #: while a `GET /event` stream is open, `generazione` bumped on every
+        #: (re)connection. Zero events is evidence only if the reader saw the
+        #: WHOLE turn (see `_stream_continuo`, clodia-platform#514).
+        self._eventi_connesso: bool = False
+        self._eventi_generazione: int = 0
         self._provider: Optional[str] = None
         self._model: Optional[str] = None
         self._last_usage: dict[str, int] = {}
@@ -3586,10 +3661,31 @@ class OpenCodeChatSession:
         (cwd / "opencode.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
         return env
 
+    def _turn_timeout_s(self) -> float:
+        """Il budget del turno di QUESTO agente (clodia-platform#514).
+
+        `turn_timeout` nel seed vince sul default di piattaforma: la soglia
+        giusta dipende dall'agente — modello, provider e tipo di lavoro — non
+        dall'istanza, e finché l'unica leva è stata `OPENCODE_TURN_TIMEOUT`
+        alzarla per l'agente che scadeva la alzava per tutti gli altri, cioè
+        toglieva il fail-fast proprio dove funzionava.
+
+        Il valore si legge a ogni turno e non si memorizza: una PATCH sul seed
+        deve valere dal turno successivo, non dal prossimo riavvio. Un seed
+        senza il campo (o con un valore che non è un numero utile) ricade sul
+        default, perché un budget nullo fermerebbe ogni turno dell'agente.
+        """
+        spec = _kind_spec(self.kind)
+        try:
+            secondi = float(getattr(spec, "turn_timeout", None) or 0)
+        except (TypeError, ValueError):
+            secondi = 0.0
+        return secondi if secondi > 0 else _OPENCODE_TURN_TIMEOUT
+
     async def _http(self):
         import httpx
         return httpx.AsyncClient(base_url=self._base_url,
-                                 timeout=httpx.Timeout(_OPENCODE_TURN_TIMEOUT))
+                                 timeout=httpx.Timeout(self._turn_timeout_s()))
 
     @staticmethod
     def _budget_timeout(budget: "_TurnBudget"):
@@ -3658,6 +3754,12 @@ class OpenCodeChatSession:
         renderebbe il timestamp un orologio, cioè un segnale che dice «vivo» per
         sempre — il difetto opposto a quello di #216, e altrettanto silenzioso.
         Tutto ciò che non è `server.*` è invece qualcosa che l'agente ha fatto.
+
+        Lo stesso filtro data `last_activity` (QUANDO) e incrementa
+        `_eventi_turno` (SE), come fa `_segna_evento_sdk` sul runtime claude:
+        sono la stessa domanda — «questo turno ha già prodotto qualcosa?» — e
+        tenerle in due punti diversi le farebbe divergere al primo evento
+        nuovo (clodia-platform#514).
         """
         riga = (riga or "").strip()
         if not riga.startswith("data:"):
@@ -3670,11 +3772,37 @@ class OpenCodeChatSession:
         if not tipo or tipo.startswith(_OC_IDLE_EVENT_PREFIX):
             return False
         self.last_activity = datetime.now(timezone.utc)
+        # `getattr` e non `+=`, per la ragione di `ChatSession._segna_evento_sdk`:
+        # una sessione costruita senza `__init__` (i fake dei test) non ha
+        # l'attributo, e un contatore diagnostico non deve poter uccidere il
+        # turno su cui gira — né lo stream che lo alimenta.
+        self._eventi_turno = getattr(self, "_eventi_turno", 0) + 1
         return True
 
     async def _consume_events(self, resp) -> None:
         async for riga in resp.aiter_lines():
             self._note_event_line(riga)
+
+    def _stato_stream(self) -> "tuple[bool, int]":
+        """(connected, generation) of the SSE reader, right now."""
+        return (bool(getattr(self, "_eventi_connesso", False)),
+                int(getattr(self, "_eventi_generazione", 0)))
+
+    def _stream_continuo(self, inizio: "tuple[bool, int]") -> bool:
+        """True only if the event stream was open for the WHOLE turn.
+
+        `_eventi_turno == 0` is the proof that makes re-sending a timed-out turn
+        harmless — but only if nothing could have been missed. `_drain_events`
+        reconnects after `_OC_EVENT_RETRY_S` when the stream drops, and SSE has
+        no replay: a tool call (a mail sent, a file written) emitted during the
+        gap is never counted. So the count is evidence only if the stream was
+        connected when the turn started, is still connected now, and was never
+        re-opened in between (same generation). Otherwise the answer is «don't
+        know», and «don't know» must not buy a retry (clodia-platform#514).
+        """
+        connesso_ora, generazione_ora = self._stato_stream()
+        connesso_inizio, generazione_inizio = inizio
+        return connesso_inizio and connesso_ora and generazione_ora == generazione_inizio
 
     async def _drain_events(self) -> None:
         """Legge `GET /event` di `opencode serve` finché il processo vive.
@@ -3697,7 +3825,16 @@ class OpenCodeChatSession:
                 async with httpx.AsyncClient(base_url=self._base_url,
                                              timeout=httpx.Timeout(10.0, read=None)) as c:
                     async with c.stream("GET", "/event") as r:
-                        await self._consume_events(r)
+                        # A new connection is a new generation: whatever was
+                        # emitted before it opened is gone (SSE has no replay
+                        # here), so a turn that spans it cannot trust its count.
+                        self._eventi_generazione = getattr(
+                            self, "_eventi_generazione", 0) + 1
+                        self._eventi_connesso = r.status_code < 400
+                        try:
+                            await self._consume_events(r)
+                        finally:
+                            self._eventi_connesso = False
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 — leggere gli eventi non rompe la sessione
@@ -3944,8 +4081,16 @@ class OpenCodeChatSession:
             "parts": [{"type": "text", "text": content}],
         }
         # Un budget per il TURNO, non per ogni richiesta: le POST che seguono
-        # ricevono il residuo (vedi `_TurnBudget`, clodia-platform#423).
-        budget = _TurnBudget(_OPENCODE_TURN_TIMEOUT)
+        # ricevono il residuo (vedi `_TurnBudget`, clodia-platform#423). Quanto
+        # vale lo dice il seed, se lo dichiara (clodia-platform#514).
+        budget = _TurnBudget(self._turn_timeout_s())
+        # Il conto riparte col turno: è la prova che decide se un turno scaduto
+        # si può rimandare, e un conto ereditato dal turno precedente la
+        # falsificherebbe in entrambe le direzioni (vedi `_note_event_line`).
+        self._eventi_turno = 0
+        # ...and it only counts if the reader saw the whole turn: snapshot the
+        # stream state now, compare at timeout (`_stream_continuo`).
+        stream_inizio = self._stato_stream()
         tentativo = _OC_TENTATIVO_PRIMO
         try:
             async with await self._http() as c:
@@ -3978,7 +4123,7 @@ class OpenCodeChatSession:
                         raise RuntimeError(
                             f"sessione opencode inutilizzabile (HTTP {r.status_code}) e "
                             f"restano {residuo:.0f}s del budget di "
-                            f"{int(_OPENCODE_TURN_TIMEOUT)}s, sotto il minimo di "
+                            f"{int(budget.total)}s, sotto il minimo di "
                             f"{int(_OPENCODE_MIN_RETRY_BUDGET)}s per riprovare — "
                             f"turno interrotto senza ricreare la sessione"
                             f"{self._stderr_hint()}")
@@ -4013,19 +4158,43 @@ class OpenCodeChatSession:
             # lato opencode e fallisco con errore chiaro (la sessione si recupera
             # al prossimo messaggio) invece di restare appesa.
             await self._abort_oc()
+            # Import locale come per gli altri `..api.*` di questo modulo: il
+            # registro dei guasti sta dove li si conosce, cioè nel client del
+            # gateway, e non c'è ragione di legare l'import del runtime a quello.
+            from ..api import gateway_http
             atteso = budget.elapsed()
+            stream_continuo = self._stream_continuo(stream_inizio)
+            # A count from a stream with a gap is not zero, it is unknown: the
+            # events of the gap may include a tool call, and `None` is what
+            # keeps `_turno_ritentabile` from re-sending it.
+            eventi = getattr(self, "_eventi_turno", None) if stream_continuo else None
             activity_log.append(self.kind, "error",
                                 {"error": "opencode turn timeout", "chat_id": self.chat_id,
-                                 "tentativo": tentativo, "atteso_s": round(atteso, 1)})
+                                 "tentativo": tentativo, "atteso_s": round(atteso, 1),
+                                 "eventi": eventi,
+                                 "stream_continuo": stream_continuo,
+                                 # Lo stesso fatto che finisce nel messaggio, qui
+                                 # come numero: la stanza vede una frase, chi
+                                 # indaga a posteriori ha bisogno di filtrarci
+                                 # sopra.
+                                 "gateway_giu": len(gateway_http.guasti_da(budget.start))})
             raise OpenCodeTurnTimeout(_oc_turn_timeout_message(
                 tentativo=tentativo, atteso=atteso,
-                budget=_OPENCODE_TURN_TIMEOUT, model=self._model,
+                budget=budget.total, model=self._model,
+                eventi=eventi,
+                # Il gateway va su ENTRAMBI i tentativi, al contrario della
+                # correlazione col loop: non è un'euristica sul passato recente
+                # ma un fatto datato dentro la finestra di QUESTO turno, e il
+                # primo tentativo è anzi quello in cui serve di più — è lì che
+                # si è perso il budget intero senza che nessuno sapesse dove.
+                gateway=gateway_http.nota_gateway(budget.start),
                 # Solo sul tentativo dopo la ricreazione: lì la domanda «è il
                 # provider o è la piattaforma?» è aperta davvero, perché la
                 # sessione era appena stata rifatta. Sul primo tentativo la
                 # correlazione sarebbe rumore attaccato a ogni timeout.
                 correlazione=(loop_lag.nota_blocco()
-                              if tentativo == _OC_TENTATIVO_RICREATA else "")))
+                              if tentativo == _OC_TENTATIVO_RICREATA else "")),
+                eventi=eventi)
         full = await self._handle_parts(data)
         activity_log.append(self.kind, "run_done",
                             {"reply": _reply_text(full), "chat_id": self.chat_id,

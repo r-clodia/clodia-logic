@@ -15,9 +15,17 @@ stanno nei client.
 esistenti catturano già quella classe e la traducono nel loro errore
 «gateway irraggiungibile». Il fail-fast entra così nel percorso di errore che
 c'è già, senza un secondo modo di fallire da gestire in ogni chiamante.
+
+Gli stessi guasti vengono **datati** in un registro di processo (`guasti_da`,
+`nota_gateway`): il breaker sa quanti ne sono arrivati di fila — abbastanza per
+smettere di provare — ma non quando, e «quando» è l'unica cosa che permette di
+dire se un turno scaduto ha speso il suo tempo mentre il gateway era giù
+(clodia-platform#514). Prima quel fatto esisteva solo in una riga di log, cioè
+fuori dalla portata di chi legge l'errore nella stanza.
 """
 from __future__ import annotations
 
+from collections import deque
 import logging
 import threading
 import time
@@ -31,9 +39,70 @@ LOG = logging.getLogger("agent-server.gateway_http")
 _THRESHOLD = 5      # fallimenti di connessione consecutivi prima di aprire
 _COOLDOWN = 10.0    # secondi di fail-fast prima di riprovare (una sonda)
 
+# SHORTCUT: gli ultimi 64 guasti in memoria, per processo. Regge perché la
+#           domanda a cui servono è «il gateway era giù DURANTE questo turno»,
+#           cioè sul passato recente: con la soglia del breaker a 5 e il
+#           cooldown a 10s, 64 coprono abbondantemente un turno. Se servisse
+#           la storia lunga (un grafico, un allarme) il posto non è qui, è la
+#           serie temporale dell'osservabilità — stessa scelta e stesso
+#           confine di `core/loop_lag._STALLS`.
+_GUASTI: "deque[tuple[float, str]]" = deque(maxlen=64)   # (istante, servizio)
+
 
 class CircuitOpen(requests.RequestException):
     """Il gateway è dato per irraggiungibile: si fallisce subito."""
+
+
+def reset_guasti() -> None:
+    """Dimentica i guasti registrati. Per i test, e per un riavvio pulito."""
+    _GUASTI.clear()
+
+
+def guasti_da(inizio: float, *, clock=time.monotonic) -> "list[tuple[float, str]]":
+    """Le chiamate al gateway **non servite** da `inizio` in poi, sulla stessa
+    scala di `clock` (di norma `time.monotonic`).
+
+    «Non servita» è sia il fallimento di connessione sia il rifiuto immediato a
+    breaker aperto: sono la stessa notizia per chi legge — in quella finestra il
+    gateway non ha risposto — e tenerne una sola darebbe il numero più piccolo
+    proprio nei minuti peggiori, quando il fail-fast sostituisce i tentativi.
+
+    Un guasto **precedente** alla finestra non le appartiene: il gateway caduto
+    e tornato prima che il turno cominciasse non spiega quel turno, e
+    attribuirglielo manderebbe la diagnosi successiva nel posto sbagliato
+    (stessa regola di `loop_lag.stall_since`).
+    """
+    return [(t, n) for t, n in _GUASTI if t >= inizio]
+
+
+def nota_gateway(inizio: float, *, clock=time.monotonic) -> str:
+    """La correlazione in una frase, pronta da appendere a un messaggio, o `""`.
+
+    Dichiara una CONCOMITANZA e i suoi numeri, non una causa. Due limiti che
+    rendono obbligatoria questa prudenza, entrambi strutturali:
+
+    - qui si vedono solo le chiamate che **questo** processo fa al gateway
+      (`topics` e `pdp`): le tool call MCP che un runtime esterno — opencode —
+      manda a `clodia-tools` per conto suo non passano da qui e restano
+      invisibili, e nemmeno il mint PKI o `api.observe`, che hanno il loro
+      trasporto. L'assenza di guasti non è quindi la prova che il gateway
+      stesse bene per tutti;
+    - il breaker conta i fallimenti di **connessione**: un gateway che risponde
+      lentamente ma risponde non lascia traccia qui.
+
+    Il verso dell'errore è deliberato: si tace quando non si sa, invece di
+    affermare che il colpevole è il modello. È la lezione già pagata dalla
+    #358 e scritta in `_oc_turn_timeout_message` — una diagnosi scritta al
+    posto di un'osservazione manda due issue a inseguire il provider.
+    """
+    guasti = guasti_da(inizio, clock=clock)
+    if not guasti:
+        return ""
+    servizi = sorted({n for _, n in guasti})
+    fa = max(0.0, clock() - guasti[-1][0])
+    return (f"nella stessa finestra il gateway non ha risposto {len(guasti)} volte "
+            f"({', '.join(servizi)}), l'ultima {fa:.0f}s prima: una tool call "
+            f"appesa sul gateway consuma il budget del turno per intero")
 
 
 class GatewayHTTP:
@@ -70,6 +139,7 @@ class GatewayHTTP:
         with self._lock:
             if self._open_until and time.monotonic() < self._open_until:
                 resta = self._open_until - time.monotonic()
+                _GUASTI.append((time.monotonic(), self.name))
                 raise CircuitOpen(
                     f"gateway '{self.name}' dato per irraggiungibile dopo "
                     f"{self._failures} errori di connessione: riprovo fra {resta:.0f}s")
@@ -85,6 +155,11 @@ class GatewayHTTP:
 
     def _failure(self) -> None:
         with self._lock:
+            # Datato QUI e non solo contato: il breaker sa «quante di fila», che
+            # basta a smettere di provare, ma non «quando», che è ciò che serve
+            # per dire se il guasto cade dentro un turno scaduto
+            # (clodia-platform#514).
+            _GUASTI.append((time.monotonic(), self.name))
             self._failures += 1
             if self._failures >= self.threshold:
                 self._open_until = time.monotonic() + self.cooldown
