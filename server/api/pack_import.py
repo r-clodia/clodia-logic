@@ -420,6 +420,7 @@ def install_pack_from_root(root: Path, *, source: str,
     # L'installazione le mostra; l'approvazione è un atto separato dell'owner.
     flows = declared_flows(manifest)
     checked = validate_flows(flows, source=source) if flows else None
+    connectors = declared_connectors(manifest)
 
     _meta = {
         "name": pack,
@@ -433,6 +434,8 @@ def install_pack_from_root(root: Path, *, source: str,
         _meta["flows"] = {"declared": flows, "approved": False}
     if upstream is not None:
         _meta["upstream"] = upstream
+    if connectors:
+        _meta["connectors"] = connectors
     (meta_dir / "pack.yaml").write_text(
         yaml.safe_dump(_meta, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -482,6 +485,29 @@ def declared_flows(manifest: dict) -> dict[str, list[str]]:
         if uris:
             out[key] = uris
     return out
+
+
+def declared_connectors(manifest: dict) -> list:
+    """Il blocco `connectors:` del pack.yaml sorgente, ricopiato com'è.
+
+    clodia-platform#516 ha dato la grammatica e #522 la prima dichiarazione
+    vera (Telegram in comms-pack); chi la LEGGE arriva con #518 (registry) e
+    #519 (rifiuto a install time), e legge il manifest REGISTRATO in
+    `<datadir>/packs/<pack>/pack.yaml`, non il sorgente — che dopo
+    l'installazione può non esistere più, perché l'archivio è temporaneo.
+    Finché questo campo non veniva ricopiato lì, la dichiarazione moriva
+    all'installazione e il registry avrebbe trovato ogni pack senza connettori:
+    un difetto che non dà errore, dà un elenco vuoto.
+
+    Qui si **legge e si ricopia**, come per `upstream`: nessuna validazione e
+    nessuna concessione. Validare qui vorrebbe dire una seconda copia della
+    grammatica fuori dal gateway, e divergerebbe; concedere sarebbe lasciare
+    all'autore del pack una decisione che è dell'owner.
+    """
+    raw = manifest.get("connectors")
+    if not isinstance(raw, list):
+        return []
+    return [c for c in raw if isinstance(c, dict) and c]
 
 
 def validate_flows(flows: dict, source: str = "") -> dict:
