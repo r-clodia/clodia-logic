@@ -15,25 +15,46 @@ from . import gateway_pdp, plugin_import
 LOG = logging.getLogger("agent-server.api.pack_mcp_mount")
 
 
-def _plugin_names(result: dict[str, Any]) -> list[str]:
-    names: list[str] = []
+def _plugin_entries(result: dict[str, Any]) -> list[tuple[str, str | None]]:
+    """`(plugin, pack)` dei plugin appena importati, nell'ordine in cui
+    compaiono.
 
-    def add(name: Any) -> None:
+    Il PACK si porta dietro perché è ciò che prova la proprietà del backend
+    montato (clodia-platform#539 §4, seguito di #354): `mcp.add` lo scrive
+    nella voce del backend, e da lì i connettori di quel pack possono usarne il
+    namespace. Si ricava dal CONTENITORE — un plugin sta sempre dentro un pack,
+    anche quando il pack è il wrapper omonimo generato per un plugin nudo — non
+    dal plugin, che non sa chi lo contiene. `None` quando il contenitore manca:
+    meglio un mount senza proprietario (com'era prima) che uno timbrato con un
+    nome indovinato.
+    """
+    out: list[tuple[str, str | None]] = []
+    visti: set[str] = set()
+
+    def add(name: Any, pack: str | None) -> None:
         n = str(name or "").strip()
-        if n and n not in names:
-            names.append(n)
+        if n and n not in visti:
+            visti.add(n)
+            out.append((n, pack))
 
-    def walk(node: Any) -> None:
+    def walk(node: Any, pack: str | None) -> None:
         if not isinstance(node, dict):
             return
-        add(node.get("plugin"))
+        mio = str(node.get("pack") or "").strip() or pack
+        add(node.get("plugin"), mio)
         for child in node.get("plugins") or []:
-            walk(child)
+            walk(child, mio)
         for child in node.get("packs") or []:
-            walk(child)
+            walk(child, mio)
 
-    walk(result)
-    return names
+    walk(result, None)
+    return out
+
+
+def _plugin_names(result: dict[str, Any]) -> list[str]:
+    """Solo i nomi, per chi non ha bisogno di sapere a quale pack appartengono
+    (`packs.py`, che legge le dichiarazioni per plugin)."""
+    return [plugin for plugin, _pack in _plugin_entries(result)]
 
 
 def _manifest_mcp(plugin: str) -> dict[str, Any]:
@@ -69,7 +90,7 @@ def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
     failed: list[dict[str, Any]] = []
     attempted: list[str] = []
     pending: list[str] = []
-    for plugin in _plugin_names(result):
+    for plugin, pack in _plugin_entries(result):
         servers = _manifest_mcp(plugin)
         if not servers:
             continue
@@ -78,11 +99,15 @@ def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
             # fonte non fidata → NON montare, solo segnalare (barriera umana).
             pending.extend(k for k in sorted(servers) if k not in pending)
             continue
-        status, data = gateway_pdp.gw_tool(
-            "mcp.add",
-            {"config": {"mcpServers": servers}},
-            principal,
-        )
+        args: dict[str, Any] = {"config": {"mcpServers": servers}}
+        if pack:
+            # Chi monta è il pack, e il gateway lo registra nella voce del
+            # backend: è l'unica prova con cui quel pack può usarne il
+            # namespace per i propri connettori (#539 §4). Senza, il mount
+            # restava «di nessuno» e il connettore del pack veniva rifiutato
+            # come se reclamasse il namespace di un altro.
+            args["pack"] = pack
+        status, data = gateway_pdp.gw_tool("mcp.add", args, principal)
         if status == 200:
             registered = data.get("result", {}).get("registered")
             if isinstance(registered, list):
