@@ -193,14 +193,15 @@ async def _lifespan(app: FastAPI):
             LOG.warning("pack ops boot reconcile fallito: %s", e)
     asyncio.create_task(_safe_boot_reconcile())
 
-    # Relay inbound Telegram → topic (modello telegram-proxy): LONG-POLL server-side,
-    # trasporto MECCANICO (nessuna logica AI). Ogni ciclo blocca (in un thread) su
-    # getUpdates finché arriva un messaggio → latenza quasi zero, meno carico dei
-    # poll ripetuti. Instrada le chat legate ai topic e innesca il responder solo se
-    # il bot è interpellato. Gattato da `channels`. Non impedisce mai l'avvio.
+    # Relay inbound canale esterno → topic (modello telegram-proxy): LONG-POLL
+    # server-side, trasporto MECCANICO (nessuna logica AI). Ogni ciclo blocca (in un
+    # thread) sul poll di ogni trasporto con chat legate finché arriva un messaggio →
+    # latenza quasi zero, meno carico dei poll ripetuti. Instrada le chat legate ai
+    # topic e innesca il responder solo se il bot è interpellato. Gattato da
+    # `channels`. Non impedisce mai l'avvio.
     async def _channel_relay_loop():
         from .api import channel_relay
-        from .api import telegram_bindings_client as _tb
+        from .api import channel_bindings_client as _cb
         timeout = int(os.environ.get("CLODIA_CHANNEL_POLL_TIMEOUT", "25"))
         riposo = int(os.environ.get("CLODIA_CHANNEL_IDLE_SLEEP", "30"))
         senza_binding = False
@@ -220,7 +221,7 @@ async def _lifespan(app: FastAPI):
                 # ingress del topic bersaglio), quindi si ricontrolla invece di
                 # uscire: il relay riparte da sé entro mezzo minuto da quando una
                 # chat viene legata.
-                if not _tb.load():
+                if not _cb.any_binding():
                     if not senza_binding:
                         LOG.info("channel relay: nessuna chat legata a un topic — "
                                  "polling sospeso (ricontrollo ogni %ds)", riposo)
