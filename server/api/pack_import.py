@@ -387,6 +387,12 @@ def install_pack_from_root(root: Path, *, source: str,
     _up = manifest.get("upstream")
     upstream = _up if isinstance(_up, dict) and _up.get("repo") else None
 
+    # I connettori si convalidano PRIMA di toccare qualunque cosa: un manifest
+    # che il gateway rifiuta non deve lasciare dietro di sé mezzo pack
+    # installato. È anche l'unico momento in cui il rifiuto costa zero.
+    connectors = declared_connectors(manifest)
+    connectors_check = validate_connectors(connectors, pack=pack)
+
     if marketplace is not None:
         plugin_dirs = _marketplace_plugin_dirs(pack_root, manifest)
     else:
@@ -420,7 +426,6 @@ def install_pack_from_root(root: Path, *, source: str,
     # L'installazione le mostra; l'approvazione è un atto separato dell'owner.
     flows = declared_flows(manifest)
     checked = validate_flows(flows, source=source) if flows else None
-    connectors = declared_connectors(manifest)
 
     _meta = {
         "name": pack,
@@ -436,6 +441,12 @@ def install_pack_from_root(root: Path, *, source: str,
         _meta["upstream"] = upstream
     if connectors:
         _meta["connectors"] = connectors
+        # Ciò che il gateway considera INERTE qui e ora (un connettore che
+        # implementa ancora da sé): registrato accanto alla dichiarazione, così
+        # chi rilegge il pack installato sa perché non vede l'effetto, senza
+        # dover ricostruire lo stato della migrazione a memoria.
+        if connectors_check.get("ignored"):
+            _meta["connectors_inactive"] = list(connectors_check["ignored"])
     (meta_dir / "pack.yaml").write_text(
         yaml.safe_dump(_meta, allow_unicode=True, sort_keys=False),
         encoding="utf-8",
@@ -456,6 +467,9 @@ def install_pack_from_root(root: Path, *, source: str,
     # Gli avvisi dei seed risalgono in cima: un import che risponde 200 con un
     # agente muto dentro è indistinguibile da un import riuscito, e chi installa
     # se ne accorge solo quando l'agente parla in un canale e non sa fare niente.
+    if connectors:
+        out["connectors"] = {"declared": [c.get("id") for c in connectors],
+                             **connectors_check}
     _avvisi = [f"{a['name']}: {a['warning']}" for a in agents if a.get("warning")]
     if _avvisi:
         out["warnings"] = _avvisi
@@ -508,6 +522,41 @@ def declared_connectors(manifest: dict) -> list:
     if not isinstance(raw, list):
         return []
     return [c for c in raw if isinstance(c, dict) and c]
+
+
+def validate_connectors(connectors: list, *, pack: str) -> dict:
+    """Chiede al gateway se questo blocco `connectors:` è installabile qui.
+
+    Due esiti, e non sono simmetrici:
+
+    - **verdetto negativo** → `PackImportError`, l'installazione non avviene. È
+      il criterio di clodia-platform#519, e un rifiuto che si aggira spegnendo
+      il gateway non sarebbe un rifiuto;
+    - **gateway irraggiungibile** → si procede, con un avviso. Un pack non deve
+      diventare non installabile perché il gateway si stava riavviando, ed è
+      sicuro proprio perché la convalida non è ciò che protegge l'istanza: il
+      registry rifiuta da solo un manifest malformato, quindi un blocco mai
+      convalidato resta inerte invece di diventare attivo (test gemello nel
+      gateway: `test_a_refused_block_is_inert_even_if_it_was_never_validated`).
+
+    Le due cose insieme sono la ragione per cui l'avviso vale: dice all'owner
+    «questo pack è installato ma i suoi connettori non sono stati guardati»,
+    non «questo pack potrebbe aver ottenuto qualcosa».
+    """
+    if not connectors:
+        return {}
+    from . import gateway_admin
+    try:
+        out = gateway_admin.connectors_validate(pack, connectors)
+    except Exception as e:  # noqa: BLE001 — irraggiungibile ≠ rifiutato
+        LOG.warning("convalida connettori non disponibile per '%s': %s", pack, e)
+        return {"checked": False, "unavailable": str(e)[:200],
+                "errors": [], "ignored": []}
+    if not out.get("ok", True):
+        raise PackImportError(
+            "il blocco `connectors:` non è installabile su questa istanza: "
+            + "; ".join(str(x) for x in (out.get("errors") or ["rifiutato"])))
+    return {"checked": True, "errors": [], **out}
 
 
 def validate_flows(flows: dict, source: str = "") -> dict:

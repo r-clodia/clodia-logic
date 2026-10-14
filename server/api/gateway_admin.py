@@ -29,6 +29,19 @@ def _base_url() -> str:
     return f"{base}/internal/agents"
 
 
+def _root_url() -> str:
+    """La radice del gateway, senza il suffisso `/internal/agents`.
+
+    `_base_url()` è nato puntando all'API degli agent e ci sono rotte interne
+    che non stanno lì (i connettori, #519). Si ricava dalla stessa variabile
+    d'ambiente invece di aggiungerne una seconda: due URL configurabili per lo
+    stesso gateway sono due occasioni di puntare a due posti diversi.
+    """
+    base = _base_url()
+    return base[: -len("/internal/agents")] if base.endswith("/internal/agents") \
+        else base
+
+
 def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL)}"}
 
@@ -81,6 +94,27 @@ def flow_allow(flows: dict, source: str = "", validate: bool = False) -> dict:
                "ingress": list(flows.get("ingress") or [])}
     r = requests.post(f"{_base_url()}/flow-allow", headers=_headers(),
                       json=payload, timeout=_HTTP_TIMEOUT)
+    r.raise_for_status()
+    return r.json()
+
+
+def connectors_validate(pack: str, connectors: list) -> dict:
+    """Chiede al gateway cosa farebbe il blocco `connectors:` di un pack.
+
+    Gemella di `flow_allow(validate=True)` e per la stessa ragione: la
+    grammatica dei connettori, il registry e le liste vivono nel gateway
+    (clodia-platform#516/#518). Una seconda copia dei criteri da questo lato
+    divergerebbe, e divergerebbe in silenzio — per di più dalla parte in cui
+    gira il codice degli agenti.
+
+    Non concede niente e non installa niente: risponde `{ok, errors, ignored,
+    connectors}`. `ok: false` è un manifest sbagliato e ferma l'installazione;
+    `ignored` sono dichiarazioni corrette ma inerti su QUESTA istanza, perché il
+    gateway implementa ancora da sé quel connettore — e quelle non la fermano.
+    """
+    payload = {"pack": pack, "connectors": list(connectors or [])}
+    r = requests.post(f"{_root_url()}/internal/connectors/validate",
+                      headers=_headers(), json=payload, timeout=_HTTP_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
