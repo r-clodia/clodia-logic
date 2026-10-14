@@ -839,6 +839,11 @@ async def revoke_scoped_override(
     return {"revoked": True, "item": row}
 
 
+#: Upper bound (seconds) for `turn_timeout` set through the PATCH
+#: (clodia-platform#514): same order of magnitude as the claude-side caps.
+TURN_TIMEOUT_MAX_S = 1800
+
+
 @router.patch("/{name}/caps", response_model=AgentSpec)
 async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -> AgentSpec:
     """Edita capabilities / rules / tool_permissions di un agent EDITABILE.
@@ -944,6 +949,12 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
     if patch.turn_timeout is not None and patch.turn_timeout < 0:
         raise HTTPException(400, f"turn_timeout invalido: {patch.turn_timeout} "
                                  "(secondi > 0, oppure 0 per tornare al default)")
+    # Upper bound too: a typo (`18000` for `180`) would let the agent hold a
+    # hung turn for five hours. The cap is applied to the PATCH, not to the
+    # schema, so a seed already on disk with a larger value still loads.
+    if patch.turn_timeout is not None and patch.turn_timeout > TURN_TIMEOUT_MAX_S:
+        raise HTTPException(400, f"turn_timeout invalido: {patch.turn_timeout} "
+                                 f"(massimo {TURN_TIMEOUT_MAX_S}s)")
     # `""` resta `""` (= rimuovi il campo); qualunque altro valore passa dalla
     # forma canonica prima di toccare il disco.
     telegram = patch.telegram if patch.telegram in (None, "") else _telegram_or_400(patch.telegram)

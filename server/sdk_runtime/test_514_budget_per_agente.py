@@ -47,6 +47,15 @@ from . import session as S
 from .test_423_budget_turno import APPESO, _Serve, _sessione
 
 
+def _stream_aperto(sess) -> None:
+    """Il lettore SSE come lo lascia `_drain_events` a stream aperto: questi
+    test misurano il conto degli eventi, che è una prova solo se lo stream ha
+    visto tutto il turno (la continuità ha i suoi test in
+    `test_514_continuita_stream_eventi`)."""
+    sess._eventi_connesso = True
+    sess._eventi_generazione = 1
+
+
 def _seed(turn_timeout):
     """Il seed dell'agente come lo vede `_kind_spec`, col solo campo che conta."""
     return SimpleNamespace(turn_timeout=turn_timeout)
@@ -69,6 +78,7 @@ class _TurnoBase(unittest.IsolatedAsyncioTestCase):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
         sess = _sessione(srv.port)
+        _stream_aperto(sess)
         t0 = asyncio.get_running_loop().time()
         with mock.patch.object(S, "_OPENCODE_TURN_TIMEOUT", default), \
              mock.patch.object(S, "_OPENCODE_MIN_RETRY_BUDGET", 0.5), \
@@ -159,6 +169,7 @@ class IlTurnoScadutoPortaIlContoDegliEventiTests(_TurnoBase):
         d = tempfile.TemporaryDirectory()
         self.addCleanup(d.cleanup)
         sess = _sessione(srv.port)
+        _stream_aperto(sess)
         sess._eventi_turno = 7              # il turno di prima aveva lavorato
         with mock.patch.object(S, "_OPENCODE_TURN_TIMEOUT", 1.0), \
              mock.patch.object(S, "_kind_spec", return_value=None), \

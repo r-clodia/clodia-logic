@@ -3511,6 +3511,12 @@ class OpenCodeChatSession:
         #: niente — ritentabile — da uno che aveva già chiamato dei tool, dove
         #: ritentare rifarebbe quegli effetti (clodia-platform#514).
         self._eventi_turno: int = 0
+        #: Continuity of the SSE reader that feeds `_eventi_turno`: `connesso`
+        #: while a `GET /event` stream is open, `generazione` bumped on every
+        #: (re)connection. Zero events is evidence only if the reader saw the
+        #: WHOLE turn (see `_stream_continuo`, clodia-platform#514).
+        self._eventi_connesso: bool = False
+        self._eventi_generazione: int = 0
         self._provider: Optional[str] = None
         self._model: Optional[str] = None
         self._last_usage: dict[str, int] = {}
@@ -3777,6 +3783,27 @@ class OpenCodeChatSession:
         async for riga in resp.aiter_lines():
             self._note_event_line(riga)
 
+    def _stato_stream(self) -> "tuple[bool, int]":
+        """(connected, generation) of the SSE reader, right now."""
+        return (bool(getattr(self, "_eventi_connesso", False)),
+                int(getattr(self, "_eventi_generazione", 0)))
+
+    def _stream_continuo(self, inizio: "tuple[bool, int]") -> bool:
+        """True only if the event stream was open for the WHOLE turn.
+
+        `_eventi_turno == 0` is the proof that makes re-sending a timed-out turn
+        harmless — but only if nothing could have been missed. `_drain_events`
+        reconnects after `_OC_EVENT_RETRY_S` when the stream drops, and SSE has
+        no replay: a tool call (a mail sent, a file written) emitted during the
+        gap is never counted. So the count is evidence only if the stream was
+        connected when the turn started, is still connected now, and was never
+        re-opened in between (same generation). Otherwise the answer is «don't
+        know», and «don't know» must not buy a retry (clodia-platform#514).
+        """
+        connesso_ora, generazione_ora = self._stato_stream()
+        connesso_inizio, generazione_inizio = inizio
+        return connesso_inizio and connesso_ora and generazione_ora == generazione_inizio
+
     async def _drain_events(self) -> None:
         """Legge `GET /event` di `opencode serve` finché il processo vive.
 
@@ -3798,7 +3825,16 @@ class OpenCodeChatSession:
                 async with httpx.AsyncClient(base_url=self._base_url,
                                              timeout=httpx.Timeout(10.0, read=None)) as c:
                     async with c.stream("GET", "/event") as r:
-                        await self._consume_events(r)
+                        # A new connection is a new generation: whatever was
+                        # emitted before it opened is gone (SSE has no replay
+                        # here), so a turn that spans it cannot trust its count.
+                        self._eventi_generazione = getattr(
+                            self, "_eventi_generazione", 0) + 1
+                        self._eventi_connesso = r.status_code < 400
+                        try:
+                            await self._consume_events(r)
+                        finally:
+                            self._eventi_connesso = False
             except asyncio.CancelledError:
                 raise
             except Exception as e:  # noqa: BLE001 — leggere gli eventi non rompe la sessione
@@ -4052,6 +4088,9 @@ class OpenCodeChatSession:
         # si può rimandare, e un conto ereditato dal turno precedente la
         # falsificherebbe in entrambe le direzioni (vedi `_note_event_line`).
         self._eventi_turno = 0
+        # ...and it only counts if the reader saw the whole turn: snapshot the
+        # stream state now, compare at timeout (`_stream_continuo`).
+        stream_inizio = self._stato_stream()
         tentativo = _OC_TENTATIVO_PRIMO
         try:
             async with await self._http() as c:
@@ -4124,11 +4163,16 @@ class OpenCodeChatSession:
             # gateway, e non c'è ragione di legare l'import del runtime a quello.
             from ..api import gateway_http
             atteso = budget.elapsed()
-            eventi = getattr(self, "_eventi_turno", None)
+            stream_continuo = self._stream_continuo(stream_inizio)
+            # A count from a stream with a gap is not zero, it is unknown: the
+            # events of the gap may include a tool call, and `None` is what
+            # keeps `_turno_ritentabile` from re-sending it.
+            eventi = getattr(self, "_eventi_turno", None) if stream_continuo else None
             activity_log.append(self.kind, "error",
                                 {"error": "opencode turn timeout", "chat_id": self.chat_id,
                                  "tentativo": tentativo, "atteso_s": round(atteso, 1),
                                  "eventi": eventi,
+                                 "stream_continuo": stream_continuo,
                                  # Lo stesso fatto che finisce nel messaggio, qui
                                  # come numero: la stanza vede una frase, chi
                                  # indaga a posteriori ha bisogno di filtrarci

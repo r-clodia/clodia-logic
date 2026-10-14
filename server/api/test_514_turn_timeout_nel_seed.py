@@ -84,6 +84,20 @@ class TurnTimeoutNelSeedTests(unittest.TestCase):
         self.assertEqual(prima, self.yaml_path.read_text(),
                          "il seed è stato toccato da una PATCH rifiutata")
 
+    def test_un_valore_oltre_il_tetto_e_respinto_prima_di_scrivere(self) -> None:
+        """A typo (`18000` for `180`) must not let the agent hold a hung turn
+        for five hours: refused like the negative case, before writing."""
+        prima = self.yaml_path.read_text()
+        with self.assertRaises(HTTPException) as e:
+            self._patch(turn_timeout=AR.TURN_TIMEOUT_MAX_S + 1)
+        self.assertEqual(400, e.exception.status_code)
+        self.assertIn("turn_timeout", str(e.exception.detail))
+        self.assertEqual(prima, self.yaml_path.read_text(),
+                         "il seed è stato toccato da una PATCH rifiutata")
+        # the cap itself is allowed
+        self.assertEqual(AR.TURN_TIMEOUT_MAX_S,
+                         self._patch(turn_timeout=AR.TURN_TIMEOUT_MAX_S).turn_timeout)
+
     def test_una_patch_che_non_lo_nomina_non_lo_tocca(self) -> None:
         """Il campo non dichiarato nella PATCH resta com'era: le altre modifiche
         non devono poter azzerare un budget impostato."""
