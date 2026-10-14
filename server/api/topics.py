@@ -986,6 +986,74 @@ async def telegram_link_action(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+@router.get("/api/topics/{tier}/{name}/connectors/{connector}/{action}")
+async def connector_action_status(tier: str, name: str, connector: str,
+                                  action: str, request: Request):
+    """Stato di un'azione di connettore su questo topic (clodia-platform#520).
+
+    La forma generica di `tg-link` e `mailbox-link`, che restano come alias
+    sottili finché la webui parla quella lingua: una stanza non ha un bottone
+    per vendor, ha i bottoni che i connettori installati dichiarano. Cosa
+    l'azione chieda e cosa scriva lo dice il manifest, quindi un connettore che
+    arriva con un pack compare qui senza una riga in più.
+
+    Due controlli, in quest'ordine: l'owner del topic (o un admin) sempre, e in
+    più l'admin di piattaforma se l'azione si dichiara `admin_only` — è la
+    regola che dal 27 set protegge il collegamento di una casella di SISTEMA,
+    posta che non è dell'owner della stanza. Senza il secondo controllo questa
+    rotta sarebbe la porta di servizio di `mailbox-link`. Sta dopo la lettura
+    perché è il gateway a sapere com'è dichiarata l'azione, e prima del
+    `return`: all'owner non arriva nulla.
+    """
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        stato = await topics_client.async_connector_action_status(
+            tier, name, connector, action)
+    except topics_client.TopicsClientError as e:
+        raise _gateway_error(e)
+    if stato.get("admin_only"):
+        _require_platform_admin(request)
+    return stato
+
+
+@router.post("/api/topics/{tier}/{name}/connectors/{connector}/{action}")
+async def connector_action_apply(tier: str, name: str, connector: str,
+                                 action: str, request: Request):
+    """Esegue l'azione dichiarata dal manifest: `{action: connect|disconnect}`
+    più i campi che quell'azione dichiara (clodia-platform#520).
+
+    I campi si inoltrano COM'È, senza conoscerne i nomi: elencarli qui sarebbe
+    il per-connettore che la rotta generica toglie. Non è un buco — il gateway
+    ignora ciò che il manifest non dichiara e accetta solo URI degli schemi che
+    quel connettore possiede (`connectors/actions.check_uris`).
+
+    La lettura dello stato prima della POST non è un giro di troppo: è come si
+    sa se l'azione è `admin_only`, e insieme fa fallire su un 404 pulito una
+    POST su un connettore o un'azione che non esistono, prima di toccare
+    qualunque cosa.
+    """
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    body = dict(body or {})
+    if body.get("action") not in ("connect", "disconnect"):
+        raise HTTPException(400, "richiesto 'action' (connect|disconnect)")
+    try:
+        stato = await topics_client.async_connector_action_status(
+            tier, name, connector, action)
+    except topics_client.TopicsClientError as e:
+        raise _gateway_error(e)
+    if stato.get("admin_only"):
+        _require_platform_admin(request)
+    try:
+        return await topics_client.async_connector_action_apply(
+            tier, name, connector, action, body)
+    except topics_client.TopicsClientError as e:
+        raise _gateway_error(e)
+
+
 def _require_platform_admin(request: Request) -> str:
     """Il connettore Mailbox è da ADMIN della piattaforma (decisione di Davide,
     27 set 2026): collegare a un topic una casella di sistema — la posta dello

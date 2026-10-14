@@ -425,6 +425,49 @@ def mailbox_link_action(tier: str, name: str, action: str, **params) -> dict:
     return r.json()
 
 
+def connector_action_status(tier: str, name: str, connector: str,
+                            action: str) -> dict:
+    """Stato di UNA azione di connettore su questo topic → gateway (#520).
+
+    La forma generica di `telegram_link_status`/`mailbox_link_status`: quali
+    campi l'azione chiede, quali valori l'istanza offre, quali voci ha già
+    scritto in questa stanza, il tier del topic e — se l'azione aggancia un
+    canale — lo stato del cap SEAL. Porta anche `admin_only`, che è ciò che
+    questo lato deve sapere PRIMA di inoltrare una POST: il ruolo dell'umano lo
+    conosce solo l'agent-server, perché al gateway la chiamata arriva con la
+    sessione che l'agent-server conia per sé.
+    """
+    url = f"{_base()}/{tier}/{name}/connectors/{connector}/{action}"
+    try:
+        r = _gw_http.get(url, headers=_headers(), timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway connectors irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error(f"connectors/{connector}/{action}", r)
+    return r.json()
+
+
+def connector_action_apply(tier: str, name: str, connector: str, action: str,
+                           body: dict) -> dict:
+    """Esegue l'azione dichiarata dal manifest → gateway (#520).
+
+    Il corpo si inoltra COM'È: i campi li dichiara il manifest del connettore,
+    e un client che ne conoscesse i nomi per filtrarli sarebbe il per-connettore
+    che questa rotta esiste per togliere. Ciò che il corpo può scrivere non lo
+    decide comunque il chiamante — `connectors/actions.check_uris` nel gateway
+    accetta solo gli URI degli schemi che quel connettore possiede.
+    """
+    url = f"{_base()}/{tier}/{name}/connectors/{connector}/{action}"
+    try:
+        r = _gw_http.post(url, headers=_headers(), json=dict(body or {}),
+                          timeout=60)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway connectors irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error(f"connectors/{connector}/{action}", r)
+    return r.json()
+
+
 def set_topic_tier(tier: str, name: str, new_tier: str, by: str, reason: str) -> dict:
     """Riclassifica il topic a un nuovo livello SEAL → gateway
     (clodia-platform#426). Chi può farlo lo verifica il chiamante."""
@@ -587,6 +630,8 @@ async_telegram_link_status = _async_of("telegram_link_status")
 async_telegram_link_action = _async_of("telegram_link_action")
 async_mailbox_link_status = _async_of("mailbox_link_status")
 async_mailbox_link_action = _async_of("mailbox_link_action")
+async_connector_action_status = _async_of("connector_action_status")
+async_connector_action_apply = _async_of("connector_action_apply")
 async_set_topic_tier = _async_of("set_topic_tier")
 async_list_files = _async_of("list_files")
 async_get_file = _async_of("get_file")
