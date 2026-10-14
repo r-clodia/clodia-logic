@@ -8,9 +8,12 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from . import channel_relay
-from .channel_relay import (_addresses_bot, _context_block, _is_messenger,
-                            _is_vetted_tg_source, _line)
+from . import channel_relay, telegram_relay_adapter
+from .channel_relay import _is_messenger, _is_vetted_sender
+from .relay_adapters import _addresses_bot
+
+_TG = telegram_relay_adapter.ADAPTER
+_context_block, _line = _TG.context_block, _TG.line
 
 
 class _Risposta:
@@ -43,7 +46,8 @@ class VettedSourceTests(unittest.TestCase):
             return _Risposta(payload, boom)
 
         with patch("server.api.observe._gw", _gw):
-            return asyncio.run(_is_vetted_tg_source(username, "SEAL-1", "software-house"))
+            return asyncio.run(_is_vetted_sender(_TG, {"from_username": username},
+                                                 "SEAL-1", "software-house"))
 
     def test_a_vetted_handle_is_authorized(self):
         self.assertTrue(self._chiedi("therealdadabit", {"vetted": True}))
@@ -103,19 +107,19 @@ class RelayGateTests(unittest.TestCase):
             turni.append(trigger_text)
             self.turn_kw = kw
 
-        async def _vetted(u, tier, topic):
+        async def _vetted(adapter, msg, tier, topic):
             return vetted
 
-        async def _group(c, tier, topic):
+        async def _group(adapter, chat_id, tier, topic):
             return group
 
         d = Path(tempfile.mkdtemp())
         msg = {"message_id": 1, "from_id": 76632169, "from_username": username,
                "from": username, "text": testo, **(extra or {})}
         with patch.object(channel_relay, "_state_path", lambda c: d / "s.json"), \
-                patch.object(channel_relay, "_is_vetted_tg_source", _vetted), \
-                patch.object(channel_relay, "_is_vetted_tg_group", _group), \
-                patch.object(channel_relay.telegram_client, "send_async", _send), \
+                patch.object(channel_relay, "_is_vetted_sender", _vetted), \
+                patch.object(channel_relay, "_is_vetted_chat", _group), \
+                patch.object(telegram_relay_adapter.telegram_client, "send_async", _send), \
                 patch.object(channel_relay.topics_client, "async_open_topic", _open), \
                 patch.object(channel_relay.topics_client, "async_post_message", _post), \
                 patch.object(channel_relay, "run_topic_turn", _turn), \
@@ -186,7 +190,7 @@ class RelayGateTests(unittest.TestCase):
             return _Risposta({"vetted": True})
 
         with patch("server.api.observe._gw", _gw):
-            ok = asyncio.run(channel_relay._is_vetted_tg_group("-5411149155", "SEAL-1", "software-house"))
+            ok = asyncio.run(channel_relay._is_vetted_chat(_TG, "-5411149155", "SEAL-1", "software-house"))
         self.assertTrue(ok)
         self.assertEqual(chiamate, [("/internal/egress", {"uri": "tg:-5411149155",
                                                           "direction": "ingress",
@@ -198,7 +202,7 @@ class RelayGateTests(unittest.TestCase):
 
         with patch("server.api.observe._gw", _gw):
             self.assertFalse(asyncio.run(
-                channel_relay._is_vetted_tg_group("-5411149155", "SEAL-1", "software-house")))
+                channel_relay._is_vetted_chat(_TG, "-5411149155", "SEAL-1", "software-house")))
 
     # ── richiesta azionabile (clodia-platform#402, seconda parte) ────────────
     def test_the_request_goes_to_the_coordinator_with_an_explicit_directive(self):
@@ -217,7 +221,7 @@ class RelayGateTests(unittest.TestCase):
         self.assertEqual(["clodia"], mentions.extract_tags(atteso))
         kw = self.turn_kw
         self.assertEqual(kw["responder_hint"], "clodia")
-        self.assertEqual(kw["directive"], channel_relay._TG_DIRECTIVE)
+        self.assertEqual(kw["directive"], channel_relay._directive(_TG))
         self.assertIn("incarica il messaggero", kw["directive"])
         self.assertIn("chat_id numerico", kw["directive"])
         self.assertEqual(kw["trigger_kind"], "external")
@@ -238,7 +242,7 @@ class RelayGateTests(unittest.TestCase):
         async def _put(tier, name, fname, b64):
             return {}
 
-        with patch.object(channel_relay.telegram_client, "download_async", _dl), \
+        with patch.object(telegram_relay_adapter.telegram_client, "download_async", _dl), \
                 patch.object(channel_relay.topics_client, "async_put_file", _put):
             _i, postati, _t = self._run(False, testo="@clodia_topics_bot leggi questo",
                                         group=True,
@@ -247,7 +251,7 @@ class RelayGateTests(unittest.TestCase):
 
     def test_an_email_address_is_not_touched(self):
         self.assertEqual("scrivi a mario@cmm.it",
-                         channel_relay._neutralize_tg_mentions("scrivi a mario@cmm.it"))
+                         _TG.neutralise_mentions("scrivi a mario@cmm.it"))
 
     def test_chatter_that_does_not_address_the_bot_is_not_relayed(self):
         """Gruppo non in whitelist: senza menzione non si autorizza, non si

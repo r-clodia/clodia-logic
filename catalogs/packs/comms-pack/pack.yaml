@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 1.1.0
+version: 1.2.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -12,3 +12,92 @@ upstream:
   ref: main
 plugins:
   - comms-pack
+
+# Connettori dichiarati dal pack (grammatica di clodia-platform#516,
+# `server/connectors/SCHEMA.md` in clodia-tools). Una dichiarazione NON è una
+# concessione: dice che cos'è il connettore, non dove può arrivare — quello
+# resta dell'owner che installa, al gate.
+#
+# Questo blocco è la metà «dichiarazione» di clodia-platform#522: riproduce
+# ALLA LETTERA il Telegram cablato oggi nel gateway (`egress.py`, `taint.py`,
+# `topics_api.py`, `tools_api.py`), senza aggiungere né togliere nulla. Chi lo
+# legge non c'è ancora: il registry che sostituisce quelle tabelle è #518, gli
+# endpoint generici #519, la webui #520. Finché non arrivano, il gateway
+# continua a usare le proprie tabelle e questo blocco è inerte — ma è il
+# riferimento contro cui #518 si misura, ed è il motivo per cui qui non c'è
+# nessuna forma, nessun verbo e nessun testo «migliorato» rispetto a oggi.
+connectors:
+  - id: telegram
+    manifest_version: 1
+    namespace: telegram
+    label: Telegram
+    schemes:
+      - scheme: tg
+        direction: both
+        label: Chat Telegram
+        # Verbatim da `egress._DANGER["tg"]`: è la frase che l'owner legge al
+        # gate prima di concedere, e cambiarla qui sarebbe cambiare, di fatto,
+        # ciò su cui ha dato il consenso.
+        danger: "una chat su Telegram, cioè su un'infrastruttura non tua."
+        # Le DUE forme di `tg:`, e non ce n'è una terza (clodia-platform#363):
+        # `egress._TG_GROUP` e `egress._TG_HANDLE`, stessi pattern.
+        forms:
+          - label: gruppo
+            pattern: '^-?\d+$'
+            example: '-1001234567890'
+          - label: persona
+            pattern: '^@[A-Za-z0-9_]{5,32}$'
+            example: '@dadabit'
+    providers:
+      - id: bot
+        label: Bot Telegram
+        credential:
+          kind: form
+          vault_entry: telegram_bot_token
+          fields:
+            - name: token
+              label: Bot token
+              secret: true
+              placeholder: '123456:ABC-DEF…'
+    # Solo i due verbi che oggi il PDP controlla davvero (`egress._SPECS`), con
+    # lo stesso argomento e lo stesso `dtype`. `telegram.inbox`/`poll` NON sono
+    # qui come `source`: oggi non passano da `_RESOURCE_READ_VERBS`, e
+    # dichiararli sarebbe inventare un controllo che non esiste.
+    verbs:
+      - verb: telegram.send
+        direction: egress
+        scheme: tg
+        arg: chat_id
+        dtype: telegram
+      - verb: telegram.send_file
+        direction: egress
+        scheme: tg
+        arg: chat_id
+        dtype: telegram
+    # Letture che portano contenuto di terzi: `taint._TAINTING_EXACT`.
+    taint:
+      - telegram.inbox
+      - telegram.receive
+      - telegram.pull
+    # Il bottone del topic: oggi `topics_api.telegram_link`, che fa i DUE passi
+    # insieme — whitelist `tg:<chat_id>` nelle due direzioni e binding del
+    # canale. `binding: channel` è il secondo passo; senza, il messaggero non
+    # riporta nulla pur con la whitelist scritta.
+    topic_actions:
+      - id: telegram-link
+        label: Collega una chat Telegram
+        binding: channel
+        fields:
+          - name: chat_id
+            label: Chat id o @handle
+        adds:
+          ingress:
+            - 'tg:{chat_id}'
+          egress:
+            - 'tg:{chat_id}'
+    # La card di setup è oggi in `tools_api.py`: un form che deposita il token
+    # nel vault. Nessuno `status_verb`: lo stato lo dà la rotta
+    # `/tools/telegram/status`, non un verbo, e dichiarare un verbo inesistente
+    # metterebbe nel manifest una promessa che nessuno mantiene.
+    tools_card:
+      setup_label: Collega un bot

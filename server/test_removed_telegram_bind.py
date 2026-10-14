@@ -16,13 +16,14 @@ di più — una SKILL che insegnava al messaggero a chiamare due verbi inesisten
 un seed che promette una capacità che non c'è la rilegge a ogni turno, e l'agente
 ci prova.
 
-**Cosa NON cerca, di proposito.** `telegram-bindings.json` e chi lo legge
-(`server/api/telegram_bindings_client.py`, `server/api/channel_relay.py`) sono
-VIVI: il file sopravvive al meccanismo A, cambia solo chi lo scrive — ora
-`telegram.listen`, gated sugli ingress del topic (clodia-platform#364). Per
-questo il criterio nomina i VERBI e la rotta, non la parola «binding»: un grep
-su «telegram-bindings» che cancella tutto ciò che trova spegne l'ingress appena
-costruito.
+**Cosa NON cerca, di proposito.** Il binding della chat e chi lo legge
+(`server/api/channel_bindings_client.py`, `server/api/channel_relay.py` e
+l'adapter Telegram) sono VIVI: sopravvivono al meccanismo A, cambia solo chi li
+scrive — ora `telegram.listen`, gated sugli ingress del topic
+(clodia-platform#364) — e da clodia-platform#521 il file è il registro generale
+`channel-bindings.json`, con Telegram come primo connettore. Per questo il
+criterio nomina i VERBI e la rotta, non la parola «binding»: un grep su
+«binding» che cancella tutto ciò che trova spegne l'ingress appena costruito.
 """
 from __future__ import annotations
 
@@ -85,9 +86,10 @@ class NoMeccanismoATests(unittest.TestCase):
         """La controprova, perché questa pulizia ha un modo ovvio di sbagliare:
         il trasporto inbound — `telegram-bindings.json` e il relay che lo legge —
         deve restare in piedi."""
-        self.assertTrue((RADICE / "api" / "telegram_bindings_client.py").exists())
+        self.assertTrue((RADICE / "api" / "channel_bindings_client.py").exists())
+        self.assertTrue((RADICE / "api" / "telegram_relay_adapter.py").exists())
         relay = (RADICE / "api" / "channel_relay.py").read_text(errors="ignore")
-        self.assertIn("telegram_bindings_client", relay)
+        self.assertIn("channel_bindings_client", relay)
 
 
 if __name__ == "__main__":
