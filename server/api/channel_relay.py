@@ -397,6 +397,13 @@ async def run_poll_cycle(timeout: int = 25) -> int:
               diventa latenza dell'altro: va spezzato in un task per adapter,
               con il loop di `main` che li supervisiona invece di aspettarli.
     """
+    # Bindings are read TWICE, on purpose. Before the poll they only decide
+    # WHICH transports to poll (no bindings => no poll: the 409 of 17 Aug). The
+    # poll can block for up to `timeout` seconds, and meanwhile the gateway may
+    # unbind, move or bind a chat: routing is therefore decided on the bindings
+    # read AFTER the poll returns, as it was before #521. With the earlier read,
+    # a chat unbound during the poll would still get one cycle of messages and a
+    # chat bound during it would lose its first ones.
     bindings = cb.load()
     n = 0
     for connector, per_chat in bindings.items():
@@ -412,6 +419,7 @@ async def run_poll_cycle(timeout: int = 25) -> int:
             continue
         if not updates:
             continue
+        per_chat = cb.load().get(connector) or {}
         by_chat: dict = {}
         for u in updates:
             by_chat.setdefault(str(u.get("chat_id")), []).append(u)
