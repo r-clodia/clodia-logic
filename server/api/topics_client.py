@@ -84,7 +84,13 @@ def _base() -> str:
 
 
 def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL)}"}
+    # `role=agent-server`: claim FIRMATO che dice al gateway che questa chiamata
+    # è del runner (clodia-platform#539 §1). Il gateway lo deduceva dall'assenza
+    # di `execution_id` e `chat` nel token — cioè da ciò che un token non porta,
+    # che un difetto futuro può produrre per caso; qui lo si dichiara. Finché il
+    # gateway non lo consuma, il claim è inerte: `mint_api` ignora i campi che
+    # non conosce e nessuna rotta lo legge.
+    return {"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL, role=pki.ROLE_AGENT_SERVER)}"}
 
 
 def list_topics(tier: str | None = None, include_archived: bool = False) -> list[dict]:

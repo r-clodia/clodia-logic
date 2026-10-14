@@ -66,7 +66,13 @@ class _Base(unittest.TestCase):
         self.cli = _Client()
 
     def esegui(self, coro, chi="davide"):
+        # `davide` è una PERSONA: dal 539 §2 la rotta pretende un principal
+        # umano (`_require_topic_owner_human`), e qui non c'è registry da
+        # interrogare. Che un agente NON passi è l'invariante di
+        # `test_539_residuals.WallActionsAreHumanTests`; qui si misura altro.
+        from . import channels
         p = [patch.object(T, "topics_client", self.cli),
+             patch.object(channels, "_is_human_principal", lambda n: n == "davide"),
              patch.object(T, "_principal_from_request", lambda r: chi)]
         for x in p:
             x.start()

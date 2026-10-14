@@ -532,6 +532,33 @@ def _require_topic_owner(request: Request, tier: str, name: str) -> str:
     return principal
 
 
+def _require_topic_owner_human(request: Request, tier: str, name: str) -> str:
+    """Owner del topic (o admin) **e** una PERSONA: autorità per gli atti sui
+    MURI del topic — legare un canale esterno, agganciare una cartella condivisa
+    (clodia-platform#539 §2).
+
+    `_require_topic_owner` da solo non basta, ed è il confused deputy della
+    issue: un topic creato senza owner esplicito prende `owner = contact_agent`
+    o `clodia` (`topics/service.py`), quindi il token RUNTIME di clodia — che
+    sta nell'env di ogni spawn — soddisfa il controllo di owner e si fa
+    inoltrare dal runner un bind di chat o una scrittura di egress, senza che
+    nessuno davanti a una tastiera l'abbia deciso. Collegare un trasporto a una
+    stanza è un atto di cui risponde una persona: stessa regola già scritta per
+    la riclassificazione SEAL (`_require_retier_authority`) e per il connettore
+    Mailbox (`_require_platform_admin`), e stesso helper del registry.
+
+    L'owner UMANO della webui e l'admin di piattaforma passano come prima: il
+    loro token porta il nome di una persona, che il registry conosce come
+    `type: human`.
+    """
+    from . import channels
+    principal = _require_topic_owner(request, tier, name)
+    if not channels._is_human_principal(principal):
+        raise HTTPException(403, "collegare un canale o una cartella a un topic "
+                                 "è una decisione di una persona")
+    return principal
+
+
 @router.post("/api/topics/{tier}/{name}/archive")
 def archive_topic(tier: str, name: str, request: Request):
     """Archivia un topic (status=archived) via il gateway. Solo l'owner (o admin)."""
@@ -924,8 +951,11 @@ async def local_folder(tier: str, name: str, request: Request):
     """Cartella condivisa Mac↔container: aggancia/sgancia una sottocartella
     come local/<mount>/ nel topic. Solo l'owner (o admin) — bind reale: chi
     lo dichiara sta decidendo cosa il topic può leggere/scrivere oltre ai
-    propri file, come drive_folder_add/remove."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    propri file, come drive_folder_add/remove.
+
+    Owner **e persona** (`_require_topic_owner_human`, #539 §2): è un atto sui
+    muri, non un attributo del topic."""
+    await asyncio.to_thread(_require_topic_owner_human, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -951,8 +981,11 @@ async def local_folder(tier: str, name: str, request: Request):
 @router.get("/api/topics/{tier}/{name}/tg-link")
 async def telegram_link_status(tier: str, name: str, request: Request):
     """Stato del collegamento Telegram del topic. Whitelist e binding sono
-    due assi distinti (Davide, 23 set 2026) — questo legge il secondo."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    due assi distinti (Davide, 23 set 2026) — questo legge il secondo.
+
+    Owner **e persona**, come la POST qui sotto: lo stato nomina la chat legata,
+    e chi la può leggere è chi la può cambiare (#539 §2)."""
+    await asyncio.to_thread(_require_topic_owner_human, request, tier, name)
     try:
         return await topics_client.async_telegram_link_status(tier, name)
     except topics_client.TopicsClientError as e:
@@ -968,8 +1001,11 @@ async def telegram_link_action(tier: str, name: str, request: Request):
     channel (clodia-platform#405): su un topic sopra SEAL-1 il gateway rifiuta
     finché non arriva, e questa rotta è l'unica strada che può fare. Si inoltra
     SEMPRE, anche falsa: il gateway deve leggere ciò che l'owner ha dichiarato,
-    e l'assenza di un campo booleano non è una dichiarazione."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    e l'assenza di un campo booleano non è una dichiarazione.
+
+    Owner **e persona** (`_require_topic_owner_human`, #539 §2): legare una chat
+    scrive whitelist e binding del topic senza passare dal gate WALLS."""
+    await asyncio.to_thread(_require_topic_owner_human, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001

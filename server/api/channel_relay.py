@@ -50,6 +50,7 @@ import json
 import logging
 import os
 import re
+import time
 
 from ..config import data_path
 from . import channel_bindings_client as cb
@@ -61,6 +62,56 @@ LOG = logging.getLogger("agent-server.channel_relay")
 _SEEN_CAP = 500
 _BUFFER_CAP = 40   # finestra di contesto massima per chat
 _DENY = "Mi spiace ma non sono autorizzata ad interagire con te"
+
+# ── backoff per trasporto quando il poll fallisce (clodia-platform#539 §6) ────
+# Il poll BLOCCA fino a `timeout` solo quando il trasporto risponde: se il
+# gateway è giù l'eccezione torna subito, il ciclo finisce in millisecondi e il
+# loop di `main` rientra immediatamente. Il 14 ott 2026, durante un rebuild del
+# gateway, sono finiti nei log 145 warning «poll del trasporto telegram» in
+# pochi secondi — rumore che seppellisce la causa vera di qualunque altro guasto
+# si stia cercando in quel momento.
+_BACKOFF_BASE = 2.0     # prima attesa dopo il primo fallimento
+_BACKOFF_MAX = 60.0     # tetto: un trasporto giù si ritenta al minuto
+#: connector → {"fails": int, "not_before": monotonic, "since": epoch}
+_BACKOFF: dict[str, dict] = {}
+
+
+def _backoff_reset(connector: str) -> None:
+    """Rientro del trasporto: una riga di log, e solo se era in guasto."""
+    st = _BACKOFF.pop(connector, None)
+    if st:
+        LOG.info("trasporto %s: poll tornato a rispondere dopo %d tentativi falliti",
+                 connector, st.get("fails", 0))
+
+
+def _backoff_note_failure(connector: str, err: Exception) -> float:
+    """Registra il fallimento e ritorna l'attesa prima del prossimo tentativo.
+
+    UNA riga di log per guasto, non una per tentativo: il primo fallimento è
+    l'informazione (il trasporto è giù, da adesso), i successivi sono la stessa
+    notizia ripetuta. Il rientro lo annuncia `_backoff_reset`.
+    """
+    st = _BACKOFF.get(connector)
+    if st is None:
+        st = {"fails": 0, "not_before": 0.0, "since": time.time()}
+        _BACKOFF[connector] = st
+        LOG.warning("poll del trasporto %s: %s — sospendo e ritento con backoff "
+                    "(fino a %ds)", connector, err, int(_BACKOFF_MAX))
+    else:
+        LOG.debug("poll del trasporto %s ancora in errore (%d): %s",
+                  connector, st["fails"] + 1, err)
+    st["fails"] += 1
+    attesa = min(_BACKOFF_BASE * (2 ** (st["fails"] - 1)), _BACKOFF_MAX)
+    st["not_before"] = time.monotonic() + attesa
+    return attesa
+
+
+def _backoff_remaining(connector: str) -> float:
+    """Secondi che mancano prima di poter ritentare questo trasporto (0 = ora)."""
+    st = _BACKOFF.get(connector)
+    if not st:
+        return 0.0
+    return max(0.0, st["not_before"] - time.monotonic())
 
 
 def _is_messenger(agent: str) -> bool:
@@ -406,17 +457,29 @@ async def run_poll_cycle(timeout: int = 25) -> int:
     # chat bound during it would lose its first ones.
     bindings = cb.load()
     n = 0
+    # Quanto dormire se NESSUN trasporto è stato interrogato perché tutti in
+    # backoff: senza, il ciclo tornerebbe subito e il loop di `main` girerebbe a
+    # vuoto — stesso hot loop di prima, solo muto.
+    attesa_minima = None
+    polled = 0
     for connector, per_chat in bindings.items():
         if not per_chat:
             continue
         adapter = relay_adapters.get(connector)
         if adapter is None:
             continue
+        resta = _backoff_remaining(connector)
+        if resta > 0:
+            attesa_minima = resta if attesa_minima is None else min(attesa_minima, resta)
+            continue
         try:
             updates = await adapter.poll(timeout)
         except Exception as e:  # noqa: BLE001
-            LOG.warning("poll del trasporto %s: %s", connector, e)
+            attesa = _backoff_note_failure(connector, e)
+            attesa_minima = attesa if attesa_minima is None else min(attesa_minima, attesa)
             continue
+        polled += 1
+        _backoff_reset(connector)
         if not updates:
             continue
         per_chat = cb.load().get(connector) or {}
@@ -432,4 +495,10 @@ async def run_poll_cycle(timeout: int = 25) -> int:
                 n += 1
             except Exception as e:  # noqa: BLE001
                 LOG.warning("relay chat %s: %s", chat_id, e)
+    if polled == 0 and attesa_minima:
+        # L'attesa la fa il ciclo, che è l'unico a sapere di aver interrogato
+        # zero trasporti. Cappata al `timeout` del ciclo: il chiamante riparte
+        # comunque con la stessa cadenza con cui ripartirebbe da un poll vuoto,
+        # e un binding creato nel frattempo non resta fermo un minuto.
+        await asyncio.sleep(min(attesa_minima, float(timeout)))
     return n

@@ -43,7 +43,12 @@ def _root_url() -> str:
 
 
 def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL)}"}
+    # `role=agent-server`: stesso claim firmato di `topics_client._headers()`
+    # (clodia-platform#539 §1). Serve anche qui perché da questo client passa
+    # `pack_import` — convalida dei connettori e registrazione nella whitelist —
+    # che è il chiamante legittimo delle rotte dove il gateway oggi ammette un
+    # token runtime di agente (§5).
+    return {"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL, role=pki.ROLE_AGENT_SERVER)}"}
 
 
 def register_agent(agent: str, allowed_tools: list | None = None,
