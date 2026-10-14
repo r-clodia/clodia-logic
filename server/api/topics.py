@@ -532,6 +532,31 @@ def _require_topic_owner(request: Request, tier: str, name: str) -> str:
     return principal
 
 
+def _require_human_topic_owner(request: Request, tier: str, name: str) -> str:
+    """`_require_topic_owner` PIÙ «e sia una persona» — per le azioni che
+    spostano i MURI del topic (clodia-platform#539 §2).
+
+    Collegare una chat o agganciare una cartella scrive le liste di
+    ingress/egress del canale: è una decisione su cosa entra ed esce, e la prende
+    chi ne risponde. Il solo `_require_topic_owner` non la protegge, perché un
+    topic creato senza owner esplicito vale `contact_agent` o `clodia`
+    (`topics/service.py`) e il principal letto dal token è il claim `agent`: il
+    token runtime di clodia — che sta nell'ambiente di ogni spawn — soddisfaceva
+    `principal == owner` e passava. Qui serve un `type: human` nel registry, che
+    un agente non può avere per costruzione.
+
+    Un admin di piattaforma resta ammesso (lo è già in `_require_topic_owner`)
+    ed è anch'esso una persona: `is_admin` pretende `type: human`.
+    """
+    principal = _require_topic_owner(request, tier, name)
+    if not admin.is_human(principal):
+        LOG.warning("topic %s/%s: '%s' non è una persona — azione sui muri rifiutata",
+                    tier, name, principal)
+        raise HTTPException(403, "collegare o scollegare un connettore a un topic "
+                                 "è una decisione di una persona, non di un agente")
+    return principal
+
+
 @router.post("/api/topics/{tier}/{name}/archive")
 def archive_topic(tier: str, name: str, request: Request):
     """Archivia un topic (status=archived) via il gateway. Solo l'owner (o admin)."""
@@ -924,8 +949,9 @@ async def local_folder(tier: str, name: str, request: Request):
     """Cartella condivisa Mac↔container: aggancia/sgancia una sottocartella
     come local/<mount>/ nel topic. Solo l'owner (o admin) — bind reale: chi
     lo dichiara sta decidendo cosa il topic può leggere/scrivere oltre ai
-    propri file, come drive_folder_add/remove."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    propri file, come drive_folder_add/remove. Owner **persona**: vedi
+    `_require_human_topic_owner`."""
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -952,7 +978,7 @@ async def local_folder(tier: str, name: str, request: Request):
 async def telegram_link_status(tier: str, name: str, request: Request):
     """Stato del collegamento Telegram del topic. Whitelist e binding sono
     due assi distinti (Davide, 23 set 2026) — questo legge il secondo."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
     try:
         return await topics_client.async_telegram_link_status(tier, name)
     except topics_client.TopicsClientError as e:
@@ -969,7 +995,7 @@ async def telegram_link_action(tier: str, name: str, request: Request):
     finché non arriva, e questa rotta è l'unica strada che può fare. Si inoltra
     SEMPRE, anche falsa: il gateway deve leggere ciò che l'owner ha dichiarato,
     e l'assenza di un campo booleano non è una dichiarazione."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001

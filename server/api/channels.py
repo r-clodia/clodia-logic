@@ -41,8 +41,8 @@ from ..sdk_runtime.session import (take_reasoning, manager, ProviderNotConnected
                                    spawn_dirs_of, topic_runtime_override,
                                    session_provider, SessioneTerminata,
                                    OpenCodeTurnTimeout)
-from . import (access_log, mentions, presence, responder_routing, router_config,
-               routing_feedback, topics_client)
+from . import (access_log, admin, mentions, presence, responder_routing,
+               router_config, routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
 from .agents import _principal_from_request, _signed_actor
 
@@ -5206,11 +5206,23 @@ async def channel_drive_folder(tier: str, name: str, request: Request) -> dict:
     partecipante potrebbe puntare la dichiarazione a una cartella sorella —
     `30-legale` accanto a `50-execution` — e allargarsi il perimetro da sé.
     È la lezione di #80, applicata al campo che ora porta il confine.
+
+    E dev'essere una PERSONA, non solo l'owner (clodia-platform#539 §2): su un
+    topic senza owner esplicito l'owner è `contact_agent` o `clodia`, e il
+    principal è il claim `agent` del token — quindi il token runtime di clodia,
+    che vive nell'ambiente di ogni spawn, soddisfaceva «sono l'owner». Spostare
+    il confine di sé stessi non è un atto di proprietà, è l'assenza di un
+    confine.
     """
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
-    _require_scope_owner(request, topic.get("meta", {}))
+    principal = _require_scope_owner(request, topic.get("meta", {}))
+    if not admin.is_human(principal):
+        LOG.warning("drive-folder %s/%s: '%s' non è una persona — rifiutato",
+                    tier, name, principal)
+        raise HTTPException(403, "dichiarare una cartella Drive per il canale è "
+                                 "una decisione di una persona, non di un agente")
     body = await request.json()
     action = (body.get("action") or "").strip()
     if not action:

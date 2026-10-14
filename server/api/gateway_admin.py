@@ -43,7 +43,16 @@ def _root_url() -> str:
 
 
 def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL)}"}
+    """Come `topics_client._headers`: chiamate dell'agent-server per sé.
+
+    `role: agent-server` serve a `/internal/connectors/validate`, che vive
+    dietro il controllo ADMIN delle rotte Tools: quel controllo smette di
+    accettare i token runtime di clodia/ophelia (clodia-platform#539 §5) e
+    senza questo claim l'import di un pack con `connectors:` si fermerebbe.
+    """
+    token = pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL,
+                                   role=pki.ROLE_AGENT_SERVER)
+    return {"Authorization": f"Bearer {token}"}
 
 
 def register_agent(agent: str, allowed_tools: list | None = None,
