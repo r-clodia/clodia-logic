@@ -332,10 +332,12 @@ class TelegramRootTests(unittest.IsolatedAsyncioTestCase):
                           AsyncMock(return_value={"id": "m-77"})), \
                 patch.object(channel_relay, "run_topic_turn", turn), \
                 patch.object(channels, "_pick_responder", return_value=None):
-            await channel_relay._act_on_telegram_request(
+            from .api import telegram_relay_adapter
+            await channel_relay._act_on_request(
                 -100123, "messaggero", "SEAL-1", "ops", {"tier": "SEAL-1"},
                 ["clodia", "messaggero"],
-                {"message_id": 88, "text": "@clodia ciao", "from_username": "davide"})
+                {"message_id": 88, "text": "@clodia ciao", "from_username": "davide"},
+                telegram_relay_adapter.ADAPTER)
         self.assertEqual(seen["cause"]["root"], {
             "kind": "telegram_relay", "message_id": "m-77",
             "telegram": {"chat_id": "-100123", "message_id": "88"}})
