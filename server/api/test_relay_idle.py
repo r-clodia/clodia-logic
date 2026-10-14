@@ -74,6 +74,55 @@ class PollOnlyWithBindingsTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(1, relay.call_count)
 
 
+class BindingsAreReadAfterThePollTests(unittest.IsolatedAsyncioTestCase):
+    """Review blocker on #514: the long-poll can last up to 25 s, and during it
+    the gateway can unbind, move or bind a chat. Routing must use the bindings
+    read AFTER the poll returns (as before #521), not the ones read before."""
+
+    def _poll_that_changes_bindings(self, messages, before, after):
+        state = {"bindings": before}
+
+        async def _p(timeout):
+            state["bindings"] = after       # the gateway writes during the poll
+            return messages
+
+        load = lambda: state["bindings"]   # noqa: E731
+        return (patch.object(telegram_relay_adapter.ADAPTER, "poll", _p),
+                patch.object(channel_relay.cb, "load", side_effect=load))
+
+    async def test_a_chat_unbound_during_the_poll_is_not_served(self) -> None:
+        p, l = self._poll_that_changes_bindings(
+            [{"chat_id": "42", "text": "ciao"}, {"chat_id": "7", "text": "x"}],
+            before={"telegram": {"42": {"tier": "SEAL-1", "topic": "ops"},
+                                 "7": {"tier": "SEAL-1", "topic": "dev"}}},
+            after={"telegram": {"7": {"tier": "SEAL-1", "topic": "dev"}}})
+        with p, l, patch.object(channel_relay, "_relay_chat") as relay:
+            served = await channel_relay.run_poll_cycle(1)
+        self.assertEqual(1, served)
+        self.assertEqual(["7"], [c.args[0] for c in relay.call_args_list])
+
+    async def test_a_chat_moved_during_the_poll_goes_to_the_new_topic(self) -> None:
+        new = {"tier": "SEAL-1", "topic": "new-topic"}
+        p, l = self._poll_that_changes_bindings(
+            [{"chat_id": "42", "text": "ciao"}],
+            before={"telegram": {"42": {"tier": "SEAL-1", "topic": "old-topic"}}},
+            after={"telegram": {"42": new}})
+        with p, l, patch.object(channel_relay, "_relay_chat") as relay:
+            await channel_relay.run_poll_cycle(1)
+        self.assertEqual(new, relay.call_args.args[1])
+
+    async def test_a_chat_bound_during_the_poll_gets_its_first_messages(self) -> None:
+        p, l = self._poll_that_changes_bindings(
+            [{"chat_id": "99", "text": "primo"}],
+            before={"telegram": {"42": {"tier": "SEAL-1", "topic": "ops"}}},
+            after={"telegram": {"42": {"tier": "SEAL-1", "topic": "ops"},
+                                "99": {"tier": "SEAL-1", "topic": "new"}}})
+        with p, l, patch.object(channel_relay, "_relay_chat") as relay:
+            served = await channel_relay.run_poll_cycle(1)
+        self.assertEqual(1, served)
+        self.assertEqual("99", relay.call_args.args[0])
+
+
 class TheLoopChecksBeforePollingTests(unittest.TestCase):
     """Il loop di `main` deve interrogare i binding PRIMA di chiamare il
     trasporto.
