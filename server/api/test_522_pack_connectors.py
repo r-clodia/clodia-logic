@@ -114,6 +114,14 @@ class ConnectorsSurviveInstallTests(unittest.TestCase):
         self._old_skills = catalog.DATA_SKILLS_DIR
         catalog.DATA_SKILLS_DIR = self.skills_meta
         self.addCleanup(setattr, catalog, "DATA_SKILLS_DIR", self._old_skills)
+        # Since #519 a pack declaring `connectors:` is installed only after the
+        # gateway validates the block (fail-closed): these tests are about the
+        # declaration surviving the install, so the gateway answers "ok".
+        from . import gateway_admin
+        gw = patch.object(gateway_admin, "connectors_validate",
+                          return_value={"ok": True, "errors": [], "ignored": []})
+        gw.start()
+        self.addCleanup(gw.stop)
 
     def _pack_root(self, nome: str, manifest: dict) -> Path:
         d = self.root / "src" / nome
