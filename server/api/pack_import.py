@@ -471,6 +471,10 @@ def install_pack_from_root(root: Path, *, source: str,
         out["connectors"] = {"declared": [c.get("id") for c in connectors],
                              **connectors_check}
     _avvisi = [f"{a['name']}: {a['warning']}" for a in agents if a.get("warning")]
+    # Inert connector declarations go into `warnings` too: `out["connectors"]`
+    # is detail, `warnings` is what the person installing actually sees.
+    _avvisi += [f"connettore inattivo su questa istanza: {x}"
+                for x in (connectors_check.get("ignored") or [])]
     if _avvisi:
         out["warnings"] = _avvisi
     return out
@@ -525,34 +529,42 @@ def declared_connectors(manifest: dict) -> list:
 
 
 def validate_connectors(connectors: list, *, pack: str) -> dict:
-    """Chiede al gateway se questo blocco `connectors:` è installabile qui.
+    """Ask the gateway whether this `connectors:` block can be installed here.
 
-    Due esiti, e non sono simmetrici:
+    Fail-closed for packs that declare `connectors:` (packs without the block
+    never get here and are unaffected):
 
-    - **verdetto negativo** → `PackImportError`, l'installazione non avviene. È
-      il criterio di clodia-platform#519, e un rifiuto che si aggira spegnendo
-      il gateway non sarebbe un rifiuto;
-    - **gateway irraggiungibile** → si procede, con un avviso. Un pack non deve
-      diventare non installabile perché il gateway si stava riavviando, ed è
-      sicuro proprio perché la convalida non è ciò che protegge l'istanza: il
-      registry rifiuta da solo un manifest malformato, quindi un blocco mai
-      convalidato resta inerte invece di diventare attivo (test gemello nel
-      gateway: `test_a_refused_block_is_inert_even_if_it_was_never_validated`).
+    - **negative verdict** (`ok: false`) → `PackImportError`, nothing is
+      installed. This is the criterion of clodia-platform#519;
+    - **the gateway cannot validate** (unreachable, 404 because the route is
+      not deployed, 401/403, 5xx, non-JSON or non-object reply) →
+      `PackImportError` too. An unvalidated block is NOT inert: on the gateway
+      side one bad or clashing manifest makes the whole connector registry fall
+      back to builtin-only, stripping every pack's connectors (and, with
+      #517/#518, their egress checks). A refusal that can be bypassed by the
+      gateway being down would not be a refusal;
+    - **a reply without `ok`** is not a pass: it is treated as a refusal.
 
-    Le due cose insieme sono la ragione per cui l'avviso vale: dice all'owner
-    «questo pack è installato ma i suoi connettori non sono stati guardati»,
-    non «questo pack potrebbe aver ottenuto qualcosa».
+    Declarations the gateway accepts but considers inert on this instance
+    (`ignored`) do not stop the install; the caller surfaces them as warnings.
     """
     if not connectors:
         return {}
     from . import gateway_admin
     try:
         out = gateway_admin.connectors_validate(pack, connectors)
-    except Exception as e:  # noqa: BLE001 — irraggiungibile ≠ rifiutato
+    except Exception as e:  # noqa: BLE001 — cannot validate ⇒ refuse
         LOG.warning("convalida connettori non disponibile per '%s': %s", pack, e)
-        return {"checked": False, "unavailable": str(e)[:200],
-                "errors": [], "ignored": []}
-    if not out.get("ok", True):
+        raise PackImportError(
+            f"il pack '{pack}' dichiara `connectors:` ma il gateway non ha potuto "
+            f"convalidarli ({type(e).__name__}: {str(e)[:160]}): installazione "
+            "rifiutata. Riprova quando il gateway risponde su "
+            "/internal/connectors/validate.") from e
+    if not isinstance(out, dict):
+        raise PackImportError(
+            f"il pack '{pack}' dichiara `connectors:` ma la risposta del gateway "
+            "alla convalida non è valida: installazione rifiutata.")
+    if out.get("ok", False) is not True:
         raise PackImportError(
             "il blocco `connectors:` non è installabile su questa istanza: "
             + "; ".join(str(x) for x in (out.get("errors") or ["rifiutato"])))

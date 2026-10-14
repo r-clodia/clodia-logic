@@ -6,17 +6,19 @@ gateway, perché la grammatica, il registry e le liste vivono là: una seconda
 copia dei criteri da questa parte del confine divergerebbe, e divergerebbe
 proprio dalla parte in cui gira il codice degli agenti.
 
-Due esiti che NON sono simmetrici, ed è il punto di questo file:
+Outcomes (fail-closed since the #516 review):
 
-* **verdetto negativo** — il manifest è sbagliato: l'installazione non avviene,
-  e non avviene *prima* di toccare qualunque cosa. Un rifiuto che lascia dietro
-  di sé mezzo pack installato è un rifiuto a metà;
-* **gateway irraggiungibile** — l'installazione procede con un avviso. Un pack
-  non deve diventare non installabile perché il gateway si stava riavviando, ed
-  è sicuro perché la convalida non è ciò che protegge l'istanza: il registry
-  rifiuta da solo un manifest malformato, quindi un blocco mai convalidato
-  resta inerte. Il gemello di questo test sta nel gateway
-  (`test_a_refused_block_is_inert_even_if_it_was_never_validated`).
+* **negative verdict** — the manifest is wrong: nothing is installed, and the
+  refusal comes *before* anything is touched. A refusal that leaves half a pack
+  installed is half a refusal;
+* **the gateway cannot validate** (unreachable, HTTP error, non-JSON reply, a
+  reply without `ok`) — refused as well, for packs that declare `connectors:`.
+  An unvalidated block is not inert: on the gateway side one bad or clashing
+  manifest makes the whole connector registry fall back to builtin-only;
+* **accepted but inert** — installed, with the reason recorded in the manifest
+  and surfaced in `warnings`.
+
+Packs without `connectors:` never ask the gateway and are unaffected.
 """
 from __future__ import annotations
 
@@ -144,14 +146,60 @@ class VerdictTests(_Install):
                          [motivo])
         self.assertEqual(out["connectors"]["ignored"], [motivo])
 
-    def test_an_unreachable_gateway_does_not_block_the_install(self) -> None:
+    # Review blocker on #516: when the gateway cannot validate, a pack that
+    # declares `connectors:` must NOT be installed. An unvalidated block is not
+    # inert: one bad or clashing manifest makes the gateway's connector registry
+    # fall back to builtin-only for every pack.
+
+    def _refused_when(self, nome: str, **gw) -> pack_import.PackImportError:
+        with patch.object(gateway_admin, "connectors_validate", **gw):
+            with self.assertRaises(pack_import.PackImportError) as e:
+                pack_import.install_pack_from_root(self._pack_root(nome),
+                                                   source="test")
+        self.assertEqual(self._installato(nome), {})
+        self.assertFalse((self.root / "plugins-meta" / f"plugin-{nome}").exists())
+        return e.exception
+
+    def test_an_unreachable_gateway_refuses_the_install(self) -> None:
+        err = self._refused_when("p5", side_effect=ConnectionError("gateway down"))
+        self.assertIn("gateway down", str(err))
+        self.assertIn("p5", str(err))
+
+    def test_http_errors_from_the_gateway_refuse_the_install(self) -> None:
+        import requests
+        for i, code in enumerate((404, 401, 403, 500)):
+            with self.subTest(status=code):
+                resp = requests.Response()
+                resp.status_code = code
+                self._refused_when(f"p5h{i}", side_effect=requests.HTTPError(
+                    f"{code} Error", response=resp))
+
+    def test_a_non_json_reply_refuses_the_install(self) -> None:
+        self._refused_when("p5j", side_effect=ValueError("Expecting value"))
+
+    def test_a_reply_without_ok_is_not_a_pass(self) -> None:
+        self._refused_when("p5k", return_value={"errors": [], "ignored": []})
+
+    def test_a_non_object_reply_refuses_the_install(self) -> None:
+        self._refused_when("p5l", return_value=["ok"])
+
+    def test_inert_connectors_reach_the_warnings(self) -> None:
+        """`out["connectors"]` is detail; `warnings` is what the person
+        installing sees."""
+        motivo = "connector 'citofono': namespace still implemented by this gateway"
         with patch.object(gateway_admin, "connectors_validate",
-                          side_effect=ConnectionError("gateway giù")):
-            out = pack_import.install_pack_from_root(self._pack_root("p5"),
+                          return_value={"ok": True, "errors": [],
+                                        "ignored": [motivo], "connectors": []}):
+            out = pack_import.install_pack_from_root(self._pack_root("p5w"),
                                                      source="test")
-        self.assertEqual(self._installato("p5").get("connectors"), [CONNETTORE])
-        self.assertFalse(out["connectors"]["checked"])
-        self.assertIn("gateway giù", out["connectors"]["unavailable"])
+        self.assertTrue(any(motivo in w for w in out.get("warnings", [])))
+
+    def test_a_clean_verdict_adds_no_warning(self) -> None:
+        with patch.object(gateway_admin, "connectors_validate",
+                          return_value={"ok": True, "errors": [], "ignored": []}):
+            out = pack_import.install_pack_from_root(self._pack_root("p5c"),
+                                                     source="test")
+        self.assertNotIn("warnings", out)
 
     def test_a_pack_without_connectors_asks_nothing(self) -> None:
         """La stragrande maggioranza dei pack non dichiara connettori: non deve
