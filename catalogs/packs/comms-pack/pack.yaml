@@ -127,3 +127,17 @@ connectors:
     context:
       channel: channel
       agent: agent
+    # `telegram.send_file` manda un file che sta in un TOPIC. Il percorso lo
+    # nomina l'agente, i byte li mette il gateway: leggere un file di topic è
+    # lavoro suo e non si sposta — ci stanno attaccati il compartimento (chi
+    # chiama dev'essere partecipante di quel topic) e l'audit di ciò che
+    # attraversa il confine. Un backend che leggesse da sé il filesystem dei
+    # topic salterebbe entrambi, e il percorso lo sceglie il chiamante.
+    files:
+      - verb: telegram.send_file
+        path_arg: path
+        bytes_arg: content_b64
+        name_arg: filename
+        tier_arg: tier
+        topic_arg: name
+        chat_arg: chat_id

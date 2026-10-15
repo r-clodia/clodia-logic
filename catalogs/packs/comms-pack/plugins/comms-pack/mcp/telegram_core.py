@@ -517,11 +517,14 @@ def send_file(a: dict) -> dict:
     import base64
     import mimetypes
     filename = str(a.get("filename") or "")
-    if not filename:
-        raise ValueError("'filename' è obbligatorio")
     data = base64.b64decode(str(a.get("content_b64") or ""))
-    if not data:
-        raise ValueError("'content_b64' è vuoto: nessun file da inviare")
+    if not filename or not data:
+        # I due argomenti li riempie il gateway leggendo il file che `path`
+        # nomina (blocco `files:` del manifest). Vuoti = la consegna non è
+        # avvenuta: si rifiuta invece di spedire un allegato vuoto.
+        raise ValueError(
+            "nessun file consegnato dal gateway per questa chiamata: indica "
+            "'path' (il file dentro il topic), non il contenuto")
     cid = _resolve_chat_or_current(a)
     mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
     as_photo = mime.startswith("image/") and \
@@ -609,6 +612,10 @@ def updates(a: dict) -> dict:
             row.update({
                 "chat_id": str(msg["chat"]["id"]),
                 "chat_title": _chat_title(msg["chat"]),
+                # Il TIPO della chat serve al gateway per riconoscere un join
+                # per link (`claim` accetta solo i gruppi): senza, un join in un
+                # gruppo verrebbe scartato e finirebbe nel topic come messaggio.
+                "chat_type": msg["chat"].get("type"),
                 "file": _extract_file(msg),
                 # Rispondere a un messaggio del BOT conta come menzione diretta.
                 "reply_to_bot": bool(rfrm.get("is_bot") and bot_uname
@@ -617,7 +624,9 @@ def updates(a: dict) -> dict:
             out.append(row)
         st["last_error"] = None
         _save_state(st)
-    return {"messages": out, "count": len(out)}
+    # `bot_username` viaggia con la risposta: al gateway serve per riconoscere
+    # un `/start@bot <token>` e non vale una seconda chiamata a ogni poll.
+    return {"messages": out, "count": len(out), "bot_username": bot_uname}
 
 
 def download(a: dict) -> dict:
@@ -696,19 +705,26 @@ TOOL_SPECS: list[dict] = [
                                           "omesso = thread Generale"}},
              ["text"])),
     dict(name="send_file",
-         description=("Invia un FILE a una chat/gruppo come allegato (o come foto se è "
-                      "un'immagine). I byte arrivano dal gateway, che legge il file dal "
-                      "topic: l'agente indica il path, non il contenuto. `chat_id` OMESSO "
-                      "→ la chat collegata al topic da cui stai chiamando."),
+         description=("Invia un FILE del topic a una chat/gruppo come allegato (o come "
+                      "foto se è un'immagine). Passa `path` (il file dentro il topic, es. "
+                      "`local/foo.png`): i byte li legge il GATEWAY, che è l'unico a poter "
+                      "leggere un file di topic. `tier`/`name` solo se il file è in un "
+                      "topic diverso da quello del gruppo. `chat_id` OMESSO → la chat "
+                      "collegata al topic da cui stai chiamando."),
          inputSchema=_schema({
              "chat_id": {"type": "string",
                          "description": "opzionale: default la chat del topic corrente"},
-             "filename": {"type": "string"},
-             "content_b64": {"type": "string",
-                             "description": "byte del file, messi dal gateway"},
+             "path": {"type": "string",
+                      "description": "path del file nel topic, es. local/foo.png"},
+             "tier": {"type": "string", "description": "opzionale (override topic)"},
+             "name": {"type": "string", "description": "opzionale (override topic)"},
              "caption": {"type": "string"},
-             "thread_id": {"type": "integer"}},
-             ["filename", "content_b64"])),
+             "thread_id": {"type": "integer"},
+             "filename": {"type": "string",
+                          "description": "riempito dal gateway: il nome del file"},
+             "content_b64": {"type": "string",
+                             "description": "riempito dal gateway: i byte del file"}},
+             ["path"])),
     dict(name="lease_release",
          description="Rilascia anticipatamente il lease su una chat (no-op se non lo detieni).",
          inputSchema=_schema({"chat_id": {"type": "string"}}, ["chat_id"])),

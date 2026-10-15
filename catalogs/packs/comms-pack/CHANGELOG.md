@@ -32,9 +32,16 @@ one.
   (long-poll) and `telegram.download` — because Telegram allows one `getUpdates`
   consumer per bot: whoever holds it holds the queue. The `messaggero` seed
   denies them explicitly, since its grant is `telegram.*`.
-- Not moved, and on purpose: reading a topic file for `send_file` (the bytes
-  come from the gateway, which owns the compartment and the audit), the
-  channel bindings and the join-by-link flow. They are platform, not connector.
+- **`send_file` takes a `path`, not bytes**: the file lives in a topic, and
+  reading it is platform work — the compartment and the audit of what crosses
+  the boundary hang off that read. The manifest declares which arguments are
+  the path and the bytes (`files:`), and the gateway delivers them.
+- `telegram.updates` reports `chat_type` per message and `bot_username` with
+  the response: the gateway needs both to recognise a join-by-link `/start
+  <token>` on the way in — `claim` only accepts groups, and without the type a
+  join in a group would land in the topic as an ordinary message.
+- Not moved, and on purpose: reading a topic file for `send_file`, the channel
+  bindings and the join-by-link flow. They are platform, not connector.
 
 ## [1.2.0] — 2026-10-14
 - **The pack declares the Telegram connector** (clodia-platform#522, epic #527):

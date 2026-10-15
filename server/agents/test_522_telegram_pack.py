@@ -295,6 +295,76 @@ class ILeaseSonoDellAgenteCheIlGatewayDichiaraTests(unittest.TestCase):
                                        "content_b64": ""})
 
 
+class IlFileDiTopicLoConsegnaIlGatewayTests(unittest.TestCase):
+    """`send_file` chiede un `path`; i byte li mette il gateway.
+
+    Leggere un file di topic è lavoro di piattaforma — compartimento e audit di
+    ciò che attraversa il confine — e resta di là anche ora che
+    l'implementazione è di qua (clodia-tools, blocco `files:` del manifest).
+    """
+
+    def setUp(self) -> None:
+        self.modulo = _core()
+        self.decl = (_connector().get("files") or [{}])[0]
+
+    def test_il_manifest_dichiara_il_file_di_send_file(self) -> None:
+        self.assertEqual(self.decl.get("verb"), "telegram.send_file")
+        self.assertEqual(self.decl.get("path_arg"), "path")
+        self.assertEqual(self.decl.get("bytes_arg"), "content_b64")
+
+    def test_lo_schema_chiede_il_path_e_non_i_byte(self) -> None:
+        """L'argomento dell'AGENTE è il percorso: se lo schema pretendesse i
+        byte, l'agente dovrebbe leggere il file da sé — cioè avere i verbi di
+        lettura dei topic che il messaggero non ha, e aggirare il
+        compartimento."""
+        tool = next(t for t in self.modulo.TOOL_SPECS if t["name"] == "send_file")
+        schema = tool["inputSchema"]
+        self.assertEqual(schema["required"], [self.decl["path_arg"]])
+        for arg in ("bytes_arg", "name_arg", "tier_arg", "topic_arg", "chat_arg"):
+            with self.subTest(arg=arg):
+                self.assertIn(self.decl[arg], schema["properties"])
+
+    def test_senza_consegna_non_si_spedisce_un_allegato_vuoto(self) -> None:
+        """Gli argomenti dei byte li riempie il gateway: vuoti significano che
+        la consegna non è avvenuta, non che il file era vuoto."""
+        with self.assertRaises(ValueError):
+            self.modulo.send_file({"chat_id": "-100", "path": "local/x"})
+
+
+class IlRelayRiconosceUnJoinTests(unittest.TestCase):
+    """Cosa `updates` deve riportare perché il gateway sappia fare il suo pezzo."""
+
+    def setUp(self) -> None:
+        self.modulo = _core()
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        p = patch.dict(os.environ, {
+            "CLODIA_TELEGRAM_STATE": str(Path(self.tmp.name) / "stato.json"),
+            "TELEGRAM_BOT_TOKEN": "123:FINTO"})
+        p.start()
+        self.addCleanup(p.stop)
+
+    def test_la_riga_porta_il_tipo_della_chat_e_la_risposta_il_bot(self) -> None:
+        """Il join per link (`/start <token>`) lo intercetta il GATEWAY, che è
+        l'unica porta da cui gli update entrano: `claim` accetta solo i gruppi,
+        quindi senza il tipo un join in un gruppo verrebbe scartato e finirebbe
+        nel topic come un messaggio qualunque. `bot_username` serve a
+        riconoscere `/start@bot` e viaggia con la risposta per non costare una
+        seconda chiamata a ogni poll."""
+        upd = [{"update_id": 5, "message": {
+            "message_id": 1, "text": "/start abcdefghijklmnop",
+            "chat": {"id": -100, "title": "Gruppo", "type": "supergroup"},
+            "from": {"id": 7, "username": "dadabit"}}}]
+        Path(os.environ["CLODIA_TELEGRAM_STATE"]).write_text(json.dumps(
+            {"offset": 0, "bot_username": "clodiabot", "chats": {}}), encoding="utf-8")
+        with patch.object(self.modulo, "api_call", lambda *a, **k: upd):
+            out = self.modulo.updates({"timeout": 0})
+        self.assertEqual(out["bot_username"], "clodiabot")
+        self.assertEqual(out["messages"][0]["chat_type"], "supergroup")
+        self.assertEqual(out["messages"][0]["from_username"], "dadabit")
+
+
+
 class IVerbiInterniNonSonoDellAgenteTests(unittest.TestCase):
     """`updates`/`download` sono la porta del relay, non verbi d'agente."""
 
