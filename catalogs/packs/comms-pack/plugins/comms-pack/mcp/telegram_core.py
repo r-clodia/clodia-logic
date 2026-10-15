@@ -24,11 +24,14 @@ stare fuori dal gateway:
    riempie con `${VAULT:telegram_bot_token}`: il vault resta del gateway, il
    segreto non passa dal modello né dal `pack.yaml`, e questo processo non ha
    modo di leggere nessun'altra credenziale.
-2. **L'identità e la stanza** (`agent`, `channel`) arrivano come ARGOMENTI che
-   il gateway riempie e sovrascrive sempre (blocco `context:` del manifest,
-   clodia-platform#522 PR 1). Qui non si legge nessun claim perché qui il claim
-   non c'è: fidarsi dell'argomento è legittimo **solo** perché chi lo scrive non
-   è il chiamante. Un valore vuoto è «non lo so», mai «fai pure».
+2. **L'identità, la stanza e la chat legata** arrivano come ARGOMENTI che il
+   gateway riempie: `agent` e `channel` sovrascrivendo sempre (`context:` del
+   manifest), `chat_id` solo se omesso (`defaults:`), e i byte di un file di
+   topic al posto del suo percorso (`files:`). Qui non si legge nessun claim
+   perché qui il claim non c'è, e non si legge nessuno stato del gateway — né
+   il registro dei binding né il filesystem dei topic: fidarsi di questi
+   argomenti è legittimo **solo** perché chi li scrive non è il chiamante. Un
+   valore vuoto è «non lo so», mai «fai pure».
 3. **Nessun controllo di grant**: `tool_allowed()` non si porta appresso. Il PDP
    sta a monte e una seconda copia qui direbbe un'altra cosa il giorno in cui
    una delle due cambia.
@@ -57,10 +60,6 @@ __version__ = "1.0.0"
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 _DEFAULT_LEASE_MIN = 10
 _MAX_LEASE_MIN = 120
-#: Il connettore sotto cui vivono i binding di canale nel registro neutro
-#: (`channel_bindings.py` del gateway, clodia-platform#521).
-_CONNECTOR = "telegram"
-
 # Serializza read-modify-write dello stato + getUpdates: Telegram ammette un
 # solo consumer `getUpdates` per bot, due in parallelo si rubano gli update
 # via offset. Un lock di processo basta perché il backend è un processo solo.
@@ -181,39 +180,6 @@ def _channel(a: dict) -> str:
     return str(a.get("channel") or "").strip()
 
 
-def _bindings_path() -> Path:
-    return Path(os.environ.get("CLODIA_CHANNEL_BINDINGS")
-                or Path(os.environ.get("CLODIA_DATA", "/datadir"))
-                / "channel-bindings.json")
-
-
-def _chat_bound_to(channel: str) -> Optional[str]:
-    """Il chat_id legato a QUESTO canale, dal registro neutro dei binding.
-
-    SHORTCUT: lettura diretta del file che il gateway scrive
-    (`channel-bindings.json`, clodia-platform#521). Regge finché il backend del
-    pack gira con lo stesso uid del gateway e vede la sua data dir — cioè fino
-    a clodia-platform#544, che isola l'uid della sandbox. Da lì in poi il
-    binding va passato come gli altri valori di contesto: un `context:` nuovo
-    che il gateway risolve e scrive nell'argomento, e questa funzione sparisce.
-    Il formato è dichiarato in `channel_bindings.py`; qui si legge soltanto, e
-    una chat che non c'è è `None`, mai un default indovinato.
-    """
-    if not channel or "/" not in channel:
-        return None
-    tier, _, topic = channel.partition("/")
-    try:
-        doc = json.loads(_bindings_path().read_text(encoding="utf-8"))
-    except (OSError, json.JSONDecodeError):
-        return None
-    entries = ((doc.get("connectors") or {}).get(_CONNECTOR) or {}) \
-        if isinstance(doc, dict) else {}
-    for cid, b in entries.items() if isinstance(entries, dict) else []:
-        if isinstance(b, dict) and (b.get("tier"), b.get("topic")) == (tier, topic):
-            return str(cid)
-    return None
-
-
 def _resolve_chat(chat: str) -> str:
     """Un riferimento chat → chat_id. Accetta l'id numerico oppure il NOME del
     gruppo (match esatto sul titolo, poi parziale) fra le chat note."""
@@ -233,30 +199,28 @@ def _resolve_chat(chat: str) -> str:
 
 
 def _resolve_chat_or_current(a: dict) -> str:
-    """`chat_id` esplicito → `_resolve_chat`; omesso → la chat legata al canale
-    da cui si chiama.
+    """La chat di questa chiamata.
 
-    Trovato il 23 set 2026: due gruppi con nomi quasi identici — «Davide &
-    Clodia» e «Davide & Clodia Colony Blogging» — hanno prodotto invii ripetuti
-    al gruppo SBAGLIATO perché chi chiamava indovinava/ricordava un nome invece
-    di usare il binding del topic corrente, l'unica fonte che non può sbagliare
-    per costruzione (una chat → un solo topic).
+    `chat_id` esplicito → `_resolve_chat`. Omesso → **lo riempie il gateway**
+    con la chat legata al canale chiamante (blocco `defaults:` del manifest):
+    il registro dei binding è suo, tiene quelli di tutti i connettori e questo
+    processo non lo legge.
+
+    Che l'omissione sia la strada preferita viene dal 23 set 2026: due gruppi
+    con nomi quasi identici — «Davide & Clodia» e «Davide & Clodia Colony
+    Blogging» — hanno prodotto invii ripetuti al gruppo SBAGLIATO perché chi
+    chiamava indovinava un nome invece di usare il binding del topic corrente,
+    l'unica fonte che non può sbagliare per costruzione.
+
+    Arrivare qui senza chat significa che la chiamata non è passata dal
+    gateway: si rifiuta, invece di indovinare.
     """
     chat = a.get("chat_id")
     if chat:
         return _resolve_chat(chat)
-    channel = _channel(a)
-    if not channel:
-        raise ValueError(
-            "nessun 'chat_id' indicato e la chiamata non arriva da un topic: "
-            "passa un chat_id o un titolo esplicito.")
-    cid = _chat_bound_to(channel)
-    if not cid:
-        raise ValueError(
-            f"nessuna chat Telegram collegata al topic {channel}: collegala dal "
-            f"pulsante Telegram del topic — o passa un chat_id/titolo esplicito "
-            f"per uscire dal topic corrente.")
-    return cid
+    raise ValueError(
+        "nessuna chat per questa chiamata: il gateway riempie 'chat_id' con la "
+        "chat legata al topic chiamante, oppure passane uno esplicito")
 
 
 def thread_id_of(value) -> int | None:

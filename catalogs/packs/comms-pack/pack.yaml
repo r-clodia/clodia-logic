@@ -133,6 +133,18 @@ connectors:
     # chiama dev'essere partecipante di quel topic) e l'audit di ciò che
     # attraversa il confine. Un backend che leggesse da sé il filesystem dei
     # topic salterebbe entrambi, e il percorso lo sceglie il chiamante.
+    # `chat_id` omesso = la chat legata al topic da cui si chiama. La risolve
+    # il GATEWAY: il registro dei binding è suo, lo scrive il bottone del topic
+    # e tiene quelli di tutti i connettori — un backend che lo leggesse da sé
+    # leggerebbe anche gli altri. Un `chat_id` esplicito vince: se il default
+    # sovrascrivesse non si potrebbe più scrivere a un'altra chat.
+    defaults:
+      - verb: telegram.send
+        arg: chat_id
+        value: binding
+      - verb: telegram.send_file
+        arg: chat_id
+        value: binding
     files:
       - verb: telegram.send_file
         path_arg: path

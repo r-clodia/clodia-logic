@@ -40,8 +40,16 @@ one.
   the response: the gateway needs both to recognise a join-by-link `/start
   <token>` on the way in — `claim` only accepts groups, and without the type a
   join in a group would land in the topic as an ordinary message.
+- **The bound chat is resolved by the gateway too** (`defaults:`): `send`
+  without a `chat_id` goes to the chat bound to the calling topic, and the
+  bindings registry holds every connector's bindings — a pack process reading
+  it itself would read everybody else's, with the gateway's uid. An explicit
+  `chat_id` from the caller still wins: a default that overwrote would make it
+  impossible to write anywhere else.
 - Not moved, and on purpose: reading a topic file for `send_file`, the channel
-  bindings and the join-by-link flow. They are platform, not connector.
+  bindings and the join-by-link flow. They are platform, not connector. The
+  pack reads no gateway state at all — a test asserts the source does not even
+  name the bindings file.
 
 ## [1.2.0] — 2026-10-14
 - **The pack declares the Telegram connector** (clodia-platform#522, epic #527):

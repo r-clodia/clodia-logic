@@ -185,6 +185,17 @@ class IlPackPortaIlCodiceTests(unittest.TestCase):
                          [s["name"] for s in _core().TOOL_SPECS])
 
 
+    def test_il_manifest_dichiara_la_chat_come_default(self) -> None:
+        """Il gateway riempie un argomento OMESSO solo se il manifest lo
+        dichiara: senza questo blocco, `telegram.send` senza `chat_id`
+        arriverebbe al backend senza chat e il PDP calcolerebbe una
+        destinazione inesistente."""
+        decls = {(d["verb"], d["arg"]): d["value"]
+                 for d in _connector().get("defaults") or []}
+        self.assertEqual(decls.get(("telegram.send", "chat_id")), "binding")
+        self.assertEqual(decls.get(("telegram.send_file", "chat_id")), "binding")
+
+
 
 class ILeaseSonoDellAgenteCheIlGatewayDichiaraTests(unittest.TestCase):
     """Il comportamento che dipende dal contesto, con l'API finta."""
@@ -195,10 +206,8 @@ class ILeaseSonoDellAgenteCheIlGatewayDichiaraTests(unittest.TestCase):
         self.addCleanup(self.tmp.cleanup)
         base = Path(self.tmp.name)
         self.stato = base / "telegram-state.json"
-        self.bindings = base / "channel-bindings.json"
         p = patch.dict(os.environ, {
             "CLODIA_TELEGRAM_STATE": str(self.stato),
-            "CLODIA_CHANNEL_BINDINGS": str(self.bindings),
             "TELEGRAM_BOT_TOKEN": "123:FINTO",
         })
         p.start()
@@ -243,39 +252,35 @@ class ILeaseSonoDellAgenteCheIlGatewayDichiaraTests(unittest.TestCase):
             with self.assertRaises(PermissionError):
                 self.modulo.poll({"chat_id": "-100123", "agent": "messaggero"})
 
-    def test_send_senza_chat_usa_la_chat_legata_al_canale(self) -> None:
-        """Il caso del 23 set 2026: chi chiama non deve indovinare un nome di
-        gruppo. Il canale lo dichiara il gateway, il binding lo scrive il
-        gateway — l'agente non sceglie nessuno dei due."""
-        self.bindings.write_text(json.dumps({"version": 1, "connectors": {
-            "telegram": {"-100999": {"instance": "messaggero-1",
-                                     "tier": "SEAL-1", "topic": "software-house"}}}}),
-            encoding="utf-8")
+    def test_la_chat_omessa_la_mette_il_gateway(self) -> None:
+        """Il pack NON legge il registro dei binding: lo tiene il gateway, che
+        riempie `chat_id` quando il chiamante lo omette (blocco `defaults:`).
+        Arrivare qui senza chat significa che la chiamata non è passata di là —
+        e allora si rifiuta, invece di indovinare."""
         with self._api({"sendMessage": {"message_id": 7}}):
-            out = self.modulo.send({"text": "ciao", "agent": "messaggero",
+            with self.assertRaises(ValueError):
+                self.modulo.send({"text": "ciao", "agent": "messaggero",
+                                  "channel": "SEAL-1/software-house"})
+        self.assertEqual(self.chiamate, [])
+
+    def test_con_la_chat_riempita_dal_gateway_si_spedisce(self) -> None:
+        with self._api({"sendMessage": {"message_id": 7}}):
+            out = self.modulo.send({"text": "ciao", "chat_id": "-100999",
+                                    "agent": "messaggero",
                                     "channel": "SEAL-1/software-house"})
         self.assertEqual(out["chat_id"], "-100999")
         self.assertEqual(self.chiamate[0][1]["chat_id"], -100999)
 
-    def test_send_senza_chat_e_senza_binding_non_indovina(self) -> None:
-        self.bindings.write_text(json.dumps({"version": 1, "connectors": {}}),
-                                 encoding="utf-8")
-        with self._api({"sendMessage": {"message_id": 7}}):
-            with self.assertRaises(ValueError):
-                self.modulo.send({"text": "ciao", "agent": "messaggero",
-                                  "channel": "SEAL-1/altro-topic"})
-        self.assertEqual(self.chiamate, [])
-
-    def test_il_binding_di_un_altro_connettore_non_vale(self) -> None:
-        """Il registro è neutro e tiene i binding di più connettori: leggere
-        quelli di un altro manderebbe il messaggio alla chat sbagliata."""
-        self.bindings.write_text(json.dumps({"version": 1, "connectors": {
-            "whatsapp": {"-100999": {"instance": "m-1", "tier": "SEAL-1",
-                                     "topic": "software-house"}}}}),
-            encoding="utf-8")
-        with self._api({"sendMessage": {"message_id": 7}}):
-            with self.assertRaises(ValueError):
-                self.modulo.send({"text": "ciao", "channel": "SEAL-1/software-house"})
+    def test_il_pack_non_apre_il_registro_dei_binding(self) -> None:
+        """La prova che la scorciatoia è sparita, e non solo commentata: il
+        sorgente non nomina più né il file del registro né la variabile che lo
+        indicava. Leggerlo significherebbe leggere i binding di TUTTI i
+        connettori, con l'uid del gateway — ciò che clodia-platform#544 chiude."""
+        sorgente = CORE_FILE.read_text(encoding="utf-8")
+        for traccia in ("channel-bindings", "CLODIA_CHANNEL_BINDINGS",
+                        "CLODIA_DATA"):
+            with self.subTest(traccia=traccia):
+                self.assertNotIn(traccia, sorgente)
 
     def test_il_token_non_passa_mai_dagli_argomenti(self) -> None:
         """Il bot con cui si spedisce è quello dell'istanza, non quello che il
