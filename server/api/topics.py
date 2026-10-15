@@ -1013,8 +1013,10 @@ async def telegram_link_action(tier: str, name: str, request: Request):
 
 
 #: Same pattern as `topics_client.CONNECTOR_SEGMENT`, held here too because
-#: this check must not depend on the client module (tests replace it).
-_CONNECTOR_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+#: this check must not depend on the client module (tests replace it). Il
+#: tetto di 64 caratteri è nel pattern e non accanto, così le due copie
+#: restano confrontabili a occhio (clodia-platform#545 §3).
+_CONNECTOR_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,63}$")
 
 
 def _check_connector_segments(connector: str, action: str) -> None:
