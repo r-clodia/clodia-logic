@@ -15,25 +15,44 @@ from . import gateway_pdp, plugin_import
 LOG = logging.getLogger("agent-server.api.pack_mcp_mount")
 
 
-def _plugin_names(result: dict[str, Any]) -> list[str]:
-    names: list[str] = []
+def _plugin_owners(result: dict[str, Any]) -> list[tuple[str, str]]:
+    """`[(plugin, pack che lo porta)]` — pack vuoto per un plugin sciolto.
 
-    def add(name: Any) -> None:
+    Il pack non è decorativo: è ciò che `register_mcp_core(..., pack=...)` scrive
+    nella voce del backend, ed è l'unica prova con cui quel pack può poi usare
+    quel namespace per i propri connettori (`backend_owners`, review di #354).
+    Montare senza dirlo lasciava i backend dei pack «di nessuno», cioè riservati
+    a tutti e rivendicabili dal primo che li rimonta (clodia-platform#539 §4).
+
+    L'appartenenza si eredita scendendo: il nodo di un pack porta il proprio
+    nome ai plugin che contiene.
+    """
+    out: list[tuple[str, str]] = []
+    visti: set[str] = set()
+
+    def add(name: Any, pack: str) -> None:
         n = str(name or "").strip()
-        if n and n not in names:
-            names.append(n)
+        if n and n not in visti:
+            visti.add(n)
+            out.append((n, pack))
 
-    def walk(node: Any) -> None:
+    def walk(node: Any, pack: str) -> None:
         if not isinstance(node, dict):
             return
-        add(node.get("plugin"))
+        mio = str(node.get("pack") or "").strip() or pack
+        add(node.get("plugin"), mio)
         for child in node.get("plugins") or []:
-            walk(child)
+            walk(child, mio)
         for child in node.get("packs") or []:
-            walk(child)
+            walk(child, mio)
 
-    walk(result)
-    return names
+    walk(result, "")
+    return out
+
+
+def _plugin_names(result: dict[str, Any]) -> list[str]:
+    """I soli nomi, per chi non ha bisogno di sapere di chi sono."""
+    return [p for p, _ in _plugin_owners(result)]
 
 
 def _manifest_mcp(plugin: str) -> dict[str, Any]:
@@ -69,7 +88,7 @@ def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
     failed: list[dict[str, Any]] = []
     attempted: list[str] = []
     pending: list[str] = []
-    for plugin in _plugin_names(result):
+    for plugin, pack in _plugin_owners(result):
         servers = _manifest_mcp(plugin)
         if not servers:
             continue
@@ -78,11 +97,15 @@ def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
             # fonte non fidata → NON montare, solo segnalare (barriera umana).
             pending.extend(k for k in sorted(servers) if k not in pending)
             continue
-        status, data = gateway_pdp.gw_tool(
-            "mcp.add",
-            {"config": {"mcpServers": servers}},
-            principal,
-        )
+        args: dict[str, Any] = {"config": {"mcpServers": servers}}
+        if pack:
+            # DI CHI è questo backend. Il gateway lo timbra nella voce e da
+            # quel momento rifiuta che un altro lo sostituisca
+            # (clodia-platform#539 §4): montare senza dirlo lasciava la
+            # proprietà in bianco, e un backend senza proprietario è di chi
+            # lo rimonta per primo.
+            args["pack"] = pack
+        status, data = gateway_pdp.gw_tool("mcp.add", args, principal)
         if status == 200:
             registered = data.get("result", {}).get("registered")
             if isinstance(registered, list):
