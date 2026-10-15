@@ -8,8 +8,10 @@ GIT_REPO_SLUG="${GIT_REPO:-r-clodia/clodia-logic}"
 
 # Preferisci il token dal mount secrets/ (no env exposure via docker inspect).
 # Fallback su GIT_TOKEN env solo per retrocompatibilita.
-if [ -f /clodia/secrets/github_token ]; then
-    GIT_TOKEN="$(tr -d "\n\r" < /clodia/secrets/github_token)"
+# `/datadir/secrets` e non piu `/clodia/secrets`: dei due mount della stessa
+# directory ne resta uno solo, sul volume nominato (clodia-platform#544).
+if [ -f /datadir/secrets/github_token ]; then
+    GIT_TOKEN="$(tr -d "\n\r" < /datadir/secrets/github_token)"
 fi
 
 if [ -n "${GIT_TOKEN:-}" ]; then
@@ -23,7 +25,7 @@ CLONE_DIR="/tmp/clodia-bundle-src"
 rm -rf "$CLONE_DIR"
 
 # Sempre clone fresco in /tmp + rsync: evita problemi con i mount points
-# read-only (secrets/:ro) che bloccano git reset --hard su /clodia.
+# (data/, topics/, dump/) che bloccano git reset --hard su /clodia.
 echo "[entrypoint] Clono $BRANCH in $CLONE_DIR..."
 git clone --depth=1 -b "$BRANCH" "$REPO" "$CLONE_DIR" \
     || { echo "[entrypoint] ERRORE: clone fallito"; exit 1; }
@@ -49,8 +51,8 @@ echo "[entrypoint] Bundle pronto"
 # dal mount secrets/ a ogni chiamata (mai scritto in .git/config né in chiaro).
 # L'auto-clone usa già un URL con token costruito sopra; questo serve ai pull a
 # mano (es. hotfix o allineamento del checkout /clodia a origin/main).
-if [ -f /clodia/secrets/github_token ]; then
-    git config --global credential.helper '!f() { echo username=x-access-token; echo "password=$(tr -d "\n\r" < /clodia/secrets/github_token)"; }; f'
+if [ -f /datadir/secrets/github_token ]; then
+    git config --global credential.helper '!f() { echo username=x-access-token; echo "password=$(tr -d "\n\r" < /datadir/secrets/github_token)"; }; f'
     echo "[entrypoint] git credential.helper configurato (token da secrets/)"
 fi
 

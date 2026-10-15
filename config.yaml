@@ -50,7 +50,7 @@ notifications:
   telegram:
     enabled: false
     chat_id: 0
-    token_file: /clodia/secrets/telegram_bot_token
+    token_file: /datadir/secrets/telegram_bot_token
 
 # ── Colonia di Agenti (CAP) ──────────────────────────────────────────
 # Tutte le voci sono opzionali (default nel codice). Vedi COLONY.md.
