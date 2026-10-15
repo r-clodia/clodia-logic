@@ -11,10 +11,12 @@ nessuno riceve, e l'owner ritenta all'infinito una cosa che ha già fatto.
 from __future__ import annotations
 
 import asyncio
+import tempfile
 import unittest
+from pathlib import Path
 from unittest.mock import patch
 
-from . import topics as T
+from . import admin, topics as T
 
 META = {"tier": "SEAL-2", "owner": "davide",
         "participants": {"davide": "owner"}}
@@ -64,9 +66,19 @@ class _Client:
 class _Base(unittest.TestCase):
     def setUp(self):
         self.cli = _Client()
+        # `davide` è una PERSONA e il registry deve dirlo: dalla #539 §2 le
+        # rotte dei muri pretendono `type: human`, e un owner che il registry
+        # non conosce non è nessuno. La fixture dichiara ciò che il test ha
+        # sempre dato per scontato.
+        self.reg = tempfile.TemporaryDirectory()
+        self.addCleanup(self.reg.cleanup)
+        (Path(self.reg.name) / "davide").mkdir()
+        (Path(self.reg.name) / "davide" / "agent.yaml").write_text(
+            "type: human\nrole: user\n", encoding="utf-8")
 
     def esegui(self, coro, chi="davide"):
         p = [patch.object(T, "topics_client", self.cli),
+             patch.object(admin, "AGENTS_DIR", Path(self.reg.name)),
              patch.object(T, "_principal_from_request", lambda r: chi)]
         for x in p:
             x.start()

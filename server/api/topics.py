@@ -532,6 +532,31 @@ def _require_topic_owner(request: Request, tier: str, name: str) -> str:
     return principal
 
 
+def _require_human_topic_owner(request: Request, tier: str, name: str) -> str:
+    """`_require_topic_owner` PIÙ «e sia una persona» — per le azioni che
+    spostano i MURI del topic (clodia-platform#539 §2).
+
+    Collegare una chat o agganciare una cartella scrive le liste di
+    ingress/egress del canale: è una decisione su cosa entra ed esce, e la prende
+    chi ne risponde. Il solo `_require_topic_owner` non la protegge, perché un
+    topic creato senza owner esplicito vale `contact_agent` o `clodia`
+    (`topics/service.py`) e il principal letto dal token è il claim `agent`: il
+    token runtime di clodia — che sta nell'ambiente di ogni spawn — soddisfaceva
+    `principal == owner` e passava. Qui serve un `type: human` nel registry, che
+    un agente non può avere per costruzione.
+
+    Un admin di piattaforma resta ammesso (lo è già in `_require_topic_owner`)
+    ed è anch'esso una persona: `is_admin` pretende `type: human`.
+    """
+    principal = _require_topic_owner(request, tier, name)
+    if not admin.is_human(principal):
+        LOG.warning("topic %s/%s: '%s' non è una persona — azione sui muri rifiutata",
+                    tier, name, principal)
+        raise HTTPException(403, "collegare o scollegare un connettore a un topic "
+                                 "è una decisione di una persona, non di un agente")
+    return principal
+
+
 @router.post("/api/topics/{tier}/{name}/archive")
 def archive_topic(tier: str, name: str, request: Request):
     """Archivia un topic (status=archived) via il gateway. Solo l'owner (o admin)."""
@@ -924,8 +949,9 @@ async def local_folder(tier: str, name: str, request: Request):
     """Cartella condivisa Mac↔container: aggancia/sgancia una sottocartella
     come local/<mount>/ nel topic. Solo l'owner (o admin) — bind reale: chi
     lo dichiara sta decidendo cosa il topic può leggere/scrivere oltre ai
-    propri file, come drive_folder_add/remove."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    propri file, come drive_folder_add/remove. Owner **persona**: vedi
+    `_require_human_topic_owner`."""
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -952,7 +978,7 @@ async def local_folder(tier: str, name: str, request: Request):
 async def telegram_link_status(tier: str, name: str, request: Request):
     """Stato del collegamento Telegram del topic. Whitelist e binding sono
     due assi distinti (Davide, 23 set 2026) — questo legge il secondo."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
     try:
         return await topics_client.async_telegram_link_status(tier, name)
     except topics_client.TopicsClientError as e:
@@ -969,7 +995,7 @@ async def telegram_link_action(tier: str, name: str, request: Request):
     finché non arriva, e questa rotta è l'unica strada che può fare. Si inoltra
     SEMPRE, anche falsa: il gateway deve leggere ciò che l'owner ha dichiarato,
     e l'assenza di un campo booleano non è una dichiarazione."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
@@ -984,6 +1010,166 @@ async def telegram_link_action(tier: str, name: str, request: Request):
             accept_seal_downgrade=bool(body.get("accept_seal_downgrade")))
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, str(e))
+
+
+#: Same pattern as `topics_client.CONNECTOR_SEGMENT`, held here too because
+#: this check must not depend on the client module (tests replace it).
+_CONNECTOR_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _check_connector_segments(connector: str, action: str) -> None:
+    """400 unless both path segments are plain ids (review of #521).
+
+    `%2E%2E` reaches this handler as `..`, and `requests` drops dot segments
+    when it builds the gateway URL: `connectors/../mailbox-link` landed on the
+    specific route, without the `admin_only` check and on the agent-server's
+    trusted token. Checked BEFORE anything else, so a malformed path reaches
+    neither the topic registry nor the gateway. `topics_client` checks again
+    where it builds the URL.
+    """
+    for valore, cosa in ((connector, "connettore"), (action, "azione")):
+        if not _CONNECTOR_SEGMENT.fullmatch(str(valore or "")):
+            raise HTTPException(400, f"{cosa} non valido")
+
+
+def _topic_view(row: dict, *, admin_view: bool) -> dict | None:
+    """One registry row, reduced to what the topic page draws.
+
+    Kept: the connector's name and glyph, its schemes with their forms (the
+    placeholders of the egress/ingress field), the `dtype` of its verbs (the
+    reason an observation names), and its topic actions with their declared
+    fields. Dropped: providers and vault entry names, pack internals, docs and
+    status verbs, templates (`adds`), and admin-only actions for a non-admin.
+    """
+    if not isinstance(row, dict) or not row.get("id"):
+        return None
+    azioni = []
+    for a in row.get("topic_actions") or ():
+        if not isinstance(a, dict):
+            continue
+        if a.get("admin_only") and not admin_view:
+            continue
+        campi = []
+        for f in a.get("fields") or ():
+            if not isinstance(f, dict):
+                continue
+            campo = {k: f.get(k) for k in ("name", "label", "required", "placeholder")}
+            if isinstance(f.get("options"), str) and f.get("options"):
+                campo["options"] = f["options"]
+            campi.append(campo)
+        azioni.append({"id": a.get("id"), "label": a.get("label") or "",
+                       "binding": a.get("binding") or "",
+                       "admin_only": bool(a.get("admin_only")),
+                       "fields": campi})
+    card = row.get("tools_card") if isinstance(row.get("tools_card"), dict) else None
+    return {
+        "id": row["id"],
+        "label": row.get("label") or "",
+        "schemes": [{k: s.get(k) for k in ("scheme", "direction", "label", "icon",
+                                           "hierarchical", "danger")}
+                    | {"forms": [{"label": f.get("label"), "example": f.get("example")}
+                                 for f in (s.get("forms") or ()) if isinstance(f, dict)]}
+                    for s in (row.get("schemes") or ()) if isinstance(s, dict)],
+        "verbs": [{"verb": v.get("verb"), "dtype": v.get("dtype") or ""}
+                  for v in (row.get("verbs") or ()) if isinstance(v, dict)],
+        "topic_actions": azioni,
+        "tools_card": {"icon": card.get("icon") or ""} if card else None,
+    }
+
+
+@router.get("/api/topics/{tier}/{name}/connectors")
+async def topic_connectors(tier: str, name: str, request: Request):
+    """The connectors as THIS topic's page draws them (clodia-platform#520).
+
+    The page used to read `GET /tools/connectors`, which the gateway serves to
+    admins only: a non-admin owner got a silent 401 and lost the Telegram and
+    Drive buttons. Here the human owner (or an admin) gets the topic actions,
+    their fields, the scheme forms and the topic's SEAL tier — read from the
+    gateway with the agent-server's own token and reduced before it leaves
+    (`_topic_view`). No vault data, no admin-only action for a non-admin; the
+    per-action state (values offered, entries, SEAL cap) stays on
+    `…/connectors/{connector}/{action}`.
+    """
+    principal = await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
+    admin_view = await asyncio.to_thread(admin.is_admin, principal)
+    try:
+        registry = await topics_client.async_connectors_registry()
+    except topics_client.TopicsClientError as e:
+        raise _gateway_error(e)
+    righe = [v for v in (_topic_view(r, admin_view=admin_view)
+                         for r in (registry or {}).get("connectors") or ())
+             if v is not None]
+    return {"tier": tier, "connectors": righe}
+
+
+@router.get("/api/topics/{tier}/{name}/connectors/{connector}/{action}")
+async def connector_action_status(tier: str, name: str, connector: str,
+                                  action: str, request: Request):
+    """Stato di un'azione di connettore su questo topic (clodia-platform#520).
+
+    La forma generica di `tg-link` e `mailbox-link`, che restano come alias
+    sottili finché la webui parla quella lingua: una stanza non ha un bottone
+    per vendor, ha i bottoni che i connettori installati dichiarano. Cosa
+    l'azione chieda e cosa scriva lo dice il manifest, quindi un connettore che
+    arriva con un pack compare qui senza una riga in più.
+
+    Due controlli, in quest'ordine: l'owner del topic (o un admin) sempre, e in
+    più l'admin di piattaforma se l'azione si dichiara `admin_only` — è la
+    regola che dal 27 set protegge il collegamento di una casella di SISTEMA,
+    posta che non è dell'owner della stanza. Senza il secondo controllo questa
+    rotta sarebbe la porta di servizio di `mailbox-link`. Sta dopo la lettura
+    perché è il gateway a sapere com'è dichiarata l'azione, e prima del
+    `return`: all'owner non arriva nulla.
+    """
+    _check_connector_segments(connector, action)
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
+    try:
+        stato = await topics_client.async_connector_action_status(
+            tier, name, connector, action)
+    except topics_client.TopicsClientError as e:
+        raise _gateway_error(e)
+    if stato.get("admin_only"):
+        _require_platform_admin(request)
+    return stato
+
+
+@router.post("/api/topics/{tier}/{name}/connectors/{connector}/{action}")
+async def connector_action_apply(tier: str, name: str, connector: str,
+                                 action: str, request: Request):
+    """Esegue l'azione dichiarata dal manifest: `{action: connect|disconnect}`
+    più i campi che quell'azione dichiara (clodia-platform#520).
+
+    I campi si inoltrano COM'È, senza conoscerne i nomi: elencarli qui sarebbe
+    il per-connettore che la rotta generica toglie. Non è un buco — il gateway
+    ignora ciò che il manifest non dichiara e accetta solo URI degli schemi che
+    quel connettore possiede (`connectors/actions.check_uris`).
+
+    La lettura dello stato prima della POST non è un giro di troppo: è come si
+    sa se l'azione è `admin_only`, e insieme fa fallire su un 404 pulito una
+    POST su un connettore o un'azione che non esistono, prima di toccare
+    qualunque cosa.
+    """
+    _check_connector_segments(connector, action)
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    body = dict(body or {})
+    if body.get("action") not in ("connect", "disconnect"):
+        raise HTTPException(400, "richiesto 'action' (connect|disconnect)")
+    try:
+        stato = await topics_client.async_connector_action_status(
+            tier, name, connector, action)
+    except topics_client.TopicsClientError as e:
+        raise _gateway_error(e)
+    if stato.get("admin_only"):
+        _require_platform_admin(request)
+    try:
+        return await topics_client.async_connector_action_apply(
+            tier, name, connector, action, body)
+    except topics_client.TopicsClientError as e:
+        raise _gateway_error(e)
 
 
 def _require_platform_admin(request: Request) -> str:

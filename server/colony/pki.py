@@ -68,6 +68,21 @@ SESSION_TTL_SECONDS = 45 * 60  # ≥ RUNNER_MAX_SECONDS (30 min) + margine
 TOKEN_PREFIX = "ckt1"
 TOKEN_AUDIENCE = "keystore"
 
+#: Il ruolo che l'agent-server dichiara nei token che conia PER SÉ — le chiamate
+#: che fa al gateway come servizio, non per conto di un agente in un turno
+#: (`topics_client`, `gateway_admin`). Il gateway lo pretende sulle rotte che
+#: amministrano un topic o le credenziali (clodia-platform#539 §1/§5): prima le
+#: riconosceva per ASSENZA di claim (nessun `execution_id`, nessun `chat`), e un
+#: token d'agente a cui mancassero entrambi sarebbe passato per l'agent-server.
+#: Un'affermazione firmata non si ottiene per sottrazione.
+#:
+#: Non è un sistema di ruoli: è UN valore, e `mint_session_token` rifiuta
+#: qualunque altro. Chi lo conia è solo chi ha le chiavi (il runner) o il secret
+#: di bootstrap del gateway (`CLODIA_ORCHESTRATOR_SECRET`), che non entra mai
+#: nell'ambiente di uno spawn.
+ROLE_AGENT_SERVER = "agent-server"
+ROLES = (ROLE_AGENT_SERVER,)
+
 
 def _b64e(data: bytes) -> str:
     return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
@@ -577,15 +592,18 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
                       scoped_tools: Optional[list[str]],
                       unattended: bool = False,
                       scope_tier: Optional[str] = None,
-                      origin: Optional[list[str]] = None) -> str:
+                      origin: Optional[list[str]] = None,
+                      role: Optional[str] = None) -> str:
     scoped_key = tuple(scoped_tools or ())
     origin_key = tuple(str(x) for x in (origin or ()))
     # `unattended` ENTRA nella chiave di cache: senza, un token coniato per una
     # chat umana verrebbe riusato per un job dello stesso agente e il blocco
-    # salterebbe silenziosamente.
+    # salterebbe silenziosamente. `role` per la stessa ragione, al contrario: un
+    # token coniato per una chiamata di servizio NON deve essere riusato per un
+    # turno d'agente dello stesso principal.
     key = (agent, execution_id, int(ttl_seconds), principal, clearance, on_behalf,
            scope_tier, origin_key,
-           human_role, chat, scoped_key, bool(unattended))
+           human_role, chat, scoped_key, bool(unattended), role)
     hit = _cached_mint(key)
     if hit is not None:
         return hit
@@ -602,7 +620,7 @@ def _mint_via_gateway(agent: str, execution_id: str, ttl_seconds: int,
         token = _mint_request(agent, execution_id, ttl_seconds, principal,
                               clearance, on_behalf, human_role, chat,
                               scoped_key, unattended, scope_tier=scope_tier,
-                              origin=list(origin_key) or None)
+                              origin=list(origin_key) or None, role=role)
         with _MINT_STATE_LOCK:
             _MINT_CACHE[key] = (token, now + int(ttl_seconds))
         return token
@@ -622,7 +640,8 @@ def _mint_request(agent: str, execution_id: str, ttl_seconds: int,
                   on_behalf: bool, human_role: Optional[str],
                   chat: Optional[str], scoped_key: tuple,
                   unattended: bool, scope_tier: Optional[str] = None,
-                  origin: Optional[list[str]] = None) -> str:
+                  origin: Optional[list[str]] = None,
+                  role: Optional[str] = None) -> str:
     """La sola chiamata al gateway (nessuna cache): la tiene fuori dal lock del
     dizionario, dentro il lock della chiave."""
     import httpx
@@ -632,7 +651,8 @@ def _mint_request(agent: str, execution_id: str, ttl_seconds: int,
             "clearance": clearance, "on_behalf": bool(on_behalf),
             "human_role": human_role, "chat": chat,
             "scoped_tools": list(scoped_key), "unattended": bool(unattended),
-            "scope_tier": scope_tier, "origin": list(origin) if origin else None}
+            "scope_tier": scope_tier, "origin": list(origin) if origin else None,
+            "role": role}
     r = httpx.post(_gateway_mint_url(), json=body,
                    headers={"X-Orchestrator-Secret": secret}, timeout=8.0)
     if r.status_code == 403 and "senza identità" in (r.text or ""):
@@ -691,7 +711,8 @@ def mint_session_token(agent: str, execution_id: str = "",
                        scoped_tools: list[str] | None = None,
                        unattended: bool = False,
                        origin: list[str] | None = None,
-                       scope_tier: str | None = None) -> str:
+                       scope_tier: str | None = None,
+                       role: str | None = None) -> str:
     """Firmato dal RUNNER con la chiave privata dell'agente (mai esposta
     al workspace). Nel workspace entra solo il token risultante.
 
@@ -705,10 +726,19 @@ def mint_session_token(agent: str, execution_id: str = "",
 
     `clearance` (opz.): la clearance dell'agent (SEAL-N) — propagata al gateway
     così può far rispettare clearance≥tier sull'accesso ai topic (difesa in
-    profondità, asse livello). Firmata → non falsificabile dall'agent."""
+    profondità, asse livello). Firmata → non falsificabile dall'agent.
+
+    `role` (opz.): solo `ROLE_AGENT_SERVER`, e solo per le chiamate che
+    l'agent-server fa al gateway PER SÉ (`topics_client`, `gateway_admin`). È
+    l'affermazione che sostituisce il riconoscimento per assenza di claim
+    (clodia-platform#539 §1). Un valore diverso è un errore di programmazione,
+    non un ruolo nuovo: si rifiuta qui, dove c'è la chiave, invece di scoprirlo
+    a valle su un token già firmato."""
     scoped_tools = list(dict.fromkeys(scoped_tools or []))
     if any(t in ("*", "agents") or t.startswith("agents.") for t in scoped_tools):
         raise PermissionError("scoped_tools non può concedere wildcard o tool agents.*")
+    if role is not None and role not in ROLES:
+        raise PermissionError(f"ruolo di sessione sconosciuto: {role!r}")
     if (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip():
         try:
             # EVERY claim of the local signer below goes to the gateway too
@@ -717,7 +747,7 @@ def mint_session_token(agent: str, execution_id: str = "",
             return _mint_via_gateway(agent, execution_id, ttl_seconds, principal,
                                      clearance, on_behalf, human_role, chat,
                                      scoped_tools, unattended, scope_tier=scope_tier,
-                                     origin=origin)
+                                     origin=origin, role=role)
         except Exception as e:  # noqa: BLE001
             LOG.warning("mint via gateway fallito per %s (%s) → firma locale", agent, e)
     key_path = agent_key_path(agent)
@@ -755,6 +785,12 @@ def mint_session_token(agent: str, execution_id: str = "",
         # Sessione aperta da un job schedulato: nessun umano davanti al turno.
         # Claim FIRMATO → l'agente non può togliersela (clodia-platform#104).
         payload["unattended"] = True
+    if role:
+        # CHI è questo chiamante, detto da chi ha la chiave: `agent-server` è il
+        # servizio che parla al gateway per sé. Firmato come `unattended`, e per
+        # lo stesso motivo — il gateway ci apre le rotte che amministrano un
+        # topic e le credenziali, e un agente non deve poterselo scrivere.
+        payload["role"] = role
     # M-authz: chiamata ON-BEHALF di un umano → il gateway autorizza sul ruolo
     # umano (PDP unico), non sul carrier-agent. Claim firmati → non forgiabili.
     if on_behalf:
