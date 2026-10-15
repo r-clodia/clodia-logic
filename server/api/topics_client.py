@@ -84,7 +84,17 @@ def _base() -> str:
 
 
 def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL)}"}
+    """Il token delle chiamate che l'agent-server fa al gateway PER SÉ.
+
+    Porta `role: agent-server` (clodia-platform#539 §1): sulle rotte che
+    amministrano un topic il gateway riconosceva questo chiamante dal fatto che
+    il token NON aveva `execution_id` né `chat` — cioè per sottrazione, e un
+    token d'agente a cui mancassero entrambi avrebbe scritto i muri di una
+    stanza. Qui l'identità è affermata e firmata.
+    """
+    token = pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL,
+                                   role=pki.ROLE_AGENT_SERVER)
+    return {"Authorization": f"Bearer {token}"}
 
 
 def list_topics(tier: str | None = None, include_archived: bool = False) -> list[dict]:
