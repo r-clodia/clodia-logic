@@ -8,6 +8,34 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [1.3.0] — 2026-10-15
+- **The pack now carries the Telegram implementation too** (clodia-platform#522,
+  phase 2): `plugins/comms-pack/mcp/telegram_mcp.py` is the gateway's
+  `server/tools/telegram.py`, moved into the pack that declares the connector,
+  and `.mcp.json` mounts it as the `telegram` MCP backend. The verbs come back
+  to the agents under the same names, through the gateway's proxy — so after
+  the whitelist, the deny lists, the gate, the egress check and the taint:
+  nothing that used to be checked stops being checked.
+- **The bot token never leaves the gateway's vault**: the mount injects it as
+  `${VAULT:telegram_bot_token}` into the backend's environment. It does not
+  pass through the model and it is not in this repository.
+- **Channel and agent arrive as declared context** (`context:` in `pack.yaml`),
+  filled and always overwritten by the gateway: a backend outside the gateway
+  has no signed claim, and a context that the caller could choose would mean
+  writing into another topic's group, or taking somebody else's lease.
+- **The Tools card now matches the gateway's own manifest field by field**
+  (`icon`, `setup_label`, `status_verb`, `blurb`, `scope`): when the per-instance
+  switch moves to `pack`, the gateway's document leaves service and this card
+  takes its place — a different copy here would be the page silently changing
+  on migration day.
+- Two verbs are for the gateway's relay and not for agents — `telegram.updates`
+  (long-poll) and `telegram.download` — because Telegram allows one `getUpdates`
+  consumer per bot: whoever holds it holds the queue. The `messaggero` seed
+  denies them explicitly, since its grant is `telegram.*`.
+- Not moved, and on purpose: reading a topic file for `send_file` (the bytes
+  come from the gateway, which owns the compartment and the audit), the
+  channel bindings and the join-by-link flow. They are platform, not connector.
+
 ## [1.2.0] — 2026-10-14
 - **The pack declares the Telegram connector** (clodia-platform#522, epic #527):
   a `connectors:` block in `pack.yaml`, in the manifest grammar of #516. It

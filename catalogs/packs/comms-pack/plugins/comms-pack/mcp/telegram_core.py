@@ -1,0 +1,744 @@
+#!/usr/bin/env python3
+"""telegram — il connettore Telegram di comms-pack: tutta la logica, zero MCP.
+
+clodia-platform#522, metà «implementazione»: fin qui il pack DICHIARAVA il
+connettore (`pack.yaml`, fase 1) mentre a parlare con `api.telegram.org` era il
+gateway (`server/tools/telegram.py`). Questo file è quel codice, portato dentro
+il pack che lo dichiara. Il gateway lo monta come backend `telegram` e i verbi
+tornano agli agenti con lo stesso nome — `telegram.send`, `telegram.inbox`, … —
+attraverso `proxy.call_proxied`, quindi dopo la whitelist, i deny, il gate,
+l'egress e il taint: **niente di ciò che controllava prima smette di controllare**.
+
+Modello invariato (deciso 29 giu 2026):
+- **outbound**: si scrive solo a chat che hanno già scritto al bot (niente
+  rubrica statica), e non serve il lease — il messaggero è l'unico mittente;
+- **inbound con lease per-chat**: un agente prende il lease esclusivo su una
+  chat per N minuti e finché è valido è l'unico a consumarne i messaggi;
+- **niente daemon**: l'inbound è lazy, `getUpdates` con offset persistito a ogni
+  `inbox`/`poll`/`send`, serializzata da un lock di processo.
+
+Quattro cose cambiano rispetto all'originale, e sono tutte conseguenze dello
+stare fuori dal gateway:
+
+1. **Il token** arriva dall'ambiente (`TELEGRAM_BOT_TOKEN`), che il mount
+   riempie con `${VAULT:telegram_bot_token}`: il vault resta del gateway, il
+   segreto non passa dal modello né dal `pack.yaml`, e questo processo non ha
+   modo di leggere nessun'altra credenziale.
+2. **L'identità e la stanza** (`agent`, `channel`) arrivano come ARGOMENTI che
+   il gateway riempie e sovrascrive sempre (blocco `context:` del manifest,
+   clodia-platform#522 PR 1). Qui non si legge nessun claim perché qui il claim
+   non c'è: fidarsi dell'argomento è legittimo **solo** perché chi lo scrive non
+   è il chiamante. Un valore vuoto è «non lo so», mai «fai pure».
+3. **Nessun controllo di grant**: `tool_allowed()` non si porta appresso. Il PDP
+   sta a monte e una seconda copia qui direbbe un'altra cosa il giorno in cui
+   una delle due cambia.
+4. **Lo stato è del pack** (`CLODIA_TELEGRAM_STATE`, di default dentro la
+   cartella del plugin): code per-chat, lease, offset, `bot_username`.
+
+**Stdlib pura**: nessuna dipendenza, nemmeno `mcp` — l'involucro del protocollo
+è `telegram_mcp.py`, che importa questo modulo. Nessun import dal gateway: un
+pack che importasse `server.*` non sarebbe un pack, sarebbe il gateway per un
+altro percorso. E nessuna libreria qui significa che il connettore si verifica
+senza avere la stessa versione di `mcp` dell'immagine che lo esegue.
+"""
+from __future__ import annotations
+
+import json
+import os
+import threading
+import urllib.error
+import urllib.request
+from datetime import datetime, timedelta, timezone
+from pathlib import Path
+from typing import Optional
+
+__version__ = "1.0.0"
+
+_API_BASE = "https://api.telegram.org/bot{token}/{method}"
+_DEFAULT_LEASE_MIN = 10
+_MAX_LEASE_MIN = 120
+#: Il connettore sotto cui vivono i binding di canale nel registro neutro
+#: (`channel_bindings.py` del gateway, clodia-platform#521).
+_CONNECTOR = "telegram"
+
+# Serializza read-modify-write dello stato + getUpdates: Telegram ammette un
+# solo consumer `getUpdates` per bot, due in parallelo si rubano gli update
+# via offset. Un lock di processo basta perché il backend è un processo solo.
+_LOCK = threading.RLock()
+
+# ── stato, token, API ────────────────────────────────────────────────────────
+
+def _state_path() -> Path:
+    return Path(os.environ.get("CLODIA_TELEGRAM_STATE")
+                or Path(__file__).resolve().parent.parent / "state"
+                / "telegram-state.json")
+
+
+def _load_state() -> dict:
+    p = _state_path()
+    if not p.is_file():
+        return {"offset": 0, "bot_username": None, "last_error": None, "chats": {}}
+    try:
+        st = json.loads(p.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return {"offset": 0, "bot_username": None, "last_error": None, "chats": {}}
+    st.setdefault("offset", 0)
+    st.setdefault("chats", {})
+    st.setdefault("bot_username", None)
+    st.setdefault("last_error", None)
+    return st
+
+
+def _save_state(st: dict) -> None:
+    p = _state_path()
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tmp = p.with_suffix(".tmp")
+    tmp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
+    os.chmod(tmp, 0o600)
+    tmp.replace(p)
+
+
+def _now() -> datetime:
+    return datetime.now(timezone.utc)
+
+
+def _iso(dt: datetime) -> str:
+    return dt.isoformat(timespec="seconds")
+
+
+def _lease_active(chat: dict) -> Optional[dict]:
+    """Il lease se valido (non scaduto), altrimenti None."""
+    lease = chat.get("lease")
+    if not lease:
+        return None
+    try:
+        exp = datetime.fromisoformat(lease["expiry"])
+    except (KeyError, ValueError):
+        return None
+    return lease if exp > _now() else None
+
+
+def _token() -> str:
+    """Il token del bot dall'ambiente del mount.
+
+    Mai dagli argomenti: un token che passasse dal modello sarebbe un token
+    nel contesto, e chi può chiamare un verbo non per questo può spedire con
+    un altro bot.
+    """
+    tok = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    if not tok:
+        raise RuntimeError(
+            "telegram: nessun bot configurato per questa istanza "
+            "(credenziale 'telegram_bot_token' nel vault del gateway)")
+    return tok
+
+
+def api_call(token: str, method: str, params: Optional[dict] = None,
+             timeout: int = 15) -> dict:
+    """Chiamata all'API Bot di Telegram: ritorna `result`, solleva su errore."""
+    url = _API_BASE.format(token=token, method=method)
+    data = json.dumps(params or {}).encode("utf-8")
+    req = urllib.request.Request(url, data=data,
+                                 headers={"Content-Type": "application/json"})
+    try:
+        with urllib.request.urlopen(req, timeout=timeout) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        try:
+            desc = json.loads(e.read().decode("utf-8")).get("description", "")
+        except Exception:  # noqa: BLE001
+            desc = e.reason
+        raise RuntimeError(f"telegram {method} HTTP {e.code}: {desc}") from None
+    except urllib.error.URLError as e:
+        raise RuntimeError(f"telegram {method} rete: {e.reason}") from None
+    if not payload.get("ok"):
+        raise RuntimeError(f"telegram {method}: {payload.get('description', 'errore')}")
+    return payload.get("result")
+
+
+# ── contesto che mette il gateway ────────────────────────────────────────────
+
+def _agent(a: dict) -> str:
+    """Chi sta chiamando, secondo il GATEWAY (`context: {…: agent}`).
+
+    Vuoto = chiamata senza agente: il lease non ha un titolare e si rifiuta,
+    invece di attribuirlo a una stringa vuota che poi nessuno può rilasciare.
+    """
+    return str(a.get("agent") or "").strip()
+
+
+def _holder(a: dict) -> str:
+    me = _agent(a)
+    if not me:
+        raise ValueError(
+            "lease senza agente: questa chiamata non porta l'identità che il "
+            "gateway dichiara nel manifest (context: agent)")
+    return me
+
+
+def _channel(a: dict) -> str:
+    """La stanza da cui si chiama, secondo il gateway (`context: {…: channel}`)."""
+    return str(a.get("channel") or "").strip()
+
+
+def _bindings_path() -> Path:
+    return Path(os.environ.get("CLODIA_CHANNEL_BINDINGS")
+                or Path(os.environ.get("CLODIA_DATA", "/datadir"))
+                / "channel-bindings.json")
+
+
+def _chat_bound_to(channel: str) -> Optional[str]:
+    """Il chat_id legato a QUESTO canale, dal registro neutro dei binding.
+
+    SHORTCUT: lettura diretta del file che il gateway scrive
+    (`channel-bindings.json`, clodia-platform#521). Regge finché il backend del
+    pack gira con lo stesso uid del gateway e vede la sua data dir — cioè fino
+    a clodia-platform#544, che isola l'uid della sandbox. Da lì in poi il
+    binding va passato come gli altri valori di contesto: un `context:` nuovo
+    che il gateway risolve e scrive nell'argomento, e questa funzione sparisce.
+    Il formato è dichiarato in `channel_bindings.py`; qui si legge soltanto, e
+    una chat che non c'è è `None`, mai un default indovinato.
+    """
+    if not channel or "/" not in channel:
+        return None
+    tier, _, topic = channel.partition("/")
+    try:
+        doc = json.loads(_bindings_path().read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError):
+        return None
+    entries = ((doc.get("connectors") or {}).get(_CONNECTOR) or {}) \
+        if isinstance(doc, dict) else {}
+    for cid, b in entries.items() if isinstance(entries, dict) else []:
+        if isinstance(b, dict) and (b.get("tier"), b.get("topic")) == (tier, topic):
+            return str(cid)
+    return None
+
+
+def _resolve_chat(chat: str) -> str:
+    """Un riferimento chat → chat_id. Accetta l'id numerico oppure il NOME del
+    gruppo (match esatto sul titolo, poi parziale) fra le chat note."""
+    c = str(chat).strip()
+    if c.lstrip("-").isdigit():
+        return c
+    low = c.lower()
+    with _LOCK:
+        chats = _load_state().get("chats", {})
+    for cid, meta in chats.items():
+        if str(meta.get("title", "")).lower() == low:
+            return cid
+    for cid, meta in chats.items():
+        if low and low in str(meta.get("title", "")).lower():
+            return cid
+    raise ValueError(f"chat '{chat}' non trovata (né chat_id numerico né titolo noto)")
+
+
+def _resolve_chat_or_current(a: dict) -> str:
+    """`chat_id` esplicito → `_resolve_chat`; omesso → la chat legata al canale
+    da cui si chiama.
+
+    Trovato il 23 set 2026: due gruppi con nomi quasi identici — «Davide &
+    Clodia» e «Davide & Clodia Colony Blogging» — hanno prodotto invii ripetuti
+    al gruppo SBAGLIATO perché chi chiamava indovinava/ricordava un nome invece
+    di usare il binding del topic corrente, l'unica fonte che non può sbagliare
+    per costruzione (una chat → un solo topic).
+    """
+    chat = a.get("chat_id")
+    if chat:
+        return _resolve_chat(chat)
+    channel = _channel(a)
+    if not channel:
+        raise ValueError(
+            "nessun 'chat_id' indicato e la chiamata non arriva da un topic: "
+            "passa un chat_id o un titolo esplicito.")
+    cid = _chat_bound_to(channel)
+    if not cid:
+        raise ValueError(
+            f"nessuna chat Telegram collegata al topic {channel}: collegala dal "
+            f"pulsante Telegram del topic — o passa un chat_id/titolo esplicito "
+            f"per uscire dal topic corrente.")
+    return cid
+
+
+def thread_id_of(value) -> int | None:
+    """Il thread di un forum (`message_thread_id`), o None (clodia-platform#548).
+
+    Decide solo DOVE compare il messaggio dentro una chat già autorizzata:
+    l'egress resta controllato sulla chat (`tg:<chat_id>`).
+    """
+    if value is None or value == "":
+        return None
+    if isinstance(value, bool):
+        raise ValueError("'thread_id' deve essere un intero positivo")
+    try:
+        tid = int(str(value).strip())
+    except (TypeError, ValueError):
+        raise ValueError("'thread_id' deve essere un intero positivo") from None
+    if tid <= 0:
+        raise ValueError("'thread_id' deve essere un intero positivo")
+    return tid
+
+
+def _with_thread(params: dict, thread_id) -> dict:
+    tid = thread_id_of(thread_id)
+    if tid is not None:
+        params["message_thread_id"] = tid
+    return params
+
+
+# ── inbound ──────────────────────────────────────────────────────────────────
+
+def _chat_title(chat: dict) -> str:
+    if chat.get("title"):
+        return chat["title"]
+    name = " ".join(x for x in (chat.get("first_name"), chat.get("last_name")) if x)
+    if chat.get("username"):
+        name = f"{name} (@{chat['username']})".strip()
+    return name or str(chat.get("id"))
+
+
+def _extract_file(msg: dict):
+    """L'allegato del messaggio (documento/foto/video/audio/voce), o None."""
+    if msg.get("document"):
+        d = msg["document"]
+        return {"file_id": d["file_id"],
+                "file_name": d.get("file_name") or f"document_{str(d['file_id'])[:10]}",
+                "mime": d.get("mime_type")}
+    if msg.get("photo"):
+        p = msg["photo"][-1]   # la risoluzione più alta
+        return {"file_id": p["file_id"],
+                "file_name": f"photo_{str(p['file_id'])[:10]}.jpg", "mime": "image/jpeg"}
+    for key, ext in (("video", "mp4"), ("audio", "mp3"), ("voice", "ogg"),
+                     ("animation", "mp4")):
+        if msg.get(key):
+            m = msg[key]
+            return {"file_id": m["file_id"],
+                    "file_name": m.get("file_name") or f"{key}_{str(m['file_id'])[:10]}.{ext}",
+                    "mime": m.get("mime_type")}
+    return None
+
+
+def _message_row(upd: dict, msg: dict) -> dict:
+    frm = msg.get("from") or {}
+    text = msg.get("text") or msg.get("caption") or ""
+    return {
+        "update_id": upd.get("update_id"),
+        "message_id": msg.get("message_id"),
+        # `from` è la stringa di display; `from_username` è l'handle stabile con
+        # cui il relay mappa il mittente a un principal registrato.
+        "from": " ".join(x for x in (frm.get("first_name"), frm.get("last_name")) if x)
+                or (frm.get("username") or str(frm.get("id"))),
+        "from_id": frm.get("id"),
+        "from_username": frm.get("username"),
+        "text": text,
+        "date": msg.get("date"),
+        "thread_id": (msg.get("message_thread_id")
+                      if msg.get("is_topic_message") else None),
+    }
+
+
+def _refresh(st: dict, token: str) -> int:
+    """getUpdates lazy: accoda i messaggi nuovi nelle code per-chat e avanza
+    l'offset. Best-effort: un errore di rete finisce in `last_error` e non rompe
+    l'operazione in corso — le code già accumulate restano leggibili."""
+    try:
+        updates = api_call(token, "getUpdates",
+                           {"offset": st["offset"], "timeout": 0, "limit": 100})
+    except RuntimeError as e:
+        st["last_error"] = str(e)[:300]
+        return 0
+    st["last_error"] = None
+    n = 0
+    for upd in updates or []:
+        st["offset"] = max(st["offset"], int(upd["update_id"]) + 1)
+        msg = upd.get("message") or upd.get("edited_message")
+        if not msg or "chat" not in msg:
+            continue
+        chat = msg["chat"]
+        cid = str(chat["id"])
+        slot = st["chats"].setdefault(cid, {"title": "", "queue": [], "lease": None,
+                                            "last_preview": "", "type": chat.get("type")})
+        slot["title"] = _chat_title(chat)
+        slot["type"] = chat.get("type")
+        entry = _message_row(upd, msg)
+        slot["queue"].append(entry)
+        text = entry["text"]
+        slot["last_preview"] = (text[:80] + "…") if len(text) > 80 else text
+        n += 1
+    return n
+
+
+# ── i tool ───────────────────────────────────────────────────────────────────
+
+def inbox(a: dict) -> dict:
+    """Chat con messaggi in arrivo (metadati, non consuma)."""
+    me = _agent(a)
+    with _LOCK:
+        st = _load_state()
+        _refresh(st, _token())
+        out = []
+        for cid, c in st["chats"].items():
+            lease = _lease_active(c)
+            out.append({
+                "chat_id": cid,
+                "title": c.get("title"),
+                "type": c.get("type"),
+                "pending": len(c.get("queue") or []),
+                "last_preview": c.get("last_preview"),
+                "leased_by": lease["holder"] if lease else None,
+                "lease_expiry": lease["expiry"] if lease else None,
+                "mine": bool(lease and me and lease["holder"] == me),
+            })
+        _save_state(st)
+    out.sort(key=lambda x: x["pending"], reverse=True)
+    return {"chats": out, "bot_username": st.get("bot_username"),
+            "last_error": st.get("last_error")}
+
+
+def lease_acquire(a: dict) -> dict:
+    """Lease esclusivo su una chat per N minuti."""
+    cid = str(a["chat_id"])
+    minutes = max(1, min(int(a.get("minutes") or _DEFAULT_LEASE_MIN), _MAX_LEASE_MIN))
+    me = _holder(a)
+    with _LOCK:
+        st = _load_state()
+        _refresh(st, _token())
+        chat = st["chats"].get(cid)
+        if chat is None:
+            _save_state(st)
+            raise ValueError(
+                f"chat '{cid}' sconosciuta: un lease si può prendere solo su una "
+                f"chat da cui è arrivato almeno un messaggio (vedi telegram.inbox)")
+        lease = _lease_active(chat)
+        if lease and lease["holder"] != me:
+            _save_state(st)
+            raise PermissionError(
+                f"lease su chat '{cid}' tenuto da '{lease['holder']}' fino a "
+                f"{lease['expiry']}")
+        expiry = _now() + timedelta(minutes=minutes)
+        chat["lease"] = {"holder": me, "expiry": _iso(expiry)}
+        _save_state(st)
+    return {"chat_id": cid, "holder": me, "expiry": _iso(expiry),
+            "minutes": minutes, "pending": len(chat.get("queue") or [])}
+
+
+def poll(a: dict) -> dict:
+    """Consuma (e svuota) la coda di una chat. Richiede il lease del chiamante."""
+    cid = str(a["chat_id"])
+    me = _holder(a)
+    with _LOCK:
+        st = _load_state()
+        _refresh(st, _token())
+        chat = st["chats"].get(cid)
+        if chat is None:
+            _save_state(st)
+            raise ValueError(f"chat '{cid}' sconosciuta (nessun messaggio ricevuto)")
+        lease = _lease_active(chat)
+        if not lease or lease["holder"] != me:
+            _save_state(st)
+            raise PermissionError(
+                f"per consumare i messaggi di '{cid}' devi detenere il lease "
+                f"(telegram.lease_acquire); attuale: "
+                f"{lease['holder'] if lease else 'nessuno'}")
+        msgs = chat.get("queue") or []
+        chat["queue"] = []
+        _save_state(st)
+    return {"chat_id": cid, "messages": msgs, "count": len(msgs),
+            "lease_expiry": lease["expiry"]}
+
+
+def lease_release(a: dict) -> dict:
+    """Rilascia il lease su una chat (no-op se non lo detieni)."""
+    cid = str(a["chat_id"])
+    me = _holder(a)
+    released = False
+    with _LOCK:
+        st = _load_state()
+        chat = st["chats"].get(cid)
+        lease = _lease_active(chat) if chat else None
+        if lease and lease["holder"] == me:
+            chat["lease"] = None
+            released = True
+        _save_state(st)
+    return {"chat_id": cid, "released": released}
+
+
+def send(a: dict) -> dict:
+    """Invia un messaggio a una chat. LEASE-FREE: il messaggero è l'unico
+    mittente della colonia, un lease esclusivo qui sarebbe solo attrito."""
+    text = str(a.get("text") or "")
+    if not text.strip():
+        raise ValueError("'text' non può essere vuoto")
+    cid = _resolve_chat_or_current(a)
+    with _LOCK:
+        token = _token()
+    res = api_call(token, "sendMessage",
+                   _with_thread({"chat_id": int(cid), "text": text},
+                                a.get("thread_id")))
+    return {"ok": True, "chat_id": cid, "message_id": res.get("message_id")}
+
+
+def _post_multipart(token: str, method: str, fields: dict, file_field: str,
+                    filename: str, filedata: bytes, mime: str) -> dict:
+    """POST multipart/form-data all'API (sendDocument/sendPhoto), stdlib pura."""
+    boundary = "----clodia" + os.urandom(16).hex()
+    parts = []
+    for k, v in fields.items():
+        parts.append(f"--{boundary}\r\nContent-Disposition: form-data; "
+                     f"name=\"{k}\"\r\n\r\n{v}\r\n".encode())
+    parts.append((f"--{boundary}\r\nContent-Disposition: form-data; "
+                  f"name=\"{file_field}\"; filename=\"{filename}\"\r\n"
+                  f"Content-Type: {mime}\r\n\r\n").encode())
+    parts.append(filedata)
+    parts.append(f"\r\n--{boundary}--\r\n".encode())
+    body = b"".join(parts)
+    url = _API_BASE.format(token=token, method=method)
+    req = urllib.request.Request(
+        url, data=body,
+        headers={"Content-Type": f"multipart/form-data; boundary={boundary}"})
+    try:
+        with urllib.request.urlopen(req, timeout=120) as resp:
+            payload = json.loads(resp.read().decode("utf-8"))
+    except urllib.error.HTTPError as e:
+        detail = e.read().decode("utf-8", "replace")[:200]
+        raise RuntimeError(f"telegram {method} HTTP {e.code}: {detail}") from e
+    if not payload.get("ok"):
+        raise RuntimeError(f"telegram {method}: {payload.get('description')}")
+    return payload["result"]
+
+
+def send_file(a: dict) -> dict:
+    """Invia un file come allegato (sendDocument) o come foto (sendPhoto).
+
+    I BYTE li passa il gateway (`content_b64`), che è l'unico a poter leggere un
+    file di topic: lì stanno il compartimento (chi chiama dev'essere
+    partecipante) e l'audit di ciò che attraversa il confine. Un pack che
+    leggesse da sé il filesystem dei topic aggirerebbe entrambi.
+    """
+    import base64
+    import mimetypes
+    filename = str(a.get("filename") or "")
+    if not filename:
+        raise ValueError("'filename' è obbligatorio")
+    data = base64.b64decode(str(a.get("content_b64") or ""))
+    if not data:
+        raise ValueError("'content_b64' è vuoto: nessun file da inviare")
+    cid = _resolve_chat_or_current(a)
+    mime = mimetypes.guess_type(filename)[0] or "application/octet-stream"
+    as_photo = mime.startswith("image/") and \
+        not filename.lower().endswith((".svg", ".gif"))
+    method, field = ("sendPhoto", "photo") if as_photo else ("sendDocument", "document")
+    fields = {"chat_id": str(cid)}
+    if a.get("caption"):
+        fields["caption"] = str(a["caption"])
+    _with_thread(fields, a.get("thread_id"))
+    with _LOCK:
+        token = _token()
+    res = _post_multipart(token, method, fields, field, filename, data, mime)
+    return {"ok": True, "chat_id": cid, "message_id": res.get("message_id"),
+            "as_photo": as_photo}
+
+
+def roster(a: dict) -> dict:
+    """Amministratori noti di un gruppo, con uid e username."""
+    got = api_call(_token(), "getChatAdministrators",
+                   {"chat_id": str(a["chat_id"])}) or []
+    out = []
+    for m in got:
+        u = m.get("user") or {}
+        if u.get("is_bot"):
+            continue
+        out.append({"uid": str(u.get("id")), "username": u.get("username"),
+                    "name": " ".join(x for x in (u.get("first_name"),
+                                                 u.get("last_name")) if x),
+                    "status": m.get("status")})
+    # Telegram non espone a un bot l'elenco COMPLETO dei membri: si ottengono
+    # gli amministratori. Lo si dice, invece di far credere che la lista sia
+    # tutta — chi mappa le persone deve sapere che gli altri vanno aggiunti a
+    # mano dal loro uid.
+    return {"members": out, "complete": False,
+            "note": ("Telegram espone a un bot i soli amministratori. Gli altri "
+                     "membri vanno mappati col loro uid, che compare quando "
+                     "scrivono nel gruppo.")}
+
+
+def status(a: dict) -> dict:
+    """Stato non sensibile per la card di setup: configurato?, @username del
+    bot, chat note/attive, ultimo errore. Mai il token."""
+    st = _load_state()
+    active = sum(1 for c in st["chats"].values()
+                 if (c.get("queue") or []) or _lease_active(c))
+    return {
+        "configured": bool((os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()),
+        "bot_username": st.get("bot_username"),
+        "known_chats": len(st["chats"]),
+        "active_chats": active,
+        "last_error": st.get("last_error"),
+    }
+
+
+def updates(a: dict) -> dict:
+    """LONG-POLL: `getUpdates` con timeout lungo, per il RELAY del gateway.
+
+    Telegram ammette un solo consumer `getUpdates` per bot: una volta che
+    l'implementazione è qui, questa è l'unica porta da cui gli update possono
+    entrare — relay compreso. Per questo il verbo esiste, e per questo non è un
+    verbo da agente: chi lo chiamasse svuoterebbe la coda che il relay deve
+    leggere. Il gateway lo tiene fuori dalla portata degli agenti (seed
+    `messaggero`, `denied_tools`) e lo usa per il proprio percorso interno.
+    """
+    timeout = max(0, min(int(a.get("timeout") or 25), 60))
+    with _LOCK:
+        offset = _load_state()["offset"]
+        token = _token()
+    # getUpdates FUORI dal lock: blocca fino a `timeout` secondi e congelare
+    # `send` per tutto quel tempo sarebbe un difetto, non una precauzione.
+    got = api_call(token, "getUpdates",
+                   {"offset": offset, "timeout": timeout, "limit": 100},
+                   timeout=timeout + 10)
+    out = []
+    with _LOCK:
+        st = _load_state()
+        bot_uname = st.get("bot_username")
+        for upd in got or []:
+            st["offset"] = max(st["offset"], int(upd["update_id"]) + 1)
+            msg = upd.get("message") or upd.get("edited_message")
+            if not msg or "chat" not in msg:
+                continue
+            rfrm = (msg.get("reply_to_message") or {}).get("from") or {}
+            row = _message_row(upd, msg)
+            row.update({
+                "chat_id": str(msg["chat"]["id"]),
+                "chat_title": _chat_title(msg["chat"]),
+                "file": _extract_file(msg),
+                # Rispondere a un messaggio del BOT conta come menzione diretta.
+                "reply_to_bot": bool(rfrm.get("is_bot") and bot_uname
+                                     and rfrm.get("username") == bot_uname),
+            })
+            out.append(row)
+        st["last_error"] = None
+        _save_state(st)
+    return {"messages": out, "count": len(out)}
+
+
+def download(a: dict) -> dict:
+    """Scarica un allegato (getFile + download): `{content_b64, size}`.
+
+    Serve al relay per depositare nel topic il file che qualcuno ha mandato in
+    chat; i byte li scrive il gateway, che è l'unico a sapere se quel topic può
+    riceverli e a marcarne la provenienza.
+    """
+    import base64
+    token = _token()
+    info = api_call(token, "getFile", {"file_id": str(a["file_id"])})
+    fpath = (info or {}).get("file_path")
+    if not fpath:
+        raise RuntimeError("getFile senza file_path")
+    url = f"https://api.telegram.org/file/bot{token}/{fpath}"
+    with urllib.request.urlopen(url, timeout=60) as resp:
+        data = resp.read()
+    return {"content_b64": base64.b64encode(data).decode("ascii"), "size": len(data)}
+
+
+# ── la superficie: nomi, schemi, dispatch ────────────────────────────────────
+#
+# Descritta con dict e non con `mcp.types.Tool`: questo modulo è il connettore e
+# non deve dipendere da nessuna libreria oltre la stdlib. L'involucro MCP
+# (`telegram_mcp.py`) traduce ogni voce in un `Tool`, e in cambio tutta la
+# logica — e la sua tabella dei verbi — resta verificabile da una suite che non
+# ha (e non deve avere) la stessa versione di `mcp` del gateway.
+
+_CONTEXT_PROPS = {
+    "channel": {"type": "string",
+                "description": "riempito dal gateway: il topic da cui si chiama"},
+    "agent": {"type": "string",
+              "description": "riempito dal gateway: l'agente che chiama"},
+}
+
+
+def _schema(props: dict, required: list[str] | None = None) -> dict:
+    return {"type": "object", "properties": {**props, **_CONTEXT_PROPS},
+            "required": list(required or [])}
+
+
+TOOL_SPECS: list[dict] = [
+    dict(name="inbox",
+         description=("Chat Telegram con messaggi in arrivo (metadati, NON consuma): "
+                      "per ognuna chat_id, titolo, n. messaggi pendenti, anteprima e chi "
+                      "detiene il lease. Punto di partenza prima di prendere un lease."),
+         inputSchema=_schema({})),
+    dict(name="lease_acquire",
+         description=("Acquisisce il lease ESCLUSIVO su una chat per N minuti: finché è "
+                      "valido sei l'unico a consumarne i messaggi e a poterle scrivere. "
+                      "Fallisce se un altro agente la detiene. Solo chat che hanno scritto."),
+         inputSchema=_schema({
+             "chat_id": {"type": "string", "description": "ID chat (da telegram.inbox)"},
+             "minutes": {"type": "integer",
+                         "description": "Durata lease (default 10, max 120)"}},
+             ["chat_id"])),
+    dict(name="poll",
+         description=("Consuma (svuota) i messaggi in coda di una chat. Richiede un lease "
+                      "attivo del chiamante su quella chat."),
+         inputSchema=_schema({"chat_id": {"type": "string"}}, ["chat_id"])),
+    dict(name="send",
+         description=("Invia un messaggio a una chat/gruppo (lease-free: sei l'unico "
+                      "mittente). Vincolo Telegram: la chat deve aver già contattato il "
+                      "bot, o il bot dev'essere membro del gruppo. `chat_id` accetta anche "
+                      "il NOME del gruppo. `chat_id` OMESSO → la chat collegata al topic "
+                      "da cui stai chiamando: PREFERISCI omettere, non indovinare/ricordare "
+                      "un nome — due gruppi con nomi quasi identici hanno già causato "
+                      "invii al gruppo sbagliato."),
+         inputSchema=_schema({
+             "chat_id": {"type": "string",
+                         "description": "opzionale: default la chat del topic corrente"},
+             "text": {"type": "string"},
+             "thread_id": {"type": "integer",
+                           "description": "opzionale: il thread di un gruppo-forum; "
+                                          "omesso = thread Generale"}},
+             ["text"])),
+    dict(name="send_file",
+         description=("Invia un FILE a una chat/gruppo come allegato (o come foto se è "
+                      "un'immagine). I byte arrivano dal gateway, che legge il file dal "
+                      "topic: l'agente indica il path, non il contenuto. `chat_id` OMESSO "
+                      "→ la chat collegata al topic da cui stai chiamando."),
+         inputSchema=_schema({
+             "chat_id": {"type": "string",
+                         "description": "opzionale: default la chat del topic corrente"},
+             "filename": {"type": "string"},
+             "content_b64": {"type": "string",
+                             "description": "byte del file, messi dal gateway"},
+             "caption": {"type": "string"},
+             "thread_id": {"type": "integer"}},
+             ["filename", "content_b64"])),
+    dict(name="lease_release",
+         description="Rilascia anticipatamente il lease su una chat (no-op se non lo detieni).",
+         inputSchema=_schema({"chat_id": {"type": "string"}}, ["chat_id"])),
+    dict(name="roster",
+         description=("Amministratori e membri noti di un gruppo, con uid e username: "
+                      "serve a mappare le persone senza digitare numeri."),
+         inputSchema=_schema({"chat_id": {"type": "string"}}, ["chat_id"])),
+    dict(name="status",
+         description=("Stato del connettore: bot configurato, @username, chat note e "
+                      "attive, ultimo errore. Mai il token."),
+         inputSchema=_schema({})),
+    dict(name="updates",
+         description=("USO INTERNO (relay del gateway): long-poll getUpdates di TUTTE le "
+                      "chat. Consuma la coda condivisa — non è un verbo da agente."),
+         inputSchema=_schema({"timeout": {"type": "integer"}})),
+    dict(name="download",
+         description=("USO INTERNO (relay del gateway): scarica un allegato Telegram e "
+                      "ne ritorna i byte, che il gateway deposita nel topic."),
+         inputSchema=_schema({"file_id": {"type": "string"}}, ["file_id"])),
+]
+
+DISPATCH = {
+    "inbox": inbox,
+    "lease_acquire": lease_acquire,
+    "poll": poll,
+    "send": send,
+    "send_file": send_file,
+    "lease_release": lease_release,
+    "roster": roster,
+    "status": status,
+    "updates": updates,
+    "download": download,
+}

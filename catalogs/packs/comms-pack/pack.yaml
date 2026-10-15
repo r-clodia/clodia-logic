@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 1.2.0
+version: 1.3.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -19,13 +19,18 @@ plugins:
 # resta dell'owner che installa, al gate.
 #
 # Questo blocco è la metà «dichiarazione» di clodia-platform#522: riproduce
-# ALLA LETTERA il Telegram cablato oggi nel gateway (`egress.py`, `taint.py`,
-# `topics_api.py`, `tools_api.py`), senza aggiungere né togliere nulla. Chi lo
-# legge non c'è ancora: il registry che sostituisce quelle tabelle è #518, gli
-# endpoint generici #519, la webui #520. Finché non arrivano, il gateway
-# continua a usare le proprie tabelle e questo blocco è inerte — ma è il
-# riferimento contro cui #518 si misura, ed è il motivo per cui qui non c'è
+# ALLA LETTERA il Telegram cablato nel gateway (`egress.py`, `taint.py`,
+# `topics_api.py`, `tools_api.py`), senza aggiungere né togliere nulla — ed è
+# il riferimento contro cui #518 si è misurata, il motivo per cui qui non c'è
 # nessuna forma, nessun verbo e nessun testo «migliorato» rispetto a oggi.
+#
+# Dalla fase 2 il blocco NON è più inerte: `plugins/comms-pack/.mcp.json` monta
+# il backend MCP `telegram` (il codice sta in `plugins/comms-pack/mcp/
+# telegram_mcp.py`) e il gateway, con l'interruttore d'istanza in posizione
+# `pack` (`connectors: {telegram: pack}` in `profile.yaml`, clodia-tools 2.100.0),
+# smette di implementare il namespace e lascia che sia questa dichiarazione a
+# descriverlo. L'interruttore è per istanza e di default resta `native`: il pack
+# si installa prima, si accende dopo.
 connectors:
   - id: telegram
     manifest_version: 1
@@ -95,9 +100,30 @@ connectors:
             - 'tg:{chat_id}'
           egress:
             - 'tg:{chat_id}'
-    # La card di setup è oggi in `tools_api.py`: un form che deposita il token
-    # nel vault. Nessuno `status_verb`: lo stato lo dà la rotta
-    # `/tools/telegram/status`, non un verbo, e dichiarare un verbo inesistente
-    # metterebbe nel manifest una promessa che nessuno mantiene.
+    # La card della pagina Tools. Dalla fase 2 di #522 i campi sono quelli del
+    # manifest del gateway (`builtin_manifests/telegram.yaml`) CAMPO PER CAMPO:
+    # quando l'interruttore d'istanza passa a `pack`, quel documento esce di
+    # servizio e questa card prende il suo posto — una copia diversa qui non
+    # sarebbe «una variante», sarebbe la scheda che cambia da sola il giorno
+    # della migrazione. `status_verb` ora c'è e non è una promessa a vuoto: il
+    # backend MCP del pack implementa `telegram.status` davvero.
     tools_card:
+      icon: telegram
       setup_label: Collega un bot
+      status_verb: telegram.status
+      blurb: >-
+        Gli agenti inviano/ricevono messaggi (tool telegram.*) con lease
+        per-chat. Crea un bot dedicato con @BotFather e incolla il token.
+      scope: api.telegram.org/bot
+    # Il contesto che il GATEWAY riempie a ogni chiamata dei verbi di questo
+    # namespace, sovrascrivendo sempre quello che è arrivato dal chiamante
+    # (clodia-platform#522, PR 1 — `manifest.CONTEXT_VALUES`). Qui non è un
+    # vezzo: un connettore nativo legge canale e agente dal claim FIRMATO della
+    # sessione, un backend di pack quel claim non ce l'ha. `telegram.send` senza
+    # `chat_id` scrive nella chat legata al canale chiamante, e il lease è di un
+    # agente per nome: se i due valori venissero dagli argomenti, dichiararne
+    # altri basterebbe per scrivere nel gruppo di un altro topic o per rubare il
+    # lease a qualcun altro.
+    context:
+      channel: channel
+      agent: agent

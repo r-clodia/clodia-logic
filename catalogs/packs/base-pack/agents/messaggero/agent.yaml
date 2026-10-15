@@ -113,6 +113,15 @@ denied_tools:
   - topic.read_file
   - topic.read_document
   - topic.fetch
+  # Due verbi del backend Telegram del comms-pack che NON sono verbi d'agente
+  # (clodia-platform#522): sono la porta interna del relay. Telegram ammette un
+  # solo consumer `getUpdates` per bot, quindi chi chiama `telegram.updates`
+  # svuota la coda che il relay deve leggere — i messaggi non arriverebbero nel
+  # topic e nessun errore lo direbbe. Vanno negati QUI perché il grant sopra è
+  # `telegram.*`: finché l'implementazione era nel gateway questi due non erano
+  # verbi affatto (rotte `/internal/telegram`), e il wildcard non li toccava.
+  - telegram.updates
+  - telegram.download
 # Verbi che per QUESTO agent richiedono un consenso umano a ogni uso
 # (clodia-platform#104). Dichiarati nel seed perché è qui che si sa quali dei
 # propri verbi sono pericolosi — e perché un controllo che non viaggia col seed
