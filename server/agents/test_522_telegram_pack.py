@@ -64,6 +64,21 @@ def _connector(cid: str = "telegram") -> dict:
     raise AssertionError(f"comms-pack non dichiara più il connettore '{cid}'")
 
 
+def _argomenti_di_contesto(cid: str = "telegram") -> set:
+    """I nomi degli argomenti che il gateway riempie (`context:`).
+
+    Il blocco è una LISTA di righe `{arg, value}` — la grammatica che il parser
+    del gateway legge (`manifest._parse_context`). Letto come mapping darebbe
+    i nomi sbagliati in silenzio: su una lista `set(...)` non solleva, itera
+    gli elementi, e qui gli elementi sono dizionari.
+    """
+    righe = _connector(cid).get("context") or []
+    assert isinstance(righe, list), (
+        "`context:` dev'essere una lista di righe {arg, value}: la forma a "
+        "mapping non viene letta dal gateway e il blocco resta inerte")
+    return {str(r["arg"]) for r in righe}
+
+
 def _core():
     """Il connettore, importato dal file del pack.
 
@@ -101,17 +116,29 @@ class IlPackPortaIlCodiceTests(unittest.TestCase):
         """Il mount inietta una credenziale del vault: dev'essere la voce che
         il connettore dichiara, non un'altra. Un placeholder diverso darebbe al
         processo del pack un segreto che il suo manifest non nomina — e che
-        nessun controllo di namespace ha mai visto."""
+        nessun controllo di namespace ha mai visto.
+
+        E dev'essere nella forma col CAMPO, `${VAULT:voce.campo}`. La forma
+        nuda `${VAULT:voce}` risolve il campo `value` del bundle, che una
+        credenziale `kind: form` non ha: il placeholder resterebbe letterale e
+        il backend partirebbe con la stringa `${VAULT:…}` al posto del token —
+        un guasto che non si vede al mount, solo alla prima chiamata a
+        api.telegram.org.
+        """
         env = json.loads(MCP_JSON.read_text(encoding="utf-8")) \
             ["mcpServers"]["telegram"].get("env") or {}
-        dichiarata = next(p["credential"]["vault_entry"]
-                          for p in _connector()["providers"] if p.get("credential"))
-        self.assertIn(f"${{VAULT:{dichiarata}}}", env.values())
-        for valore in env.values():
-            if "VAULT:" in str(valore):
-                self.assertIn(f"VAULT:{dichiarata}", str(valore),
-                              "il mount inietta una credenziale che il "
-                              "connettore non dichiara")
+        credenziale = next(p["credential"] for p in _connector()["providers"]
+                           if p.get("credential"))
+        voce = credenziale["vault_entry"]
+        campi = {c["name"] for c in credenziale.get("fields") or []}
+        self.assertTrue(campi, "la credenziale non dichiara campi")
+        ammessi = {f"${{VAULT:{voce}.{campo}}}" for campo in campi}
+        iniettati = [str(v) for v in env.values() if "VAULT:" in str(v)]
+        self.assertTrue(iniettati, "il mount non inietta nessuna credenziale")
+        for valore in iniettati:
+            self.assertIn(valore, ammessi,
+                          "il mount inietta una credenziale (o un campo) che "
+                          "il connettore non dichiara")
 
     def test_ogni_verbo_promesso_dal_manifest_esiste_nel_server(self) -> None:
         """Il difetto silenzioso: una mappatura di egress su un verbo che
@@ -138,12 +165,30 @@ class IlPackPortaIlCodiceTests(unittest.TestCase):
                         or card.get("status_verb") == verbo:
                     self.assertIn(nome, implementati)
 
+    def test_il_contesto_e_scritto_nella_grammatica_del_gateway(self) -> None:
+        """`context:` è una LISTA di righe `{arg, value}`.
+
+        Non è stile: è la forma che `manifest._parse_context` del gateway sa
+        leggere. Scritto come mapping (`channel: channel`) il connettore non
+        entra nel registry — il pack si installa, il blocco resta inerte, e il
+        sintomo è un backend che riceve il contesto *del chiamante*. Qui si
+        confrontano le chiavi di ogni riga, non solo il tipo del blocco.
+        """
+        righe = _connector().get("context")
+        self.assertIsInstance(righe, list, righe)
+        self.assertTrue(righe, "il connettore non dichiara più `context:`")
+        for riga in righe:
+            with self.subTest(riga=riga):
+                self.assertIsInstance(riga, dict, riga)
+                self.assertEqual(set(riga), {"arg", "value"}, riga)
+                self.assertIn(riga["value"], ("channel", "agent"), riga)
+
     def test_ogni_tool_accetta_il_contesto_dichiarato(self) -> None:
         """Il contesto è per NAMESPACE: il gateway lo riempie su ogni verbo del
         connettore, quindi ogni tool del server deve dichiararlo nel proprio
         schema. Un tool che non lo fa riceve un argomento che non conosce."""
         modulo = _core()
-        attesi = set(_connector().get("context") or {})
+        attesi = _argomenti_di_contesto()
         self.assertTrue(attesi, "il connettore non dichiara più `context:`")
         for tool in modulo.TOOL_SPECS:
             with self.subTest(tool=tool["name"]):
@@ -154,7 +199,7 @@ class IlPackPortaIlCodiceTests(unittest.TestCase):
         """Lo mette il gateway, non il chiamante: pretenderlo `required` farebbe
         fallire la validazione del client prima che il gateway lo scriva."""
         modulo = _core()
-        attesi = set(_connector().get("context") or {})
+        attesi = _argomenti_di_contesto()
         for tool in modulo.TOOL_SPECS:
             with self.subTest(tool=tool["name"]):
                 richiesti = set((tool["inputSchema"] or {}).get("required") or [])

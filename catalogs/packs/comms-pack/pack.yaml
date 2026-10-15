@@ -125,8 +125,10 @@ connectors:
     # altri basterebbe per scrivere nel gruppo di un altro topic o per rubare il
     # lease a qualcun altro.
     context:
-      channel: channel
-      agent: agent
+      - arg: channel
+        value: channel
+      - arg: agent
+        value: agent
     # `telegram.send_file` manda un file che sta in un TOPIC. Il percorso lo
     # nomina l'agente, i byte li mette il gateway: leggere un file di topic è
     # lavoro suo e non si sposta — ci stanno attaccati il compartimento (chi

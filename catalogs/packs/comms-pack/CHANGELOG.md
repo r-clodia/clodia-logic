@@ -17,10 +17,17 @@ one.
   the whitelist, the deny lists, the gate, the egress check and the taint:
   nothing that used to be checked stops being checked.
 - **The bot token never leaves the gateway's vault**: the mount injects it as
-  `${VAULT:telegram_bot_token}` into the backend's environment. It does not
-  pass through the model and it is not in this repository.
-- **Channel and agent arrive as declared context** (`context:` in `pack.yaml`),
-  filled and always overwritten by the gateway: a backend outside the gateway
+  `${VAULT:telegram_bot_token.token}` into the backend's environment. It does
+  not pass through the model and it is not in this repository. The FIELD is
+  part of the placeholder: the bare `${VAULT:entry}` form resolves the bundle's
+  `value`, which a `kind: form` credential does not have, so the placeholder
+  would survive literally and the backend would start with `${VAULT:…}` in
+  place of the token — a fault invisible at mount time, visible only at the
+  first call to api.telegram.org.
+- **Channel and agent arrive as declared context** (`context:` in `pack.yaml`,
+  one `{arg, value}` row each — the grammar the gateway's parser reads; written
+  as a mapping the connector does not enter the registry and the block stays
+  inert), filled and always overwritten by the gateway: a backend outside the gateway
   has no signed claim, and a context that the caller could choose would mean
   writing into another topic's group, or taking somebody else's lease.
 - **The Tools card now matches the gateway's own manifest field by field**
