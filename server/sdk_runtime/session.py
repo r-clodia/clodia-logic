@@ -1082,6 +1082,26 @@ def _resolve_permission_mode(kind: str) -> Optional[str]:
     return "bypassPermissions"
 
 
+def mcp_tool_name(verb: str) -> str:
+    """Il nome con cui Claude Code vede un verbo del gateway.
+
+    Il server MCP si chiama `clodia-tools` e il gateway espone i verbi con il
+    punto sostituito dal trattino basso: `leads-mcp.update_lead` arriva al
+    modello come `mcp__clodia-tools__leads-mcp_update_lead` (misurato nel
+    transcript del 15 ott 2026, clodia-platform#546).
+    """
+    return "mcp__clodia-tools__" + str(verb).replace(".", "_")
+
+
+def _resolve_auto_approved(kind: str) -> list[str]:
+    """Le regole `allow` per i verbi del gateway che il seed pre-approva (#546)."""
+    try:
+        verbs = getattr(_kind_spec(kind), "auto_approved_tools", None) or []
+    except Exception:  # noqa: BLE001 — un seed illeggibile non pre-approva niente
+        return []
+    return [mcp_tool_name(v) for v in verbs]
+
+
 def _resolve_native_allowed(kind: str) -> list[str] | None:
     """Gli strumenti nativi concessi a questo seed: i suoi PIÙ il pavimento.
 
@@ -1797,6 +1817,12 @@ class ChatSession:
                 disallowed.append(t)
         if disallowed:
             opts_kwargs["disallowed_tools"] = disallowed
+        # Verbi del gateway che il seed dichiara già autorizzati (#546): come
+        # regole `allow` il CLI li risolve prima del classificatore della
+        # modalità auto (#547). Il gateway resta l'autorità su di essi.
+        pre_approvati = _resolve_auto_approved(self.kind)
+        if pre_approvati:
+            opts_kwargs["allowed_tools"] = pre_approvati
         permission_mode_override = _resolve_permission_mode(self.kind)
         if permission_mode_override == "bypassPermissions" and _IS_ROOT:
             # Root: --dangerously-skip-permissions rifiutato dal CLI. Il callback
