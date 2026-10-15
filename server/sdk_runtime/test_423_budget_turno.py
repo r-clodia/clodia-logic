@@ -213,11 +213,14 @@ class OgniRichiestaStaNelResiduoTests(unittest.TestCase):
     def test_tutte_le_post_del_turno_passano_un_timeout(self) -> None:
         sorgente = pathlib.Path(S.__file__).read_text(encoding="utf-8")
         albero = ast.parse(sorgente)
-        fn = next(n for n in ast.walk(albero)
-                  if isinstance(n, ast.AsyncFunctionDef) and n.name == "_run_turn"
-                  and any(isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "post"
-                          for d in ast.walk(n)))
-        post = [n for n in ast.walk(fn)
+        # The turn's POSTs live in `_run_turn` and, since #552, in `_post_turn`
+        # (the message POST raced against the provider-limit event).
+        fns = [n for n in ast.walk(albero)
+               if isinstance(n, ast.AsyncFunctionDef)
+               and n.name in ("_run_turn", "_post_turn")
+               and any(isinstance(d, ast.Call) and getattr(d.func, "attr", "") == "post"
+                       for d in ast.walk(n))]
+        post = [n for fn in fns for n in ast.walk(fn)
                 if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "post"]
         self.assertGreaterEqual(len(post), 3, "le tre POST del turno non ci sono più")
         senza = [n.lineno for n in post
