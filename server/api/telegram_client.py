@@ -44,10 +44,14 @@ def updates(chat_id: str) -> dict:
     return r.json()
 
 
-def send(chat_id: str, text: str) -> dict:
-    """Invia un messaggio al gruppo (outbound)."""
+def send(chat_id: str, text: str, thread_id=None) -> dict:
+    """Invia un messaggio al gruppo (outbound); nel thread del forum se dato
+    (clodia-platform#548)."""
+    body = {"chat_id": str(chat_id), "text": text}
+    if thread_id:
+        body["thread_id"] = int(thread_id)
     r = requests.post(f"{_base_url()}/send", headers=_headers(),
-                      json={"chat_id": str(chat_id), "text": text}, timeout=_HTTP_TIMEOUT)
+                      json=body, timeout=_HTTP_TIMEOUT)
     r.raise_for_status()
     return r.json()
 
@@ -72,8 +76,8 @@ def download(file_id: str) -> dict:
 # ── wrapper async ────────────────────────────────────────────────────────────
 # Il client è sincrono di proposito (lo usa anche il relay in un thread suo); da
 # un handler async si passa da qui, così l'attesa di rete non ferma l'event loop.
-async def send_async(chat_id: str, text: str) -> dict:
-    return await asyncio.to_thread(send, chat_id, text)
+async def send_async(chat_id: str, text: str, thread_id=None) -> dict:
+    return await asyncio.to_thread(send, chat_id, text, thread_id)
 
 
 async def download_async(file_id: str) -> dict:

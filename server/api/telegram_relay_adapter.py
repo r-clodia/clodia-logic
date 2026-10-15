@@ -36,8 +36,8 @@ class TelegramRelayAdapter(RelayAdapter):
         timeout, e ritorna i messaggi nuovi di TUTTE le chat."""
         return await asyncio.to_thread(telegram_client.poll, timeout)
 
-    async def send(self, chat_id, text: str) -> None:
-        await telegram_client.send_async(str(chat_id), text)
+    async def send(self, chat_id, text: str, thread_id=None) -> None:
+        await telegram_client.send_async(str(chat_id), text, thread_id)
 
     async def download(self, file_ref: dict) -> str | None:
         dl = await telegram_client.download_async(file_ref["file_id"])

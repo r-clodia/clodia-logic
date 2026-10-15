@@ -32,6 +32,7 @@ class _Fake(RelayAdapter):
 
     def __init__(self, updates=None):
         self.inviati: list = []
+        self.thread_inviati: list = []
         self.updates = updates or []
         self.pollato = 0
 
@@ -39,8 +40,9 @@ class _Fake(RelayAdapter):
         self.pollato += 1
         return self.updates
 
-    async def send(self, chat_id, text: str) -> None:
+    async def send(self, chat_id, text: str, thread_id=None) -> None:
         self.inviati.append((str(chat_id), text))
+        self.thread_inviati.append(thread_id)
 
     async def download(self, file_ref: dict) -> str | None:
         return "eA=="
@@ -219,3 +221,33 @@ class RegistroTests(unittest.IsolatedAsyncioTestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ThreadDelForumTests(_Base):
+    """clodia-platform#548: in un gruppo-forum la risposta va nel thread da cui
+    è arrivata la richiesta, non nel «Generale»."""
+    MSG = {"message_id": 5, "from_username": "ada", "from": "ada",
+           "text": "@clodia scrivi in funding", "thread_id": 42}
+
+    async def test_la_conferma_va_nel_thread_della_richiesta(self):
+        await self._relay([dict(self.MSG)], vetted_uris={"fx:ada"})
+        self.assertTrue(self.adapter.inviati)
+        self.assertEqual(set(self.adapter.thread_inviati), {42})
+
+    async def test_il_rifiuto_va_nel_thread_della_richiesta(self):
+        await self._relay([dict(self.MSG)], vetted_uris=set())
+        self.assertEqual(self.adapter.thread_inviati, [42])
+
+    async def test_la_chat_vagliata_conferma_nel_thread(self):
+        await self._relay([dict(self.MSG)], vetted_uris={f"fx:{self.CHAT}"})
+        self.assertEqual(self.adapter.thread_inviati, [42])
+
+    async def test_il_canale_riceve_il_thread_da_passare_a_telegram_send(self):
+        await self._relay([dict(self.MSG)], vetted_uris={"fx:ada"})
+        self.assertIn("(chat_id fx-77, thread_id 42)", self.postati[0])
+
+    async def test_senza_thread_tutto_resta_come_prima(self):
+        msg = {k: v for k, v in self.MSG.items() if k != "thread_id"}
+        await self._relay([msg], vetted_uris={"fx:ada"})
+        self.assertEqual(set(self.adapter.thread_inviati), {None})
+        self.assertIn("(chat_id fx-77) ", self.postati[0])

@@ -92,7 +92,7 @@ class RelayGateTests(unittest.TestCase):
         from pathlib import Path
         inviati, postati, turni = [], [], []
 
-        async def _send(chat_id, text):
+        async def _send(chat_id, text, thread_id=None):
             inviati.append(text)
             return {}
 

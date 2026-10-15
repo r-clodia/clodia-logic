@@ -76,7 +76,10 @@ class RelayAdapter:
     async def poll(self, timeout: int) -> list:
         raise NotImplementedError
 
-    async def send(self, chat_id, text: str) -> None:
+    async def send(self, chat_id, text: str, thread_id=None) -> None:
+        """`thread_id`: dove rispondere dentro la chat, se il trasporto ha i
+        thread (topic di un forum Telegram, clodia-platform#548); None = come
+        prima."""
         raise NotImplementedError
 
     async def download(self, file_ref: dict) -> str | None:
