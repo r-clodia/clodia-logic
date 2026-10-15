@@ -337,6 +337,84 @@ class PathTraversalTests(_Base):
         self.assertEqual(res["connector"], "openai-images")
 
 
+class IdLengthTests(_Base):
+    """clodia-platform#545 §3: il pattern non aveva un tetto di lunghezza.
+
+    `^[a-z0-9][a-z0-9_-]*$` accetta cinquemila caratteri, e quei cinquemila
+    caratteri arrivavano al gateway. Non è un bypass — il gateway non conosce
+    quell'id e risponde 404 — ma è una richiesta che chiunque può far fare
+    all'agent-server verso il gateway, su un collegamento che viaggia con il
+    token FIDATO dell'agent-server, e la riga di log che lascia è sua.
+
+    Il tetto non è un numero inventato: un id che il gateway possa davvero
+    avere sta in 40 caratteri (`connectors/manifest._ID`, e i namespace in 32),
+    quindi 64 lascia margine e non taglia niente di legittimo.
+    """
+
+    LUNGO = "a" * 65
+
+    def test_an_overlong_id_is_a_400_before_the_gateway(self):
+        for connector, action in ((self.LUNGO, "telegram-link"),
+                                  ("telegram", self.LUNGO)):
+            for chiamata in (
+                    lambda: T.connector_action_status(
+                        "SEAL-1", "acme", connector, action, _Req()),
+                    lambda: T.connector_action_apply(
+                        "SEAL-1", "acme", connector, action,
+                        _Req({"action": "connect", "chat": "-100"}))):
+                with self.subTest(connector=connector[:8], action=action[:8]):
+                    with self.assertRaises(HTTPException) as e:
+                        self.esegui(chiamata(), chi="davide")
+                    self.assertEqual(e.exception.status_code, 400)
+                    self.assertEqual(self.cli.chiamate, [])
+
+    def test_the_longest_legitimate_id_still_passes(self):
+        """Il taglio è SOPRA ciò che un manifest può dichiarare: se questo
+        diventasse rosso, il tetto starebbe rifiutando un id vero."""
+        al_limite = "a" * 64
+        res = self.esegui(T.connector_action_status(
+            "SEAL-1", "acme", al_limite, al_limite, _Req()))
+        self.assertEqual(res["connector"], al_limite)
+
+    def test_the_client_refuses_it_too(self):
+        """Seconda parete, dove l'URL viene costruita: la rotta non è l'unico
+        chiamante possibile."""
+        from . import topics_client as tc
+        viste: list = []
+
+        class _Http:
+            def get(self, url, **k):
+                viste.append(url)
+                raise AssertionError("must not be reached")
+
+            post = get
+
+        with patch.object(tc, "_gw_http", _Http()), \
+                patch.object(tc, "_headers", lambda: {}):
+            with self.assertRaises(tc.TopicsClientError) as e:
+                tc.connector_action_status("SEAL-1", "t", self.LUNGO, "x")
+            self.assertEqual(e.exception.status, 400)
+            with self.assertRaises(tc.TopicsClientError):
+                tc.connector_action_apply("SEAL-1", "t", "x", self.LUNGO, {})
+        self.assertEqual(viste, [])
+
+    def test_the_two_walls_use_the_same_pattern(self):
+        """Le due copie esistono apposta (la rotta non deve dipendere dal
+        client), ma devono dire la stessa cosa: una divergenza non si vede,
+        perché ciascuna delle due da sola sembra giusta."""
+        from . import topics_client as tc
+        self.assertEqual(T._CONNECTOR_SEGMENT.pattern,
+                         tc.CONNECTOR_SEGMENT.pattern)
+
+    def test_the_refusal_does_not_echo_the_whole_id(self):
+        """Un messaggio che ricopia cinquemila caratteri sposta il costo dal
+        gateway al log di chi rifiuta."""
+        from . import topics_client as tc
+        with self.assertRaises(tc.TopicsClientError) as e:
+            tc.connector_action_status("SEAL-1", "t", "a" * 5000, "x")
+        self.assertLess(len(str(e.exception)), 200)
+
+
 class AnAgentRuntimeTokenIsNotAPersonTests(_Base):
     """Review of #521, reopening #539 §2: a topic created without an explicit
     owner is owned by `clodia`, whose runtime token lives in every spawn. The

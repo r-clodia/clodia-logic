@@ -437,12 +437,19 @@ def mailbox_link_action(tier: str, name: str, action: str, **params) -> dict:
     return r.json()
 
 
+#: Tetto di lunghezza di un segmento. Un id che il gateway possa davvero avere
+#: sta in 40 caratteri (`connectors/manifest._ID`, i namespace in 32): 64
+#: lascia margine e non taglia nulla di legittimo (clodia-platform#545 §3).
+MAX_SEGMENT = 64
+
 #: What a connector id or an action id may look like in a gateway URL. The
 #: gateway's own ids are narrower (`^[a-z][a-z0-9-]*$`); this is the wall that
 #: keeps a dot segment or a slash out of the path (review of #521: `..` was
 #: normalised away by `requests`, and `connectors/../mailbox-link` reached the
-#: specific route on the agent-server's trusted token).
-CONNECTOR_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+#: specific route on the agent-server's trusted token). Il tetto di lunghezza
+#: è parte del pattern: senza, cinquemila caratteri passavano di qui e
+#: arrivavano al gateway (#545 §3).
+CONNECTOR_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]{0,%d}$" % (MAX_SEGMENT - 1))
 
 
 def _segment(value: str, what: str) -> str:
