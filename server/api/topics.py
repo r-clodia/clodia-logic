@@ -1012,6 +1012,96 @@ async def telegram_link_action(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+#: Same pattern as `topics_client.CONNECTOR_SEGMENT`, held here too because
+#: this check must not depend on the client module (tests replace it).
+_CONNECTOR_SEGMENT = re.compile(r"^[a-z0-9][a-z0-9_-]*$")
+
+
+def _check_connector_segments(connector: str, action: str) -> None:
+    """400 unless both path segments are plain ids (review of #521).
+
+    `%2E%2E` reaches this handler as `..`, and `requests` drops dot segments
+    when it builds the gateway URL: `connectors/../mailbox-link` landed on the
+    specific route, without the `admin_only` check and on the agent-server's
+    trusted token. Checked BEFORE anything else, so a malformed path reaches
+    neither the topic registry nor the gateway. `topics_client` checks again
+    where it builds the URL.
+    """
+    for valore, cosa in ((connector, "connettore"), (action, "azione")):
+        if not _CONNECTOR_SEGMENT.fullmatch(str(valore or "")):
+            raise HTTPException(400, f"{cosa} non valido")
+
+
+def _topic_view(row: dict, *, admin_view: bool) -> dict | None:
+    """One registry row, reduced to what the topic page draws.
+
+    Kept: the connector's name and glyph, its schemes with their forms (the
+    placeholders of the egress/ingress field), the `dtype` of its verbs (the
+    reason an observation names), and its topic actions with their declared
+    fields. Dropped: providers and vault entry names, pack internals, docs and
+    status verbs, templates (`adds`), and admin-only actions for a non-admin.
+    """
+    if not isinstance(row, dict) or not row.get("id"):
+        return None
+    azioni = []
+    for a in row.get("topic_actions") or ():
+        if not isinstance(a, dict):
+            continue
+        if a.get("admin_only") and not admin_view:
+            continue
+        campi = []
+        for f in a.get("fields") or ():
+            if not isinstance(f, dict):
+                continue
+            campo = {k: f.get(k) for k in ("name", "label", "required", "placeholder")}
+            if isinstance(f.get("options"), str) and f.get("options"):
+                campo["options"] = f["options"]
+            campi.append(campo)
+        azioni.append({"id": a.get("id"), "label": a.get("label") or "",
+                       "binding": a.get("binding") or "",
+                       "admin_only": bool(a.get("admin_only")),
+                       "fields": campi})
+    card = row.get("tools_card") if isinstance(row.get("tools_card"), dict) else None
+    return {
+        "id": row["id"],
+        "label": row.get("label") or "",
+        "schemes": [{k: s.get(k) for k in ("scheme", "direction", "label", "icon",
+                                           "hierarchical", "danger")}
+                    | {"forms": [{"label": f.get("label"), "example": f.get("example")}
+                                 for f in (s.get("forms") or ()) if isinstance(f, dict)]}
+                    for s in (row.get("schemes") or ()) if isinstance(s, dict)],
+        "verbs": [{"verb": v.get("verb"), "dtype": v.get("dtype") or ""}
+                  for v in (row.get("verbs") or ()) if isinstance(v, dict)],
+        "topic_actions": azioni,
+        "tools_card": {"icon": card.get("icon") or ""} if card else None,
+    }
+
+
+@router.get("/api/topics/{tier}/{name}/connectors")
+async def topic_connectors(tier: str, name: str, request: Request):
+    """The connectors as THIS topic's page draws them (clodia-platform#520).
+
+    The page used to read `GET /tools/connectors`, which the gateway serves to
+    admins only: a non-admin owner got a silent 401 and lost the Telegram and
+    Drive buttons. Here the human owner (or an admin) gets the topic actions,
+    their fields, the scheme forms and the topic's SEAL tier — read from the
+    gateway with the agent-server's own token and reduced before it leaves
+    (`_topic_view`). No vault data, no admin-only action for a non-admin; the
+    per-action state (values offered, entries, SEAL cap) stays on
+    `…/connectors/{connector}/{action}`.
+    """
+    principal = await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
+    admin_view = await asyncio.to_thread(admin.is_admin, principal)
+    try:
+        registry = await topics_client.async_connectors_registry()
+    except topics_client.TopicsClientError as e:
+        raise _gateway_error(e)
+    righe = [v for v in (_topic_view(r, admin_view=admin_view)
+                         for r in (registry or {}).get("connectors") or ())
+             if v is not None]
+    return {"tier": tier, "connectors": righe}
+
+
 @router.get("/api/topics/{tier}/{name}/connectors/{connector}/{action}")
 async def connector_action_status(tier: str, name: str, connector: str,
                                   action: str, request: Request):
@@ -1031,7 +1121,8 @@ async def connector_action_status(tier: str, name: str, connector: str,
     perché è il gateway a sapere com'è dichiarata l'azione, e prima del
     `return`: all'owner non arriva nulla.
     """
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    _check_connector_segments(connector, action)
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
     try:
         stato = await topics_client.async_connector_action_status(
             tier, name, connector, action)
@@ -1058,7 +1149,8 @@ async def connector_action_apply(tier: str, name: str, connector: str,
     POST su un connettore o un'azione che non esistono, prima di toccare
     qualunque cosa.
     """
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    _check_connector_segments(connector, action)
+    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
