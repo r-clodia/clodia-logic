@@ -9,6 +9,10 @@ from typing import Literal, Optional
 
 from pydantic import BaseModel, Field, ConfigDict, field_validator, model_validator
 
+#: Un verbo del gateway: `<namespace>.<tool>`, namespace dei backend compreso il
+#: trattino (`leads-mcp.update_lead`). Niente jolly, niente spazi.
+_GATEWAY_VERB = __import__("re").compile(r"[a-z][a-z0-9_-]{0,63}\.[A-Za-z0-9_.]{1,96}")
+
 
 AgentType = Literal["bot", "human", "proxy"]
 #: Ciò che un proxy può dichiarare: parla e legge LA SUA stanza, e basta.
@@ -469,6 +473,27 @@ class AgentSpec(BaseModel):
     # semplici ("<plugin>") coerse a {name: <plugin>, hard: false}.
     requires_plugins: list["PluginRequirement"] = Field(default_factory=list)
 
+    @field_validator("auto_approved_tools", mode="before")
+    @classmethod
+    def _auto_approved_are_gateway_verbs(cls, v):
+        """Solo verbi del gateway, mai strumenti nativi (clodia-platform#546)."""
+        if v is None:
+            return None
+        if isinstance(v, str):
+            v = [v]
+        if not isinstance(v, list):
+            raise ValueError("auto_approved_tools: attesa una lista di verbi del gateway")
+        out: list[str] = []
+        for raw in v:
+            verb = str(raw or "").strip()
+            if not _GATEWAY_VERB.fullmatch(verb):
+                raise ValueError(
+                    f"auto_approved_tools: {raw!r} non è un verbo del gateway "
+                    "(<namespace>.<tool>); gli strumenti nativi non si pre-approvano")
+            if verb not in out:
+                out.append(verb)
+        return out
+
     @field_validator("requires_plugins", mode="before")
     @classmethod
     def _coerce_requires_plugins(cls, v):
@@ -564,6 +589,22 @@ class AgentSpec(BaseModel):
     #: nella config del gateway, dove l'agente non scrive).
     permission_mode: Optional[
         Literal["default", "acceptEdits", "plan", "bypassPermissions"]] = None
+    #: Verbi del GATEWAY che Claude Code deve considerare già autorizzati
+    #: (clodia-platform#546). Lo spawn gira come root, quindi senza
+    #: `bypassPermissions`: il CLI applica la sua modalità predefinita, «auto», e
+    #: il suo classificatore rigiudica ogni azione che nessuna regola risolve
+    #: (#547). Per i verbi elencati qui la regola c'è, e il classificatore non
+    #: viene consultato — come da documentazione: «Actions matching your allow,
+    #: ask, or deny rules resolve immediately».
+    #:
+    #: Solo verbi del gateway (`<namespace>.<tool>`): l'autorità su quelli resta
+    #: il gateway, con i grant per agente e il PDP — un verbo non concesso viene
+    #: rifiutato lì comunque. Un nome nativo (`Bash`, `Write`…) è rifiutato al
+    #: caricamento: pre-approvare azioni locali vorrebbe dire spegnere l'unico
+    #: controllo che hanno.
+    #:
+    #: Forma: `["leads-mcp.update_lead", "leads-mcp.add_contact_log"]`.
+    auto_approved_tools: Optional[list[str]] = None
     #: Verbi che, per QUESTO agent, richiedono un consenso umano a ogni uso.
     #:
     #: Dichiarati qui perché è il posto in cui si sa quali dei propri verbi sono
