@@ -46,7 +46,21 @@ The shape of a pack (the `clodia-packs` repository is a directory of them):
 ```
 
 Runtime manifest: `CLODIA_DATA/packs/<pack>/pack.yaml` (name, description,
-version, source, agents, plugins).
+version, source, agents, plugins — and, copied as declared, what the gateway
+reads: `upstream`, `first_party`, `license`, `connectors`, `components`).
+
+**Components** (clodia-platform#558). A pack is a distribution of components,
+each mounted in the container it belongs to: the agent-server installs the
+seeds and plugins (skills, MCP servers), the webui draws topic buttons and
+Tools cards from `connectors:`, and a `components:` entry with
+`target: gateway` is code the GATEWAY fetches from the pack's first-party
+upstream, pins by commit and runs inside the reference monitor (grammar and
+trust rules: `server/connectors/SCHEMA.md` in clodia-tools). The agent-server
+never installs or loads that code; it only keeps the block in the installed
+manifest, which is what triggers the gateway's own fetch. After an **Update**,
+the gateway keeps the commit it pinned until a human admin asks it to move
+(`POST /internal/components/<pack>/refresh`, named in the Update answer as
+`gateway_components.refresh`). google-pack is the first pack with one.
 
 **Import** (`POST /clodia/packs/import[-url]`, unified): if the archive is a
 pack, plugins and seeds are installed; otherwise it delegates to the plugin

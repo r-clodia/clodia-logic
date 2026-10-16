@@ -436,7 +436,11 @@ def _list_packs() -> list[dict[str, Any]]:
             # has_upstream via _pack_upstream: legge il manifest installato E fa
             # fallback al catalogo bundled (robusto se il manifest installato è
             # stato registrato senza il campo upstream).
-            "first_party": bool(manifest.get("first_party")),
+            # Only a reserved first-party name can BE first-party: a zip/URL
+            # import's own `first_party: true` is not believed (review of
+            # clodia-logic#532). The gateway's trust table is the real check.
+            "first_party": bool(manifest.get("first_party"))
+                           and name in _reserved_names(),
             "has_upstream": bool(_pack_upstream(name)),
             # Esiste una dichiarazione del pack con cui confrontare i seed
             # installati (bundled o upstream)? Senza, il drift non è
@@ -1092,3 +1096,9 @@ async def delete_pack(name: str, request: Request):
         result["deprovision"] = report
     plugins_api.invalidate_plugins()
     return result
+
+
+def _reserved_names() -> set:
+    """The reserved first-party pack names (lazy import: avoids a cycle)."""
+    from .plugin_import import RESERVED_PLUGIN_NAMES
+    return set(RESERVED_PLUGIN_NAMES)

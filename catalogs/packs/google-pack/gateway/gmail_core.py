@@ -1,52 +1,39 @@
-#!/usr/bin/env python3
-"""gmail_transport — the Gmail transport of google-pack's `mail-gmail` provider.
+"""Gmail for google-pack's gateway component — the `mail_run` service.
 
-clodia-platform#524. Gmail is google-pack's provider `gmail` of the mail
-vocabulary (`mail-gmail`, `extends: mail`). The gateway keeps the `email.*`
-verbs and every decision that belongs to the reference monitor — which account
-a call uses, the mailbox whitelist (`inbox:`/`outbox:`), strict ingress with its
-fail-closed audit (#503), topic attachments in and out with their taint, the
-reply recipient — and the Google credentials. A Gmail account (one with a
-`google_`/`gmail_` credential) follows the instance switch `connectors:
-{google: pack}`; the gateway then calls the one tool here, `run`, with the
-contract of comms-pack's `mail-transport` (SCHEMA.md, `providers[]`):
+clodia-platform#558 (was the `gmail-transport` MCP backend of #524). Gmail is
+google-pack's provider `gmail` of the mail vocabulary (`mail-gmail`,
+`extends: mail`). The gateway keeps the `email.*` verbs and every decision that
+belongs to the reference monitor — which account a call uses, the mailbox
+whitelist (`inbox:`/`outbox:`), strict ingress with its fail-closed audit
+(#503), topic attachments in and out with their taint, the reply recipient.
+For a Gmail account (one with a `google_`/`gmail_` credential) on
+`connectors: {google: pack}`, after all of that, the gateway calls the service
+`mail_run` of this component with the contract of the mail transport
+(clodia-tools `connectors/SCHEMA.md`, `providers[]`):
 
     run({argv: [str], files: {relpath: base64}, timeout: int})
       -> {"returncode": int, "stdout": str, "stderr": str}
 
-`files` are that call's XOAUTH2 files, as `vault.materialize_google_oauth`
-writes them — `secrets/google_oauth_client.json`,
-`secrets/email_oauth_tokens.json`, `secrets/email_config.json` — plus any
-outgoing attachments. Unlike `google.request`, this transport therefore does
-receive one account's refresh token and the app client for the duration of a
-call: the vendored client refreshes its own XOAUTH2 access token.
+`files` are that call's XOAUTH2 files, as the gateway's vault materialises
+them for ONE account (`secrets/google_oauth_client.json`,
+`secrets/email_oauth_tokens.json`, `secrets/email_config.json`), plus any
+outgoing attachments. Same process as before the move — the gateway's — so
+nothing travels over MCP any more; the per-call directory is kept because it
+is what confines one call's credential to one client process.
 
 1. a private temp dir (0700) is created for this call only;
 2. each file is written at its RELATIVE path inside it (0600); absolute
    paths, `..` and anything that would resolve through a symlink are refused;
 3. the bundled `email_client.py` (a copy of the gateway's own client) runs
    with argv — `{dir}` replaced by the temp dir ONLY in an `--attachment`
-   slot — a minimal environment (PATH, LANG, HOME=<tmp>) and
-   `CLODIA_SECRETS_DIR=<tmp>/secrets`;
+   slot — a minimal environment (PATH, LANG, HOME=<tmp>,
+   PYTHONDONTWRITEBYTECODE=1: no `__pycache__` may appear next to the pinned
+   component) and `CLODIA_SECRETS_DIR=<tmp>/secrets`;
 4. the temp dir is ALWAYS removed — on success, on failure, on timeout.
 
-Cross-process safety: there is no state to share. The gateway may start a
-process per call; each call has its own directory, its own copy of the
-credential and its own client process, and nothing is written outside that
-directory (the client's access-token cache lives in the client process and
-dies with it).
-
-The raw output goes back to the gateway, which filters it. Nothing here logs
-argv, credentials or file contents; stderr is trimmed and, best effort,
-scrubbed of the secret values it was handed and of anything shaped like a
-Google access token or a bearer header.
-
-This module is comms-pack's `mail_transport_core.py` with the same
-validation, file and placeholder code (the tests compare the functions); only
-the names, this docstring and the extra scrubbing differ.
-
-**Stdlib only**: the MCP envelope is `gmail_transport_mcp.py`, so this can be
-tested without the gateway's `mcp`.
+Nothing here logs argv, credentials or file contents; stderr is trimmed and,
+best effort, scrubbed of the secret values it was handed and of anything
+shaped like a Google access token or a bearer header. Stdlib only.
 """
 from __future__ import annotations
 
@@ -62,8 +49,6 @@ import subprocess
 import sys
 import tempfile
 from pathlib import Path, PurePosixPath
-
-__version__ = "1.0.0"
 
 HERE = Path(__file__).resolve().parent
 CLIENT = HERE / "email_client.py"
@@ -264,7 +249,7 @@ def run(args: dict) -> dict:
     argv, files, timeout = _check_request(args or {})
     # Resolved, so `{dir}`, cwd and CLODIA_SECRETS_DIR name the same path
     # (on macOS the temp root sits behind the /tmp → /private/tmp link).
-    root = Path(tempfile.mkdtemp(prefix="gmail-transport-")).resolve()
+    root = Path(tempfile.mkdtemp(prefix="gmail-component-")).resolve()
     try:
         os.chmod(root, 0o700)
         _write_files(root, files)
@@ -274,6 +259,7 @@ def run(args: dict) -> dict:
             "LANG": os.environ.get("LANG") or "C.UTF-8",
             "HOME": str(root),
             "CLODIA_SECRETS_DIR": str(secrets_dir),
+            "PYTHONDONTWRITEBYTECODE": "1",
         }
         cmd = [sys.executable, str(CLIENT), *_with_dir(argv, root)]
         proc = subprocess.Popen(cmd, cwd=root, env=env, stdin=subprocess.DEVNULL,
@@ -289,7 +275,7 @@ def run(args: dict) -> dict:
                 proc.kill()
             out, err = proc.communicate()
             returncode = TIMEOUT_RETURNCODE
-            err = (err or b"") + f"\ngmail-transport: timed out after {timeout}s".encode()
+            err = (err or b"") + f"\ngmail: timed out after {timeout}s".encode()
         secrets = _secret_values(files)
         stderr = _trim(_scrub(err.decode("utf-8", errors="replace"), secrets))
         return {
@@ -299,34 +285,3 @@ def run(args: dict) -> dict:
         }
     finally:
         _remove(root)
-
-
-TOOL_SPECS: list[dict] = [
-    dict(name="run",
-         description=(
-             "GATEWAY-INTERNAL — hidden from agents, who use email.*. Runs the "
-             "bundled Gmail (XOAUTH2) client once: writes `files` (relative "
-             "path → base64; the call's OAuth files go under secrets/) into a "
-             "private temp dir, replaces '{dir}' in --attachment values with "
-             "that dir, runs email_client.py with CLODIA_SECRETS_DIR="
-             "<dir>/secrets, removes the dir. Returns JSON {returncode, stdout, "
-             "stderr}."),
-         inputSchema={
-             "type": "object",
-             "properties": {
-                 "argv": {"type": "array", "items": {"type": "string"},
-                          "description": "Arguments for email_client.py; "
-                                         "'{dir}' is replaced by the call dir."},
-                 "files": {"type": "object",
-                           "additionalProperties": {"type": "string"},
-                           "description": "Relative path → base64 content."},
-                 "timeout": {"type": "integer", "minimum": 1,
-                             "maximum": MAX_TIMEOUT, "default": DEFAULT_TIMEOUT,
-                             "description": "Seconds (default 60, max 300)."},
-             },
-             "required": ["argv"],
-             "additionalProperties": False,
-         }),
-]
-
-DISPATCH = {"run": run}

@@ -183,6 +183,19 @@ class PacksApiTest(unittest.TestCase):
         self.assertEqual(plugin_names, {"inner-plugin", "bare-plugin"})
         self.assertEqual(pack["counts"], {"agents": 1, "plugins": 2})
 
+    def test_a_third_party_pack_cannot_report_itself_first_party(self) -> None:
+        """Review of clodia-logic#532: a zip import's own `first_party: true`
+        must not surface; only reserved first-party names can be first-party."""
+        import yaml as _yaml
+        pack_import.import_pack_zip(self._pack_zip(), source="my-pack.zip")
+        mf = pack_import.PACKS_META_DIR / "my-pack" / "pack.yaml"
+        data = _yaml.safe_load(mf.read_text()) or {}
+        data["first_party"] = True
+        mf.write_text(_yaml.safe_dump(data))
+        self._clear_caches()
+        (pack,) = [p for p in packs._list_packs() if p["name"] == "my-pack"]
+        self.assertFalse(pack["first_party"])
+
     def test_unified_import_falls_back_to_plugin(self) -> None:
         data = _zip_bytes({
             ".claude-plugin/plugin.json": '{"name": "loose-plugin"}',

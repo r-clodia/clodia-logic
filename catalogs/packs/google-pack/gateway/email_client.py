@@ -6,10 +6,10 @@ Usa solo librerie standard Python (imaplib, smtplib, email, urllib)
 Config: secrets/email_config.json
 
 Vendored into google-pack from r-clodia/clodia-tools:vendor/email_client.py
-(commit c1d6921bb463, clodia-platform#524): the Gmail (XOAUTH2) transport of
-the `mail-gmail` provider, run by gmail_transport_core.py with
-CLODIA_SECRETS_DIR set to a per-call temp dir. Keep it identical to the gateway
-copy except for this note.
+(commit c1d6921bb463, clodia-platform#524): the Gmail (XOAUTH2) client of the
+`mail-gmail` provider, run by gmail_core.py (google-pack's gateway component,
+clodia-platform#558) with CLODIA_SECRETS_DIR set to a per-call temp dir. Keep
+it identical to the gateway copy except for this note.
 """
 
 import imaplib
