@@ -1283,6 +1283,19 @@ class GmailForCommsPackTests(_OnFakeHost):
                     self.host.services["mail_exec"]({"account": "conto", "argv": [],
                                                      "files": files})
 
+    def test_mail_exec_runs_only_mail_commands_and_att_attachments(self) -> None:
+        """Review of clodia-tools#384: a caller could make the client attach
+        the call's own OAuth files (`secrets/…`)."""
+        core = _mod("gmail_core")
+        for argv in (["configure"], ["send", "--to", "x@y.it", "--attachment",
+                                     "secrets/email_oauth_tokens.json"],
+                     ["send", "--attachment=secrets/email_config.json"],
+                     ["send", "--attachment", "{dir}/att/../secrets/x"],
+                     ["download-attachments", "1"]):
+            with self.subTest(argv=argv):
+                with self.assertRaises(core.TransportError):
+                    self.host.services["mail_exec"]({"account": "conto", "argv": argv})
+
     def test_mail_exec_refuses_an_unknown_or_bad_account(self) -> None:
         core = _mod("gmail_core")
         with self.assertRaises(PermissionError):

@@ -60,6 +60,14 @@ def get() -> Any:
     return HOST
 
 
+def google_mail_account_exists(account: str) -> bool:
+    """Name-only check through the gateway (never the credential)."""
+    try:
+        return bool(get().perimeter.google_mail_account_exists(account))
+    except Exception:  # noqa: BLE001 — in doubt: treat as Google, refuse
+        return True
+
+
 # ── Gmail: google-pack's component ─────────────────────────────────────────
 
 def google_service(name: str):

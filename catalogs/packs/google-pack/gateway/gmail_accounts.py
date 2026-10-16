@@ -108,6 +108,12 @@ def _oauth_files(credential: str) -> dict[str, str]:
     }
 
 
+#: The email client commands the `email.*` verbs need (never `configure`,
+#: `download-attachments` to arbitrary paths, …).
+_ALLOWED_COMMANDS = frozenset({"folders", "list", "read", "search", "send",
+                               "reply", "get-attachment", "accounts"})
+
+
 def mail_exec(payload: dict) -> dict:
     """One Gmail client run for `payload["account"]` (see the module doc)."""
     payload = payload or {}
@@ -128,6 +134,18 @@ def mail_exec(payload: dict) -> dict:
     credential = _credential(account)
     if not _host.has_credential(credential):
         raise PermissionError(f"'{account}' is not a Google mail account")
+    # Only the client commands the mail verbs use, and attachments only from
+    # the call's own `att/` files: otherwise a caller could make the client
+    # attach `secrets/email_oauth_tokens.json` (review of clodia-tools#384).
+    if not argv or argv[0] not in _ALLOWED_COMMANDS:
+        raise gmail_core.TransportError("command not allowed")
+    for i, a in enumerate(argv):
+        if a.startswith("--attachment"):
+            value = a.split("=", 1)[1] if "=" in a else (
+                argv[i + 1] if i + 1 < len(argv) else "")
+            if not value.startswith("{dir}/att/") or ".." in value:
+                raise gmail_core.TransportError(
+                    "attachments must come from the call's own att/ files")
     return gmail_core.run({
         "argv": ["--account", account, *argv],
         "files": {**files, **_oauth_files(credential)},

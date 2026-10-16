@@ -390,6 +390,13 @@ def _secrets_env(account: str, direction: str):
     gcred, mcred = _gmail_cred(account), _mailbox_cred(account)
     cred = gcred if vault.has_credential(gcred) else (
         mcred if vault.has_credential(mcred) else None)
+    if cred == mcred and _host.google_mail_account_exists(account):
+        # A Google account whose google-pack is not serving: never fall back
+        # to a same-named IMAP mailbox — another sender address, and a reply
+        # resolved in one mailbox sent from the other (review of #384).
+        raise PermissionError(
+            f"l'account '{account}' è un account Google: google-pack non è "
+            "attivo su questa istanza, quindi la sua posta non si usa ora")
     if cred is None:
         addr = _legacy_address(account)
         if not addr:

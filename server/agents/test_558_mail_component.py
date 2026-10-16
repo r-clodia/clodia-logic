@@ -243,6 +243,12 @@ class FakePerimeter:
     def legacy_mail_accounts(self):
         return dict(self.legacy)
 
+    #: Accounts that ALSO hold a Google mail credential (names only).
+    google_named: set = set()
+
+    def google_mail_account_exists(self, account):
+        return account in self.google_named
+
 
 class FakeTopics:
     def __init__(self, host):
@@ -550,6 +556,16 @@ class GmailTests(_OnFakeHost):
         self.assertIn("google-pack", str(e.exception))
         out = self.call("email.folders", {"account": "studio"})     # IMAP unaffected
         self.assertEqual(out["folders"]["argv"][2], "folders")
+
+    def test_a_dual_credential_account_is_refused_while_google_pack_is_down(self) -> None:
+        """Review of #384: `studio` with both `mailbox_studio` and
+        `google_studio` silently switched sender address when google-pack was
+        down. Refused instead."""
+        self.host.google = {}
+        self.host.perimeter.google_named = {"studio"}
+        with self.assertRaises(PermissionError) as e:
+            self.call("email.folders", {"account": "studio"})
+        self.assertIn("google-pack", str(e.exception))
 
     def test_the_google_bundle_is_never_read(self) -> None:
         with self.assertRaises(PermissionError):
