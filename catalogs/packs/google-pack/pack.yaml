@@ -1,10 +1,11 @@
 name: google-pack
 description: >-
-  First-party pack for Google Workspace: declares the Drive, Sheets, Docs and
-  Calendar connectors and Gmail as a provider of the mail vocabulary, and ships
-  their transports. The verbs, the folder/calendar perimeter and the Google
-  credentials stay in the gateway.
-version: 1.0.0
+  First-party pack for Google Workspace: the Drive, Sheets, Docs and Calendar
+  connectors and Gmail as a provider of the mail vocabulary, implemented by a
+  gateway component (verbs, folder/calendar perimeter, OAuth consent, Gmail)
+  that runs inside the gateway; the credentials stay in the gateway's vault.
+  Ships the skill to keep a topic in sync with a Drive folder.
+version: 2.0.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -13,6 +14,34 @@ upstream:
   ref: main
 plugins:
   - google-pack
+
+# A pack is a distribution of components, each mounted in its container
+# (clodia-platform#558, owner decision 2026-10-16; grammar in clodia-tools
+# `server/connectors/SCHEMA.md`, «Components»):
+#
+#   gateway       `gateway/` below — fetched BY THE GATEWAY from this
+#                 repository's default branch, pinned by commit, and imported
+#                 inside the reference monitor. Never installed into the
+#                 datadir, never loaded from it.
+#   agent-server  `plugins/google-pack` (the `topic-drive-sync` skill), installed
+#                 by the agent-server as for every pack.
+#   webui         nothing to ship: the topic button and the Tools card are drawn
+#                 from the `connectors:` manifest below (#520).
+#
+# The gateway runs the component only on `connectors: {google: pack}` in the
+# instance profile; on `native` (the default) it stays pinned on standby.
+components:
+  - id: google
+    target: gateway
+    source:
+      repo: r-clodia/clodia-logic
+      path: catalogs/packs/google-pack/gateway
+      ref: main
+    entry: google_component
+    connectors: [google, google-sheets, google-docs, google-calendar]
+    # The gateway's custody (`builtin.CORE_CREDENTIALS_FOLLOW`): reachable only
+    # while the `google` switch is on `pack`, checked at every access.
+    credentials: [google_, gworkspace_, gmail_, app_google_oauth]
 
 # Connectors declared by the pack (grammar of clodia-platform#516,
 # `server/connectors/SCHEMA.md` in clodia-tools). A declaration is NOT a grant:
@@ -31,26 +60,29 @@ plugins:
 # the builtin sits in `server/agents/fixtures/524_builtin_google.yaml` and
 # `test_524_google_pack.py` compares the two field by field.
 #
-# Exactly two kinds of difference, both required for a NON-builtin manifest:
+# Exactly three kinds of difference, all required for a NON-builtin manifest:
 #   1. `canonicalise:` of `gdrive` and `gsheets` is rewritten in the pack regex
 #      subset (no quantified group, at most two repeats and two `?`): each
 #      builtin rule with an optional group becomes one rule per shape. Same
 #      answers on every URL the builtin rewrites, with one bounded exception:
 #      the `drive/u/<n>/folders/` form is recognised for n < 100 (`\d\d?`);
-#   2. the `workspace` provider gets its `transport` (`google.request`), and the
-#      pack adds `mail-gmail`, Gmail as a provider of the mail vocabulary.
+#   2. the pack adds `mail-gmail`, Gmail as a provider of the mail vocabulary;
+#   3. each verb that has no egress/source mapping and no taint row is listed
+#      in `unmapped:` (#558): the gateway serves a COMPONENT verb only when the
+#      reviewed manifest classifies it, and «the PDP has nothing to read for
+#      this verb, the component enforces its perimeter» is that classification
+#      for these eleven. The PDP answers are the builtin's, unchanged.
 #
-# Division of labour (design comment on #524): the GATEWAY keeps the 24
-# `gdrive/gsheets/gdocs/gcalendar` verbs and the whole perimeter (`gdrive_root`:
-# parent walk, shortcut refusal, list filtering, adopt-after-create, writable
-# parent, `gcal:` allowlist, pre-PDP parent lookup, scratch I/O, taint) and the
-# credentials (OAuth consent, app client, `google_<acct>` bundles, refresh) —
-# so the switch needs no re-consent. The pack only moves bytes: with the
-# instance switch `connectors: {google: pack}` the gateway calls the
-# `google-transport` backend's `request` tool with a short-lived access token,
-# and Gmail calls the `gmail-transport` backend's `run` tool with that one
-# call's XOAUTH2 files. With the switch on `native` (the default) nothing here
-# runs.
+# Division of labour (#558, superseding the transport design of #524): with
+# the instance switch `connectors: {google: pack}` the gateway component in
+# `gateway/` implements the 24 `gdrive/gsheets/gdocs/gcalendar` verbs and the
+# whole perimeter (`gdrive_root`: parent walk, shortcut refusal, list
+# filtering, adopt-after-create, writable parent, `gcal:` allowlist, pre-PDP
+# parent lookup) and runs them inside the gateway, under the gateway's checks
+# (whitelist, gates, the PDP on the mappings below, scratch I/O, taint,
+# audit). The credentials (consent, app client, `google_<acct>` bundles) stay
+# in the gateway's vault — no re-consent. With the switch on `native` (the
+# default) none of this runs.
 #
 # The `https:` canonicalisation rules below are read by the gateway only while
 # the switch ELECTS this connector, and only for URLs whose host the gateway
@@ -130,14 +162,9 @@ connectors:
     providers:
       - id: workspace
         label: Account Google
-        # Difference 2: google-pack's own backend carries each Google API call
-        # of the gateway's verbs (`google.request`, see SCHEMA.md «The
-        # switch»). Never listed to agents. The credential below is the
-        # builtin's: `kind: oauth` names no vault entry, and the consent, the
-        # app client and the `google_<acct>` bundles stay the gateway's.
-        transport:
-          backend: google-transport
-          tool: request
+        # The builtin's credential: `kind: oauth` names no vault entry; the
+        # consent, the app client and the `google_<acct>` bundles stay in the
+        # gateway's vault, reached by the component through the host.
         credential:
           kind: oauth
           authorize_url: https://accounts.google.com/o/oauth2/v2/auth
@@ -192,6 +219,9 @@ connectors:
       - {verb: gdrive.update, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
       # Reads of a resource BY ID: the source is that resource.
       - {verb: gdrive.download, direction: source, scheme: gdrive, arg: file_id, template: 'gdrive:file/{value}'}
+    # Difference 3: no destination and no source the PDP reads (an id of a
+    # file inside the perimeter, a query) — `gdrive_root` is the check.
+    unmapped: [gdrive.list, gdrive.search, gdrive.rename]
 
   # Verb-only siblings: no scheme, no provider, no card. They map their own
   # namespace's verbs onto the owner's schemes («using a vocabulary is not
@@ -213,6 +243,7 @@ connectors:
     label: Google Docs
     verbs:
       - {verb: gdocs.read, direction: source, scheme: gdrive, arg: document_id, template: 'gdrive:doc/{value}'}
+    unmapped: [gdocs.create, gdocs.append_text, gdocs.replace_text]
 
   - id: google-calendar
     manifest_version: 1
@@ -223,16 +254,18 @@ connectors:
     # enforced by the gateway's `gdrive_root`, not by the PDP's tables.)
     taint:
       - gcalendar.list_events
+    unmapped: [gcalendar.list_calendars, gcalendar.create_event,
+               gcalendar.update_event, gcalendar.delete_event, gcalendar.freebusy]
 
   # Gmail, a provider of the mail vocabulary that comms-pack (or, on `mail:
   # native`, the gateway) owns: `extends:` adds an implementation, never a
   # meaning, so this entry declares no scheme, verb or taint. Namespace
   # `gdrive` because `google` stays reserved together with the `google_` vault
   # prefix (SCHEMA.md «The switch»). A Gmail account (one with a
-  # `google_`/`gmail_` credential) follows the `google` switch: the gateway
-  # calls `run` on `gmail-transport` with the mail transport's contract and
-  # that call's XOAUTH2 files. No credential here: Google accounts are still
-  # connected from Tools and stay in the gateway's vault.
+  # `google_`/`gmail_` credential) follows the `google` switch: the gateway's
+  # `email.*` verbs, after every check of theirs, call the component's
+  # `mail_run` service with that call's XOAUTH2 files. No transport and no
+  # credential here: the code is the component's, the credential the vault's.
   - id: mail-gmail
     manifest_version: 1
     namespace: gdrive
@@ -241,6 +274,3 @@ connectors:
     providers:
       - id: gmail
         label: Gmail
-        transport:
-          backend: gmail-transport
-          tool: run

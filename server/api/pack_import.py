@@ -386,6 +386,13 @@ def install_pack_from_root(root: Path, *, source: str,
     # first-party installato via questo path perde l'aggiornabilità.
     _up = manifest.get("upstream")
     upstream = _up if isinstance(_up, dict) and _up.get("repo") else None
+    # What the GATEWAY reads from the installed manifest besides `connectors:`
+    # (clodia-platform#558): `first_party` (a gateway component is refused
+    # without it) and `components:` (the trigger of the gateway's own fetch of
+    # a `target: gateway` component). Copied as they are: the gateway decides
+    # trust from its own table and re-reads the manifest from the pinned
+    # upstream commit, so nothing here is a grant.
+    components = declared_components(manifest)
 
     # I connettori si convalidano PRIMA di toccare qualunque cosa: un manifest
     # che il gateway rifiuta non deve lasciare dietro di sé mezzo pack
@@ -439,6 +446,12 @@ def install_pack_from_root(root: Path, *, source: str,
         _meta["flows"] = {"declared": flows, "approved": False}
     if upstream is not None:
         _meta["upstream"] = upstream
+    if manifest.get("first_party") is True:
+        _meta["first_party"] = True
+    if isinstance(manifest.get("license"), str) and manifest["license"].strip():
+        _meta["license"] = manifest["license"].strip()
+    if components:
+        _meta["components"] = components
     if connectors:
         _meta["connectors"] = connectors
         # Ciò che il gateway considera INERTE qui e ora (un connettore che
@@ -470,6 +483,18 @@ def install_pack_from_root(root: Path, *, source: str,
     if connectors:
         out["connectors"] = {"declared": [c.get("id") for c in connectors],
                              **connectors_check}
+    gateway_ids = [str(c.get("id") or "") for c in components
+                   if str(c.get("target") or "") == "gateway"]
+    if gateway_ids:
+        # The gateway pins a component on first sight and moves the pin only on
+        # a refresh, which a HUMAN admin asks for (never this service): the
+        # Update itself cannot do it, so it says what is left to do.
+        out["gateway_components"] = {
+            "declared": gateway_ids,
+            "refresh": f"POST /internal/components/{pack}/refresh",
+            "note": ("the gateway fetches this pack's gateway component itself; "
+                     "after an Update a human admin asks it to move to the new "
+                     "upstream commit with the refresh above")}
     _avvisi = [f"{a['name']}: {a['warning']}" for a in agents if a.get("warning")]
     # Inert connector declarations go into `warnings` too: `out["connectors"]`
     # is detail, `warnings` is what the person installing actually sees.
@@ -503,6 +528,18 @@ def declared_flows(manifest: dict) -> dict[str, list[str]]:
         if uris:
             out[key] = uris
     return out
+
+
+def declared_components(manifest: dict) -> list:
+    """The `components:` block of the source pack.yaml, copied as it is
+    (clodia-platform#558). Same reasoning as `declared_connectors`: the
+    installed manifest is what the gateway reads, and a block dropped here is a
+    component the gateway never hears of — no error, just nothing loaded. No
+    validation here: the grammar and the trust rules are the gateway's."""
+    raw = manifest.get("components")
+    if not isinstance(raw, list):
+        return []
+    return [c for c in raw if isinstance(c, dict) and c]
 
 
 def declared_connectors(manifest: dict) -> list:

@@ -1,6 +1,6 @@
 {
   "name": "google-pack",
-  "description": "Google Workspace transports for the gateway: google-transport (Drive, Docs, Sheets, Calendar API calls) and gmail-transport (Gmail over XOAUTH2). Gateway-internal, no skills.",
-  "version": "1.0.0",
+  "description": "Google Workspace skills for agents: topic-drive-sync (keep a topic's files in sync with a Google Drive folder through the gdrive.* and topic.* verbs). The Google verbs themselves are served by google-pack's gateway component.",
+  "version": "2.0.0",
   "license": "AGPL-3.0-or-later"
 }

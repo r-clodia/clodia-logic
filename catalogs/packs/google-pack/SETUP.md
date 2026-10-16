@@ -2,13 +2,30 @@
 
 What to do after importing or updating the pack.
 
-## 0. Installing it
+## 0. What it is made of
+
+google-pack 2.0.0 is a distribution of components (clodia-platform#558):
+
+| component | where it runs | what it is |
+|---|---|---|
+| `gateway/` (`components:`, `target: gateway`) | the gateway | the 24 Google verbs, the folder/calendar perimeter, the OAuth consent routes, Gmail, the services the gateway calls |
+| `plugins/google-pack` | the agent-server | the `topic-drive-sync` skill |
+| `connectors:` | gateway PDP + webui | schemes, mappings, taint, the "Aggiungi una cartella Drive" topic button, the Tools card |
+
+The gateway component is never installed into the datadir: the gateway fetches
+it from r-clodia/clodia-logic (default branch), pins the commit in its own
+state directory and verifies it before every load.
+
+## 1. Installing / updating
+
+Requirements: clodia-tools (gateway) ≥ 2.109.0, clodia-logic ≥ 6.305.0 (an
+older agent-server drops `components:` and `first_party` from the installed
+manifest, and the gateway then never sees the component).
 
 google-pack is bundled with clodia-logic (`catalogs/packs/google-pack`). On a
 fresh datadir `init-datadir.sh` registers its manifest like every bundled pack;
-then **Update** it from the Packs page to install the plugin and mount its MCP
-servers. On an existing datadir that predates the pack, register the manifest
-once and then Update:
+then **Update** it from the Packs page. On an existing datadir that predates
+the pack, register the manifest once and then Update:
 
 ```sh
 mkdir -p "$CLODIA_DATA/packs/google-pack"
@@ -18,60 +35,73 @@ cp catalogs/packs/google-pack/pack.yaml "$CLODIA_DATA/packs/google-pack/pack.yam
 `google-pack` is a reserved first-party name: it cannot be imported from a zip
 or a third-party URL.
 
-## 1. Plugin dependencies (`requires`)
+## 2. The gateway component
 
-None beyond the gateway image: both backends are stdlib Python plus the `mcp`
-package the gateway already has.
+1. **First time**: after the Update the gateway pins the component by itself
+   at its next reconcile (≤ 60 s; `CLODIA_COMPONENT_INTERVAL`). Check:
 
-## 2. MCP servers
+   ```sh
+   curl -sS -H "Authorization: Bearer $OWNER_SESSION_TOKEN" \
+        https://<gateway>/internal/components
+   ```
 
-`plugins/google-pack/.mcp.json` mounts two stdio backends. **Nothing to
-configure** for either: neither has a mount-time credential.
+   With the switch still on `native` its status is **`standby`** (pinned, not
+   imported, nothing served by it): expected.
+2. **Every later Update**: the pin does NOT move by itself. A human admin asks
+   the gateway to fetch the new head of `main` (the agent-server cannot: it is
+   refused there by design). Until the webui has a button, with the owner's
+   own session token:
 
-- **`google-transport`** — the transport of the `google` connector. The
-  gateway calls its single tool `request` once per Google API call, with a
-  short-lived access token; the refresh token and the OAuth client stay in the
-  gateway's vault.
-- **`gmail-transport`** — the transport of the `mail-gmail` provider. The
-  gateway calls its single tool `run` with that one call's XOAUTH2 files.
+   ```sh
+   curl -sS -X POST -H "Authorization: Bearer $OWNER_SESSION_TOKEN" \
+        https://<gateway>/internal/components/google-pack/refresh
+   ```
 
-Both tools are gateway-internal and hidden from agents, who keep calling
-`gdrive.*`, `gsheets.*`, `gdocs.*`, `gcalendar.*` and `email.*`.
+   The Update answer names this call (`gateway_components.refresh`).
 
-## 3. Turning the connectors on
+No MCP server to mount, no plugin dependency, no credential to configure.
 
-Nothing runs until the instance profile switches Google to the pack:
+## 3. Turning it on
 
 ```yaml
-# profile.yaml
+# $CLODIA_DATA/profile.yaml
 connectors:
   google: pack
 ```
 
-The one switch moves the four Google connectors (`google`, `google-sheets`,
-`google-docs`, `google-calendar`) and Gmail together. With `native` (the
-default) the gateway keeps using its built-in code. Gmail accounts follow
-`google`; IMAP mailboxes keep following `mail` (comms-pack).
+then restart the gateway (the profile is read at start; the first reconcile
+at boot loads the component). The one switch moves the four Google connectors
+(`google`, `google-sheets`, `google-docs`, `google-calendar`) and Gmail
+together. With `native` (the default) the gateway keeps using its built-in
+code and the component stays on standby. Gmail accounts follow `google`; IMAP
+mailboxes keep following `mail` (comms-pack).
 
-**No re-consent.** Google accounts are still connected from Tools → Google,
-and their bundles (`google_<account>`) stay in the gateway's vault in both
-positions. Drive folders are still authorised per topic with the
-"Aggiungi una cartella Drive" button, and a topic's `drive_folders` still
-narrows `gdrive.*` in that room.
+**No re-consent.** The Google credentials (`google_<account>`,
+`app_google_oauth`, legacy `gworkspace_`/`gmail_`) stay in the gateway's vault
+with the same names and shapes; the component reaches them through the gateway
+only while the switch is on `pack`. Tools → Google keeps working: the
+gateway's `/tools/google/*` forward to the component's routes. Drive folders
+are still authorised per topic with the "Aggiungi una cartella Drive" button,
+and a topic's `drive_folders` still narrows `gdrive.*` in that room.
 
 ## 4. Verification
 
-With `google: pack`:
+`GET /internal/components` → google-pack `loaded`, 24 verbs, routes
+`app`/`auth`/`connect`. Then, with `google: pack`:
 
 - `gdrive.list` and `gdrive.upload` confined to an authorised folder behave as
   on `native` (an upload without destination is still refused `OutsideRoot`);
 - `gsheets.append_rows` on an authorised sheet, `gcalendar.list_events` on an
   approved `gcal:` calendar;
-- the `topic-drive-sync` skill on a real topic, and the folder labels;
-- for Gmail (`email.list`/`email.send` on a `google_` account): the same
-  results as on `native`;
-- no `ya29.`/`1//` in the gateway's or the pack's logs.
+- `gdrive.update` of a file outside the whitelisted folders is DENIED by the
+  egress check (the parent lookup is the component's);
+- the `topic-drive-sync` skill on a real topic, and the folder labels in the
+  whitelist page;
+- Tools → Google → Test: green for each connected account;
+- Gmail (`email.list`/`email.send` on a `google_` account): the same results as
+  on `native`;
+- no `ya29.`/`1//` in the gateway's logs.
 
-If google-pack is missing, refused or its backends are not mounted, every
-Google verb is refused — never served by the built-in code. Set
-`connectors: {google: native}` to go back.
+If the component is missing, refused or failed, every Google verb is refused
+(DENIED, naming the component) — never served by the built-in code. Set
+`connectors: {google: native}` and restart the gateway to go back.
