@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 1.4.0
+version: 2.0.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -12,6 +12,41 @@ upstream:
   ref: main
 plugins:
   - comms-pack
+
+# A pack is a distribution of components, each mounted in its container
+# (clodia-platform#558, owner decision 2026-10-16; grammar in clodia-tools
+# `server/connectors/SCHEMA.md`, «Components»):
+#
+#   gateway       `gateway/` below — the MAIL code (the eight `email.*` verbs,
+#                 mailbox whitelist, strict ingress, topic attachments, reply
+#                 recipient, the mailbox management of the Tools page, the
+#                 IMAP/SMTP client). Fetched BY THE GATEWAY from this
+#                 repository's default branch, pinned by commit, and imported
+#                 inside the reference monitor. Never installed into the
+#                 datadir, never loaded from it.
+#   agent-server  `plugins/comms-pack`: the Telegram MCP backend and the skills
+#                 (check-email, telegram-1to1, helpdesk).
+#   webui         nothing to ship: the topic buttons and the Tools cards are
+#                 drawn from the `connectors:` manifest below (#520).
+#
+# The gateway runs the component only on `connectors: {mail: pack}` in the
+# instance profile; on `native` (the default) it stays pinned on standby and
+# the gateway's own mail code serves. Telegram is not part of it (its switch
+# and its MCP backend are #522's).
+components:
+  - id: mail
+    target: gateway
+    source:
+      repo: r-clodia/clodia-logic
+      path: catalogs/packs/comms-pack/gateway
+      ref: main
+    entry: mail_component
+    connectors: [mail]
+    # The gateway's custody (`builtin.CORE_CREDENTIALS_FOLLOW`): reachable only
+    # while the `mail` switch is on `pack`, checked at every access. Google
+    # accounts are NOT here: they are google-pack's, asked through its
+    # component's services.
+    credentials: [mailbox_]
 
 # Connettori dichiarati dal pack (grammatica di clodia-platform#516,
 # `server/connectors/SCHEMA.md` in clodia-tools). Una dichiarazione NON è una
@@ -166,20 +201,27 @@ connectors:
   # of the builtin sits in `server/agents/fixtures/523_builtin_mail.yaml` and
   # `test_523_mail_transport.py` compares the two field by field.
   #
-  # Exactly two additions, both required for a NON-builtin manifest:
+  # Exactly three additions, all required for a NON-builtin manifest:
   #   1. `forms:` on `inbox` and `outbox` — a pack topic action may only write
   #      into a scheme that declares forms (SCHEMA.md, `topic_actions`), and
   #      `mailbox-link` writes `inbox:{address}` / `outbox:{address}`;
-  #   2. `providers:` — the IMAP/SMTP transport this pack ships.
+  #   2. `providers:` — `imap`, the IMAP/SMTP mailboxes this pack serves (no
+  #      transport since 2.0.0: the code is the gateway component's);
+  #   3. `unmapped:` — `email.folders` and `email.save_attachment` have no
+  #      egress/source mapping and no taint row (#558): the gateway serves a
+  #      COMPONENT verb only when the reviewed manifest classifies it. The PDP
+  #      answers are the builtin's, unchanged.
   #
-  # Division of labour (design comment on #523): the GATEWAY keeps the `email.*`
-  # verbs and every decision — account resolution, mailbox whitelist, strict
-  # ingress (#503) and its audit, topic attachments in and out with taint, the
-  # reply recipient, the vault. The pack only moves bytes: with the instance
-  # switch `connectors: {mail: pack}` the gateway calls the `mail-transport`
-  # backend's `run` tool with that one call's mailbox credential, and filters
-  # the raw result itself. With the switch on `native` (the default) nothing
-  # here runs.
+  # Division of labour (#558, superseding the transport design of #523): with
+  # the instance switch `connectors: {mail: pack}` the gateway component in
+  # `gateway/` implements the eight `email.*` verbs for every account and
+  # every decision the gateway used to take inside them — account resolution,
+  # mailbox whitelist (`inbox:`/`outbox:`), strict ingress (#503) and its
+  # audit record, topic attachments in and out with taint, the reply recipient
+  # (its `pdp_arguments` service) — reading the perimeter from the gateway per
+  # call. The `mailbox_<acct>` credentials stay in the gateway's vault. A
+  # Google account is served through google-pack's component. With the switch
+  # on `native` (the default) nothing here runs.
   - id: mail
     manifest_version: 1
     namespace: email
@@ -217,17 +259,12 @@ connectors:
           - label: address
             pattern: '^[^@\s]+@[A-Za-z0-9.-]+$'
             example: 'studio@example.org'
-    # Addition 2: the transport. The gateway calls `run` on the `mail-transport`
-    # backend (`plugins/comms-pack/.mcp.json`) with argv for the bundled
-    # `email_client.py` plus only that call's credential files and attachments.
-    # No `credential:` here: mailboxes are still added from Tools → mailboxes
-    # and stay in the gateway's vault.
+    # Addition 2: the IMAP/SMTP provider. No `transport:` and no `credential:`:
+    # the code is this pack's gateway component, mailboxes are still added
+    # from Tools → mailboxes and stay in the gateway's vault.
     providers:
       - id: imap
         label: IMAP/SMTP
-        transport:
-          backend: mail-transport
-          tool: run
     verbs:
       # One field may carry several addresses: `multi` splits them on comma
       # and semicolon, as today's extractor does.
@@ -310,3 +347,6 @@ connectors:
       - email.list
       - email.search
       - email.get_attachment
+    # Addition 3: no destination and no source the PDP reads — the mailbox
+    # whitelist and strict ingress are the component's checks.
+    unmapped: [email.folders, email.save_attachment]

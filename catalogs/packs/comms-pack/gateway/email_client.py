@@ -6,9 +6,10 @@ Usa solo librerie standard Python (imaplib, smtplib, email, urllib)
 Config: secrets/email_config.json
 
 Vendored into comms-pack from r-clodia/clodia-tools:vendor/email_client.py
-(commit a7e12044bbef, clodia-platform#523): the IMAP/SMTP transport of the
-`mail` connector, run by mail_transport_core.py with CLODIA_SECRETS_DIR set to a
-per-call temp dir. Keep it identical to the gateway copy except for this note.
+(commit c1d6921bb463, clodia-platform#523): the IMAP/SMTP client of the
+`mail` connector, run by mail.py (comms-pack's gateway component,
+clodia-platform#558) with CLODIA_SECRETS_DIR set to a per-call temp dir. Keep
+it identical to the gateway copy except for this note.
 """
 
 import imaplib

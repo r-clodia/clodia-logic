@@ -23,8 +23,11 @@ What could break silently, and is measured here:
    import guard scans it. (The real component inside the real gateway, with
    the Google suites re-run against it, is clodia-tools'
    `server/test_558_google_component.py` with `CLODIA_LOGIC_SRC`.)
-3. **Gmail drifts from comms-pack's transport.** Same validation, same files,
-   same `{dir}` rule — and the client is the gateway's copy.
+3. **Gmail drifts.** `mail_run` (the gateway's `email.*` on `mail: native`)
+   and `mail_accounts`/`mail_exec` (comms-pack's mail component on
+   `mail: pack`, google-pack 2.1.0): the per-call directory, the `{dir}` rule,
+   the XOAUTH2 files byte-identical to the gateway's
+   `vault.materialize_google_oauth`, and the client is the gateway's copy.
 
 With `CLODIA_TOOLS_SRC=<clodia-tools checkout>` the manifest also goes through
 the gateway's own parser and registry. Without it those tests are skipped and
@@ -64,7 +67,7 @@ GATEWAY = PACK / "gateway"
 GMAIL_CORE = GATEWAY / "gmail_core.py"
 CLIENT = GATEWAY / "email_client.py"
 BASE_SKILLS = Path(workspace_path("catalogs/packs/base-pack/plugins/base-pack/skills"))
-COMMS_MCP = Path(workspace_path("catalogs/packs/comms-pack/plugins/comms-pack/mcp"))
+COMMS_GATEWAY = Path(workspace_path("catalogs/packs/comms-pack/gateway"))
 BUILTIN = Path(__file__).resolve().parent / "fixtures" / "524_builtin_google.yaml"
 TOOLS_SRC = os.environ.get("CLODIA_TOOLS_SRC", "")
 
@@ -196,7 +199,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 
     def test_pack_metadata(self) -> None:
         self.assertEqual(self.pack["name"], "google-pack")
-        self.assertEqual(self.pack["version"], "2.0.0")
+        self.assertEqual(self.pack["version"], "2.1.0")
         self.assertTrue(self.pack["first_party"])
         self.assertEqual(self.pack["upstream"], {"repo": "r-clodia/clodia-logic",
                                                  "path": "catalogs/packs/google-pack",
@@ -605,7 +608,8 @@ class RegisterTests(_OnFakeHost):
                           "connect": (["POST"], "owner")})
         self.assertEqual(sorted(self.host.services), sorted([
             "accounts", "describe_folder", "perimeter_changed", "credential_changed",
-            "folder_labels", "pdp_arguments", "test_connection", "mail_run"]))
+            "folder_labels", "pdp_arguments", "test_connection", "mail_run",
+            "mail_accounts", "mail_exec"]))
         self.assertIs(self.host.services["mail_run"], _mod("gmail_core").run)
 
     def test_no_import_of_the_gateway(self) -> None:
@@ -1101,53 +1105,28 @@ class _IsolatedTmp(unittest.TestCase):
         return patch.object(self.core, "CLIENT", probe)
 
 
-class GmailTransportIsCommsPacksTests(unittest.TestCase):
-    """Same validation, files and placeholder code as comms-pack's transport."""
+class GmailClientIsCommsPacksTests(unittest.TestCase):
+    """The bundled client is the same as comms-pack's gateway component's (and,
+    with CLODIA_TOOLS_SRC, the gateway's own) — except for the vendoring note.
+    (Until comms-pack 1.4.0 `gmail_core` also mirrored comms-pack's transport
+    function by function; the transport is gone since comms-pack 2.0.0.)"""
 
-    SHARED = ("_check_relpath", "_check_request", "_write_files", "_remove",
-              "_secret_values", "_trim", "_with_dir")
-    CONSTANTS = ("DEFAULT_TIMEOUT", "MAX_TIMEOUT", "MAX_FILES", "MAX_FILES_BYTES",
-                 "STDERR_LIMIT", "TIMEOUT_RETURNCODE", "DIR_PLACEHOLDER", "REDACTED",
-                 "_SECRET_KEY_HINTS", "_MIN_SECRET_LEN")
-
-    def setUp(self) -> None:
-        self.gmail = _mcore()
-        self.comms = _load(COMMS_MCP / "mail_transport_core.py", "mail_transport_core_524")
-
-    def test_shared_functions_are_identical(self) -> None:
-        for name in self.SHARED:
-            with self.subTest(function=name):
-                self.assertEqual(inspect.getsource(getattr(self.gmail, name)),
-                                 inspect.getsource(getattr(self.comms, name)))
-
-    def test_run_differs_only_by_name_and_bytecode(self) -> None:
-        mine = inspect.getsource(self.gmail.run)
-        mine = mine.replace('"gmail-component-"', '"mail-transport-"')
-        mine = mine.replace("gmail: timed out", "mail-transport: timed out")
-        mine = mine.replace('            "PYTHONDONTWRITEBYTECODE": "1",\n', "")
-        self.assertEqual(mine, inspect.getsource(self.comms.run))
-
-    def test_constants(self) -> None:
-        for name in self.CONSTANTS:
-            self.assertEqual(getattr(self.gmail, name), getattr(self.comms, name), name)
+    @staticmethod
+    def _body(path: Path) -> str:
+        text = path.read_text(encoding="utf-8")
+        start = text.index("\nVendored into")
+        end = text.index('"""', start)
+        return text[:start] + text[end:]
 
     def test_the_bundled_client_is_comms_packs_copy(self) -> None:
-        def body(path: Path) -> str:
-            text = path.read_text(encoding="utf-8")
-            start = text.index("Vendored into")
-            end = text.index('"""', start)
-            return text[:start] + text[end:]
-        self.assertEqual(self.gmail.CLIENT, CLIENT.resolve())
-        self.assertEqual(body(CLIENT), body(COMMS_MCP / "email_client.py"))
+        self.assertEqual(_mcore().CLIENT, CLIENT.resolve())
+        self.assertEqual(self._body(CLIENT), self._body(COMMS_GATEWAY / "email_client.py"))
         self.assertIn("r-clodia/clodia-tools:vendor/email_client.py",
                       CLIENT.read_text(encoding="utf-8")[:1200])
 
     @unittest.skipUnless(TOOLS_SRC, "set CLODIA_TOOLS_SRC to a clodia-tools checkout")
     def test_the_bundled_client_is_the_gateways_copy(self) -> None:
-        text = CLIENT.read_text(encoding="utf-8")
-        start = text.index("\nVendored into")
-        end = text.index('"""', start)
-        self.assertEqual(text[:start] + text[end:],
+        self.assertEqual(self._body(CLIENT),
                          (Path(TOOLS_SRC) / "vendor" / "email_client.py")
                          .read_text(encoding="utf-8"))
 
@@ -1240,6 +1219,99 @@ class GmailRunTests(_IsolatedTmp):
         cwds = {json.loads(o["stdout"])["cwd"] for o in outs}
         self.assertEqual(len(cwds), 2)
         self.assertEqual(self.leftovers(), [])
+
+
+class GmailForCommsPackTests(_OnFakeHost):
+    """`mail_accounts` and `mail_exec`: what comms-pack's mail component asks
+    (google-pack 2.1.0). Addresses out, never a secret; the XOAUTH2 files are
+    written HERE from this component's own credential."""
+
+    def test_mail_accounts_rows_carry_no_secret(self) -> None:
+        self.host.vault["gmail_vecchio"] = {"email": "v@x.it"}      # incomplete
+        rows = self.host.services["mail_accounts"]()
+        self.assertEqual(rows, [
+            {"credential": "google_conto", "account": "conto", "kind": "google",
+             "operational": True, "send_only": False, "missing": [], "error": None,
+             "email": "c@x.it"},
+            {"credential": "gmail_vecchio", "account": "vecchio", "kind": "gmail",
+             "operational": False, "send_only": False,
+             "missing": ["client_id", "client_secret", "refresh_token"], "error": None,
+             "email": "v@x.it"}])
+        blob = json.dumps(rows)
+        for secret in (REFRESH, CLIENT_SECRET, "CID"):
+            self.assertNotIn(secret, blob)
+
+    def test_mail_exec_writes_the_gateways_files_itself(self) -> None:
+        core = _mod("gmail_core")
+        box = tempfile.mkdtemp()
+        self.addCleanup(lambda: __import__("shutil").rmtree(box, True))
+        probe = Path(box) / "probe.py"
+        probe.write_text(textwrap.dedent(r"""
+            import json, os, sys
+            d = os.environ["CLODIA_SECRETS_DIR"]
+            files = {n: open(os.path.join(d, n)).read() for n in sorted(os.listdir(d))}
+            print(json.dumps({"argv": sys.argv[1:], "files": files}))
+        """), encoding="utf-8")
+        with patch.object(core, "CLIENT", probe):
+            res = self.host.services["mail_exec"]({
+                "account": "conto", "argv": ["send", "--attachment", "{dir}/att/0/a.pdf"],
+                "files": {"att/0/a.pdf": _b64("%PDF")}, "timeout": 30})
+        self.assertEqual(res["returncode"], 0, res)
+        seen = json.loads(res["stdout"])
+        self.assertEqual(seen["argv"][:3], ["--account", "conto", "send"])
+        self.assertTrue(seen["argv"][4].endswith("/att/0/a.pdf"))
+        # Byte for byte what the gateway's `vault.materialize_google_oauth` writes.
+        account = "c"     # `account` absent from the bundle: the email's local part
+        self.assertEqual(seen["files"], {
+            "google_oauth_client.json": json.dumps(
+                {"client_id": "CID", "client_secret": CLIENT_SECRET}),
+            "email_oauth_tokens.json": json.dumps(
+                {account: {"refresh_token": REFRESH, "email": "c@x.it"}}),
+            "email_config.json": json.dumps({
+                "accounts": {account: {"email": "c@x.it", "auth": "oauth2",
+                                       "imap_server": "imap.gmail.com", "imap_port": 993,
+                                       "smtp_server": "smtp.gmail.com", "smtp_port": 587}},
+                "default": account}),
+        })
+
+    def test_mail_exec_takes_attachments_only(self) -> None:
+        core = _mod("gmail_core")
+        for files in ({"secrets/email_config.json": _b64("{}")}, {"x": _b64("1")},
+                      {"../att/x": _b64("1")}):
+            with self.subTest(files=list(files)):
+                with self.assertRaises(core.TransportError):
+                    self.host.services["mail_exec"]({"account": "conto", "argv": [],
+                                                     "files": files})
+
+    def test_mail_exec_runs_only_mail_commands_and_att_attachments(self) -> None:
+        """Review of clodia-tools#384: a caller could make the client attach
+        the call's own OAuth files (`secrets/…`)."""
+        core = _mod("gmail_core")
+        for argv in (["configure"], ["send", "--to", "x@y.it", "--attachment",
+                                     "secrets/email_oauth_tokens.json"],
+                     ["send", "--attachment=secrets/email_config.json"],
+                     ["send", "--attachment", "{dir}/att/../secrets/x"],
+                     ["download-attachments", "1"]):
+            with self.subTest(argv=argv):
+                with self.assertRaises(core.TransportError):
+                    self.host.services["mail_exec"]({"account": "conto", "argv": argv})
+
+    def test_mail_exec_refuses_an_unknown_or_bad_account(self) -> None:
+        core = _mod("gmail_core")
+        with self.assertRaises(PermissionError):
+            self.host.services["mail_exec"]({"account": "altro", "argv": []})
+        for bad in ("", None, 3):
+            with self.assertRaises(core.TransportError):
+                self.host.services["mail_exec"]({"account": bad, "argv": []})
+
+    @unittest.skipUnless(TOOLS_SRC, "set CLODIA_TOOLS_SRC to a clodia-tools checkout")
+    def test_the_gmail_servers_are_the_gateways(self) -> None:
+        src = (Path(TOOLS_SRC) / "server" / "vault.py").read_text(encoding="utf-8")
+        tree = ast.parse(src)
+        (node,) = [n for n in tree.body if isinstance(n, ast.Assign)
+                   and getattr(n.targets[0], "id", "") == "_GMAIL_SERVERS"]
+        self.assertEqual(ast.literal_eval(node.value),
+                         _mod("gmail_accounts")._GMAIL_SERVERS)
 
 
 class GmailRealClientTests(_IsolatedTmp):

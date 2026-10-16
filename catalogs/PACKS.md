@@ -60,7 +60,8 @@ never installs or loads that code; it only keeps the block in the installed
 manifest, which is what triggers the gateway's own fetch. After an **Update**,
 the gateway keeps the commit it pinned until a human admin asks it to move
 (`POST /internal/components/<pack>/refresh`, named in the Update answer as
-`gateway_components.refresh`). google-pack is the first pack with one.
+`gateway_components.refresh`). google-pack (Google) and comms-pack (mail,
+since 2.0.0) have one.
 
 **Import** (`POST /clodia/packs/import[-url]`, unified): if the archive is a
 pack, plugins and seeds are installed; otherwise it delegates to the plugin

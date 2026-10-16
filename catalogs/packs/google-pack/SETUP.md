@@ -18,7 +18,8 @@ state directory and verifies it before every load.
 
 ## 1. Installing / updating
 
-Requirements: clodia-tools (gateway) ≥ 2.109.0, clodia-logic ≥ 6.305.0 (an
+Requirements: clodia-tools (gateway) ≥ 2.109.0 (≥ 2.110.0 for Gmail with
+`mail: pack`), clodia-logic ≥ 6.305.0 (an
 older agent-server drops `components:` and `first_party` from the installed
 manifest, and the gateway then never sees the component).
 
@@ -74,7 +75,10 @@ at boot loads the component). The one switch moves the four Google connectors
 (`google`, `google-sheets`, `google-docs`, `google-calendar`) and Gmail
 together. With `native` (the default) the gateway keeps using its built-in
 code and the component stays on standby. Gmail accounts follow `google`; IMAP
-mailboxes keep following `mail` (comms-pack).
+mailboxes keep following `mail` (comms-pack). With `mail: pack` (comms-pack
+≥ 2.0.0) the `email.*` verbs are comms-pack's component's for every account,
+and a Google account's mail runs here through `mail_accounts`/`mail_exec`
+(2.1.0): without `google: pack` it is refused.
 
 **No re-consent.** The Google credentials (`google_<account>`,
 `app_google_oauth`, legacy `gworkspace_`/`gmail_`) stay in the gateway's vault

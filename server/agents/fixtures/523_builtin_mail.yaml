@@ -1,7 +1,7 @@
 # VENDORED FIXTURE — do not edit by hand.
 # Copy of r-clodia/clodia-tools:server/connectors/builtin_manifests/mail.yaml
 # at commit a7e12044bbef23f734d82016ecab512cbddc8318 (fetched 2026-10-16), kept here because the test suite runs
-# offline. test_523_mail_transport.py compares comms-pack's `mail` connector
+# offline. test_558_mail_component.py compares comms-pack's `mail` connector
 # against it. When the gateway changes its builtin, refresh this copy:
 #   gh api repos/r-clodia/clodia-tools/contents/server/connectors/builtin_manifests/mail.yaml -q .content | base64 -d
 #

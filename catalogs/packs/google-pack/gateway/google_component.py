@@ -18,7 +18,9 @@ on `connectors: {google: pack}`:
 - the gateway calls back the services below where its own code needs Google:
   the confinement API, the labels of a whitelist, the pre-PDP parent lookup of
   `gdrive.update`, the Tools card test, the token cache, and Gmail for the
-  `email.*` verbs of a Google account.
+  `email.*` verbs of a Google account: `mail_run` when the gateway serves
+  mail itself (`mail: native`), `mail_accounts`/`mail_exec` when comms-pack's
+  component does (`mail: pack`, google-pack 2.1.0).
 
 On `native` (the default) the gateway keeps this component pinned but on
 standby: none of this runs.
@@ -31,7 +33,8 @@ from . import _host
 
 #: The services the gateway calls (`components.service("google-pack", name)`).
 SERVICES = ("accounts", "describe_folder", "perimeter_changed", "credential_changed",
-            "folder_labels", "pdp_arguments", "test_connection", "mail_run")
+            "folder_labels", "pdp_arguments", "test_connection", "mail_run",
+            "mail_accounts", "mail_exec")
 
 
 def _accounts() -> list[str]:
@@ -64,8 +67,8 @@ def register(host: Any) -> None:
     # Every module imported HERE, not at first use: an import error disables
     # the component at load (logged, its verbs denied), not on a live call.
     from . import (gcalendar, gdocs, gdrive, gdrive_labels, gdrive_root,  # noqa: F401
-                   gmail_core, google_io, google_oauth, gsheets, routes, schemas,
-                   verbs)
+                   gmail_accounts, gmail_core, google_io, google_oauth, gsheets,
+                   routes, schemas, verbs)
 
     for tool in schemas.TOOLS:
         host.register_verb(tool, verbs.handler_for(tool.name))
@@ -79,3 +82,7 @@ def register(host: Any) -> None:
     host.register_service("pdp_arguments", verbs.pdp_arguments)
     host.register_service("test_connection", routes.test_connection)
     host.register_service("mail_run", gmail_core.run)
+    # comms-pack's component asks these two (and only these: the gateway's
+    # `builtin.COMPONENT_SERVICES`) for a Google account's `email.*` call.
+    host.register_service("mail_accounts", gmail_accounts.mail_accounts)
+    host.register_service("mail_exec", gmail_accounts.mail_exec)
