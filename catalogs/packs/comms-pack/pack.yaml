@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 1.3.0
+version: 1.4.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -155,3 +155,158 @@ connectors:
         tier_arg: tier
         topic_arg: name
         chat_arg: chat_id
+
+  # ── mail (clodia-platform#523) ─────────────────────────────────────────────
+  # The mail vocabulary, moved here from the gateway's builtin manifest
+  # (`server/connectors/builtin_manifests/mail.yaml` in clodia-tools). Every
+  # scheme, verb, topic action, Tools card field and taint row below is that
+  # document VERBATIM in meaning — labels and the gate's danger text included,
+  # because they are what the owner reads before granting, and a different copy
+  # here would be the page silently changing on migration day. A vendored copy
+  # of the builtin sits in `server/agents/fixtures/523_builtin_mail.yaml` and
+  # `test_523_mail_transport.py` compares the two field by field.
+  #
+  # Exactly two additions, both required for a NON-builtin manifest:
+  #   1. `forms:` on `inbox` and `outbox` — a pack topic action may only write
+  #      into a scheme that declares forms (SCHEMA.md, `topic_actions`), and
+  #      `mailbox-link` writes `inbox:{address}` / `outbox:{address}`;
+  #   2. `providers:` — the IMAP/SMTP transport this pack ships.
+  #
+  # Division of labour (design comment on #523): the GATEWAY keeps the `email.*`
+  # verbs and every decision — account resolution, mailbox whitelist, strict
+  # ingress (#503) and its audit, topic attachments in and out with taint, the
+  # reply recipient, the vault. The pack only moves bytes: with the instance
+  # switch `connectors: {mail: pack}` the gateway calls the `mail-transport`
+  # backend's `run` tool with that one call's mailbox credential, and filters
+  # the raw result itself. With the switch on `native` (the default) nothing
+  # here runs.
+  - id: mail
+    manifest_version: 1
+    namespace: email
+    label: Email
+    schemes:
+      # `mailto:` = the RECIPIENT of a message.
+      - scheme: mailto
+        direction: egress
+        label: Destinatario
+        lowercase: true
+        danger: >-
+          un indirizzo email. Una volta inviato, il messaggio non è più
+          richiamabile e la copia resta sul server del destinatario.
+      # `mailfrom:` = the SENDER of a message that was read: it governs the
+      # taint of the content, not access to the mailbox.
+      - scheme: mailfrom
+        direction: source
+        label: Mittente
+        lowercase: true
+      # `inbox:`/`outbox:` = the MAILBOX a verb reads from or writes with. The
+      # question is WHERE, not WHO. `forms:` is addition 1 (see above).
+      - scheme: inbox
+        direction: source
+        label: Casella in lettura
+        lowercase: true
+        forms:
+          - label: address
+            pattern: '^[^@\s]+@[A-Za-z0-9.-]+$'
+            example: 'studio@example.org'
+      - scheme: outbox
+        direction: egress
+        label: Casella in scrittura
+        lowercase: true
+        forms:
+          - label: address
+            pattern: '^[^@\s]+@[A-Za-z0-9.-]+$'
+            example: 'studio@example.org'
+    # Addition 2: the transport. The gateway calls `run` on the `mail-transport`
+    # backend (`plugins/comms-pack/.mcp.json`) with argv for the bundled
+    # `email_client.py` plus only that call's credential files and attachments.
+    # No `credential:` here: mailboxes are still added from Tools → mailboxes
+    # and stay in the gateway's vault.
+    providers:
+      - id: imap
+        label: IMAP/SMTP
+        transport:
+          backend: mail-transport
+          tool: run
+    verbs:
+      # One field may carry several addresses: `multi` splits them on comma
+      # and semicolon, as today's extractor does.
+      - verb: email.send
+        direction: egress
+        scheme: mailto
+        arg: to
+        multi: true
+        dtype: email
+      - verb: email.send
+        direction: egress
+        scheme: mailto
+        arg: cc
+        multi: true
+        dtype: email
+      - verb: email.send
+        direction: egress
+        scheme: mailto
+        arg: bcc
+        multi: true
+        dtype: email
+      # `email.reply` has no `to` in its arguments: the recipient comes from the
+      # message being answered, i.e. from uncontrolled content. These mappings
+      # read nothing → no destination → UNKNOWN → denied, unless the type
+      # explicitly admits `*`. On purpose.
+      - verb: email.reply
+        direction: egress
+        scheme: mailto
+        arg: to
+        multi: true
+        dtype: email
+      - verb: email.reply
+        direction: egress
+        scheme: mailto
+        arg: cc
+        multi: true
+        dtype: email
+      - verb: email.reply
+        direction: egress
+        scheme: mailto
+        arg: bcc
+        multi: true
+        dtype: email
+      # The source of a mail that was read is in the RESULT, not the arguments.
+      - verb: email.read
+        direction: source
+        scheme: mailfrom
+        arg: from
+        reads: result
+        normalise: email_from
+    # The topic button: pick a mailbox ALREADY configured on the instance and it
+    # becomes ingress and egress of this topic in one go. The field is an option
+    # set (`options: mailboxes`), not free text: the address that lands in the
+    # whitelist is resolved by the gateway. Admin only: a system mailbox is mail
+    # that does not belong to the topic's owner (decision of 27 Sep 2026).
+    topic_actions:
+      - id: mailbox-link
+        label: Autorizza una casella
+        admin_only: true
+        fields:
+          - name: account
+            label: Casella di sistema
+            options: mailboxes
+        adds:
+          ingress:
+            - 'inbox:{address}'
+          egress:
+            - 'outbox:{address}'
+    tools_card:
+      icon: email
+      setup_label: Gestisci caselle
+      blurb: >-
+        Connettore multi-casella: aggiungi/togli mailbox IMAP/SMTP (info@,
+        IONOS, …). Le caselle si autorizzano per canale, non per agente.
+      scope: IMAP/SMTP
+    # Incoming mail: the sender is not controlled. `email.read` is not here
+    # because it has ONE declared source above; these three mix several senders
+    # in one answer, so there is nothing to vet.
+    taint:
+      - email.list
+      - email.search
+      - email.get_attachment

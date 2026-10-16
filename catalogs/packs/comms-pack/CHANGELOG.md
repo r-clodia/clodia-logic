@@ -8,6 +8,35 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [1.4.0] — 2026-10-16
+- **The pack declares the `mail` connector** (clodia-platform#523): the
+  gateway's builtin `mail.yaml` (clodia-tools), moved verbatim in meaning —
+  schemes `mailto`/`mailfrom`/`inbox`/`outbox` (all `lowercase`), the
+  `email.send`/`email.reply`/`email.read` mappings, the admin-only
+  `mailbox-link` topic action over `options: mailboxes`, the Tools card and the
+  taint rows, labels and the gate's danger text included. Two additions only,
+  both required for a non-builtin manifest: `forms:` (an email address) on
+  `inbox` and `outbox`, which the topic action writes into, and
+  `providers: [{id: imap, transport: {backend: mail-transport, tool: run}}]`.
+- **The pack ships the IMAP/SMTP transport, not the verbs.** Unlike Telegram,
+  the gateway keeps `email.*` and every decision — account resolution, mailbox
+  whitelist, strict ingress and its audit (#503), topic attachments and taint,
+  reply recipient, the vault. The new backend `mail-transport`
+  (`plugins/comms-pack/mcp/mail_transport_mcp.py`, logic in the stdlib-only
+  `mail_transport_core.py`) exposes one gateway-internal tool, `run`
+  (`argv`, `files`, `timeout` → `{returncode, stdout, stderr}`): it writes that
+  call's credential and attachments into a private 0700 temp dir (relative
+  paths only; absolute paths, `..` and links refused; files 0600), runs the
+  bundled `email_client.py` — a copy of the gateway's `vendor/email_client.py`
+  — with `CLODIA_SECRETS_DIR` pointing there and a minimal environment, and
+  always removes the dir, on failure and timeout too. stderr is trimmed and
+  scrubbed of the secret values it was handed.
+- **No mount-time secret**: the `mail-transport` entry in `.mcp.json` has no
+  `${VAULT:…}` placeholder — the credential arrives per call, so the process
+  never holds more than the mailbox of the call in progress.
+- Off by default: nothing changes until the instance profile sets
+  `connectors: {mail: pack}`. Mailboxes are still added from Tools → mailboxes.
+
 ## [1.3.0] — 2026-10-16
 - **State is safe across processes** (review of clodia-logic#527): the gateway
   starts a stdio process per call, so the in-process lock let two concurrent
