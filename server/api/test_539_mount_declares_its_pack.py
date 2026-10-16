@@ -157,3 +157,45 @@ class ARefusedMountIsReportedNotRaisedTests(MountDeclaresItsPackTests):
     test_the_wrapper_form_of_a_pack_is_covered_too = None
     test_a_loose_plugin_claims_nothing = None
     test_each_plugin_is_mounted_in_the_name_of_its_own_pack = None
+
+
+class OneRefusalDoesNotDropTheOthersTests(unittest.TestCase):
+    """clodia-platform#555, terra 16 Oct 2026: it-pack declares drawio, github
+    and imagegen-transport; the admin's unstamped drawio was refused and, the
+    call being atomic, github and imagegen-transport were never mounted — while
+    the update reported all three as mounted."""
+
+    def setUp(self) -> None:
+        import tempfile
+        from pathlib import Path
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        p = patch.object(plugin_import, "PLUGINS_META_DIR", Path(tmp.name))
+        p.start()
+        self.addCleanup(p.stop)
+        _Manifests(Path(tmp.name)).scrivi("it-pack", {
+            "drawio": {"url": "http://drawio-mcp:3001/mcp"},
+            "github": {"url": "https://api.githubcopilot.com/mcp/"},
+            "imagegen-transport": {"command": "python3", "args": []}})
+        self.chiamate = []
+
+        def gw(tool, args, principal):
+            (nome,) = args["config"]["mcpServers"]
+            self.chiamate.append(nome)
+            if nome == "drawio":
+                return 409, "il backend MCP 'drawio' è già montato da un amministratore"
+            if nome == "imagegen-transport":
+                return 200, {"ok": False, "error": "refused"}
+            return 200, {"ok": True, "result": {"registered": [nome]}}
+        q = patch.object(gateway_pdp, "gw_tool", gw)
+        q.start()
+        self.addCleanup(q.stop)
+
+    def test_each_server_is_its_own_call_and_the_report_is_honest(self) -> None:
+        out = pack_mcp_mount.auto_mount_imported_mcp(
+            {"kind": "pack", "pack": "it-pack", "plugins": [{"plugin": "it-pack"}]},
+            "davide", trusted=True)["mcp_mount"]
+        self.assertEqual(sorted(self.chiamate), ["drawio", "github", "imagegen-transport"])
+        self.assertEqual(out["mounted"], ["github"])
+        self.assertEqual(sorted(f["servers"][0] for f in out["failed"]),
+                         ["drawio", "imagegen-transport"])

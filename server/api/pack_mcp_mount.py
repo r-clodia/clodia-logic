@@ -97,34 +97,37 @@ def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
             # fonte non fidata → NON montare, solo segnalare (barriera umana).
             pending.extend(k for k in sorted(servers) if k not in pending)
             continue
-        args: dict[str, Any] = {"config": {"mcpServers": servers}}
-        if pack:
-            # DI CHI è questo backend. Il gateway lo timbra nella voce e da
-            # quel momento rifiuta che un altro lo sostituisca
-            # (clodia-platform#539 §4): montare senza dirlo lasciava la
-            # proprietà in bianco, e un backend senza proprietario è di chi
-            # lo rimonta per primo.
-            args["pack"] = pack
-        status, data = gateway_pdp.gw_tool("mcp.add", args, principal)
-        # The gateway's reply is not always a JSON object: a refused mount can
-        # come back as plain text, and treating it as a dict turned a clear
-        # refusal into a bare 500 for the whole update (clodia-platform#555).
-        if not isinstance(data, dict):
-            data = {"error": str(data)[:500]} if data else {}
-        if status == 200:
+        # One server per call (clodia-platform#555): `mcp.add` is atomic on its
+        # whole config, so a single refused server (e.g. an admin's unstamped
+        # `drawio`) used to drop the pack's other servers too — on terra the
+        # it-pack update left `github` and `imagegen-transport` unmounted.
+        for name in sorted(servers):
+            args: dict[str, Any] = {"config": {"mcpServers": {name: servers[name]}}}
+            if pack:
+                # DI CHI è questo backend. Il gateway lo timbra nella voce e da
+                # quel momento rifiuta che un altro lo sostituisca
+                # (clodia-platform#539 §4).
+                args["pack"] = pack
+            status, data = gateway_pdp.gw_tool("mcp.add", args, principal)
+            # The reply is not always a JSON object: a refused mount can come
+            # back as plain text (clodia-platform#555).
+            if not isinstance(data, dict):
+                data = {"error": str(data)[:500]} if data else {}
             esito = data.get("result") if isinstance(data.get("result"), dict) else {}
             registered = esito.get("registered")
-            if isinstance(registered, list):
-                mounted.extend(str(x) for x in registered if str(x) not in mounted)
+            ok = (status == 200 and data.get("ok") is not False
+                  and isinstance(registered, list) and name in [str(x) for x in registered])
+            if ok:
+                if name not in mounted:
+                    mounted.append(name)
             else:
-                mounted.extend(k for k in sorted(servers) if k not in mounted)
-        else:
-            failed.append({
-                "plugin": plugin,
-                "servers": sorted(servers),
-                "status": status,
-                "error": data.get("detail") or data.get("error") or "mount_failed",
-            })
+                failed.append({
+                    "plugin": plugin,
+                    "servers": [name],
+                    "status": status,
+                    "error": (data.get("detail") or data.get("error")
+                              or esito.get("error") or "not registered by the gateway"),
+                })
     if attempted:
         entry: dict[str, Any] = {
             "attempted": attempted,
