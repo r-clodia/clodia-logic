@@ -3404,6 +3404,75 @@ class OpenCodeTurnTimeout(RuntimeError):
         self.eventi = eventi
 
 
+class OpenCodeProviderLimit(RuntimeError):
+    """The provider refused the turn for quota or rate limit (#552).
+
+    opencode retries a 429 on its own and says so only in a `session.status`
+    event of type `retry`; the turn then waited out the whole budget and
+    failed as a timeout that blamed the model and the gateway, while the
+    provider had answered «quota exhausted» from the first second. This stops
+    the turn as soon as the cause is known and names it.
+
+    Not an `OpenCodeTurnTimeout`, on purpose: re-sending the message would hit
+    the same limit, so `_turno_ritentabile` must not buy a retry with it.
+    """
+
+    audit_cause = "provider_quota"
+
+    def __init__(self, *args, eventi: "int | None" = None) -> None:
+        super().__init__(*args)
+        self.eventi = eventi
+        # Plain text for the room (`api/channels._diagnosi`): the cause is
+        # known, a repr would only hide it.
+        self.nota_utente = f"⛔ {args[0]}" if args else ""
+
+
+#: Messages that mean the provider's quota is gone: no retry within a turn
+#: will help, so the first one stops the turn.
+_OC_QUOTA_RE = re.compile(
+    r"insufficient[ _]quota|exceeded your (current )?(organi[sz]ation )?quota|"
+    r"quota (exceeded|exhausted)|billing", re.I)
+#: Messages of a rate limit, which may clear by itself: tolerated up to
+#: `_OC_RATE_LIMIT_MAX_RETRIES` consecutive retries.
+_OC_RATE_RE = re.compile(r"rate.?limit|too many requests|\b429\b|overloaded", re.I)
+_OC_RATE_LIMIT_MAX_RETRIES = 3
+
+
+def _oc_retry_block(status: dict) -> "str | None":
+    """The reason to stop the turn, from an opencode `retry` status, or None.
+
+    `status` is `{type: "retry", attempt, message, action?, next}`
+    (opencode 1.15 `SessionStatus`). Only provider limits stop the turn; any
+    other retry (a dropped connection, a 5xx) keeps opencode's own policy.
+    """
+    if not isinstance(status, dict) or status.get("type") != "retry":
+        return None
+    action = status.get("action") if isinstance(status.get("action"), dict) else {}
+    testo = " ".join(str(x) for x in (status.get("message"), action.get("title"),
+                                      action.get("message"), action.get("reason"))
+                     if x)
+    if _OC_QUOTA_RE.search(testo):
+        return testo
+    try:
+        tentativo = int(status.get("attempt") or 0)
+    except (TypeError, ValueError):
+        tentativo = 0
+    if _OC_RATE_RE.search(testo) and tentativo >= _OC_RATE_LIMIT_MAX_RETRIES:
+        return testo
+    return None
+
+
+def _oc_provider_limit_message(*, motivo: str, model: str | None,
+                               provider: str | None, atteso: float) -> str:
+    """What the room reads: the provider refused, which one, and what to do."""
+    motivo = re.sub(r"\s+", " ", motivo).strip()[:240]
+    return (f"il provider {provider or '?'} ha rifiutato il turno per quota o "
+            f"limite di richieste (modello {model or '?'}, dopo {atteso:.0f}s): "
+            f"«{motivo}» — turno interrotto senza attendere il budget. Serve "
+            f"alzare la quota del provider o riprovare più tardi; rimandare "
+            f"subito il messaggio non cambia l'esito")
+
+
 async def _audit_turn_acquired(chat) -> None:
     """Start the dispatcher's audit Turn, if any (never raises into the turn)."""
     try:
@@ -3797,6 +3866,8 @@ class OpenCodeChatSession:
         tipo = (ev or {}).get("type") or ""
         if not tipo or tipo.startswith(_OC_IDLE_EVENT_PREFIX):
             return False
+        if tipo == "session.status":
+            self._note_retry_status((ev or {}).get("properties") or {})
         self.last_activity = datetime.now(timezone.utc)
         # `getattr` e non `+=`, per la ragione di `ChatSession._segna_evento_sdk`:
         # una sessione costruita senza `__init__` (i fake dei test) non ha
@@ -3804,6 +3875,58 @@ class OpenCodeChatSession:
         # turno su cui gira — né lo stream che lo alimenta.
         self._eventi_turno = getattr(self, "_eventi_turno", 0) + 1
         return True
+
+    def _note_retry_status(self, props: dict) -> None:
+        """A provider limit seen on THIS session stops the running turn (#552)."""
+        if not isinstance(props, dict):
+            return
+        sid = props.get("sessionID")
+        if sid and getattr(self, "_oc_session", None) and sid != self._oc_session:
+            return
+        motivo = _oc_retry_block(props.get("status") or {})
+        if not motivo:
+            return
+        self._provider_block = motivo
+        evt = getattr(self, "_provider_block_evt", None)
+        if evt is not None:
+            evt.set()
+
+    async def _post_turn(self, c, body: dict, budget: "_TurnBudget"):
+        """POST the turn message, unless the provider refuses it first (#552).
+
+        The POST is synchronous and lasts the whole turn: the only way to know
+        about opencode's silent retries while it runs is the event stream, so
+        the two race and the first to finish decides.
+        """
+        url = f"{self._base_url}/session/{self._oc_session}/message"
+        evt = getattr(self, "_provider_block_evt", None)
+        if evt is None:
+            return await c.post(url, json=body, timeout=self._budget_timeout(budget))
+        post = asyncio.ensure_future(
+            c.post(url, json=body, timeout=self._budget_timeout(budget)))
+        attesa = asyncio.ensure_future(evt.wait())
+        try:
+            done, _ = await asyncio.wait({post, attesa},
+                                         return_when=asyncio.FIRST_COMPLETED)
+        except BaseException:
+            post.cancel(); attesa.cancel()
+            raise
+        if post in done:
+            attesa.cancel()
+            return post.result()
+        post.cancel()
+        await self._abort_oc()
+        motivo = getattr(self, "_provider_block", None) or "limite del provider"
+        activity_log.append(self.kind, "error",
+                            {"error": "opencode provider limit", "chat_id": self.chat_id,
+                             "motivo": motivo[:300], "atteso_s": round(budget.elapsed(), 1)})
+        LOG.warning("opencode %s: turno fermato, il provider rifiuta per quota/limite "
+                    "(%.0fs): %s", self.kind, budget.elapsed(), motivo[:200])
+        raise OpenCodeProviderLimit(
+            _oc_provider_limit_message(motivo=motivo, model=self._model,
+                                       provider=self._provider,
+                                       atteso=budget.elapsed()),
+            eventi=getattr(self, "_eventi_turno", None))
 
     async def _consume_events(self, resp) -> None:
         async for riga in resp.aiter_lines():
@@ -4118,10 +4241,13 @@ class OpenCodeChatSession:
         # stream state now, compare at timeout (`_stream_continuo`).
         stream_inizio = self._stato_stream()
         tentativo = _OC_TENTATIVO_PRIMO
+        # A provider limit seen during THIS turn stops it (#552); one seen in
+        # the previous turn must not.
+        self._provider_block = None
+        self._provider_block_evt = asyncio.Event()
         try:
             async with await self._http() as c:
-                r = await c.post(f"{self._base_url}/session/{self._oc_session}/message",
-                                 json=body, timeout=self._budget_timeout(budget))
+                r = await self._post_turn(c, body, budget)
                 if self._session_unusable(r):
                     # La sessione OpenCode vive solo dentro il suo processo `opencode
                     # serve`: dopo un restart dell'agent-server l'id .ocsession di un
@@ -4163,8 +4289,7 @@ class OpenCodeChatSession:
                         except Exception:  # noqa: BLE001
                             pass
                         tentativo = _OC_TENTATIVO_RICREATA
-                        r = await c.post(f"{self._base_url}/session/{self._oc_session}/message",
-                                         json=body, timeout=self._budget_timeout(budget))
+                        r = await self._post_turn(c, body, budget)
                         # Riga sua: nel `try` condiviso l'esito di QUESTA POST era
                         # indistinguibile da quello della prima, e dal log non si
                         # ricavava quale dei due invii fosse morto.
