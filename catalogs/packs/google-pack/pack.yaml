@@ -1,0 +1,246 @@
+name: google-pack
+description: >-
+  First-party pack for Google Workspace: declares the Drive, Sheets, Docs and
+  Calendar connectors and Gmail as a provider of the mail vocabulary, and ships
+  their transports. The verbs, the folder/calendar perimeter and the Google
+  credentials stay in the gateway.
+version: 1.0.0
+license: AGPL-3.0-or-later
+first_party: true
+upstream:
+  repo: r-clodia/clodia-logic
+  path: catalogs/packs/google-pack
+  ref: main
+plugins:
+  - google-pack
+
+# Connectors declared by the pack (grammar of clodia-platform#516,
+# `server/connectors/SCHEMA.md` in clodia-tools). A declaration is NOT a grant:
+# it says what the connector is, never where it may reach — that stays with the
+# owner who installs, at the gate.
+#
+# clodia-platform#524. The gateway's builtin `google.yaml` (clodia-tools,
+# `server/connectors/builtin_manifests/`) moved here: the same four connectors
+# — `google` (namespace `gdrive`, owner of the `gdrive:`/`gsheets:`/`gcal:`
+# vocabulary, the account provider, the `drive-folder` topic button and the
+# Tools card) and the verb-only siblings `google-sheets`, `google-docs`,
+# `google-calendar` — with every scheme, form, verb mapping, taint row, label
+# and danger text VERBATIM in meaning. Labels and danger texts are copied as
+# they are, in the language the owner reads them at the gate: a different copy
+# here would be the page silently changing on migration day. A vendored copy of
+# the builtin sits in `server/agents/fixtures/524_builtin_google.yaml` and
+# `test_524_google_pack.py` compares the two field by field.
+#
+# Exactly two kinds of difference, both required for a NON-builtin manifest:
+#   1. `canonicalise:` of `gdrive` and `gsheets` is rewritten in the pack regex
+#      subset (no quantified group, at most two repeats and two `?`): each
+#      builtin rule with an optional group becomes one rule per shape. Same
+#      answers on every URL the builtin rewrites, with one bounded exception:
+#      the `drive/u/<n>/folders/` form is recognised for n < 100 (`\d\d?`);
+#   2. the `workspace` provider gets its `transport` (`google.request`), and the
+#      pack adds `mail-gmail`, Gmail as a provider of the mail vocabulary.
+#
+# Division of labour (design comment on #524): the GATEWAY keeps the 24
+# `gdrive/gsheets/gdocs/gcalendar` verbs and the whole perimeter (`gdrive_root`:
+# parent walk, shortcut refusal, list filtering, adopt-after-create, writable
+# parent, `gcal:` allowlist, pre-PDP parent lookup, scratch I/O, taint) and the
+# credentials (OAuth consent, app client, `google_<acct>` bundles, refresh) —
+# so the switch needs no re-consent. The pack only moves bytes: with the
+# instance switch `connectors: {google: pack}` the gateway calls the
+# `google-transport` backend's `request` tool with a short-lived access token,
+# and Gmail calls the `gmail-transport` backend's `run` tool with that one
+# call's XOAUTH2 files. With the switch on `native` (the default) nothing here
+# runs.
+#
+# The `https:` canonicalisation rules below are read by the gateway only while
+# the switch ELECTS this connector, and only for URLs whose host the gateway
+# pins for it (`builtin.ELECTED_URL_HOSTS`: drive.google.com, docs.google.com).
+# The hosts are not ours to choose: that list lives in the gateway.
+connectors:
+  - id: google
+    manifest_version: 1
+    namespace: gdrive
+    label: Google Workspace
+    schemes:
+      - scheme: gdrive
+        direction: both
+        label: Cartella o file di Drive
+        hierarchical: true
+        forms:
+          - label: cartella
+            pattern: 'folder/[\w-]+'
+            example: 'folder/1AbCdEfGhIjKlMnOpQrStUv'
+          - label: file
+            pattern: 'file/[\w-]+'
+            example: 'file/1AbCdEfGhIjKlMnOpQrStUv'
+          - label: documento
+            pattern: 'doc/[\w-]+'
+            example: 'doc/1AbCdEfGhIjKlMnOpQrStUv'
+        # The shapes a person naturally writes, brought back to the canonical
+        # form: a folder URL is what gets copied from the browser bar, and
+        # `gdrive://<id>` is the same resource in another encoding. Difference
+        # 1 above: one rule per shape instead of an optional group.
+        canonicalise:
+          - from: '^gdrive://([\w-]+)/?$'
+            to: 'gdrive:folder/{1}'
+          - from: '^gdrive://folder/([\w-]+)/?$'
+            to: 'gdrive:folder/{1}'
+          - from: '^https?://drive\.google\.com/drive/folders/([\w-]+)$'
+            to: 'gdrive:folder/{1}'
+          - from: '^https?://drive\.google\.com/drive/folders/([\w-]+)[/?#].*$'
+            to: 'gdrive:folder/{1}'
+          - from: '^https?://drive\.google\.com/drive/u/\d\d?/folders/([\w-]+)$'
+            to: 'gdrive:folder/{1}'
+          - from: '^https?://drive\.google\.com/drive/u/\d\d?/folders/([\w-]+)[/?#].*$'
+            to: 'gdrive:folder/{1}'
+          - from: '^https?://docs\.google\.com/document/d/([\w-]+)$'
+            to: 'gdrive:doc/{1}'
+          - from: '^https?://docs\.google\.com/document/d/([\w-]+)[/?#].*$'
+            to: 'gdrive:doc/{1}'
+          - from: '^https?://drive\.google\.com/file/d/([\w-]+)$'
+            to: 'gdrive:file/{1}'
+          - from: '^https?://drive\.google\.com/file/d/([\w-]+)[/?#].*$'
+            to: 'gdrive:file/{1}'
+      - scheme: gsheets
+        direction: both
+        label: Foglio Google
+        danger: 'un foglio Google. Se è condiviso, lo vede chi ha il link.'
+        canonicalise:
+          - from: '^gsheets://([\w-]+)/?$'
+            to: 'gsheets:{1}'
+          - from: '^https?://docs\.google\.com/spreadsheets/d/([\w-]+)$'
+            to: 'gsheets:{1}'
+          - from: '^https?://docs\.google\.com/spreadsheets/d/([\w-]+)[/?#].*$'
+            to: 'gsheets:{1}'
+      # `gcal:` is EGRESS, not ingress: it governs AUTHORITY over the resource
+      # (reading the agenda and writing events into it), not trust in the
+      # content coming from it. `gcal:*` is not grantable: it would be the
+      # widest permission of the module, written in three characters and
+      # indistinguishable in a list from a single entry. A domain
+      # (`gcal:*@example.org`) is.
+      - scheme: gcal
+        direction: egress
+        label: Calendario Google
+        wildcard: false
+        danger: >-
+          un calendario Google: chi lo approva concede di LEGGERE l'agenda (con
+          titoli, luoghi e invitati) e di scriverci eventi, che arrivano come
+          invito a chi è in lista. Non è confinabile a una cartella: il
+          perimetro è il calendario stesso.
+    providers:
+      - id: workspace
+        label: Account Google
+        # Difference 2: google-pack's own backend carries each Google API call
+        # of the gateway's verbs (`google.request`, see SCHEMA.md «The
+        # switch»). Never listed to agents. The credential below is the
+        # builtin's: `kind: oauth` names no vault entry, and the consent, the
+        # app client and the `google_<acct>` bundles stay the gateway's.
+        transport:
+          backend: google-transport
+          tool: request
+        credential:
+          kind: oauth
+          authorize_url: https://accounts.google.com/o/oauth2/v2/auth
+          token_url: https://oauth2.googleapis.com/token
+          scopes:
+            - https://www.googleapis.com/auth/drive
+            - https://www.googleapis.com/auth/spreadsheets
+            - https://www.googleapis.com/auth/calendar
+    # The topic button: a Drive folder becomes source AND destination of this
+    # room. No `binding` — Drive has no channel to attach, it is authorised and
+    # that is all.
+    topic_actions:
+      - id: drive-folder
+        label: Aggiungi una cartella Drive
+        fields:
+          - name: folder
+            label: Cartella Drive (id o URL)
+            placeholder: '1AbCdEfGhIjKlMnOpQrStUv'
+        adds:
+          ingress:
+            - 'gdrive:folder/{folder}'
+          egress:
+            - 'gdrive:folder/{folder}'
+    tools_card:
+      icon: google
+      setup_label: Connetti Google
+      blurb: >-
+        Gmail, Drive, Documenti e Calendar in un solo consenso (un token
+        OAuth): lettura/invio email + accesso ai file dell'owner.
+      scope: Gmail · Drive · Docs · Calendar
+    verbs:
+      # Where the content ends up, or WHO it is shared with: `gdrive.share` is
+      # egress towards a PERSON, not a folder. That is why the two do not merge
+      # — `mailto:` against `gdrive:folder/` — and why one verb carries more
+      # than one mapping.
+      - {verb: gdrive.upload, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.upload, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.upload, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.share, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.share, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.share, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.mkdir, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.mkdir, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.mkdir, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.move, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.move, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.move, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      # `folder_id` is added by the gateway's `call_tool`, reading the file's
+      # parent from Drive.
+      - {verb: gdrive.update, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.update, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.update, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      # Reads of a resource BY ID: the source is that resource.
+      - {verb: gdrive.download, direction: source, scheme: gdrive, arg: file_id, template: 'gdrive:file/{value}'}
+
+  # Verb-only siblings: no scheme, no provider, no card. They map their own
+  # namespace's verbs onto the owner's schemes («using a vocabulary is not
+  # owning it», SCHEMA.md) and follow the `google` switch.
+  - id: google-sheets
+    manifest_version: 1
+    namespace: gsheets
+    label: Google Sheets
+    verbs:
+      - {verb: gsheets.add_tab, direction: egress, scheme: gsheets, arg: spreadsheet_id, dtype: gsheets}
+      - {verb: gsheets.append_rows, direction: egress, scheme: gsheets, arg: spreadsheet_id, dtype: gsheets}
+      - {verb: gsheets.write_range, direction: egress, scheme: gsheets, arg: spreadsheet_id, dtype: gsheets}
+      - {verb: gsheets.read, direction: source, scheme: gsheets, arg: spreadsheet_id}
+      - {verb: gsheets.list_tabs, direction: source, scheme: gsheets, arg: spreadsheet_id}
+
+  - id: google-docs
+    manifest_version: 1
+    namespace: gdocs
+    label: Google Docs
+    verbs:
+      - {verb: gdocs.read, direction: source, scheme: gdrive, arg: document_id, template: 'gdrive:doc/{value}'}
+
+  - id: google-calendar
+    manifest_version: 1
+    namespace: gcalendar
+    label: Google Calendar
+    # A list of events mixes several authors in one answer: there is no ONE
+    # source to vet, so it taints. (No verb mapping: the `gcal:` perimeter is
+    # enforced by the gateway's `gdrive_root`, not by the PDP's tables.)
+    taint:
+      - gcalendar.list_events
+
+  # Gmail, a provider of the mail vocabulary that comms-pack (or, on `mail:
+  # native`, the gateway) owns: `extends:` adds an implementation, never a
+  # meaning, so this entry declares no scheme, verb or taint. Namespace
+  # `gdrive` because `google` stays reserved together with the `google_` vault
+  # prefix (SCHEMA.md «The switch»). A Gmail account (one with a
+  # `google_`/`gmail_` credential) follows the `google` switch: the gateway
+  # calls `run` on `gmail-transport` with the mail transport's contract and
+  # that call's XOAUTH2 files. No credential here: Google accounts are still
+  # connected from Tools and stay in the gateway's vault.
+  - id: mail-gmail
+    manifest_version: 1
+    namespace: gdrive
+    label: Gmail
+    extends: mail
+    providers:
+      - id: gmail
+        label: Gmail
+        transport:
+          backend: gmail-transport
+          tool: run
