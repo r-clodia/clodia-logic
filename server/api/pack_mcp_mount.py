@@ -112,8 +112,8 @@ def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
         if not isinstance(data, dict):
             data = {"error": str(data)[:500]} if data else {}
         if status == 200:
-            result = data.get("result") if isinstance(data.get("result"), dict) else {}
-            registered = result.get("registered")
+            esito = data.get("result") if isinstance(data.get("result"), dict) else {}
+            registered = esito.get("registered")
             if isinstance(registered, list):
                 mounted.extend(str(x) for x in registered if str(x) not in mounted)
             else:
