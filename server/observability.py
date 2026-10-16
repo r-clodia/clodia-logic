@@ -13,7 +13,7 @@ from contextlib import contextmanager
 from pathlib import Path
 from typing import Any, Iterator, Optional
 
-from .config import workspace_path
+from .config import data_path
 
 LOG = logging.getLogger("agent-server.observability")
 
@@ -59,7 +59,9 @@ def configure_langfuse_env() -> bool:
     if _CONFIGURED:
         return _has_required_env()
 
-    secrets_dir = workspace_path("secrets")
+    # `$CLODIA_DATA/secrets` e non più il bundle `/clodia/secrets`: dei due
+    # mount della stessa directory ne è rimasto uno solo (clodia-platform#544).
+    secrets_dir = data_path("secrets")
     for env_name, filename in _SECRET_FILES.items():
         if os.environ.get(env_name):
             continue

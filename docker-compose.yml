@@ -27,7 +27,6 @@ services:
     ports:
       - "7842:7842"
     volumes: &datadir-volumes
-      - ${CLODIA_DATA}/secrets:/clodia/secrets:ro
       - ${CLODIA_DATA}/data:/clodia/data
       - ${CLODIA_DATA}/topics:/clodia/topics
       # Git server centrale dei topic: bare repo montati al PATH IDENTICO
@@ -43,7 +42,16 @@ services:
       # pipes.yaml + colony.db si perdono al recreate (lezione 11 giu 2026).
       # PKI colonia: CA + identità agenti (chiavi private, area runner)
       # e certificati pubblici. Senza mount si perdono al recreate.
-      - ${CLODIA_DATA}/secrets:/datadir/secrets
+      #
+      # `secrets` è un VOLUME NOMINATO, non un bind della directory host
+      # (clodia-platform#544). Un bind di una directory macOS attraversa
+      # virtiofs, che NON applica i bit di permesso: misurato su terra, l'uid di
+      # sandbox di uno spawn leggeva 44 file mode 600 di root. Lo stesso
+      # albero su un volume nominato vive nel filesystem Linux del VM, dove
+      # root:0600 è un confine che il kernel fa rispettare — ed è l'unica cosa
+      # che rende vero l'isolamento per-uid degli spawn. Il contenuto va
+      # copiato una volta sola dalla datadir host (vedi #544).
+      - clodia-secrets:/datadir/secrets
       - ${CLODIA_DATA}/pki:/datadir/pki
       # Credenziali provider (OAuth anthropic/openai): elemento top-level del
       # datadir clonabile, persistito a sé (non più sotto data/).
@@ -84,6 +92,14 @@ services:
       CLODIA_ORCHESTRATOR_SECRET: ${CLODIA_ORCHESTRATOR_SECRET:-}
       CLODIA_SHARED_ROOT: /shared
       LANGFUSE_CAPTURE_CONTENT: "true"
+      # Base del pool di uid con cui girano gli spawn in sandbox. Dichiarata
+      # per ENTRAMBI i container: l'agent-server la usa per allocare l'uid, il
+      # gateway come SOGGETTO del self-check di isolamento (#544) — la domanda
+      # «questo uid riesce a leggere un file 0600 del gateway?» va posta con
+      # l'uid vero, non con uno inventato. Vuota = come prima (sandbox off);
+      # ad accendere la sandbox è comunque CLODIA_AGENT_SANDBOX_KINDS.
+      CLODIA_AGENT_SANDBOX_UID: ${CLODIA_AGENT_SANDBOX_UID:-}
+      CLODIA_AGENT_SANDBOX_KINDS: ${CLODIA_AGENT_SANDBOX_KINDS:-}
     restart: unless-stopped
     healthcheck:
       test: ["CMD", "python3", "-c", "import httpx; httpx.get('http://localhost:7842/health', timeout=2)"]
@@ -125,3 +141,14 @@ services:
 
 volumes:
   clodia-transfer:
+  # Segreti legacy (token, chiavi, CA) — volume nominato per DECISIONE, non per
+  # comodità: è l'unico modo di avere un filesystem che applica i bit di
+  # permesso sotto a `/datadir/secrets`. Un bind `${CLODIA_DATA}/secrets` di una
+  # directory macOS passa da virtiofs, che i bit li ignora: su terra l'uid di
+  # sandbox di uno spawn ha letto 44 file mode 600 di root (clodia-platform#544).
+  # Migrazione una-tantum dei file esistenti, PRIMA o DURANTE il riavvio:
+  #   docker run --rm -v "$CLODIA_DATA/secrets":/from:ro -v clodia_clodia-secrets:/to \
+  #     alpine sh -c 'cp -a /from/. /to/ && chown -R 0:0 /to && chmod -R go-rwx /to'
+  # (il nome reale del volume lo dà `docker volume ls`: ha il prefisso del
+  # progetto compose). Senza la copia il container parte senza segreti.
+  clodia-secrets:
