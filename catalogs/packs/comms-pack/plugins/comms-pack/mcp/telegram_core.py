@@ -60,10 +60,88 @@ __version__ = "1.0.0"
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 _DEFAULT_LEASE_MIN = 10
 _MAX_LEASE_MIN = 120
-# Serializza read-modify-write dello stato + getUpdates: Telegram ammette un
-# solo consumer `getUpdates` per bot, due in parallelo si rubano gli update
-# via offset. Un lock di processo basta perché il backend è un processo solo.
-_LOCK = threading.RLock()
+
+
+class _StateLock:
+    """Serializza il read-modify-write dello stato FRA PROCESSI.
+
+    Il backend NON è un processo solo: il proxy del gateway avvia un processo
+    stdio per ogni chiamata, quindi un lock di processo lasciava passare due
+    `lease_acquire` concorrenti — entrambi «esclusivi» — e due scritture sullo
+    stesso file temporaneo (review di clodia-logic#527). Un `flock` su un file
+    accanto allo stato, più un RLock per i thread dello stesso processo;
+    rientrante, perché i verbi si richiamano a vicenda tenendolo.
+    """
+
+    def __init__(self) -> None:
+        self._rlock = threading.RLock()
+        self._local = threading.local()
+
+    def _path(self) -> Path:
+        return _state_path().with_name(_state_path().name + ".lock")
+
+    def __enter__(self):
+        self._rlock.acquire()
+        depth = getattr(self._local, "depth", 0)
+        if depth == 0:
+            import fcntl
+            p = self._path()
+            p.parent.mkdir(parents=True, exist_ok=True)
+            fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o600)
+            try:
+                fcntl.flock(fd, fcntl.LOCK_EX)
+            except BaseException:
+                os.close(fd)
+                self._rlock.release()
+                raise
+            self._local.fd = fd
+        self._local.depth = depth + 1
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self._local.depth -= 1
+        if self._local.depth == 0:
+            import fcntl
+            fd = self._local.fd
+            try:
+                fcntl.flock(fd, fcntl.LOCK_UN)
+            finally:
+                os.close(fd)
+        self._rlock.release()
+
+
+# Serializza read-modify-write dello stato (vedi `_StateLock`).
+_LOCK = _StateLock()
+
+
+def _poll_lock(blocking: bool):
+    """Il diritto di chiamare `getUpdates`: Telegram ne ammette UNO per bot, e
+    due in parallelo si rubano gli update via offset o ricevono 409. Il
+    long-poll del relay lo tiene per tutta l'attesa; il refresh lazy di
+    `inbox`/`poll` lo prova senza aspettare e, se è occupato, non chiama
+    Telegram (i messaggi li sta già raccogliendo chi tiene il lock).
+    Ritorna il fd da rilasciare, o None se occupato."""
+    import fcntl
+    p = _state_path().with_name(_state_path().name + ".poll.lock")
+    p.parent.mkdir(parents=True, exist_ok=True)
+    fd = os.open(p, os.O_RDWR | os.O_CREAT, 0o600)
+    try:
+        fcntl.flock(fd, fcntl.LOCK_EX | (0 if blocking else fcntl.LOCK_NB))
+    except BlockingIOError:
+        os.close(fd)
+        return None
+    except BaseException:
+        os.close(fd)
+        raise
+    return fd
+
+
+def _poll_unlock(fd) -> None:
+    import fcntl
+    try:
+        fcntl.flock(fd, fcntl.LOCK_UN)
+    finally:
+        os.close(fd)
 
 # ── stato, token, API ────────────────────────────────────────────────────────
 
@@ -91,7 +169,10 @@ def _load_state() -> dict:
 def _save_state(st: dict) -> None:
     p = _state_path()
     p.parent.mkdir(parents=True, exist_ok=True)
-    tmp = p.with_suffix(".tmp")
+    # Nome UNICO per processo e thread: con un nome fisso due scritture
+    # concorrenti si rubavano il file e la seconda `replace` falliva
+    # (FileNotFoundError, review di clodia-logic#527).
+    tmp = p.with_name(f"{p.name}.{os.getpid()}.{threading.get_ident()}.tmp")
     tmp.write_text(json.dumps(st, ensure_ascii=False, indent=2), encoding="utf-8")
     os.chmod(tmp, 0o600)
     tmp.replace(p)
@@ -304,12 +385,17 @@ def _refresh(st: dict, token: str) -> int:
     """getUpdates lazy: accoda i messaggi nuovi nelle code per-chat e avanza
     l'offset. Best-effort: un errore di rete finisce in `last_error` e non rompe
     l'operazione in corso — le code già accumulate restano leggibili."""
+    fd = _poll_lock(blocking=False)
+    if fd is None:
+        return 0          # un altro consumer sta già leggendo gli update
     try:
         updates = api_call(token, "getUpdates",
                            {"offset": st["offset"], "timeout": 0, "limit": 100})
     except RuntimeError as e:
         st["last_error"] = str(e)[:300]
         return 0
+    finally:
+        _poll_unlock(fd)
     st["last_error"] = None
     n = 0
     for upd in updates or []:
@@ -554,14 +640,23 @@ def updates(a: dict) -> dict:
     `messaggero`, `denied_tools`) e lo usa per il proprio percorso interno.
     """
     timeout = max(0, min(int(a.get("timeout") or 25), 60))
-    with _LOCK:
-        offset = _load_state()["offset"]
-        token = _token()
-    # getUpdates FUORI dal lock: blocca fino a `timeout` secondi e congelare
-    # `send` per tutto quel tempo sarebbe un difetto, non una precauzione.
-    got = api_call(token, "getUpdates",
-                   {"offset": offset, "timeout": timeout, "limit": 100},
-                   timeout=timeout + 10)
+    # Il diritto a `getUpdates` per tutta l'attesa (vedi `_poll_lock`), ma
+    # FUORI dal lock dello stato: congelare `send` per `timeout` secondi
+    # sarebbe un difetto, non una precauzione.
+    fd = _poll_lock(blocking=True)
+    try:
+        with _LOCK:
+            offset = _load_state()["offset"]
+            token = _token()
+        got = api_call(token, "getUpdates",
+                       {"offset": offset, "timeout": timeout, "limit": 100},
+                       timeout=timeout + 10)
+        return _absorb_updates(got)
+    finally:
+        _poll_unlock(fd)
+
+
+def _absorb_updates(got) -> dict:
     out = []
     with _LOCK:
         st = _load_state()

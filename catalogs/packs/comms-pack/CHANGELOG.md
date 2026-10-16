@@ -8,7 +8,13 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
-## [1.3.0] — 2026-10-15
+## [1.3.0] — 2026-10-16
+- **State is safe across processes** (review of clodia-logic#527): the gateway
+  starts a stdio process per call, so the in-process lock let two concurrent
+  `lease_acquire` both win the "exclusive" lease and two writers race on one
+  temp file. State access is now serialised with a file lock, each writer uses
+  its own temp file, and `getUpdates` is guarded by a separate lock held for the
+  whole long-poll (a lazy refresh skips Telegram when someone else is polling).
 - **The pack now carries the Telegram implementation too** (clodia-platform#522,
   phase 2): `plugins/comms-pack/mcp/telegram_mcp.py` is the gateway's
   `server/tools/telegram.py`, moved into the pack that declares the connector,
