@@ -2,41 +2,99 @@
 
 What to do after importing or updating the pack.
 
+## 0. What it is made of
+
+comms-pack 2.0.0 is a distribution of components (clodia-platform#558):
+
+| component | where it runs | what it is |
+|---|---|---|
+| `gateway/` (`components:`, `target: gateway`) | the gateway | mail: the eight `email.*` verbs, mailbox whitelist, strict ingress, topic attachments, reply recipient, the mailbox services of the Tools page, the IMAP/SMTP client |
+| `plugins/comms-pack` | the agent-server | the Telegram MCP backend and the skills (check-email, telegram-1to1, helpdesk) |
+| `connectors:` | gateway PDP + webui | `telegram` and `mail`: schemes, mappings, taint, topic buttons, Tools cards |
+
+The gateway component is never installed into the datadir: the gateway fetches
+it from r-clodia/clodia-logic (default branch), pins the commit in its own
+state directory and verifies it before every load.
+
+Requirements: clodia-tools (gateway) ≥ 2.110.0, clodia-logic ≥ 6.306.0; for
+Gmail accounts on `mail: pack`, google-pack ≥ 2.1.0 on `google: pack`.
+
 ## 1. Plugin dependencies (`requires`)
 
-None beyond the gateway image: both backends are stdlib Python plus the `mcp`
-package the gateway already has.
+None beyond the gateway image: the Telegram backend is stdlib Python plus the
+`mcp` package the gateway already has.
 
 ## 2. MCP servers
 
-`plugins/comms-pack/.mcp.json` mounts two stdio backends:
+`plugins/comms-pack/.mcp.json` mounts one stdio backend, **`telegram`** — the
+Telegram connector (clodia-platform#522). The bot token is injected from the
+gateway's vault (`${VAULT:telegram_bot_token.token}`); connect the bot from
+Tools → Telegram. (The `mail-transport` backend of 1.4.0 is gone: after the
+Update the gateway unmounts it.)
 
-- **`telegram`** — the Telegram connector (clodia-platform#522). The bot token
-  is injected from the gateway's vault (`${VAULT:telegram_bot_token.token}`);
-  connect the bot from Tools → Telegram.
-- **`mail-transport`** — the IMAP/SMTP transport of the `mail` connector
-  (clodia-platform#523). **Nothing to configure**: it has no mount-time
-  credential, the gateway hands it each call's mailbox credential as a file.
-  Its single tool `run` is gateway-internal and hidden from agents.
+## 3. The gateway component
 
-## 3. Turning the connectors on
+1. **First time**: after the Update the gateway pins the component by itself
+   at its next reconcile (≤ 60 s; `CLODIA_COMPONENT_INTERVAL`). Check:
+
+   ```sh
+   curl -sS -H "Authorization: Bearer $OWNER_SESSION_TOKEN" \
+        https://<gateway>/internal/components
+   ```
+
+   With the switch still on `native` its status is **`standby`** (pinned, not
+   imported, nothing served by it): expected.
+2. **Every later Update**: the pin does NOT move by itself. A human admin asks
+   the gateway to fetch the new head of `main`:
+
+   ```sh
+   curl -sS -X POST -H "Authorization: Bearer $OWNER_SESSION_TOKEN" \
+        https://<gateway>/internal/components/comms-pack/refresh
+   ```
+
+## 4. Turning the connectors on
 
 Both are off until the instance profile switches them:
 
 ```yaml
-# profile.yaml
+# $CLODIA_DATA/profile.yaml
 connectors:
   telegram: pack
   mail: pack
 ```
 
-With `native` (the default) the gateway keeps using its built-in code. Mailboxes
-are still added and removed from Tools → mailboxes, and authorised per topic
-with the admin-only "Autorizza una casella" button, whichever position the
-switch is in.
+then restart the gateway. With `native` (the default) the gateway keeps using
+its built-in code and the mail component stays on standby.
 
-## 4. Verification
+On `mail: pack`:
+- **IMAP/SMTP mailboxes** (`mailbox_<acct>`) are served by the component. The
+  credentials stay in the gateway's vault with the same names: nothing to
+  re-enter. Tools → mailboxes keeps working (same URLs, same authentication;
+  the gateway's routes call the component).
+- **Gmail accounts** (`google_<acct>`) are served through google-pack's
+  component: they need google-pack ≥ 2.1.0 and `google: pack`. Otherwise they
+  are refused (the error names google-pack).
+- **Legacy accounts** (`secrets/email_config.json`) are refused: move them to
+  the vault (Tools → mailboxes) first, or stay on `native`.
 
-- `mail: pack`: `email.list` on an authorised mailbox returns messages, and
-  `email.send` to a whitelisted `mailto:` delivers (same results as `native`).
+Mailboxes are authorised per topic with the admin-only "Autorizza una casella"
+button, whichever position the switch is in.
+
+## 5. Verification
+
+`GET /internal/components` → comms-pack/mail `loaded`, 8 verbs. Then, with
+`mail: pack`:
+
+- `email.list`/`email.read` on an authorised IMAP mailbox, `email.send` to a
+  whitelisted `mailto:` (same results as `native`);
+- `email.list` on a Google account by an agent with email tools (Gmail via
+  google-pack);
+- on a strict-ingress channel, a message from an undeclared sender is withheld
+  from `email.list` and refused by `email.read` ("mittente non vagliato");
+- Tools → mailboxes → Test: one line per mailbox;
 - `telegram: pack`: `telegram.status` reports the bot.
+
+If the component is missing, refused or failed, every `email.*` verb is
+refused (DENIED, naming the component) and the mailbox routes answer 503 —
+never served by the built-in code. Set `connectors: {mail: native}` and
+restart the gateway to go back.

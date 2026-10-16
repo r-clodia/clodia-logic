@@ -5,7 +5,7 @@ description: >-
   gateway component (verbs, folder/calendar perimeter, OAuth consent, Gmail)
   that runs inside the gateway; the credentials stay in the gateway's vault.
   Ships the skill to keep a topic in sync with a Drive folder.
-version: 2.0.0
+version: 2.1.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -262,10 +262,13 @@ connectors:
   # meaning, so this entry declares no scheme, verb or taint. Namespace
   # `gdrive` because `google` stays reserved together with the `google_` vault
   # prefix (SCHEMA.md «The switch»). A Gmail account (one with a
-  # `google_`/`gmail_` credential) follows the `google` switch: the gateway's
-  # `email.*` verbs, after every check of theirs, call the component's
-  # `mail_run` service with that call's XOAUTH2 files. No transport and no
-  # credential here: the code is the component's, the credential the vault's.
+  # `google_`/`gmail_` credential) follows the `google` switch. On `mail:
+  # native` the gateway's `email.*` verbs, after every check of theirs, call
+  # the component's `mail_run` service with that call's XOAUTH2 files; on
+  # `mail: pack` comms-pack's mail component does the checks and calls
+  # `mail_accounts`/`mail_exec`, and the XOAUTH2 files are written here (2.1.0).
+  # No transport and no credential here: the code is the component's, the
+  # credential the vault's.
   - id: mail-gmail
     manifest_version: 1
     namespace: gdrive

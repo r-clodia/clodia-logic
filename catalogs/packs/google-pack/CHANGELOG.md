@@ -4,6 +4,24 @@ Changelog of the `google-pack` pack ([Keep a Changelog](https://keepachangelog.c
 format, SemVer). The newest version is at the top; `pack.yaml` holds the current
 one.
 
+## [2.1.0] — 2026-10-17
+- **Gmail for comms-pack's mail component** (clodia-platform#558; needs
+  clodia-tools ≥ 2.110.0). With `connectors: {mail: pack}` the eight `email.*`
+  verbs are comms-pack's gateway component's for every account; a Google
+  account's credential stays in THIS component's scope, so comms-pack asks two
+  new services, the only ones the gateway lets it look up
+  (`builtin.COMPONENT_SERVICES`):
+  - `mail_accounts()` — the Google mail accounts (`google_`/`gmail_`), in the
+    shape of the gateway's diagnostics rows plus the bundle's address. Names and
+    addresses only: never a token, a secret or a client id;
+  - `mail_exec({account, argv, files, timeout})` — one run of the bundled client
+    for `account`: comms-pack hands only that call's attachments (`att/…`; any
+    other path is refused), and the XOAUTH2 files are written HERE, byte for
+    byte as the gateway's `vault.materialize_google_oauth` writes them, then
+    run by `gmail_core.run` (same per-call directory, `{dir}` rule, scrubbing
+    and clean-up as `mail_run`).
+  `mail_run` is unchanged and still serves `mail: native`.
+
 ## [2.0.0] — 2026-10-16
 - **Google runs in the gateway as a component of this pack** (clodia-platform#558,
   owner decision 2026-10-16; needs clodia-tools ≥ 2.109.0 and clodia-logic

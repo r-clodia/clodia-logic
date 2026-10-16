@@ -8,6 +8,56 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.0.0] — 2026-10-17
+- **Mail runs in the gateway as a component of this pack** (clodia-platform#558,
+  owner decision 2026-10-16; needs clodia-tools ≥ 2.110.0 and clodia-logic
+  ≥ 6.306.0; Gmail accounts need google-pack ≥ 2.1.0). New `components:` block
+  with one `target: gateway` component, `gateway/` (entry `mail_component`),
+  fetched by the gateway itself from r-clodia/clodia-logic's default branch,
+  pinned by commit and loaded only on `connectors: {mail: pack}`:
+  - the eight `email.*` verbs (schemas copied verbatim from the gateway),
+    served through the gateway's normal `call_tool` path — whitelist, deny,
+    unattended block, gates, the egress PDP on this pack's mappings, taint,
+    audit. comms-pack owns the mail vocabulary, so it owns the verbs for EVERY
+    account;
+  - every decision the gateway took inside them, reading the perimeter from
+    the gateway per call through the host: account resolution, the mailbox
+    whitelist (`inbox:`/`outbox:`), strict ingress with its fail-closed audit
+    record (#503, same refusal text — `main._denial_class` still classifies it
+    as `sender_not_vetted`), agent attachments confined to the caller's
+    scratch (#461), topic attachments in (`topic_files`) and out
+    (`save_attachment`: `untrusted`, channel tainted, name sanitised #420), the
+    reply recipient (service `pdp_arguments`: the gateway drops the caller's
+    `to` and judges the reply by the original sender);
+  - the IMAP/SMTP client (`email_client.py`, the gateway's
+    `vendor/email_client.py` verbatim) run on ONE mailbox's `mailbox_<acct>`
+    credential, written to a private 0700 directory removed after the call,
+    with a minimal environment and no bytecode next to the pinned code. The
+    credentials stay in the gateway's vault (`host.credentials("mailbox_")`,
+    reachable only while the switch is on `pack`);
+  - Google accounts are google-pack's: their credential never reaches this
+    component, which asks google-pack's component (`mail_accounts`,
+    `mail_exec`) through `host.service`. Without google-pack serving, a Google
+    account is refused — never the gateway's native client;
+  - the mailbox management of the Tools page as services the gateway's own
+    routes call (`mailboxes_list`, `mailbox_add`, `mailbox_remove`,
+    `test_mailboxes`), plus `diagnostics`, `system_mailboxes`,
+    `mailbox_address` for the topic button and the Tools card;
+  - legacy accounts (`secrets/email_config.json`) are listed and refused
+    with the reason: they keep working on `mail: native` only.
+  Code moved from clodia-tools: `server/tools/email.py`, the `email.*`
+  branches and `_email_account`/`_topic_attachments`/`_agent_attachments`/
+  `_reply_recipient` of `server/main.py`, the mailbox routes and the mailbox
+  test of `server/tools_api.py`, `vendor/email_client.py`. The gateway keeps
+  its native copy behind the switch until the removal step.
+- **Transport removed**: the `mail-transport` backend (`mail_transport_mcp.py`,
+  `mail_transport_core.py` and the plugin's `email_client.py`) is gone, and
+  the `imap` provider declares no transport.
+- **`unmapped:`** on `mail` for `email.folders` and `email.save_attachment`
+  (no egress/source mapping, no taint row): the gateway serves a component
+  verb only when the reviewed manifest classifies it. The PDP answers are the
+  builtin's, unchanged.
+
 ## [1.4.0] — 2026-10-16
 - **The pack declares the `mail` connector** (clodia-platform#523): the
   gateway's builtin `mail.yaml` (clodia-tools), moved verbatim in meaning —

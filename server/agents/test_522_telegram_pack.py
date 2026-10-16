@@ -100,14 +100,14 @@ class IlPackPortaIlCodiceTests(unittest.TestCase):
         self.assertTrue(CORE_FILE.is_file(), CORE_FILE)
         self.assertTrue(ENTRYPOINT.is_file(), ENTRYPOINT)
         mount = json.loads(MCP_JSON.read_text(encoding="utf-8"))["mcpServers"]
-        # Since #523 the plugin also mounts `mail-transport` (gateway-internal,
-        # covered by test_523_mail_transport); Telegram's backend must still
-        # be named after its connector's namespace.
+        # The plugin mounts only Telegram's backend: mail is comms-pack's
+        # GATEWAY component since 2.0.0 (#558, test_558_mail_component), and
+        # the backend must be named after its connector's namespace.
         self.assertIn("telegram", mount,
                       "il backend deve chiamarsi come il namespace del "
                       "connettore: con un altro nome i verbi tornano come "
                       "`<altro>.send` e nessuna mappatura li descrive più")
-        self.assertEqual(set(mount) - {"telegram", "mail-transport"}, set())
+        self.assertEqual(set(mount), {"telegram"})
         telegram = mount["telegram"]
         args = [str(x) for x in telegram.get("args") or []]
         self.assertEqual(len(args), 1, args)
