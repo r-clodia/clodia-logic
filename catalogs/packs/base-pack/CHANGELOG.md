@@ -9,6 +9,16 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+## [7.37.0] — 2026-10-15
+- **`messaggero` denies `telegram.updates` and `telegram.download`**
+  (clodia-platform#522). With the Telegram implementation inside comms-pack,
+  those two are the gateway relay's own door: Telegram allows a single
+  `getUpdates` consumer per bot, so an agent calling them empties the queue the
+  relay has to read — no error, just messages that stop arriving in the topic.
+  The grant is `telegram.*`, so the wildcard would reach them: while the
+  implementation lived in the gateway they were routes, not verbs, and there
+  was nothing to deny.
+
 ## [7.36.0] — 2026-10-08
 - **`staff` and `deputy` are now seed attributes** (clodia-platform#497):
   `segretario`, `messaggero` and `sysadmin` declare `staff: true`, and
