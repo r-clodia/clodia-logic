@@ -126,3 +126,34 @@ class PluginOwnersTests(unittest.TestCase):
 
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()
+
+
+class ARefusedMountIsReportedNotRaisedTests(MountDeclaresItsPackTests):
+    """clodia-platform#555: the gateway refused the `github` mount (409) with a
+    plain-text body and the pack update died with HTTP 500 on `data.get`."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        rifiuto = patch.object(gateway_pdp, "gw_tool",
+                               lambda tool, args, principal:
+                               (409, "il backend MCP 'github' è già montato da un amministratore"))
+        rifiuto.start()
+        self.addCleanup(rifiuto.stop)
+
+    def _monta(self):
+        self.man.scrivi("it-pack", {"github": {"url": "https://api.githubcopilot.com/mcp/"}})
+        return pack_mcp_mount.auto_mount_imported_mcp(
+            {"kind": "pack", "pack": "it-pack", "plugins": [{"plugin": "it-pack"}]},
+            "davide", trusted=True)
+
+    def test_the_refusal_is_in_the_result(self) -> None:
+        out = self._monta()
+        testo = repr(out)
+        self.assertIn("409", testo)
+        self.assertIn("già montato", testo)
+
+    # The inherited tests assert a successful mount: not applicable here.
+    test_a_packs_plugin_mounts_in_the_name_of_its_pack = None
+    test_the_wrapper_form_of_a_pack_is_covered_too = None
+    test_a_loose_plugin_claims_nothing = None
+    test_each_plugin_is_mounted_in_the_name_of_its_own_pack = None

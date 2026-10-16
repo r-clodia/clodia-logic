@@ -106,8 +106,14 @@ def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
             # lo rimonta per primo.
             args["pack"] = pack
         status, data = gateway_pdp.gw_tool("mcp.add", args, principal)
+        # The gateway's reply is not always a JSON object: a refused mount can
+        # come back as plain text, and treating it as a dict turned a clear
+        # refusal into a bare 500 for the whole update (clodia-platform#555).
+        if not isinstance(data, dict):
+            data = {"error": str(data)[:500]} if data else {}
         if status == 200:
-            registered = data.get("result", {}).get("registered")
+            result = data.get("result") if isinstance(data.get("result"), dict) else {}
+            registered = result.get("registered")
             if isinstance(registered, list):
                 mounted.extend(str(x) for x in registered if str(x) not in mounted)
             else:
