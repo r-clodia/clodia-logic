@@ -1,0 +1,135 @@
+# VENDORED FIXTURE — do not edit by hand.
+# Copy of r-clodia/clodia-tools:server/connectors/builtin_manifests/mail.yaml
+# at commit a7e12044bbef23f734d82016ecab512cbddc8318 (fetched 2026-10-16), kept here because the test suite runs
+# offline. test_523_mail_transport.py compares comms-pack's `mail` connector
+# against it. When the gateway changes its builtin, refresh this copy:
+#   gh api repos/r-clodia/clodia-tools/contents/server/connectors/builtin_manifests/mail.yaml -q .content | base64 -d
+#
+# La posta, come il gateway la implementa oggi (clodia-platform#518).
+#
+# Finché `email.*` è un verbo nativo, il vocabolario della posta è dichiarato
+# qui e un pack che provasse a dichiararlo viene rifiutato: due definizioni di
+# `mailto:` sulla stessa istanza sono una definizione di troppo. La migrazione
+# #522 sposta questo file in comms-pack e lo cancella da qui.
+name: gateway-mail
+connectors:
+  - id: mail
+    manifest_version: 1
+    namespace: email
+    label: Email
+    schemes:
+      # `mailto:` = il DESTINATARIO di un messaggio.
+      - scheme: mailto
+        direction: egress
+        label: Destinatario
+        lowercase: true
+        danger: >-
+          un indirizzo email. Una volta inviato, il messaggio non è più
+          richiamabile e la copia resta sul server del destinatario.
+      # `mailfrom:` = il MITTENTE di un messaggio letto: governa il taint del
+      # contenuto, non l'accesso alla casella.
+      - scheme: mailfrom
+        direction: source
+        label: Mittente
+        lowercase: true
+      # `inbox:`/`outbox:` = la CASELLA con cui un verbo legge o scrive. La
+      # domanda è DOVE, non CHI: sostituiscono il grant per agente sulla
+      # credenziale nel vault.
+      - scheme: inbox
+        direction: source
+        label: Casella in lettura
+        lowercase: true
+      - scheme: outbox
+        direction: egress
+        label: Casella in scrittura
+        lowercase: true
+    verbs:
+      # Un solo campo può portare più indirizzi: `multi` li separa come fa
+      # l'estrattore di oggi, su virgola e punto e virgola.
+      - verb: email.send
+        direction: egress
+        scheme: mailto
+        arg: to
+        multi: true
+        dtype: email
+      - verb: email.send
+        direction: egress
+        scheme: mailto
+        arg: cc
+        multi: true
+        dtype: email
+      - verb: email.send
+        direction: egress
+        scheme: mailto
+        arg: bcc
+        multi: true
+        dtype: email
+      # `email.reply` non ha `to` negli argomenti: il destinatario viene dal
+      # messaggio a cui si risponde, cioè da contenuto non controllato. Le tre
+      # mappature non leggono nulla → nessuna destinazione → UNKNOWN → negato,
+      # a meno che il tipo ammetta esplicitamente `*`. È voluto.
+      - verb: email.reply
+        direction: egress
+        scheme: mailto
+        arg: to
+        multi: true
+        dtype: email
+      - verb: email.reply
+        direction: egress
+        scheme: mailto
+        arg: cc
+        multi: true
+        dtype: email
+      - verb: email.reply
+        direction: egress
+        scheme: mailto
+        arg: bcc
+        multi: true
+        dtype: email
+      # La fonte di una mail letta sta nel RISULTATO, non negli argomenti: è
+      # già in mano al gateway dopo la chiamata, e una seconda fetch per
+      # rileggerla sarebbe una richiesta in più per un dato che abbiamo.
+      - verb: email.read
+        direction: source
+        scheme: mailfrom
+        arg: from
+        reads: result
+        normalise: email_from
+    # Il bottone del topic: si sceglie una casella GIÀ configurata nel sistema e
+    # quella diventa in un colpo solo ingress ed egress di questo topic. Il
+    # campo ha un insieme di valori (`options: mailboxes`), non testo libero:
+    # l'indirizzo che finisce in whitelist lo risolve il gateway, perché una
+    # whitelist scritta da chi ne è soggetto non è una whitelist. Nessun
+    # binding: qui si autorizza soltanto — leggere la posta resta compito dei
+    # verbi email, il connettore decide DOVE, non chi né quando.
+    topic_actions:
+      - id: mailbox-link
+        label: Autorizza una casella
+        # Solo un admin dell'istanza: una casella di sistema è posta che non è
+        # dell'owner del topic (decisione del 27 set 2026, finora scritta come
+        # `{#if $isAdmin}` attorno al bottone Mailbox nella webui).
+        admin_only: true
+        fields:
+          - name: account
+            label: Casella di sistema
+            options: mailboxes
+        adds:
+          ingress:
+            - 'inbox:{address}'
+          egress:
+            - 'outbox:{address}'
+    tools_card:
+      icon: email
+      setup_label: Gestisci caselle
+      blurb: >-
+        Connettore multi-casella: aggiungi/togli mailbox IMAP/SMTP (info@,
+        IONOS, …). Le caselle si autorizzano per canale, non per agente.
+      scope: IMAP/SMTP
+    # Posta in arrivo: il mittente non è controllato. `email.read` non è qui
+    # perché ha UNA fonte dichiarata sopra, e una fonte vagliata non contamina;
+    # questi tre mescolano più mittenti in una risposta sola, quindi non c'è
+    # niente da vagliare.
+    taint:
+      - email.list
+      - email.search
+      - email.get_attachment

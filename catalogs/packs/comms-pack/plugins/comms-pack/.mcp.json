@@ -7,6 +7,10 @@
         "TELEGRAM_BOT_TOKEN": "${VAULT:telegram_bot_token.token}",
         "CLODIA_TELEGRAM_STATE": "/datadir/plugins/comms-pack/state/telegram-state.json"
       }
+    },
+    "mail-transport": {
+      "command": "python3",
+      "args": ["/datadir/plugins/comms-pack/mcp/mail_transport_mcp.py"]
     }
   }
 }
