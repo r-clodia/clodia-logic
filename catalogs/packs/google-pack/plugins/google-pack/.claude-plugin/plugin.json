@@ -1,0 +1,6 @@
+{
+  "name": "google-pack",
+  "description": "Google Workspace transports for the gateway: google-transport (Drive, Docs, Sheets, Calendar API calls) and gmail-transport (Gmail over XOAUTH2). Gateway-internal, no skills.",
+  "version": "1.0.0",
+  "license": "AGPL-3.0-or-later"
+}

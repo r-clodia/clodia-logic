@@ -1,0 +1,171 @@
+# VENDORED FIXTURE — do not edit by hand.
+# Copy of r-clodia/clodia-tools:server/connectors/builtin_manifests/google.yaml
+# at commit a3f9af19810a915090e48cd2999ffd8ded59db84 (fetched 2026-10-16), kept here because the test suite runs
+# offline. test_524_google_pack.py compares google-pack's four Google
+# connectors against it (and, with CLODIA_TOOLS_SRC set, this copy against the
+# checkout's). When the gateway changes its builtin, refresh this copy:
+#   gh api repos/r-clodia/clodia-tools/contents/server/connectors/builtin_manifests/google.yaml -q .content | base64 -d
+#
+# Google Workspace, as the gateway implements it today (clodia-platform#518).
+# Migration #524: this file moves to google-pack and disappears from here.
+#
+# Four connectors, one per verb namespace (`gdrive.`, `gsheets.`, `gdocs.`,
+# `gcalendar.`), switched TOGETHER by the one switch `connectors: {google:
+# pack}` (`builtin.SWITCH_WITH`). The owner, `google`, declares the vocabulary
+# (`gdrive:`/`gsheets:`/`gcal:`), the account provider, the topic button and
+# the Tools card; the three siblings only map their own verbs onto it. They are
+# split rather than one connector spanning four namespaces because a PACK
+# connector owns exactly one namespace (#516): google-pack declares the same
+# four, and the switch has to free — and fail closed on — each namespace by
+# itself (`builtin.released`, `main._check_pack_connector_held`). The PDP's
+# answers are the same as with the single connector (`test_524_google_pins`).
+name: gateway-google
+connectors:
+  - id: google
+    manifest_version: 1
+    namespace: gdrive
+    label: Google Workspace
+    schemes:
+      - scheme: gdrive
+        direction: both
+        label: Cartella o file di Drive
+        hierarchical: true
+        forms:
+          - label: cartella
+            pattern: 'folder/[\w-]+'
+            example: 'folder/1AbCdEfGhIjKlMnOpQrStUv'
+          - label: file
+            pattern: 'file/[\w-]+'
+            example: 'file/1AbCdEfGhIjKlMnOpQrStUv'
+          - label: documento
+            pattern: 'doc/[\w-]+'
+            example: 'doc/1AbCdEfGhIjKlMnOpQrStUv'
+        # Le forme che un umano scrive naturalmente, ricondotte alla forma
+        # canonica: un URL di cartella è ciò che si copia dalla barra del
+        # browser, e `gdrive://<id>` è la stessa risorsa in un'altra codifica.
+        canonicalise:
+          - from: '^gdrive://(?:folder/)?([\w-]+)/?$'
+            to: 'gdrive:folder/{1}'
+          - from: '^https?://drive\.google\.com/drive/(?:u/\d+/)?folders/([\w-]+)(?:[/?#].*)?'
+            to: 'gdrive:folder/{1}'
+          - from: '^https?://docs\.google\.com/document/d/([\w-]+)(?:[/?#].*)?'
+            to: 'gdrive:doc/{1}'
+          - from: '^https?://drive\.google\.com/file/d/([\w-]+)(?:[/?#].*)?'
+            to: 'gdrive:file/{1}'
+      - scheme: gsheets
+        direction: both
+        label: Foglio Google
+        danger: 'un foglio Google. Se è condiviso, lo vede chi ha il link.'
+        canonicalise:
+          - from: '^gsheets://([\w-]+)/?$'
+            to: 'gsheets:{1}'
+          - from: '^https?://docs\.google\.com/spreadsheets/d/([\w-]+)(?:[/?#].*)?'
+            to: 'gsheets:{1}'
+      # `gcal:` sta in USCITA e non in ingresso perché governa l'AUTORITÀ sulla
+      # risorsa (leggere l'agenda e scriverci eventi), non la fiducia nel
+      # contenuto che ne arriva. `gcal:*` non è concedibile: sarebbe il permesso
+      # più largo del modulo, scritto in tre caratteri e indistinguibile in
+      # lista da una voce puntuale. Un dominio (`gcal:*@esempio.it`) sì.
+      - scheme: gcal
+        direction: egress
+        label: Calendario Google
+        wildcard: false
+        danger: >-
+          un calendario Google: chi lo approva concede di LEGGERE l'agenda (con
+          titoli, luoghi e invitati) e di scriverci eventi, che arrivano come
+          invito a chi è in lista. Non è confinabile a una cartella: il
+          perimetro è il calendario stesso.
+    providers:
+      - id: workspace
+        label: Account Google
+        credential:
+          kind: oauth
+          authorize_url: https://accounts.google.com/o/oauth2/v2/auth
+          token_url: https://oauth2.googleapis.com/token
+          scopes:
+            - https://www.googleapis.com/auth/drive
+            - https://www.googleapis.com/auth/spreadsheets
+            - https://www.googleapis.com/auth/calendar
+    # Il bottone del topic: una cartella di Drive diventa fonte E destinazione
+    # di questa stanza. Nessun `binding` — Drive non ha un canale da agganciare,
+    # si autorizza e basta, ed è esattamente ciò che l'icona Drive della webui
+    # fa dal 18 set 2026 scrivendo le due liste a mano. Dichiararlo qui è ciò
+    # che permette alla pagina di disegnare il bottone senza sapere cos'è Drive
+    # (clodia-platform#520).
+    topic_actions:
+      - id: drive-folder
+        label: Aggiungi una cartella Drive
+        fields:
+          - name: folder
+            label: Cartella Drive (id o URL)
+            placeholder: '1AbCdEfGhIjKlMnOpQrStUv'
+        adds:
+          ingress:
+            - 'gdrive:folder/{folder}'
+          egress:
+            - 'gdrive:folder/{folder}'
+    tools_card:
+      icon: google
+      setup_label: Connetti Google
+      blurb: >-
+        Gmail, Drive, Documenti e Calendar in un solo consenso (un token
+        OAuth): lettura/invio email + accesso ai file dell'owner.
+      scope: Gmail · Drive · Docs · Calendar
+    verbs:
+      # Dove finisce il contenuto, o con CHI viene condiviso: `gdrive.share` è
+      # uscita verso una PERSONA, non verso una cartella. Per questo i due non
+      # si fondono — `mailto:` contro `gdrive:folder/` — ed è anche il motivo
+      # per cui un verbo porta più di una mappatura.
+      - {verb: gdrive.upload, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.upload, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.upload, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.share, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.share, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.share, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.mkdir, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.mkdir, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.mkdir, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.move, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.move, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.move, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      # `folder_id` lo aggiunge `call_tool` leggendo il parent del file da Drive.
+      - {verb: gdrive.update, direction: egress, scheme: mailto, arg: email, dtype: drive}
+      - {verb: gdrive.update, direction: egress, scheme: gdrive, arg: folder_id, template: 'gdrive:folder/{value}', dtype: drive}
+      - {verb: gdrive.update, direction: egress, scheme: gdrive, arg: parent_id, template: 'gdrive:folder/{value}', dtype: drive}
+      # Letture di una risorsa PER ID: la fonte è quella risorsa, e l'argomento
+      # che la identifica è diverso per ognuna. Senza queste righe un
+      # `gsheets.read` su un foglio dichiarato fidato contaminerebbe comunque —
+      # la regola «verbo + fonte» applicata a metà.
+      - {verb: gdrive.download, direction: source, scheme: gdrive, arg: file_id, template: 'gdrive:file/{value}'}
+
+  # Verb-only siblings: no scheme, no provider, no card. They map their own
+  # namespace's verbs onto the owner's schemes («using a vocabulary is not
+  # owning it», SCHEMA.md) and follow the `google` switch.
+  - id: google-sheets
+    manifest_version: 1
+    namespace: gsheets
+    label: Google Sheets
+    verbs:
+      - {verb: gsheets.add_tab, direction: egress, scheme: gsheets, arg: spreadsheet_id, dtype: gsheets}
+      - {verb: gsheets.append_rows, direction: egress, scheme: gsheets, arg: spreadsheet_id, dtype: gsheets}
+      - {verb: gsheets.write_range, direction: egress, scheme: gsheets, arg: spreadsheet_id, dtype: gsheets}
+      - {verb: gsheets.read, direction: source, scheme: gsheets, arg: spreadsheet_id}
+      - {verb: gsheets.list_tabs, direction: source, scheme: gsheets, arg: spreadsheet_id}
+
+  - id: google-docs
+    manifest_version: 1
+    namespace: gdocs
+    label: Google Docs
+    verbs:
+      - {verb: gdocs.read, direction: source, scheme: gdrive, arg: document_id, template: 'gdrive:doc/{value}'}
+
+  - id: google-calendar
+    manifest_version: 1
+    namespace: gcalendar
+    label: Google Calendar
+    # Un elenco di eventi mescola più autori in una risposta: non c'è UNA fonte
+    # da vagliare, quindi contamina e basta. (No verb mapping: today no
+    # calendar verb has a declared destination or source — the `gcal:`
+    # perimeter is enforced by `gdrive_root`, not by the PDP's tables.)
+    taint:
+      - gcalendar.list_events
