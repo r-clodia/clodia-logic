@@ -1047,6 +1047,19 @@ async def fire_job(job_id: int) -> dict:
         LOG.warning("fire_job: job %s non trovato (forse appena cancellato)", job_id)
         return {"chat_id": None, "status": "error: job not found"}
 
+    # Un job di un agente il cui pack è DISATTIVATO non parte (#563): l'agente
+    # non è nel registry, e il fallback qui sotto lo farebbe girare come
+    # `clodia` — più capacità, non meno. Saltato e registrato, non degradato.
+    try:
+        from ..agents.pack_state import disabled_agents
+        _spento = str(job.get("agent") or "") in disabled_agents()
+    except Exception:  # noqa: BLE001 — stato illeggibile: non si inventa uno skip
+        _spento = False
+    if _spento:
+        LOG.info("job %s: agente '%s' di un pack disattivato → saltato", job_id, job.get("agent"))
+        db.mark_run(job_id, status="skipped: pack disattivato", chat_id=None)
+        return {"chat_id": None, "status": "skipped: pack disattivato"}
+
     # JOB LOGICO: piano deterministico di verbi, nessun turno LLM né gate
     # (pre-autorizzato alla creazione). Esegue via l'endpoint interno del gateway.
     if (job.get("mode") or "agentic") == "logic":

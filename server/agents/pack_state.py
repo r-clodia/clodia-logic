@@ -20,7 +20,10 @@ nothing from `server.api`, which imports the agents package.
 """
 from __future__ import annotations
 
+import json
 import logging
+import os
+import tempfile
 from pathlib import Path
 from typing import Any
 
@@ -89,18 +92,65 @@ def disabled_plugins() -> set[str]:
     return out - NEVER_DISABLED
 
 
+def _atomic_write(path: Path, text: str) -> None:
+    """Temp file + `os.replace`: a reader (the gateway polls these files)
+    never sees a half-written manifest."""
+    fd, tmp = tempfile.mkstemp(dir=str(path.parent), prefix=".pack.", suffix=".tmp")
+    try:
+        with os.fdopen(fd, "w", encoding="utf-8") as f:
+            f.write(text)
+        os.replace(tmp, path)
+    except BaseException:
+        Path(tmp).unlink(missing_ok=True)
+        raise
+
+
 def set_disabled(pack: str, disabled: bool) -> None:
     """Write the flag in the installed manifest. KeyError if not installed,
-    ValueError for a pack that can never be disabled."""
+    ValueError for a pack that can never be disabled or whose manifest does
+    not parse (refused rather than rewritten as `{disabled: true}`, which
+    would wipe its agents, plugins and upstream)."""
     if pack in NEVER_DISABLED:
         raise ValueError(f"'{pack}' non si può disattivare")
     path = _packs_dir() / pack / "pack.yaml"
     if not path.is_file():
         raise KeyError(pack)
-    doc = _read(path)
+    try:
+        doc = yaml.safe_load(path.read_text(encoding="utf-8"))
+    except Exception as e:  # noqa: BLE001
+        raise ValueError(f"manifest di '{pack}' illeggibile: {e}") from e
+    if not isinstance(doc, dict):
+        raise ValueError(f"manifest di '{pack}' non è una mappa")
     if disabled:
         doc["disabled"] = True
     else:
         doc.pop("disabled", None)
-    path.write_text(yaml.safe_dump(doc, allow_unicode=True, sort_keys=False),
-                    encoding="utf-8")
+    _atomic_write(path, yaml.safe_dump(doc, allow_unicode=True, sort_keys=False))
+
+
+# What a disable unmounted, so the enable mounts back exactly that (#563):
+# never what the pack's own files declare, which a third-party pack wrote.
+
+def _state_path(pack: str) -> Path:
+    return data_path("packs-state") / f"{pack}.json"
+
+
+def record_unmounted(pack: str, servers: list[str]) -> None:
+    p = _state_path(pack)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        prev = set(json.loads(p.read_text(encoding="utf-8")).get("unmounted") or [])
+    except Exception:  # noqa: BLE001
+        prev = set()
+    _atomic_write(p, json.dumps({"unmounted": sorted(prev | set(servers))}))
+
+
+def take_unmounted(pack: str) -> set[str]:
+    """The servers to mount back, consumed."""
+    p = _state_path(pack)
+    try:
+        out = set(json.loads(p.read_text(encoding="utf-8")).get("unmounted") or [])
+    except Exception:  # noqa: BLE001
+        out = set()
+    p.unlink(missing_ok=True)
+    return out

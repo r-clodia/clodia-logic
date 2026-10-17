@@ -69,7 +69,8 @@ def _manifest_mcp(plugin: str) -> dict[str, Any]:
 
 
 def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
-                            *, trusted: bool = False) -> dict[str, Any]:
+                            *, trusted: bool = False,
+                            only: set[str] | None = None) -> dict[str, Any]:
     """Monta via gateway i server MCP dichiarati dai plugin appena importati.
 
     Mutazione in-place di `result`: aggiunge `mcp_mount` solo se c'erano server
@@ -90,6 +91,9 @@ def auto_mount_imported_mcp(result: dict[str, Any], principal: str,
     pending: list[str] = []
     for plugin, pack in _plugin_owners(result):
         servers = _manifest_mcp(plugin)
+        if only is not None:
+            # Enable of a disabled pack (#563): only what the disable unmounted.
+            servers = {k: v for k, v in servers.items() if k in only}
         if not servers:
             continue
         attempted.extend(k for k in sorted(servers) if k not in attempted)

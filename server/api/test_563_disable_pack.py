@@ -52,6 +52,7 @@ class _Env(unittest.IsolatedAsyncioTestCase):
             patch.object(skill_sync, "data_path", side_effect=dp),
             patch.object(pack_import, "PACKS_META_DIR", self.data / "packs"),
             patch.object(gateway_pdp, "require_authz_async", new=AsyncMock(return_value="davide")),
+            patch.object(gateway_pdp, "is_agent", side_effect=lambda n: n != "davide"),
             patch("server.sdk_runtime.session.manager.drop_all", new=AsyncMock(return_value=["a"])),
             patch.object(packs.plugins_api, "invalidate_plugins"),
             patch.object(packs.registry, "load"),
@@ -128,14 +129,14 @@ class WhatStopsTests(_Env):
             self.assertIsNotNone(skill_sync._resolve_skill_source("s1"))
             self.assertEqual(skill_sync._pack_skill_names("acme-pack"), ["acme-pack/s1"])
             on_rule = rule_sync._resolve_rule_source("acme-pack/r1")
+            self.assertIsNotNone(on_rule)
             _manifest(self.data, "acme-pack", disabled=True)
             self.assertIsNone(skill_sync._resolve_skill_source("acme-pack/s1"))
             self.assertIsNone(skill_sync._resolve_skill_source("s1"))
             self.assertEqual(skill_sync._pack_skill_names("acme-pack"), [])
             self.assertNotIn("s1", skill_sync._all_skill_names())
-            if on_rule is not None:
-                self.assertIsNone(rule_sync._resolve_rule_source("acme-pack/r1"))
-                self.assertEqual(rule_sync._pack_rule_names("acme-pack"), [])
+            self.assertIsNone(rule_sync._resolve_rule_source("acme-pack/r1"))
+            self.assertEqual(rule_sync._pack_rule_names("acme-pack"), [])
 
     def test_a_disabled_bundled_pack_is_not_served_from_the_image(self) -> None:
         _manifest(self.data, "comms-pack")
@@ -145,42 +146,123 @@ class WhatStopsTests(_Env):
 
 
 class EndpointTests(_Env):
-    async def test_disable_unmounts_and_restarts(self) -> None:
-        with patch.object(pack_deprovision, "snapshot_pack",
-                          return_value={"acme-pack": {"mcp_servers": ["acme-mcp"]}}), \
-             patch.object(pack_deprovision, "_unmount",
-                          return_value={"unmounted": ["acme-mcp"]}) as um:
+    def _snap(self):
+        return patch.object(pack_deprovision, "snapshot_pack",
+                            return_value={"acme-pack": {"mcp_servers": ["acme-mcp"]}})
+
+    async def test_disable_unmounts_records_and_restarts(self) -> None:
+        with self._snap(), patch.object(pack_deprovision, "_unmount",
+                                        return_value={"unmounted": ["acme-mcp"], "failed": []}) as um:
             out = await packs.disable_pack("acme-pack", _Req())
         um.assert_called_once_with(["acme-mcp"], "davide")
         self.assertTrue(pack_state.is_disabled("acme-pack"))
         self.assertEqual(out["agents_restarted"], 1)
-        again = await packs.disable_pack("acme-pack", _Req())
-        self.assertTrue(again.get("already"))
+        self.assertEqual(pack_state.take_unmounted("acme-pack"), {"acme-mcp"})
+
+    async def test_a_failed_unmount_is_retried_by_a_second_disable(self) -> None:
+        with self._snap(), patch.object(pack_deprovision, "_unmount",
+                                        return_value={"unmounted": [], "failed": [{"server": "acme-mcp"}]}):
+            out = await packs.disable_pack("acme-pack", _Req())
+        self.assertIn("warning", out)
+        with self._snap(), patch.object(pack_deprovision, "_unmount",
+                                        return_value={"unmounted": ["acme-mcp"], "failed": []}) as um:
+            again = await packs.disable_pack("acme-pack", _Req())
+        um.assert_called_once()                       # retried, not «already done»
+        self.assertTrue(again["already"])
+        self.assertEqual(pack_state.take_unmounted("acme-pack"), {"acme-mcp"})
 
     async def test_base_pack_and_unknown_are_refused(self) -> None:
         self.assertEqual((await packs.disable_pack("base-pack", _Req())).status_code, 403)
         self.assertEqual((await packs.disable_pack("nobody", _Req())).status_code, 404)
         self.assertEqual((await packs.enable_pack("nobody", _Req())).status_code, 404)
 
-    async def test_enable_mounts_again_trusted_for_first_party(self) -> None:
+    async def test_an_agent_can_neither_disable_nor_enable(self) -> None:
+        with patch.object(gateway_pdp, "require_authz_async", new=AsyncMock(return_value="sysadmin")):
+            self.assertEqual((await packs.disable_pack("acme-pack", _Req())).status_code, 403)
+            pack_state.set_disabled("acme-pack", True)
+            self.assertEqual((await packs.enable_pack("acme-pack", _Req())).status_code, 403)
+        self.assertTrue(pack_state.is_disabled("acme-pack"))
+
+    async def test_enable_mounts_back_only_what_disable_unmounted(self) -> None:
         pack_state.set_disabled("acme-pack", True)
-        with patch.object(packs, "_pack_upstream",
-                          return_value={"repo": "r-clodia/clodia-packs", "path": "x", "ref": "main"}), \
-             patch.object(packs.pack_mcp_mount, "auto_mount_imported_mcp") as am:
+        pack_state.record_unmounted("acme-pack", ["acme-mcp"])
+        with patch.object(packs.pack_mcp_mount, "auto_mount_imported_mcp") as am:
             out = await packs.enable_pack("acme-pack", _Req())
         self.assertFalse(pack_state.is_disabled("acme-pack"))
         args, kw = am.call_args
         self.assertEqual(args[0]["plugins"], [{"plugin": "acme-pack"}])
+        self.assertEqual(kw["only"], {"acme-mcp"})
         self.assertTrue(kw["trusted"])
         self.assertEqual(out["enabled"], "acme-pack")
+        self.assertEqual(pack_state.take_unmounted("acme-pack"), set())   # consumed
 
-    async def test_enable_of_a_third_party_pack_is_not_trusted(self) -> None:
-        pack_state.set_disabled("acme-pack", True)
-        with patch.object(packs, "_pack_upstream",
-                          return_value={"repo": "someone/else", "path": "", "ref": "main"}), \
-             patch.object(packs.pack_mcp_mount, "auto_mount_imported_mcp") as am:
+    async def test_disable_enable_does_not_mount_pending_servers(self) -> None:
+        # A third-party pack whose servers stayed `pending` at import: the
+        # disable unmounted nothing, so the enable mounts nothing — whatever
+        # upstream its own manifest claims.
+        _manifest(self.data, "acme-pack", upstream={"repo": "r-clodia/clodia-packs"})
+        with patch.object(pack_deprovision, "snapshot_pack", return_value={}):
+            await packs.disable_pack("acme-pack", _Req())
+        with patch.object(packs.pack_mcp_mount, "auto_mount_imported_mcp") as am:
             await packs.enable_pack("acme-pack", _Req())
-        self.assertFalse(am.call_args.kwargs["trusted"])
+        am.assert_not_called()
+
+    def test_auto_mount_only_filters_servers(self) -> None:
+        from . import pack_mcp_mount
+        with patch.object(pack_mcp_mount, "_manifest_mcp",
+                          return_value={"a": {"command": "x"}, "b": {"command": "y"}}), \
+             patch.object(pack_mcp_mount.gateway_pdp, "gw_tool",
+                          return_value=(200, {"ok": True, "result": {"registered": ["a"]}})) as gw:
+            pack_mcp_mount.auto_mount_imported_mcp(
+                {"pack": "p", "plugins": [{"plugin": "p"}]}, "davide", trusted=True, only={"a"})
+        mounted = [c.args[1]["config"]["mcpServers"] for c in gw.call_args_list]
+        self.assertEqual(mounted, [{"a": {"command": "x"}}])
+
+    def test_unreadable_manifest_is_not_rewritten(self) -> None:
+        p = self.data / "packs/acme-pack/pack.yaml"
+        p.write_text("agents: [a\n  : broken", encoding="utf-8")
+        with self.assertRaises(ValueError):
+            pack_state.set_disabled("acme-pack", True)
+        self.assertIn("broken", p.read_text())
+
+
+class JobsOfADisabledPackTests(_Env):
+    async def test_a_job_of_a_disabled_agent_is_skipped_not_run_as_clodia(self) -> None:
+        from ..scheduler import scheduler
+        pack_state.set_disabled("acme-pack", True)
+        with patch.object(scheduler.db, "get_job",
+                          return_value={"id": 7, "agent": "acme-pack-agent", "mode": "agentic",
+                                        "prompt": "x"}), \
+             patch.object(scheduler.db, "mark_run") as mr:
+            out = await scheduler.fire_job(7)
+        self.assertEqual(out["status"], "skipped: pack disattivato")
+        mr.assert_called_once()
+
+
+class ReinstallKeepsItOffTests(_Env):
+    def test_install_carries_the_flag_in_the_same_write(self) -> None:
+        pack_state.set_disabled("acme-pack", True)
+        root = self.data / "src" / "acme-pack"
+        root.mkdir(parents=True)
+        (root / "pack.yaml").write_text(yaml.safe_dump(
+            {"name": "acme-pack", "version": "3.0.0", "agents": [], "plugins": []}),
+            encoding="utf-8")
+        writes = []
+        real = pack_state._atomic_write
+
+        def spy(path, text):
+            writes.append(yaml.safe_load(text))
+            return real(path, text)
+
+        (root / "plugins" / "acme-pack").mkdir(parents=True)
+        with patch.object(pack_state, "_atomic_write", side_effect=spy), \
+             patch.object(pack_import.plugin_import, "install_plugin_from_root",
+                          return_value={"plugin": "acme-pack", "status": "installed"}):
+            pack_import.install_pack_from_root(root, source="test", force=True)
+        manifest_writes = [w for w in writes if isinstance(w, dict) and w.get("version") == "3.0.0"]
+        self.assertTrue(manifest_writes)
+        self.assertTrue(all(w.get("disabled") is True for w in manifest_writes))
+        self.assertTrue(pack_state.is_disabled("acme-pack"))
 
 
 class UpdateKeepsItOffTests(_Env):

@@ -844,7 +844,9 @@ async def _perform_update(name: str, principal: str) -> dict:
         raise ValueError(f"update: {str(e)[:160]}") from e
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"update fallito: {str(e)[:160]}") from e
-    if was_disabled:
+    # The flag is carried by `install_pack_from_root` in the same write as
+    # the new manifest; this only re-asserts it should an installer path skip it.
+    if was_disabled and not pack_state.is_disabled(name):
         pack_state.set_disabled(name, True)
     # update di un pack FIRST-PARTY dal proprio upstream = codice nostro → mount
     # automatico consentito (fonte trusted). Gli import da zip/URL restano opt-in.
@@ -959,6 +961,10 @@ async def disable_pack(name: str, request: Request):
     the platform; the gateway reads the flag and treats it as absent. Seeds,
     memory, datastores and grants stay."""
     principal = await gateway_pdp.require_authz_async(request, "packs.remove")  # admin-only
+    if gateway_pdp.is_agent(principal):
+        # A human decision: an agent with packs.* gets no confirmation gate here.
+        return JSONResponse(status_code=403, content={
+            "error": "disattivare un pack è una decisione di una persona, non di un agente"})
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     if name in pack_state.NEVER_DISABLED:
@@ -966,15 +972,29 @@ async def disable_pack(name: str, request: Request):
             "error": f"'{name}' è il pack di base della piattaforma, non si disattiva"})
     if not (pack_import.PACKS_META_DIR / name / "pack.yaml").is_file():
         return JSONResponse(status_code=404, content={"error": "pack non trovato"})
-    if pack_state.is_disabled(name):
-        return {"disabled": name, "already": True}
-    # Read BEFORE the flag: what the pack mounted is what is unmounted.
+    already = pack_state.is_disabled(name)
+    # The pack's declared servers. On a repeated disable the unmount runs
+    # again: a first attempt that failed (gateway down) is retried, never
+    # answered with «already done» while the backends stay mounted.
     snap = pack_deprovision.snapshot_pack(name)
-    pack_state.set_disabled(name, True)
+    if not already:
+        try:
+            pack_state.set_disabled(name, True)
+        except ValueError as e:
+            return JSONResponse(status_code=409, content={"error": str(e)})
     servers = sorted({s for d in snap.values() for s in d.get("mcp_servers") or []})
     out: dict[str, Any] = {"disabled": name}
+    if already:
+        out["already"] = True
     if servers:
-        out["mcp"] = await asyncio.to_thread(pack_deprovision._unmount, servers, principal)
+        rep = await asyncio.to_thread(pack_deprovision._unmount, servers, principal)
+        out["mcp"] = rep
+        # What was really unmounted is what the enable mounts back — nothing
+        # the pack's own files could add.
+        pack_state.record_unmounted(name, rep.get("unmounted") or [])
+        if rep.get("failed"):
+            out["warning"] = ("alcuni server MCP del pack non sono stati smontati: "
+                              "ripeti Disattiva per ritentare")
     _refresh_registry()
     out["agents_restarted"] = await _restart_agents()
     return out
@@ -983,35 +1003,41 @@ async def disable_pack(name: str, request: Request):
 @router.post("/clodia/packs/{name}/enable")
 async def enable_pack(name: str, request: Request):
     """Turns a disabled pack back on (#563): the flag goes, its agents load,
-    its MCP backends are mounted again — automatically only for a pack whose
-    upstream is first-party (as on Update); otherwise they are `pending` and
-    the owner mounts them from Tools, as at import. The gateway re-pins its
-    component at the next reconcile (never below the floor)."""
-    principal = await gateway_pdp.require_authz_async(request, "packs.remove")  # admin-only
+    and the MCP backends the disable unmounted are mounted again — those
+    only. The gateway forgot the component's pin when the pack went off:
+    it pins it again at the next reconcile at the CURRENT upstream head
+    (never below the floor), so an enable can bring newer component code,
+    as a first install does."""
+    # Enabling widens capability: the import permission, and a person.
+    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
+    if gateway_pdp.is_agent(principal):
+        return JSONResponse(status_code=403, content={
+            "error": "riattivare un pack è una decisione di una persona, non di un agente"})
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
     if not (pack_import.PACKS_META_DIR / name / "pack.yaml").is_file():
         return JSONResponse(status_code=404, content={"error": "pack non trovato"})
     if not pack_state.is_disabled(name):
         return {"enabled": name, "already": True}
-    pack_state.set_disabled(name, False)
+    try:
+        pack_state.set_disabled(name, False)
+    except ValueError as e:
+        return JSONResponse(status_code=409, content={"error": str(e)})
     _refresh_registry()
-    up = _pack_upstream(name) or {}
-    trusted = up.get("repo") in _FIRST_PARTY_REPOS
+    # Mount back ONLY what the disable unmounted (recorded in the agent-server's
+    # state, not in the pack's files): a third-party pack whose servers were
+    # still `pending` at import does not get them mounted by disable+enable.
+    back = pack_state.take_unmounted(name)
     mount: dict[str, Any] = {"pack": name,
                              "plugins": [{"plugin": p} for p in _pack_plugins_of(name)]}
-    await asyncio.to_thread(pack_mcp_mount.auto_mount_imported_mcp, mount, principal,
-                            trusted=trusted)
+    if back:
+        await asyncio.to_thread(pack_mcp_mount.auto_mount_imported_mcp, mount, principal,
+                                trusted=True, only=back)
     result: dict[str, Any] = {"enabled": name}
     if mount.get("mcp_mount"):
         result["mcp_mount"] = mount["mcp_mount"]
     result["agents_restarted"] = await _restart_agents()
     return result
-
-
-#: Repositories whose packs are first-party: their MCP backends are mounted
-#: again on enable without the owner's opt-in (the same trust as Update).
-_FIRST_PARTY_REPOS = frozenset({"r-clodia/clodia-logic", "r-clodia/clodia-packs"})
 
 
 @router.post("/clodia/packs/update-all")
