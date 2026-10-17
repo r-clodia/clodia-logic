@@ -58,3 +58,6 @@
 {"ts": "2026-09-27T12:04:02.305076+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}
 {"ts": "2026-10-01T22:47:14.421407+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}
 {"ts": "2026-10-01T22:47:34.166715+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}
+{"ts": "2026-10-17T12:12:56.450516+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}
+{"ts": "2026-10-17T12:20:10.827336+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}
+{"ts": "2026-10-17T12:23:26.405793+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}

@@ -171,7 +171,8 @@ def _collect_plugins() -> dict[str, dict[str, Any]]:
         bundled_logic = False
     if bundled_logic and logic_packs_root.is_dir():
         for packdir in sorted(logic_packs_root.iterdir()):
-            if not packdir.is_dir():
+            # A removed bundled pack is not listed from the image (#562).
+            if not packdir.is_dir() or not catalog.bundled_pack_installed(packdir.name):
                 continue
             plugin_name = packdir.name
             skills_dir = packdir / "plugins" / plugin_name / "skills"
@@ -317,7 +318,9 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
         "name": name,
         "description": description,
         "origin": origin,
-        "deletable": origin in ("external", "user", "imported"),
+        # A first-party plugin goes with its pack (#562), never alone.
+        "deletable": origin in ("external", "user", "imported")
+        and name not in RESERVED_PLUGIN_NAMES,
         "version": str(manifest.get("version") or "").strip(),
         "source": str(manifest.get("source") or "").strip(),
         # licenza dichiarata del plugin (umbrella per le sue skill); il base-pack
@@ -424,9 +427,12 @@ async def delete_plugin(name: str, request: Request):
     principal = await gateway_pdp.require_authz_async(request, "mcp.remove")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    # A first-party plugin goes away WITH its pack (`DELETE /clodia/packs/{name}`,
+    # #562): removed alone it would leave the manifest behind, the image's
+    # skills still served and the pack never offered for reinstall.
     if name in RESERVED_PLUGIN_NAMES:
         return JSONResponse(
-            status_code=403, content={"error": f"'{name}' è un plugin nativo, non rimovibile"})
+            status_code=403, content={"error": f"'{name}' è un plugin di prima parte: si rimuove insieme al suo pack"})
     # Snapshot prima della rimozione: i manifest sono la sola fonte di ciò che
     # va smontato, e fra un attimo non ci saranno più.
     snap = pack_deprovision.snapshot([name])

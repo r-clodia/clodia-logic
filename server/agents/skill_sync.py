@@ -51,6 +51,38 @@ def _is_skill_dir(p: Path) -> bool:
     return p.is_dir() and (p / "SKILL.md").is_file()
 
 
+#: Where `remove_pack` marks a BUNDLED pack as removed (clodia-platform#562).
+REMOVED_PACKS_DIR = "packs-removed"
+
+
+def bundled_pack_installed(pack: str) -> bool:
+    """May the image's copy of the bundled pack `pack` serve its skills here?
+
+    The image carries every bundled pack's skills under `catalogs/packs/`.
+    They stop reaching agents only when the owner REMOVED the pack (a marker
+    in `DATA/packs-removed/`, written by the removal and cleared by the
+    reinstall) — not merely when its manifest is missing: an instance whose
+    datadir predates a pack's manifest registration would otherwise lose, on
+    upgrade, skills that base-pack's own seeds use (review of clodia-logic#536).
+    """
+    if pack in ("base-pack", "logic"):
+        return True
+    if (data_path("packs") / pack / "pack.yaml").is_file():
+        return True
+    return not (data_path(REMOVED_PACKS_DIR) / pack).exists()
+
+
+def mark_bundled_pack_removed(pack: str, removed: bool) -> None:
+    """Set or clear the removal marker of a bundled pack (see above)."""
+    d = data_path(REMOVED_PACKS_DIR)
+    marker = d / pack
+    if removed:
+        d.mkdir(parents=True, exist_ok=True)
+        marker.write_text("removed by the owner (clodia-platform#562)\n", encoding="utf-8")
+    else:
+        marker.unlink(missing_ok=True)
+
+
 def _logic_catalog_is_bundled() -> bool:
     try:
         LOGIC_CATALOG_DIR.resolve().relative_to(LOGIC_PACKS_ROOT.resolve())
@@ -161,7 +193,7 @@ def _resolve_skill_source(cap: str) -> Optional[Path]:
     if "/" in cap:
         pack, _, skill = cap.partition("/")
         logic_src = LOGIC_PACKS_ROOT / pack / "plugins" / pack / "skills" / skill
-        if _is_skill_dir(logic_src):
+        if bundled_pack_installed(pack) and _is_skill_dir(logic_src):
             return logic_src
         src = DATA_CATALOG_DIR / pack / skill
         return src if _is_skill_dir(src) else None
@@ -183,7 +215,8 @@ def _resolve_skill_source(cap: str) -> Optional[Path]:
         return src
     if _logic_catalog_is_bundled() and LOGIC_PACKS_ROOT.is_dir():
         for packdir in sorted(LOGIC_PACKS_ROOT.iterdir()):
-            if not packdir.is_dir() or packdir.name == "base-pack":
+            if not packdir.is_dir() or packdir.name == "base-pack" or \
+                    not bundled_pack_installed(packdir.name):
                 continue
             plugin_skills = packdir / "plugins" / packdir.name / "skills"
             cand = plugin_skills / cap
@@ -219,7 +252,8 @@ def _all_skill_names() -> list[str]:
                 _add(d.name)
     if _logic_catalog_is_bundled() and LOGIC_PACKS_ROOT.is_dir():
         for packdir in sorted(LOGIC_PACKS_ROOT.iterdir()):
-            if not packdir.is_dir() or packdir.name == "base-pack":
+            if not packdir.is_dir() or packdir.name == "base-pack" or \
+                    not bundled_pack_installed(packdir.name):
                 continue
             plugin_skills = packdir / "plugins" / packdir.name / "skills"
             if plugin_skills.is_dir():
@@ -237,7 +271,7 @@ def _pack_skill_names(pack: str) -> list[str]:
     if pack == "logic":
         pack = "base-pack"
     logic_pack_skills = LOGIC_PACKS_ROOT / pack / "plugins" / pack / "skills"
-    if logic_pack_skills.is_dir():
+    if bundled_pack_installed(pack) and logic_pack_skills.is_dir():
         for d in sorted(logic_pack_skills.iterdir()):
             if _is_skill_dir(d):
                 out.append(d.name if pack == "base-pack" else f"{pack}/{d.name}")

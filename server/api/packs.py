@@ -404,6 +404,26 @@ def _setup_pending(name: str, plugin_children: list) -> bool:
     return _pack_needs_setup(plugin_children) and _setup_marker_path(name).is_file()
 
 
+def _used_by(plugins: list[str], own_agents: list[str]) -> list[dict[str, Any]]:
+    """Agents OUTSIDE the pack that use its skills (`<plugin>/<skill>` or
+    `<plugin>/*` among their capabilities): what a removal takes away from
+    them, shown before it is confirmed (#562 — base-pack's messaggero,
+    ophelia and sysadmin use comms-pack's skills)."""
+    if not plugins:
+        return []
+    own = set(own_agents)
+    prefixes = tuple(f"{p}/" for p in plugins)
+    out: list[dict[str, Any]] = []
+    for spec in registry.list():
+        if spec.name in own:
+            continue
+        caps = [str(c) for c in (getattr(spec, "capabilities", None) or [])
+                if str(c).startswith(prefixes)]
+        if caps:
+            out.append({"agent": spec.name, "skills": caps})
+    return out
+
+
 def _list_packs() -> list[dict[str, Any]]:
     plugin_items = {p["name"]: p for p in plugins_api.list_plugins()}
     installed_plugins = set(plugin_items)
@@ -458,8 +478,10 @@ def _list_packs() -> list[dict[str, Any]]:
             "setup_pending_reason": (setup_pending_reason(name)
                                      if _setup_pending(name, plugin_children) else ""),
             "virtual": False,
-            # first-party (base-pack e riservati) → non rimovibile
-            "deletable": name not in pack_import.RESERVED_PACK_NAMES,
+            # Only base-pack is non-removable (#562); a removed first-party
+            # pack comes back from `/clodia/packs/available`.
+            "deletable": name not in pack_import.NON_REMOVABLE_PACK_NAMES,
+            "used_by": _used_by(plugin_names, agent_names),
             "license": lic["license"],
             "licenses": lic["licenses"],
             "license_missing": lic["license_missing"],
@@ -491,7 +513,7 @@ def _list_packs() -> list[dict[str, Any]]:
                                      if _setup_pending(pname, [item]) else ""),
             "virtual": True,
             "deletable": bool(item.get("deletable", True))
-            and pname not in pack_import.RESERVED_PACK_NAMES,
+            and pname not in pack_import.NON_REMOVABLE_PACK_NAMES,
             "license": lic["license"],
             "licenses": lic["licenses"],
             "license_missing": lic["license_missing"],
@@ -512,6 +534,48 @@ class PackImportUrl(BaseModel):
 @router.get("/clodia/packs")
 async def list_packs() -> list[dict[str, Any]]:
     return _list_packs()
+
+
+def _available_first_party() -> list[dict[str, Any]]:
+    """The bundled first-party packs that are NOT installed (#562).
+
+    A removed first-party pack cannot come back through a zip/URL import: its
+    name is reserved against spoofing. It comes back from here, from the
+    official upstream its bundled manifest declares."""
+    root = workspace_path("catalogs/packs")
+    out: list[dict[str, Any]] = []
+    if not root.is_dir():
+        return out
+    for d in sorted(root.iterdir()):
+        name = d.name
+        if not d.is_dir() or not catalog._NAME_RE.fullmatch(name) or \
+                name in pack_import.NON_REMOVABLE_PACK_NAMES or \
+                (pack_import.PACKS_META_DIR / name / "pack.yaml").is_file():
+            continue
+        # Without a manifest a bundled pack is still served from the image
+        # unless the owner removed it: only a REMOVED one is available.
+        from ..agents.skill_sync import bundled_pack_installed
+        if bundled_pack_installed(name):
+            continue
+        try:
+            m = yaml.safe_load((d / "pack.yaml").read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        if not _pack_upstream(name):
+            continue
+        out.append({"name": name,
+                    "description": str(m.get("description") or "").strip(),
+                    "version": str(m.get("version") or "").strip(),
+                    "first_party": True})
+    return out
+
+
+# Registered BEFORE `/clodia/packs/{name}`, which would otherwise take
+# "available" for a pack name.
+@router.get("/clodia/packs/available")
+async def list_available_packs(request: Request) -> list[dict[str, Any]]:
+    await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
+    return _available_first_party()
 
 
 @router.get("/clodia/packs/{name}")
@@ -820,6 +884,34 @@ async def update_pack(name: str, request: Request):
     except Exception as e:  # noqa: BLE001
         LOG.warning("drop_all dopo update fallito: %s", e)
     return {**result, "agents_restarted": len(stopped)}
+
+
+@router.post("/clodia/packs/{name}/install")
+async def install_first_party_pack(name: str, request: Request):
+    """Reinstalls a bundled first-party pack that is not installed (#562):
+    the same trusted path as Update, from the official upstream of the bundled
+    manifest — including the gateway component refresh (#561) and the agents'
+    restart. Anything else is refused: a third-party pack is imported, an
+    installed one is updated."""
+    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
+    if name not in {p["name"] for p in _available_first_party()}:
+        return JSONResponse(status_code=400, content={
+            "error": f"'{name}' non è un pack di prima parte da reinstallare"})
+    try:
+        result = await _perform_update(name, principal)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except RuntimeError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    from ..agents.skill_sync import mark_bundled_pack_removed
+    mark_bundled_pack_removed(name, False)
+    stopped = []
+    try:
+        from ..sdk_runtime.session import manager
+        stopped = await manager.drop_all()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("drop_all dopo install fallito: %s", e)
+    return {**result, "installed": name, "agents_restarted": len(stopped)}
 
 
 @router.post("/clodia/packs/update-all")
@@ -1146,12 +1238,13 @@ async def delete_pack(name: str, request: Request):
     principal = await gateway_pdp.require_authz_async(request, "packs.remove")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
-    # base-pack (e gli altri riservati) è first-party e NON è rimovibile — guardia
-    # esplicita a monte, indipendente dal fatto che sia materializzato in DATA/packs.
-    if name in pack_import.RESERVED_PACK_NAMES:
+    # base-pack NON è rimovibile — guardia esplicita a monte, indipendente dal
+    # fatto che sia materializzato in DATA/packs. Gli altri first-party sì
+    # (#562): tornano da `POST /clodia/packs/{name}/install`.
+    if name in pack_import.NON_REMOVABLE_PACK_NAMES:
         return JSONResponse(
             status_code=403,
-            content={"error": f"'{name}' è un pack first-party, non rimovibile"})
+            content={"error": f"'{name}' è il pack di base della piattaforma, non rimovibile"})
     # I servizi dichiarati si leggono PRIMA: dopo la rimozione i manifest non ci
     # sono più, e con loro l'unico posto che sapeva cosa andava smontato.
     snap = pack_deprovision.snapshot_pack(name)
@@ -1159,13 +1252,16 @@ async def delete_pack(name: str, request: Request):
         result = pack_import.remove_pack(name)
     except KeyError:
         # pack virtuale (plugin senza manifest): delega alla rimozione plugin
-        from .plugin_import import RESERVED_PLUGIN_NAMES, remove_plugin
-        if name in RESERVED_PLUGIN_NAMES:
+        from .plugin_import import NON_REMOVABLE_PACK_NAMES, remove_plugin
+        if name in NON_REMOVABLE_PACK_NAMES:
             return JSONResponse(status_code=403,
                                 content={"error": f"'{name}' è nativo, non rimovibile"})
         removed = remove_plugin(name)
-        if not removed["removed"]:
+        if not removed["removed"] and not _bundle_catalog_dir(name):
             return JSONResponse(status_code=404, content={"error": "pack non trovato"})
+        # A bundled pack served from the image without a manifest (a datadir
+        # that predates its registration) has nothing on disk to remove: its
+        # removal IS the marker written below (review of clodia-logic#536).
         result = {"deleted": name, "plugins": [name], "agents": [],
                   "datastores_archived": removed["datastores_archived"],
                   "datastores_retained": removed["datastores_retained"]}
@@ -1177,7 +1273,19 @@ async def delete_pack(name: str, request: Request):
     )
     if report:
         result["deprovision"] = report
+    if _bundle_catalog_dir(name):
+        # The image keeps serving a bundled pack's skills until this marker
+        # says the owner removed it (#562); the reinstall clears it.
+        from ..agents.skill_sync import mark_bundled_pack_removed
+        mark_bundled_pack_removed(name, True)
     plugins_api.invalidate_plugins()
+    # Live sessions keep the skills they were started with: restart them, so
+    # the removal takes effect now and not at the next idle reap.
+    try:
+        from ..sdk_runtime.session import manager
+        result["agents_restarted"] = len(await manager.drop_all())
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("drop_all dopo la rimozione fallito: %s", e)
     return result
 
 

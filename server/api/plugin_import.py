@@ -69,6 +69,14 @@ PLUGINS_META_DIR = data_path("plugins")
 RESERVED_PLUGIN_NAMES = {"base-pack", "editorial-pack", "comms-pack", "google-pack",
                          "local-pack", "logic"}
 
+# What cannot be REMOVED is a different, smaller set (clodia-platform#562):
+# base-pack carries the native agents, skills and rules the platform needs to
+# run, and `logic` is its internal plugin. The other reserved names are
+# reserved against spoofing on import, not against removal: a first-party pack
+# is removed like any other and comes back through `POST /clodia/packs/{name}/
+# install` from its official upstream.
+NON_REMOVABLE_PACK_NAMES = {"base-pack", "logic"}
+
 
 class PluginImportError(SkillImportError):
     """Errore d'import plugin gestito (→ 400 lato API)."""
