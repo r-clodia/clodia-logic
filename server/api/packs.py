@@ -665,6 +665,78 @@ def _download_upstream_tarball(up: dict, tmp: Path) -> Path:
     return root
 
 
+def _gateway_component_packs(result: Any) -> list[str]:
+    """Names of the packs in an import/update result that declare gateway
+    components (`gateway_components`, set by `install_pack_from_root`). A
+    bundle nests its packs under `packs`."""
+    if not isinstance(result, dict):
+        return []
+    out: list[str] = []
+    if result.get("gateway_components"):
+        nm = str(result.get("pack") or result.get("name") or "")
+        if nm:
+            out.append(nm)
+    for sub in result.get("packs") or []:
+        out += [n for n in _gateway_component_packs(sub) if n not in out]
+    return out
+
+
+async def _refresh_gateway_components(result: dict, principal: str) -> None:
+    """After an Update, move the pin of the pack's gateway components
+    (clodia-platform#561).
+
+    The gateway runs a component at the commit it pinned and moves the pin
+    only when a HUMAN admin asks (`POST /internal/components/<pack>/refresh`).
+    The Update is that human asking: the request goes out with the same
+    on-behalf token as every other UI action, and the gateway still decides
+    (`on_behalf` + `human_role: admin`). An agent principal (super-agents can
+    reach `packs.import_url`) is not sent: its result says why. No `allow_downgrade`: the floor
+    stays. A failed refresh does not fail the Update — the result says so.
+    """
+    packs = _gateway_component_packs(result)
+    if not packs:
+        return
+    if gateway_pdp.is_agent(principal) or gateway_pdp.human_role(principal) != "admin":
+        for nm in packs:
+            (_gc_entry(result, nm) or {})["refreshed"] = {
+                "ok": False, "reason": "only a human admin moves a gateway component"}
+        return
+    import httpx
+    base = gateway_pdp._gw_base()
+    async with httpx.AsyncClient(timeout=180.0) as client:
+        for nm in packs:
+            entry = _gc_entry(result, nm) or {}
+            try:
+                r = await client.post(
+                    f"{base}/internal/components/{nm}/refresh", json={},
+                    headers={"Authorization": f"Bearer {gateway_pdp._token(principal)}"})
+            except httpx.HTTPError as e:
+                LOG.warning("component refresh %s: %s", nm, type(e).__name__)
+                entry["refreshed"] = {"ok": False, "reason": f"gateway unreachable ({type(e).__name__})"}
+                continue
+            if r.status_code != 200:
+                LOG.warning("component refresh %s: HTTP %s", nm, r.status_code)
+                entry["refreshed"] = {"ok": False, "reason": f"gateway answered {r.status_code}"}
+                continue
+            rows = (r.json() or {}).get("components") or []
+            entry["refreshed"] = {"ok": True, "components": [
+                {k: row.get(k) for k in ("id", "status", "reason", "commit") if k in row}
+                for row in rows if isinstance(row, dict)]}
+
+
+def _gc_entry(result: dict, pack: str) -> dict | None:
+    """The `gateway_components` dict of `pack` inside `result` (bundle-aware)."""
+    if str(result.get("pack") or result.get("name") or "") == pack and \
+            isinstance(result.get("gateway_components"), dict):
+        return result["gateway_components"]
+    for sub in result.get("packs") or []:
+        if isinstance(sub, dict):
+            got = _gc_entry(sub, pack)
+            if got is not None:
+                return got
+    return None
+
+
 async def _perform_update(name: str, principal: str) -> dict:
     """Il lavoro di un Update, senza il layer HTTP: scarica dall'upstream,
     SOSTITUISCE seed/skill/mcp (force), monta gli MCP trusted, aggiorna il
@@ -705,6 +777,7 @@ async def _perform_update(name: str, principal: str) -> dict:
     # l'altra metà del flag che si ripresenta da solo (#347).
     set_setup_pending(name, True, by="packs.update",
                       reason=f"update da {up['repo']}@{up['ref']}")
+    await _refresh_gateway_components(result, principal)
     new_ver = ""
     meta = pack_import.PACKS_META_DIR / name / "pack.yaml"
     if meta.is_file():
