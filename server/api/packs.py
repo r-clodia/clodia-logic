@@ -29,7 +29,7 @@ from fastapi import APIRouter, File, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
-from ..agents import seed_sync
+from ..agents import pack_state, seed_sync
 from ..agents.loader import registry
 from ..config import workspace_path
 from . import (catalog, gateway_pdp, pack_deprovision, pack_import,
@@ -482,6 +482,10 @@ def _list_packs() -> list[dict[str, Any]]:
             # pack comes back from `/clodia/packs/available`.
             "deletable": name not in pack_import.NON_REMOVABLE_PACK_NAMES,
             "used_by": _used_by(plugin_names, agent_names),
+            # #563: off, not removed — agents not loaded, skills not served,
+            # gateway treats it as absent. Base-pack cannot be disabled.
+            "disabled": manifest.get("disabled") is True,
+            "disableable": name not in pack_state.NEVER_DISABLED,
             "license": lic["license"],
             "licenses": lic["licenses"],
             "license_missing": lic["license_missing"],
@@ -828,6 +832,9 @@ async def _perform_update(name: str, principal: str) -> dict:
         raise ValueError(f"'{name}' non dichiara un upstream: update non disponibile")
     import tempfile
     from ..api.pack_import import PackImportError as _PIE
+    # An Update of a disabled pack keeps it disabled (#563): the new files
+    # land, nothing is mounted or refreshed until the owner enables it.
+    was_disabled = pack_state.is_disabled(name)
     try:
         with tempfile.TemporaryDirectory() as td:
             root = await asyncio.to_thread(_download_upstream_tarball, up, Path(td))
@@ -837,9 +844,12 @@ async def _perform_update(name: str, principal: str) -> dict:
         raise ValueError(f"update: {str(e)[:160]}") from e
     except Exception as e:  # noqa: BLE001
         raise RuntimeError(f"update fallito: {str(e)[:160]}") from e
+    if was_disabled:
+        pack_state.set_disabled(name, True)
     # update di un pack FIRST-PARTY dal proprio upstream = codice nostro → mount
     # automatico consentito (fonte trusted). Gli import da zip/URL restano opt-in.
-    pack_mcp_mount.auto_mount_imported_mcp(result, principal, trusted=True)
+    if not was_disabled:
+        pack_mcp_mount.auto_mount_imported_mcp(result, principal, trusted=True)
     plugins_api.invalidate_plugins()
     try:
         registry.load()
@@ -851,7 +861,8 @@ async def _perform_update(name: str, principal: str) -> dict:
     # l'altra metà del flag che si ripresenta da solo (#347).
     set_setup_pending(name, True, by="packs.update",
                       reason=f"update da {up['repo']}@{up['ref']}")
-    await _refresh_gateway_components(result, principal)
+    if not was_disabled:
+        await _refresh_gateway_components(result, principal)
     new_ver = ""
     meta = pack_import.PACKS_META_DIR / name / "pack.yaml"
     if meta.is_file():
@@ -914,6 +925,95 @@ async def install_first_party_pack(name: str, request: Request):
     return {**result, "installed": name, "agents_restarted": len(stopped)}
 
 
+def _pack_plugins_of(name: str) -> list[str]:
+    meta = pack_import.PACKS_META_DIR / name / "pack.yaml"
+    try:
+        m = yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return []
+    return [str(p) for p in (m.get("plugins") or [])]
+
+
+async def _restart_agents() -> int:
+    try:
+        from ..sdk_runtime.session import manager
+        return len(await manager.drop_all())
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("drop_all fallito: %s", e)
+        return 0
+
+
+def _refresh_registry() -> None:
+    plugins_api.invalidate_plugins()
+    try:
+        registry.load()
+    except Exception:  # noqa: BLE001
+        pass
+
+
+@router.post("/clodia/packs/{name}/disable")
+async def disable_pack(name: str, request: Request):
+    """Turns a pack off without removing it (#563): `disabled: true` in its
+    manifest; its MCP backends unmounted (their config is in the manifest, the
+    enable mounts them again); its agents, skills and rules no longer reach
+    the platform; the gateway reads the flag and treats it as absent. Seeds,
+    memory, datastores and grants stay."""
+    principal = await gateway_pdp.require_authz_async(request, "packs.remove")  # admin-only
+    if not catalog._NAME_RE.fullmatch(name):
+        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    if name in pack_state.NEVER_DISABLED:
+        return JSONResponse(status_code=403, content={
+            "error": f"'{name}' è il pack di base della piattaforma, non si disattiva"})
+    if not (pack_import.PACKS_META_DIR / name / "pack.yaml").is_file():
+        return JSONResponse(status_code=404, content={"error": "pack non trovato"})
+    if pack_state.is_disabled(name):
+        return {"disabled": name, "already": True}
+    # Read BEFORE the flag: what the pack mounted is what is unmounted.
+    snap = pack_deprovision.snapshot_pack(name)
+    pack_state.set_disabled(name, True)
+    servers = sorted({s for d in snap.values() for s in d.get("mcp_servers") or []})
+    out: dict[str, Any] = {"disabled": name}
+    if servers:
+        out["mcp"] = await asyncio.to_thread(pack_deprovision._unmount, servers, principal)
+    _refresh_registry()
+    out["agents_restarted"] = await _restart_agents()
+    return out
+
+
+@router.post("/clodia/packs/{name}/enable")
+async def enable_pack(name: str, request: Request):
+    """Turns a disabled pack back on (#563): the flag goes, its agents load,
+    its MCP backends are mounted again — automatically only for a pack whose
+    upstream is first-party (as on Update); otherwise they are `pending` and
+    the owner mounts them from Tools, as at import. The gateway re-pins its
+    component at the next reconcile (never below the floor)."""
+    principal = await gateway_pdp.require_authz_async(request, "packs.remove")  # admin-only
+    if not catalog._NAME_RE.fullmatch(name):
+        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    if not (pack_import.PACKS_META_DIR / name / "pack.yaml").is_file():
+        return JSONResponse(status_code=404, content={"error": "pack non trovato"})
+    if not pack_state.is_disabled(name):
+        return {"enabled": name, "already": True}
+    pack_state.set_disabled(name, False)
+    _refresh_registry()
+    up = _pack_upstream(name) or {}
+    trusted = up.get("repo") in _FIRST_PARTY_REPOS
+    mount: dict[str, Any] = {"pack": name,
+                             "plugins": [{"plugin": p} for p in _pack_plugins_of(name)]}
+    await asyncio.to_thread(pack_mcp_mount.auto_mount_imported_mcp, mount, principal,
+                            trusted=trusted)
+    result: dict[str, Any] = {"enabled": name}
+    if mount.get("mcp_mount"):
+        result["mcp_mount"] = mount["mcp_mount"]
+    result["agents_restarted"] = await _restart_agents()
+    return result
+
+
+#: Repositories whose packs are first-party: their MCP backends are mounted
+#: again on enable without the owner's opt-in (the same trust as Update).
+_FIRST_PARTY_REPOS = frozenset({"r-clodia/clodia-logic", "r-clodia/clodia-packs"})
+
+
 @router.post("/clodia/packs/update-all")
 async def update_all_packs(request: Request):
     """Un click: Update + setup LOGICO (non un turno d'agente) per ogni pack
@@ -960,6 +1060,12 @@ async def update_all_packs(request: Request):
                         merged[k] = list(merged[k]) + [x for x in v if x not in merged[k]]
                 else:
                     merged.extend(x for x in src if x not in merged)
+        if pack_state.is_disabled(name):
+            # Updated, but off (#563): nothing is provisioned until enabled.
+            results.append({"name": name, "updated": True, "version": up.get("version"),
+                            "disabled": True, "setup_done": False,
+                            "setup_gaps": [], "setup_actions": []})
+            continue
         setup = await pack_ops_logical.run_logical_setup_async(
             name, pack_decls, principal)
         if not setup["gaps"]:

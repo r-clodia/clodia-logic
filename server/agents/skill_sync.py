@@ -67,9 +67,22 @@ def bundled_pack_installed(pack: str) -> bool:
     """
     if pack in ("base-pack", "logic"):
         return True
+    from .pack_state import is_disabled
+    if is_disabled(pack):          # #563: disabled = not served
+        return False
     if (data_path("packs") / pack / "pack.yaml").is_file():
         return True
     return not (data_path(REMOVED_PACKS_DIR) / pack).exists()
+
+
+def _off() -> set[str]:
+    """Plugins of the disabled packs: their data-catalog skills are not served
+    (#563). Never raises."""
+    try:
+        from .pack_state import disabled_plugins
+        return disabled_plugins()
+    except Exception:  # noqa: BLE001
+        return set()
 
 
 def mark_bundled_pack_removed(pack: str, removed: bool) -> None:
@@ -195,6 +208,8 @@ def _resolve_skill_source(cap: str) -> Optional[Path]:
         logic_src = LOGIC_PACKS_ROOT / pack / "plugins" / pack / "skills" / skill
         if bundled_pack_installed(pack) and _is_skill_dir(logic_src):
             return logic_src
+        if pack in _off():
+            return None
         src = DATA_CATALOG_DIR / pack / skill
         return src if _is_skill_dir(src) else None
     # bare: data flat
@@ -203,8 +218,10 @@ def _resolve_skill_source(cap: str) -> Optional[Path]:
         return flat
     # bare: dentro un pack-subdir data (primo match in ordine)
     if DATA_CATALOG_DIR.is_dir():
+        off = _off()
         for packdir in sorted(DATA_CATALOG_DIR.iterdir()):
-            if not packdir.is_dir() or packdir.name.startswith("."):
+            if not packdir.is_dir() or packdir.name.startswith(".") or \
+                    packdir.name in off:
                 continue
             cand = packdir / cap
             if _is_skill_dir(cand):
@@ -237,11 +254,14 @@ def _all_skill_names() -> list[str]:
             names.append(name)
 
     if DATA_CATALOG_DIR.is_dir():
+        off = _off()
         for d in sorted(DATA_CATALOG_DIR.iterdir()):
             if not d.is_dir() or d.name.startswith("."):
                 continue
             if _is_skill_dir(d):
                 _add(d.name)  # skill flat (user/local-pack)
+            elif d.name in off:
+                continue
             else:
                 for gc in sorted(d.iterdir()):  # pack-subdir
                     if _is_skill_dir(gc):
@@ -281,6 +301,8 @@ def _pack_skill_names(pack: str) -> list[str]:
             for d in sorted(LOGIC_CATALOG_DIR.iterdir()):
                 if _is_skill_dir(d):
                     out.append(d.name)
+        return out
+    if pack in _off():
         return out
     packdir = DATA_CATALOG_DIR / pack
     if packdir.is_dir():
