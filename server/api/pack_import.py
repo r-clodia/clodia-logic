@@ -430,6 +430,11 @@ def install_pack_from_root(root: Path, *, source: str,
 
     meta_dir = PACKS_META_DIR / pack
     meta_dir.mkdir(parents=True, exist_ok=True)
+    # A disabled pack stays disabled across Update and re-import (#563): the
+    # flag goes into the SAME write as the new manifest, so no reader (the
+    # gateway polls this file) ever sees the pack on in between.
+    from ..agents import pack_state as _pack_state
+    keep_disabled = _pack_state.is_disabled(pack)
     # Dichiarazioni di flusso: registrate come IN SOSPESO, non concesse.
     # L'installazione le mostra; l'approvazione è un atto separato dell'owner.
     flows = declared_flows(manifest)
@@ -461,10 +466,10 @@ def install_pack_from_root(root: Path, *, source: str,
         # dover ricostruire lo stato della migrazione a memoria.
         if connectors_check.get("ignored"):
             _meta["connectors_inactive"] = list(connectors_check["ignored"])
-    (meta_dir / "pack.yaml").write_text(
-        yaml.safe_dump(_meta, allow_unicode=True, sort_keys=False),
-        encoding="utf-8",
-    )
+    if keep_disabled:
+        _meta["disabled"] = True
+    _pack_state._atomic_write(meta_dir / "pack.yaml",
+                              yaml.safe_dump(_meta, allow_unicode=True, sort_keys=False))
     _copy_pack_docs(pack_root, meta_dir)
     LOG.info("pack '%s' importato: %d agent, %d plugin", pack, len(agents), len(plugins))
     out = {

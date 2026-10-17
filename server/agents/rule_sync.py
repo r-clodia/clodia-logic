@@ -81,8 +81,11 @@ def _resolve_rule_source(name: str) -> Optional[Path]:
       - rule QUALIFICATA `<pack>/<rule>` → `DATA/<pack>/<rule>.md`
       - rule BARE `<rule>` → data flat, poi pack-subdir data, poi logic.
     """
+    off = _off()
     if "/" in name:
         pack, _, rule = name.partition("/")
+        if pack in off:
+            return None
         src = DATA_CATALOG_DIR / pack / f"{rule}.md"
         return src if _is_rule_file(src) else None
     flat = DATA_CATALOG_DIR / f"{name}.md"
@@ -90,7 +93,8 @@ def _resolve_rule_source(name: str) -> Optional[Path]:
         return flat
     if DATA_CATALOG_DIR.is_dir():
         for packdir in sorted(DATA_CATALOG_DIR.iterdir()):
-            if not packdir.is_dir() or packdir.name.startswith("."):
+            if not packdir.is_dir() or packdir.name.startswith(".") or \
+                    packdir.name in off:
                 continue
             cand = packdir / f"{name}.md"
             if _is_rule_file(cand):
@@ -110,12 +114,23 @@ def _pack_rule_names(pack: str) -> list[str]:
                 if _is_rule_file(f):
                     out.append(f.stem)
         return out
+    if pack in _off():
+        return out
     packdir = DATA_CATALOG_DIR / pack
     if packdir.is_dir():
         for f in sorted(packdir.glob("*.md")):
             if _is_rule_file(f):
                 out.append(f"{pack}/{f.stem}")
     return out
+
+
+def _off() -> set[str]:
+    """Plugins of the disabled packs: their rules are not served (#563)."""
+    try:
+        from .pack_state import disabled_plugins
+        return disabled_plugins()
+    except Exception:  # noqa: BLE001
+        return set()
 
 
 def materialize_rules(

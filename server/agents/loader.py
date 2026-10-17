@@ -238,8 +238,19 @@ class AgentRegistry:
         self._agents.clear()
         self._errors.clear()
         self._warnings.clear()
+        # Agents of a disabled pack are not loaded (clodia-platform#563): not
+        # listed, not routed to, not spawned. Their seed stays on disk.
+        from .pack_state import disabled_agents
+        try:
+            spenti = disabled_agents()
+        except Exception:  # noqa: BLE001 — unreadable packs dir: load everyone
+            spenti = set()
         for spec_file in self.discover():
             agent_dir = spec_file.parent
+            if agent_dir.name in spenti:
+                LOG.info("agent '%s' non caricato: il suo pack è disattivato",
+                         agent_dir.name)
+                continue
             try:
                 testo = spec_file.read_text()
                 raw = yaml.safe_load(testo) or {}
