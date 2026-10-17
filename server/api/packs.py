@@ -936,25 +936,25 @@ def _pack_plugins_of(name: str) -> list[str]:
     return [str(p) for p in (m.get("plugins") or [])]
 
 
-def _own_mounted(pack: str, principal: str) -> set[str]:
-    """Backends mounted in the gateway and stamped as `pack`'s (`mcp.list`).
-    Unreadable → empty: nothing is unmounted rather than the wrong thing."""
+def _mounted_rows(principal: str) -> dict[str, dict]:
+    """`{name: row}` of the backends mounted in the gateway (`mcp.list`: name,
+    `pack` stamp, `config_sha256`). Unreadable → empty: nothing is unmounted
+    rather than the wrong thing."""
     try:
         status, data = gateway_pdp.gw_tool("mcp.list", {}, principal)
     except Exception:  # noqa: BLE001
-        return set()
+        return {}
     if status != 200:
-        return set()
+        return {}
     res = (data or {}).get("result") if isinstance(data, dict) else None
     if isinstance(res, str):
         try:
             import json as _json
             res = _json.loads(res)
         except Exception:  # noqa: BLE001
-            return set()
+            return {}
     rows = (res or {}).get("mcp_backends") or [] if isinstance(res, dict) else []
-    return {str(r.get("name")) for r in rows
-            if isinstance(r, dict) and str(r.get("pack") or "") == pack}
+    return {str(r.get("name")): r for r in rows if isinstance(r, dict) and r.get("name")}
 
 
 def _declared_configs(pack: str) -> dict[str, Any]:
@@ -1018,19 +1018,42 @@ async def disable_pack(name: str, request: Request):
     # Only what is REALLY mounted and stamped as THIS pack's: the gateway
     # answers 200 to an unmount of a name that is not there, and a name alone
     # may be an admin's own backend (review of clodia-logic#537).
-    own = await asyncio.to_thread(_own_mounted, name, principal)
-    servers = [s for s in declared if s in own]
+    rows = await asyncio.to_thread(_mounted_rows, principal)
+    servers = [s for s in declared if str((rows.get(s) or {}).get("pack") or "") == name]
+    avvisi: list[str] = []
+    # Declared and mounted, but not stamped as this pack's (an admin's own
+    # backend of the same name, a legacy unstamped mount): left alone, and said.
+    altrui = [s for s in declared if s in rows and s not in servers]
+    if altrui:
+        out["mcp_not_unmounted"] = altrui
+        avvisi.append("server MCP con lo stesso nome ma non montati da questo pack, "
+                      "lasciati montati: " + ", ".join(altrui))
     if servers:
         configs = _declared_configs(name)
         rep = await asyncio.to_thread(pack_deprovision._unmount, servers, principal)
         out["mcp"] = rep
-        # What was really unmounted, with the hash of its config, is what the
-        # enable may mount back — nothing the pack's files add or change later.
-        pack_state.record_unmounted(name, {
-            s: pack_state.config_hash(configs.get(s)) for s in (rep.get("unmounted") or [])})
+        # Mounted back on enable only when what the pack declares NOW is what
+        # the gateway had mounted (its `config_sha256`): a config changed by a
+        # re-import, never mounted, is not slipped in by disable+enable.
+        tornano: dict[str, str] = {}
+        da_rivedere: list[str] = []
+        for s in rep.get("unmounted") or []:
+            h = pack_state.config_hash(configs.get(s))
+            if h and h == str((rows.get(s) or {}).get("config_sha256") or ""):
+                tornano[s] = h
+            else:
+                da_rivedere.append(s)
+        pack_state.record_unmounted(name, tornano)
+        if da_rivedere:
+            out["mcp_review_on_enable"] = da_rivedere
+            avvisi.append("alla riattivazione questi server MCP non verranno rimontati "
+                          "da soli (configurazione diversa da quella montata, o montati "
+                          "da un gateway precedente): " + ", ".join(da_rivedere))
         if rep.get("failed"):
-            out["warning"] = ("alcuni server MCP del pack non sono stati smontati: "
-                              "ripeti Disattiva per ritentare")
+            avvisi.append("alcuni server MCP del pack non sono stati smontati: "
+                          "ripeti Disattiva per ritentare")
+    if avvisi:
+        out["warning"] = " · ".join(avvisi)
     _refresh_registry()
     out["agents_restarted"] = await _restart_agents()
     return out

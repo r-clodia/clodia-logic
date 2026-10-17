@@ -150,7 +150,8 @@ class EndpointTests(_Env):
 
     def setUp(self) -> None:
         super().setUp()
-        self.mounted = [{"name": "acme-mcp", "pack": "acme-pack"},
+        self.mounted = [{"name": "acme-mcp", "pack": "acme-pack",
+                         "config_sha256": pack_state.config_hash(self.CFG)},
                         {"name": "other", "pack": "someone-else"}]
         for p in (
             patch.object(pack_deprovision, "snapshot_pack",
@@ -173,6 +174,7 @@ class EndpointTests(_Env):
             out = await packs.disable_pack("acme-pack", _Req())
         # not `pending-one` (never mounted), not `other` (another pack's)
         um.assert_called_once_with(["acme-mcp"], "davide")
+        self.assertEqual(out["mcp_not_unmounted"], ["other"])
         self.assertTrue(pack_state.is_disabled("acme-pack"))
         self.assertEqual(out["agents_restarted"], 1)
         self.assertEqual(set(pack_state.take_unmounted("acme-pack")), {"acme-mcp"})
@@ -217,6 +219,18 @@ class EndpointTests(_Env):
         self.assertTrue(kw["trusted"])
         self.assertEqual(out["enabled"], "acme-pack")
         self.assertEqual(pack_state.take_unmounted("acme-pack"), {})   # consumed
+
+    async def test_a_declared_config_never_mounted_is_not_mounted_back(self) -> None:
+        # Re-imported while ENABLED with a new command: the new config stayed
+        # pending, the reviewed one is what runs. Disable+enable must not
+        # mount the unreviewed one.
+        self.mounted[0]["config_sha256"] = pack_state.config_hash({"command": "reviewed"})
+        with self._unmount(["acme-mcp"]):
+            out = await packs.disable_pack("acme-pack", _Req())
+        self.assertEqual(out["mcp_review_on_enable"], ["acme-mcp"])
+        with patch.object(packs.pack_mcp_mount, "auto_mount_imported_mcp") as am:
+            await packs.enable_pack("acme-pack", _Req())
+        am.assert_not_called()
 
     async def test_a_server_changed_while_disabled_is_not_mounted_back(self) -> None:
         with self._unmount(["acme-mcp"]):
