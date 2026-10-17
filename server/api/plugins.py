@@ -318,7 +318,9 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
         "name": name,
         "description": description,
         "origin": origin,
-        "deletable": origin in ("external", "user", "imported"),
+        # A first-party plugin goes with its pack (#562), never alone.
+        "deletable": origin in ("external", "user", "imported")
+        and name not in RESERVED_PLUGIN_NAMES,
         "version": str(manifest.get("version") or "").strip(),
         "source": str(manifest.get("source") or "").strip(),
         # licenza dichiarata del plugin (umbrella per le sue skill); il base-pack

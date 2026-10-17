@@ -552,6 +552,11 @@ def _available_first_party() -> list[dict[str, Any]]:
                 name in pack_import.NON_REMOVABLE_PACK_NAMES or \
                 (pack_import.PACKS_META_DIR / name / "pack.yaml").is_file():
             continue
+        # Without a manifest a bundled pack is still served from the image
+        # unless the owner removed it: only a REMOVED one is available.
+        from ..agents.skill_sync import bundled_pack_installed
+        if bundled_pack_installed(name):
+            continue
         try:
             m = yaml.safe_load((d / "pack.yaml").read_text(encoding="utf-8")) or {}
         except Exception:  # noqa: BLE001
@@ -1252,8 +1257,11 @@ async def delete_pack(name: str, request: Request):
             return JSONResponse(status_code=403,
                                 content={"error": f"'{name}' è nativo, non rimovibile"})
         removed = remove_plugin(name)
-        if not removed["removed"]:
+        if not removed["removed"] and not _bundle_catalog_dir(name):
             return JSONResponse(status_code=404, content={"error": "pack non trovato"})
+        # A bundled pack served from the image without a manifest (a datadir
+        # that predates its registration) has nothing on disk to remove: its
+        # removal IS the marker written below (review of clodia-logic#536).
         result = {"deleted": name, "plugins": [name], "agents": [],
                   "datastores_archived": removed["datastores_archived"],
                   "datastores_retained": removed["datastores_retained"]}

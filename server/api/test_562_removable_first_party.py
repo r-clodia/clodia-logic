@@ -148,8 +148,31 @@ class RemovalTests(_Env):
 
 class ReinstallTests(_Env):
     async def test_available_lists_only_removed_bundled_packs(self) -> None:
+        # No manifest, no marker: still served from the image, so installed.
+        self.assertEqual(await packs.list_available_packs(_Req()), [])
+        skill_sync.mark_bundled_pack_removed("google-pack", True)
         names = [p["name"] for p in await packs.list_available_packs(_Req())]
         self.assertEqual(names, ["google-pack"])
+
+    async def test_a_bundled_pack_without_manifest_is_removed_by_its_marker(self) -> None:
+        with patch.object(pack_deprovision, "snapshot_pack", return_value={}), \
+             patch.object(plugin_import, "remove_plugin",
+                          return_value={"removed": False, "datastores_archived": [],
+                                        "datastores_retained": []}), \
+             patch.object(pack_deprovision, "deprovision_async", new=AsyncMock(return_value=None)), \
+             patch("server.sdk_runtime.session.manager.drop_all", new=AsyncMock(return_value=[])), \
+             patch.object(packs.plugins_api, "invalidate_plugins"):
+            out = await packs.delete_pack("google-pack", _Req())
+        self.assertEqual(out["deleted"], "google-pack")
+        self.assertFalse(skill_sync.bundled_pack_installed("google-pack"))
+        self.assertEqual([p["name"] for p in await packs.list_available_packs(_Req())],
+                         ["google-pack"])
+        # a third-party name with nothing on disk is still a 404
+        with patch.object(plugin_import, "remove_plugin",
+                          return_value={"removed": False}), \
+             patch.object(pack_deprovision, "snapshot_pack", return_value={}):
+            r = await packs.delete_pack("nobody-pack", _Req())
+        self.assertEqual(r.status_code, 404)
 
     async def test_install_runs_the_trusted_update_path(self) -> None:
         skill_sync.mark_bundled_pack_removed("google-pack", True)
