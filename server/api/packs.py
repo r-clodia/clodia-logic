@@ -815,6 +815,52 @@ def _gc_entry(result: dict, pack: str) -> dict | None:
     return None
 
 
+#: The GitHub owner whose repositories are first-party (clodia-platform#564):
+#: only the owner of the platform can write there, so content fetched from
+#: them is "our code". Anything else is a third party's, whatever its pack
+#: manifest says about itself.
+FIRST_PARTY_OWNER = "r-clodia"
+
+
+def _is_first_party_upstream(up: dict | None) -> bool:
+    repo = str((up or {}).get("repo") or "")
+    return repo.split("/", 1)[0].lower() == FIRST_PARTY_OWNER and repo.count("/") == 1
+
+
+def _update_upstream(name: str) -> dict | None:
+    """Where an Update of `name` fetches from. For a RESERVED first-party name
+    the bundled catalog's declaration wins over the installed manifest's: the
+    installed one is a datadir file, the bundled one ships with the image."""
+    if name in pack_import.RESERVED_PACK_NAMES and _bundle_catalog_dir(name):
+        try:
+            m = yaml.safe_load((_bundle_catalog_dir(name) / "pack.yaml")
+                               .read_text(encoding="utf-8")) or {}
+            b = m.get("upstream")
+            if isinstance(b, dict) and b.get("repo"):
+                return {"repo": str(b["repo"]).strip(),
+                        "path": str(b.get("path") or "").strip().strip("/"),
+                        "ref": str(b.get("ref") or "main").strip()}
+        except Exception:  # noqa: BLE001
+            pass
+    return _pack_upstream(name)
+
+
+def _check_update_root(root: Path, name: str) -> None:
+    """The fetched upstream must contain ONE pack, and it must be `name`
+    (#564): an Update must never install a different pack — a reserved
+    first-party name, or another installed pack it would overwrite with
+    `force`."""
+    found = pack_import.find_pack_root(root)
+    if found is None:
+        raise pack_import.PackImportError("l'upstream non contiene un pack (pack.yaml)")
+    pack_root, manifest = found
+    got = pack_import._sanitize_pack_name(manifest.get("name") or pack_root.name,
+                                          allow_reserved=True)
+    if got != name:
+        raise pack_import.PackImportError(
+            f"l'upstream contiene il pack '{got}', non '{name}': update rifiutato")
+
+
 async def _perform_update(name: str, principal: str) -> dict:
     """Il lavoro di un Update, senza il layer HTTP: scarica dall'upstream,
     SOSTITUISCE seed/skill/mcp (force), monta gli MCP trusted, aggiorna il
@@ -827,9 +873,16 @@ async def _perform_update(name: str, principal: str) -> dict:
     """
     if not catalog._NAME_RE.fullmatch(name):
         raise ValueError("nome non valido")
-    up = _pack_upstream(name)
+    up = _update_upstream(name)
     if not up:
         raise ValueError(f"'{name}' non dichiara un upstream: update non disponibile")
+    # Trust comes from WHERE the code is fetched, never from what the pack
+    # says about itself (#564): a reserved name and an automatic MCP mount
+    # only from a first-party repository.
+    first_party = _is_first_party_upstream(up)
+    if name in pack_import.RESERVED_PACK_NAMES and not first_party:
+        raise ValueError(f"'{name}' è un nome di prima parte: si aggiorna solo da "
+                         f"{FIRST_PARTY_OWNER}/*, non da {up['repo']}")
     import tempfile
     from ..api.pack_import import PackImportError as _PIE
     # An Update of a disabled pack keeps it disabled (#563): the new files
@@ -838,8 +891,11 @@ async def _perform_update(name: str, principal: str) -> dict:
     try:
         with tempfile.TemporaryDirectory() as td:
             root = await asyncio.to_thread(_download_upstream_tarball, up, Path(td))
+            _check_update_root(root, name)
             result = pack_import.install_pack_from_root(
-                root, source=f"github:{up['repo']}", allow_reserved=True, force=True)
+                root, source=f"github:{up['repo']}",
+                allow_reserved=first_party and name in pack_import.RESERVED_PACK_NAMES,
+                force=True)
     except _PIE as e:
         raise ValueError(f"update: {str(e)[:160]}") from e
     except Exception as e:  # noqa: BLE001
@@ -848,10 +904,11 @@ async def _perform_update(name: str, principal: str) -> dict:
     # the new manifest; this only re-asserts it should an installer path skip it.
     if was_disabled and not pack_state.is_disabled(name):
         pack_state.set_disabled(name, True)
-    # update di un pack FIRST-PARTY dal proprio upstream = codice nostro → mount
-    # automatico consentito (fonte trusted). Gli import da zip/URL restano opt-in.
+    # Update from a FIRST-PARTY repository = our code → automatic mount. From
+    # anyone else's repository the new servers stay `pending`, as at import:
+    # the owner mounts them from Tools after reading them (#564).
     if not was_disabled:
-        pack_mcp_mount.auto_mount_imported_mcp(result, principal, trusted=True)
+        pack_mcp_mount.auto_mount_imported_mcp(result, principal, trusted=first_party)
     plugins_api.invalidate_plugins()
     try:
         registry.load()

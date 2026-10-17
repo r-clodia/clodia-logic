@@ -331,6 +331,7 @@ class UpdateKeepsItOffTests(_Env):
         with patch.object(packs, "_pack_upstream",
                           return_value={"repo": "r-clodia/clodia-packs", "path": "p", "ref": "main"}), \
              patch.object(packs, "_download_upstream_tarball", return_value=Path("/x")), \
+             patch.object(packs, "_check_update_root"), \
              patch.object(packs.pack_import, "install_pack_from_root", side_effect=_install), \
              patch.object(packs.pack_mcp_mount, "auto_mount_imported_mcp") as am, \
              patch.object(packs, "set_setup_pending"), \
