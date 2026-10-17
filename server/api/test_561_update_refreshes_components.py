@@ -151,6 +151,7 @@ class UpdateWiringTests(unittest.IsolatedAsyncioTestCase):
                           return_value={"repo": "r-clodia/clodia-logic", "ref": "main",
                                         "path": "catalogs/packs/google-pack"}), \
              patch.object(packs, "_download_upstream_tarball", return_value=Path("/x")), \
+             patch.object(packs, "_check_update_root"), \
              patch.object(packs.pack_import, "install_pack_from_root", return_value=installed), \
              patch.object(packs.pack_mcp_mount, "auto_mount_imported_mcp"), \
              patch.object(packs.plugins_api, "invalidate_plugins"), \
