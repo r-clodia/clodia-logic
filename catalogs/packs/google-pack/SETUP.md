@@ -48,17 +48,18 @@ or a third-party URL.
 
    With the switch still on `native` its status is **`standby`** (pinned, not
    imported, nothing served by it): expected.
-2. **Every later Update**: the pin does NOT move by itself. A human admin asks
-   the gateway to fetch the new head of `main` (the agent-server cannot: it is
-   refused there by design). Until the webui has a button, with the owner's
-   own session token:
+2. **Every later Update**: with clodia-logic ≥ 6.306.1 (clodia-platform#561)
+   a human admin's Update also asks the gateway to move the pin to the new
+   head of `main`; the Update answer reports it under
+   `gateway_components.refreshed` (`ok`, and per component its `commit`,
+   `status`, `reason`). The gateway decides: an agent's Update, or a
+   non-admin's, does not move it. On an older agent-server, a human admin
+   asks it directly with their own session token:
 
    ```sh
    curl -sS -X POST -H "Authorization: Bearer $OWNER_SESSION_TOKEN" \
         https://<gateway>/internal/components/google-pack/refresh
    ```
-
-   The Update answer names this call (`gateway_components.refresh`).
 
 No MCP server to mount, no plugin dependency, no credential to configure.
 

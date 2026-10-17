@@ -4,6 +4,13 @@ Changelog of the `google-pack` pack ([Keep a Changelog](https://keepachangelog.c
 format, SemVer). The newest version is at the top; `pack.yaml` holds the current
 one.
 
+## [2.1.1] — 2026-10-17
+- **No code change.** Republished so that an instance already on 2.1.0 gets an
+  Update again: with clodia-logic ≥ 6.306.1 a human admin's Update also moves
+  the gateway component's pin (clodia-platform#561). An instance whose
+  `google` component is still pinned at 2.0.0's commit reaches the 2.1.0 code
+  with this Update.
+
 ## [2.1.0] — 2026-10-17
 - **Gmail for comms-pack's mail component** (clodia-platform#558; needs
   clodia-tools ≥ 2.110.0). With `connectors: {mail: pack}` the eight `email.*`
