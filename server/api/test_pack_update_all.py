@@ -46,7 +46,7 @@ class UpdateAllTests(unittest.IsolatedAsyncioTestCase):
                           return_value=(_con_upstream(["a"])
                                        + [{"name": "b", "has_upstream": False}])), \
              patch.object(packs, "_perform_update",
-                         new=AsyncMock(return_value={"updated": "a", "version": "1.0"})) as pu, \
+                         new=AsyncMock(return_value={"updated": "a", "version": "1.0", "first_party_source": True})) as pu, \
              patch("server.api.pack_ops_logical.run_logical_setup_async",
                   new=AsyncMock(return_value={"done": [], "gaps": []})):
             out = await packs.update_all_packs(_Req())
@@ -57,7 +57,7 @@ class UpdateAllTests(unittest.IsolatedAsyncioTestCase):
         async def _pu(name, principal):
             if name == "rotto":
                 raise RuntimeError("update fallito: 502")
-            return {"updated": name, "version": "1.0"}
+            return {"updated": name, "version": "1.0", "first_party_source": True}
         with patch.object(packs, "_list_packs",
                           return_value=_con_upstream(["rotto", "sano"])), \
              patch.object(packs, "_perform_update", side_effect=_pu), \
@@ -72,7 +72,7 @@ class UpdateAllTests(unittest.IsolatedAsyncioTestCase):
     async def test_no_gaps_marks_setup_done(self) -> None:
         with patch.object(packs, "_list_packs", return_value=_con_upstream(["a"])), \
              patch.object(packs, "_perform_update",
-                         new=AsyncMock(return_value={"updated": "a", "version": "1.0"})), \
+                         new=AsyncMock(return_value={"updated": "a", "version": "1.0", "first_party_source": True})), \
              patch("server.api.pack_ops_logical.run_logical_setup_async",
                   new=AsyncMock(return_value={"done": ["pip:mcp"], "gaps": []})), \
              patch.object(packs, "record_setup_done") as rsd:
@@ -84,7 +84,7 @@ class UpdateAllTests(unittest.IsolatedAsyncioTestCase):
     async def test_gaps_leave_setup_pending_and_do_not_mark_done(self) -> None:
         with patch.object(packs, "_list_packs", return_value=_con_upstream(["a"])), \
              patch.object(packs, "_perform_update",
-                         new=AsyncMock(return_value={"updated": "a", "version": "1.0"})), \
+                         new=AsyncMock(return_value={"updated": "a", "version": "1.0", "first_party_source": True})), \
              patch("server.api.pack_ops_logical.run_logical_setup_async",
                   new=AsyncMock(return_value={"done": [],
                                               "gaps": [{"kind": "pip", "package": "x",
@@ -109,7 +109,7 @@ class UpdateAllTests(unittest.IsolatedAsyncioTestCase):
     async def test_agents_restart_once_per_batch_not_once_per_pack(self) -> None:
         with patch.object(packs, "_list_packs", return_value=_con_upstream(["a", "b"])), \
              patch.object(packs, "_perform_update",
-                         new=AsyncMock(return_value={"updated": "x", "version": "1.0"})), \
+                         new=AsyncMock(return_value={"updated": "x", "version": "1.0", "first_party_source": True})), \
              patch("server.api.pack_ops_logical.run_logical_setup_async",
                   new=AsyncMock(return_value={"done": [], "gaps": []})), \
              patch("server.sdk_runtime.session.manager.drop_all",

@@ -221,7 +221,8 @@ def _marketplace_plugin_dirs(mp_root: Path, manifest: dict[str, Any]) -> list[Pa
     return out
 
 
-def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
+def _install_seed(sdir: Path, *, force: bool = False,
+                  force_only: set[str] | None = None) -> dict[str, Any]:
     """Installa e registra un agent seed. Ritorna {name, status, detail?}.
 
     status: installed | exists | error. Sequenza: copia → PKI (best-effort) →
@@ -240,6 +241,10 @@ def _install_seed(sdir: Path, *, force: bool = False) -> dict[str, Any]:
     if not _AGENT_NAME_RE.fullmatch(name):
         return {"name": name, "status": "error", "detail": "nome agente non valido"}
     dest = registry.base_dir / name
+    # `force_only` (Update from a THIRD-PARTY repository, #564): replace only
+    # the seeds the pack already owned — never a native, never another pack's.
+    if force and force_only is not None and name not in force_only:
+        force = False
     if name in _NATIVE_AGENTS and not force:
         # I nativi (clodia/ophelia/messaggero) sono installati da init-datadir.sh,
         # non da pack. Se già presenti (caso normale, es. re-install del base-pack)
@@ -338,7 +343,8 @@ def _copy_pack_docs(pack_root: Path, meta_dir: Path) -> None:
 
 def install_pack_from_root(root: Path, *, source: str,
                            allow_reserved: bool = False,
-                           force: bool = False) -> dict[str, Any]:
+                           force: bool = False,
+                           force_only: set[str] | None = None) -> dict[str, Any]:
     """Installa un archivio come PACK (o delega a plugin_import se non lo è).
 
     `allow_reserved`: consente di (re)installare un pack dal nome RISERVATO
@@ -420,7 +426,7 @@ def install_pack_from_root(root: Path, *, source: str,
         except PluginImportError as e:
             raise PackImportError(f"plugin '{pdir.name}': {e}")
 
-    agents = [_install_seed(sdir, force=force) for sdir in seed_dirs]
+    agents = [_install_seed(sdir, force=force, force_only=force_only) for sdir in seed_dirs]
     failed = [a for a in agents if a["status"] == "error"]
     if failed and not any(a["status"] in ("installed", "exists") for a in agents) \
             and not plugins:

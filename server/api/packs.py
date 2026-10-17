@@ -21,6 +21,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import re
 from pathlib import Path
 from typing import Any
 
@@ -83,6 +84,30 @@ def _pack_meta(name: str) -> dict | None:
 
 
 # ── Check update / Update da GitHub (Opzione A) ──────────────────────────────
+_REPO_RE = re.compile(r"^[A-Za-z0-9](?:[A-Za-z0-9-]{0,38})/[A-Za-z0-9._-]{1,100}$")
+_REF_RE = re.compile(r"^[A-Za-z0-9._/-]{1,200}$")
+
+
+def _valid_upstream(up: dict | None) -> bool:
+    """`repo`, `ref` and `path` go into a GitHub URL and into a filesystem
+    path inside the fetched tarball: no `..`, no stray characters (#564 —
+    `ref: x/../../../../attacker/evil/tarball/main` turned a first-party
+    `repo` into any repository)."""
+    if not isinstance(up, dict):
+        return False
+    repo, ref, path = str(up.get("repo") or ""), str(up.get("ref") or ""), str(up.get("path") or "")
+    if not _REPO_RE.fullmatch(repo) or repo.split("/", 1)[1] in (".", ".."):
+        return False
+    if not _REF_RE.fullmatch(ref) or ref.startswith("/"):
+        return False
+    for value in (ref, path):
+        if any(seg in (".", "..") for seg in value.split("/")):
+            return False
+    if path and not _REF_RE.fullmatch(path):
+        return False
+    return True
+
+
 def _pack_upstream(name: str) -> dict | None:
     """`upstream: {repo, path, ref}` dal manifest installato (o dal catalogo
     bundled come fallback). None se il pack non dichiara un upstream."""
@@ -97,9 +122,13 @@ def _pack_upstream(name: str) -> dict | None:
             continue
         up = m.get("upstream")
         if isinstance(up, dict) and up.get("repo"):
-            return {"repo": str(up["repo"]).strip(),
-                    "path": str(up.get("path") or "").strip().strip("/"),
-                    "ref": str(up.get("ref") or "main").strip()}
+            out = {"repo": str(up["repo"]).strip(),
+                   "path": str(up.get("path") or "").strip().strip("/"),
+                   "ref": str(up.get("ref") or "main").strip()}
+            if not _valid_upstream(out):
+                LOG.warning("pack '%s': upstream non valido, ignorato (%s)", name, out)
+                return None
+            return out
     return None
 
 
@@ -715,6 +744,8 @@ def _download_upstream_tarball(up: dict, tmp: Path) -> Path:
     import io
     import tarfile
     import httpx
+    if not _valid_upstream(up):
+        raise pack_import.PackImportError("upstream non valido")
     url = f"https://api.github.com/repos/{up['repo']}/tarball/{up['ref']}"
     headers = {}
     tok = _github_token()
@@ -723,13 +754,21 @@ def _download_upstream_tarball(up: dict, tmp: Path) -> Path:
     r = httpx.get(url, headers=headers, timeout=120.0, follow_redirects=True)
     r.raise_for_status()
     with tarfile.open(fileobj=io.BytesIO(r.content), mode="r:gz") as tf:
-        tf.extractall(tmp)  # il tar GitHub ha un unico top-dir <repo>-<sha>/
+        # No links (a repo's symlink would make copytree copy the target —
+        # a local file — into the plugin dir) and the `data` filter (no
+        # absolute paths, no `..`, no device files).
+        if any(m.issym() or m.islnk() for m in tf.getmembers()):
+            raise pack_import.PackImportError("l'archivio dell'upstream contiene link: rifiutato")
+        tf.extractall(tmp, filter="data")  # il tar GitHub ha un unico top-dir <repo>-<sha>/
     tops = [c for c in tmp.iterdir() if c.is_dir()]
     if not tops:
-        raise PackImportError("tarball vuoto")
-    root = tops[0] / up["path"] if up["path"] else tops[0]
+        raise pack_import.PackImportError("tarball vuoto")
+    base = tops[0].resolve()
+    root = (base / up["path"]).resolve() if up["path"] else base
+    if root != base and base not in root.parents:
+        raise pack_import.PackImportError("il path dell'upstream esce dall'archivio")
     if not (root / "pack.yaml").is_file():
-        raise PackImportError(f"path '{up['path']}' senza pack.yaml nel repo")
+        raise pack_import.PackImportError(f"path '{up['path']}' senza pack.yaml nel repo")
     return root
 
 
@@ -837,12 +876,23 @@ def _update_upstream(name: str) -> dict | None:
                                .read_text(encoding="utf-8")) or {}
             b = m.get("upstream")
             if isinstance(b, dict) and b.get("repo"):
-                return {"repo": str(b["repo"]).strip(),
-                        "path": str(b.get("path") or "").strip().strip("/"),
-                        "ref": str(b.get("ref") or "main").strip()}
+                out = {"repo": str(b["repo"]).strip(),
+                       "path": str(b.get("path") or "").strip().strip("/"),
+                       "ref": str(b.get("ref") or "main").strip()}
+                return out if _valid_upstream(out) else None
         except Exception:  # noqa: BLE001
             pass
     return _pack_upstream(name)
+
+
+def _owned_seeds(name: str) -> set[str]:
+    """The (non-native) agents the installed manifest of `name` lists."""
+    meta = pack_import.PACKS_META_DIR / name / "pack.yaml"
+    try:
+        m = yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
+    except Exception:  # noqa: BLE001
+        return set()
+    return {str(a) for a in (m.get("agents") or [])} - set(pack_import._NATIVE_AGENTS)
 
 
 def _check_update_root(root: Path, name: str) -> None:
@@ -895,7 +945,10 @@ async def _perform_update(name: str, principal: str) -> dict:
             result = pack_import.install_pack_from_root(
                 root, source=f"github:{up['repo']}",
                 allow_reserved=first_party and name in pack_import.RESERVED_PACK_NAMES,
-                force=True)
+                force=True,
+                # From a third party, replace only the seeds this pack already
+                # owned: never a native, never another pack's (#564).
+                force_only=None if first_party else _owned_seeds(name))
     except _PIE as e:
         raise ValueError(f"update: {str(e)[:160]}") from e
     except Exception as e:  # noqa: BLE001
@@ -929,7 +982,8 @@ async def _perform_update(name: str, principal: str) -> dict:
             new_ver = str((yaml.safe_load(meta.read_text(encoding="utf-8")) or {}).get("version") or "").strip()
         except Exception:  # noqa: BLE001
             pass
-    return {"updated": name, "version": new_ver, **(result or {})}
+    return {"updated": name, "version": new_ver, **(result or {}),
+            "first_party_source": first_party}
 
 
 @router.post("/clodia/packs/{name}/update")
@@ -1217,6 +1271,14 @@ async def update_all_packs(request: Request):
             results.append({"name": name, "updated": True, "version": up.get("version"),
                             "disabled": True, "setup_done": False,
                             "setup_gaps": [], "setup_actions": []})
+            continue
+        if not up.get("first_party_source"):
+            # A third party's `requires:` (pip/npm installs, MCP) is not run
+            # by a click on «Aggiorna tutto» (#564): the owner reviews it.
+            results.append({"name": name, "updated": True, "version": up.get("version"),
+                            "setup_done": False, "setup_actions": [],
+                            "setup_gaps": [{"detail": "pack di terze parti: setup da "
+                                                      "rivedere e completare a mano"}]})
             continue
         setup = await pack_ops_logical.run_logical_setup_async(
             name, pack_decls, principal)
