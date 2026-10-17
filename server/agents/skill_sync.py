@@ -51,16 +51,36 @@ def _is_skill_dir(p: Path) -> bool:
     return p.is_dir() and (p / "SKILL.md").is_file()
 
 
-def bundled_pack_installed(pack: str) -> bool:
-    """Is the bundled first-party pack `pack` installed on this instance?
+#: Where `remove_pack` marks a BUNDLED pack as removed (clodia-platform#562).
+REMOVED_PACKS_DIR = "packs-removed"
 
-    The image carries every bundled pack's skills under `catalogs/packs/`,
-    installed or not. base-pack is always there; the others only while their
-    manifest is in `DATA/packs/` — a removed pack's skills must not keep
-    reaching agents from the image (clodia-platform#562)."""
+
+def bundled_pack_installed(pack: str) -> bool:
+    """May the image's copy of the bundled pack `pack` serve its skills here?
+
+    The image carries every bundled pack's skills under `catalogs/packs/`.
+    They stop reaching agents only when the owner REMOVED the pack (a marker
+    in `DATA/packs-removed/`, written by the removal and cleared by the
+    reinstall) — not merely when its manifest is missing: an instance whose
+    datadir predates a pack's manifest registration would otherwise lose, on
+    upgrade, skills that base-pack's own seeds use (review of clodia-logic#536).
+    """
     if pack in ("base-pack", "logic"):
         return True
-    return (data_path("packs") / pack / "pack.yaml").is_file()
+    if (data_path("packs") / pack / "pack.yaml").is_file():
+        return True
+    return not (data_path(REMOVED_PACKS_DIR) / pack).exists()
+
+
+def mark_bundled_pack_removed(pack: str, removed: bool) -> None:
+    """Set or clear the removal marker of a bundled pack (see above)."""
+    d = data_path(REMOVED_PACKS_DIR)
+    marker = d / pack
+    if removed:
+        d.mkdir(parents=True, exist_ok=True)
+        marker.write_text("removed by the owner (clodia-platform#562)\n", encoding="utf-8")
+    else:
+        marker.unlink(missing_ok=True)
 
 
 def _logic_catalog_is_bundled() -> bool:

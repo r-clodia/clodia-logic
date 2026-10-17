@@ -404,6 +404,26 @@ def _setup_pending(name: str, plugin_children: list) -> bool:
     return _pack_needs_setup(plugin_children) and _setup_marker_path(name).is_file()
 
 
+def _used_by(plugins: list[str], own_agents: list[str]) -> list[dict[str, Any]]:
+    """Agents OUTSIDE the pack that use its skills (`<plugin>/<skill>` or
+    `<plugin>/*` among their capabilities): what a removal takes away from
+    them, shown before it is confirmed (#562 — base-pack's messaggero,
+    ophelia and sysadmin use comms-pack's skills)."""
+    if not plugins:
+        return []
+    own = set(own_agents)
+    prefixes = tuple(f"{p}/" for p in plugins)
+    out: list[dict[str, Any]] = []
+    for spec in registry.list():
+        if spec.name in own:
+            continue
+        caps = [str(c) for c in (getattr(spec, "capabilities", None) or [])
+                if str(c).startswith(prefixes)]
+        if caps:
+            out.append({"agent": spec.name, "skills": caps})
+    return out
+
+
 def _list_packs() -> list[dict[str, Any]]:
     plugin_items = {p["name"]: p for p in plugins_api.list_plugins()}
     installed_plugins = set(plugin_items)
@@ -461,6 +481,7 @@ def _list_packs() -> list[dict[str, Any]]:
             # Only base-pack is non-removable (#562); a removed first-party
             # pack comes back from `/clodia/packs/available`.
             "deletable": name not in pack_import.NON_REMOVABLE_PACK_NAMES,
+            "used_by": _used_by(plugin_names, agent_names),
             "license": lic["license"],
             "licenses": lic["licenses"],
             "license_missing": lic["license_missing"],
@@ -877,6 +898,8 @@ async def install_first_party_pack(name: str, request: Request):
         return JSONResponse(status_code=400, content={"error": str(e)})
     except RuntimeError as e:
         return JSONResponse(status_code=500, content={"error": str(e)})
+    from ..agents.skill_sync import mark_bundled_pack_removed
+    mark_bundled_pack_removed(name, False)
     stopped = []
     try:
         from ..sdk_runtime.session import manager
@@ -1242,7 +1265,19 @@ async def delete_pack(name: str, request: Request):
     )
     if report:
         result["deprovision"] = report
+    if _bundle_catalog_dir(name):
+        # The image keeps serving a bundled pack's skills until this marker
+        # says the owner removed it (#562); the reinstall clears it.
+        from ..agents.skill_sync import mark_bundled_pack_removed
+        mark_bundled_pack_removed(name, True)
     plugins_api.invalidate_plugins()
+    # Live sessions keep the skills they were started with: restart them, so
+    # the removal takes effect now and not at the next idle reap.
+    try:
+        from ..sdk_runtime.session import manager
+        result["agents_restarted"] = len(await manager.drop_all())
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("drop_all dopo la rimozione fallito: %s", e)
     return result
 
 

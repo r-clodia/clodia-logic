@@ -39,7 +39,7 @@ from pydantic import BaseModel
 
 from ..config import workspace_path
 from . import catalog, gateway_pdp, pack_deprovision, pack_mcp_mount, plugin_import
-from .plugin_import import NON_REMOVABLE_PACK_NAMES
+from .plugin_import import RESERVED_PLUGIN_NAMES
 
 LOG = logging.getLogger("agent-server.api.plugins")
 router = APIRouter()
@@ -425,9 +425,12 @@ async def delete_plugin(name: str, request: Request):
     principal = await gateway_pdp.require_authz_async(request, "mcp.remove")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
-    if name in NON_REMOVABLE_PACK_NAMES:
+    # A first-party plugin goes away WITH its pack (`DELETE /clodia/packs/{name}`,
+    # #562): removed alone it would leave the manifest behind, the image's
+    # skills still served and the pack never offered for reinstall.
+    if name in RESERVED_PLUGIN_NAMES:
         return JSONResponse(
-            status_code=403, content={"error": f"'{name}' è un plugin nativo, non rimovibile"})
+            status_code=403, content={"error": f"'{name}' è un plugin di prima parte: si rimuove insieme al suo pack"})
     # Snapshot prima della rimozione: i manifest sono la sola fonte di ciò che
     # va smontato, e fra un attimo non ci saranno più.
     snap = pack_deprovision.snapshot([name])

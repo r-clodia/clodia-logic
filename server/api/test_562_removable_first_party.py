@@ -14,7 +14,11 @@ Measured here:
 3. the reserved names still refuse an import from zip/URL (anti-spoofing);
 4. a removed bundled pack comes back only from `available` + `install`,
    which runs the trusted Update path — and nothing else is installable there;
-5. a removed bundled pack's skills are not resolved from the image.
+5. a removed bundled pack's skills are not resolved from the image — only
+   once REMOVED (a marker), not merely without a manifest;
+6. a first-party plugin is never removed alone, every bundled pack is a
+   reserved name, and the agents outside a pack that use its skills are named
+   before the removal.
 """
 from __future__ import annotations
 
@@ -26,7 +30,8 @@ from unittest.mock import AsyncMock, MagicMock, patch
 import yaml
 
 from ..agents import skill_sync
-from . import gateway_pdp, pack_deprovision, pack_import, packs, plugin_import
+from ..config import workspace_path
+from . import gateway_pdp, pack_deprovision, pack_import, packs, plugin_import, plugins
 
 
 class _Req:
@@ -79,6 +84,8 @@ class RemovalTests(_Env):
 
     async def test_a_first_party_pack_is_removed(self) -> None:
         with patch.object(pack_deprovision, "snapshot_pack", return_value={}), \
+             patch("server.sdk_runtime.session.manager.drop_all",
+                   new=AsyncMock(return_value=["x", "y"])), \
              patch.object(pack_import, "remove_pack",
                           return_value={"deleted": "comms-pack", "plugins": ["comms-pack"],
                                         "agents": [], "datastores_archived": [],
@@ -88,6 +95,36 @@ class RemovalTests(_Env):
             out = await packs.delete_pack("comms-pack", _Req())
         rm.assert_called_once_with("comms-pack")
         self.assertEqual(out["deleted"], "comms-pack")
+        # live sessions drop the pack's skills now, not at the next idle reap
+        self.assertEqual(out["agents_restarted"], 2)
+        # the image stops serving a bundled pack only once it is REMOVED
+        self.assertTrue((self.data / "packs-removed" / "comms-pack").exists())
+
+    async def test_a_first_party_plugin_is_not_removed_alone(self) -> None:
+        # It goes with its pack: alone it would leave the manifest behind.
+        with patch.object(plugin_import, "remove_plugin") as rp:
+            for n in ("comms-pack", "google-pack", "base-pack", "logic"):
+                r = await plugins.delete_plugin(n, _Req())
+                self.assertEqual(r.status_code, 403, n)
+        rp.assert_not_called()
+
+    def test_every_bundled_pack_is_a_reserved_name(self) -> None:
+        # Otherwise a third party could take a bundled pack's name and switch
+        # the image's skills on for its own pack.
+        root = workspace_path("catalogs/packs")
+        bundled = {d.name for d in root.iterdir() if (d / "pack.yaml").is_file()}
+        self.assertTrue(bundled)
+        self.assertLessEqual(bundled, plugin_import.RESERVED_PLUGIN_NAMES)
+
+    def test_used_by_names_the_agents_outside_the_pack(self) -> None:
+        specs = [MagicMock(capabilities=["comms-pack/check-email", "other/x"]),
+                 MagicMock(capabilities=["comms-pack/*"]),
+                 MagicMock(capabilities=["base/thing"])]
+        for spec, n in zip(specs, ("messaggero", "inside", "clodia")):
+            spec.name = n
+        with patch.object(packs.registry, "list", return_value=specs):
+            self.assertEqual(packs._used_by(["comms-pack"], ["inside"]), [
+                {"agent": "messaggero", "skills": ["comms-pack/check-email"]}])
 
     def test_remove_pack_refuses_base_pack(self) -> None:
         with self.assertRaises(pack_import.PackImportError):
@@ -115,6 +152,7 @@ class ReinstallTests(_Env):
         self.assertEqual(names, ["google-pack"])
 
     async def test_install_runs_the_trusted_update_path(self) -> None:
+        skill_sync.mark_bundled_pack_removed("google-pack", True)
         with patch.object(packs, "_perform_update",
                           new=AsyncMock(return_value={"updated": "google-pack",
                                                       "version": "2.0.0"})) as pu, \
@@ -122,8 +160,15 @@ class ReinstallTests(_Env):
                    new=AsyncMock(return_value=["a"])):
             out = await packs.install_first_party_pack("google-pack", _Req())
         pu.assert_awaited_once_with("google-pack", "davide")
+        self.assertFalse((self.data / "packs-removed" / "google-pack").exists())
         self.assertEqual(out["installed"], "google-pack")
         self.assertEqual(out["agents_restarted"], 1)
+
+    def test_the_reinstall_source_is_the_bundled_manifest(self) -> None:
+        # No DATA manifest left: the upstream comes from the image only.
+        self.assertEqual(packs._pack_upstream("google-pack"), {
+            "repo": "r-clodia/clodia-logic", "path": "catalogs/packs/google-pack",
+            "ref": "main"})
 
     async def test_install_refuses_anything_else(self) -> None:
         with patch.object(packs, "_perform_update", new=AsyncMock()) as pu:
@@ -137,17 +182,26 @@ class ReinstallTests(_Env):
 
 
 class SkillsOfARemovedPackTests(_Env):
-    def test_installed_is_read_from_the_datadir(self) -> None:
+    def test_only_a_removal_stops_the_image(self) -> None:
         self.assertTrue(skill_sync.bundled_pack_installed("base-pack"))
         self.assertTrue(skill_sync.bundled_pack_installed("logic"))
         self.assertTrue(skill_sync.bundled_pack_installed("comms-pack"))
+        # no manifest (a datadir that predates its registration): still served
+        self.assertTrue(skill_sync.bundled_pack_installed("google-pack"))
+        skill_sync.mark_bundled_pack_removed("google-pack", True)
         self.assertFalse(skill_sync.bundled_pack_installed("google-pack"))
+        skill_sync.mark_bundled_pack_removed("google-pack", False)
+        self.assertTrue(skill_sync.bundled_pack_installed("google-pack"))
+        # base-pack can never be marked off
+        skill_sync.mark_bundled_pack_removed("base-pack", True)
+        self.assertTrue(skill_sync.bundled_pack_installed("base-pack"))
 
     def test_a_removed_packs_skill_is_not_resolved_from_the_image(self) -> None:
         for n in ("comms-pack", "google-pack"):
             sk = self.catalog / n / "plugins" / n / "skills" / "s1"
             sk.mkdir(parents=True)
             (sk / "SKILL.md").write_text("---\nname: s1\ndescription: d\n---\n", encoding="utf-8")
+        skill_sync.mark_bundled_pack_removed("google-pack", True)
         with patch.object(skill_sync, "LOGIC_PACKS_ROOT", self.catalog), \
              patch.object(skill_sync, "DATA_CATALOG_DIR", self.data / "skills-catalog"):
             self.assertIsNotNone(skill_sync._resolve_skill_source("comms-pack/s1"))
