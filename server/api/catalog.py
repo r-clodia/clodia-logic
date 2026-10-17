@@ -33,7 +33,7 @@ from ..agents.rule_sync import DATA_CATALOG_DIR as DATA_RULES_DIR
 from ..agents.rule_sync import LOGIC_CATALOG_DIR as LOGIC_RULES_DIR
 from ..agents.skill_sync import DATA_CATALOG_DIR as DATA_SKILLS_DIR
 from ..agents.skill_sync import LOGIC_CATALOG_DIR as LOGIC_SKILLS_DIR
-from ..agents.skill_sync import LOGIC_PACKS_ROOT
+from ..agents.skill_sync import LOGIC_PACKS_ROOT, bundled_pack_installed
 
 LOG = logging.getLogger("agent-server.api.catalog")
 router = APIRouter()
@@ -275,7 +275,8 @@ def _iter_logic_skill_paths() -> dict[str, Path]:
         bundled = False
     if bundled and LOGIC_PACKS_ROOT.is_dir():
         for packdir in sorted(LOGIC_PACKS_ROOT.iterdir()):
-            if not packdir.is_dir() or packdir.name == "base-pack":
+            if not packdir.is_dir() or packdir.name == "base-pack" or \
+                    not bundled_pack_installed(packdir.name):
                 continue
             plugin_skills = packdir / "plugins" / packdir.name / "skills"
             for name, path in _iter_skill_paths(plugin_skills).items():

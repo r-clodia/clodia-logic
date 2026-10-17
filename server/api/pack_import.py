@@ -75,6 +75,7 @@ _AGENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,30}(?:\.[a-z0-9][a-z0-9_-]{0,
 _NATIVE_AGENTS = {"clodia", "ophelia", "messaggero"}
 
 RESERVED_PACK_NAMES = plugin_import.RESERVED_PLUGIN_NAMES
+NON_REMOVABLE_PACK_NAMES = plugin_import.NON_REMOVABLE_PACK_NAMES
 
 
 class PackImportError(SkillImportError):
@@ -650,9 +651,9 @@ def remove_pack(name: str) -> dict[str, Any]:
 
     Ritorna il riepilogo (`agents_archived`/`agents_retained`/`manifest_archived`
     dicono dove sono finiti i dati); solleva KeyError se il pack non esiste.
-    Solleva PackImportError se il pack è first-party/riservato (non rimovibile)."""
-    if name in RESERVED_PACK_NAMES:
-        raise PackImportError(f"pack first-party non rimovibile: '{name}'")
+    Solleva PackImportError se il pack non è rimovibile (base-pack, #562)."""
+    if name in NON_REMOVABLE_PACK_NAMES:
+        raise PackImportError(f"pack non rimovibile: '{name}'")
     meta = PACKS_META_DIR / name / "pack.yaml"
     if not meta.is_file():
         raise KeyError(name)
@@ -666,7 +667,7 @@ def remove_pack(name: str) -> dict[str, Any]:
     retained: list[dict[str, Any]] = []
     for plugin in manifest.get("plugins") or []:
         plugin = str(plugin)
-        if plugin in plugin_import.RESERVED_PLUGIN_NAMES:
+        if plugin in plugin_import.NON_REMOVABLE_PACK_NAMES:
             continue
         res = plugin_import.remove_plugin(plugin)
         archived += res["datastores_archived"]

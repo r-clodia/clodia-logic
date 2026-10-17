@@ -51,6 +51,18 @@ def _is_skill_dir(p: Path) -> bool:
     return p.is_dir() and (p / "SKILL.md").is_file()
 
 
+def bundled_pack_installed(pack: str) -> bool:
+    """Is the bundled first-party pack `pack` installed on this instance?
+
+    The image carries every bundled pack's skills under `catalogs/packs/`,
+    installed or not. base-pack is always there; the others only while their
+    manifest is in `DATA/packs/` — a removed pack's skills must not keep
+    reaching agents from the image (clodia-platform#562)."""
+    if pack in ("base-pack", "logic"):
+        return True
+    return (data_path("packs") / pack / "pack.yaml").is_file()
+
+
 def _logic_catalog_is_bundled() -> bool:
     try:
         LOGIC_CATALOG_DIR.resolve().relative_to(LOGIC_PACKS_ROOT.resolve())
@@ -161,7 +173,7 @@ def _resolve_skill_source(cap: str) -> Optional[Path]:
     if "/" in cap:
         pack, _, skill = cap.partition("/")
         logic_src = LOGIC_PACKS_ROOT / pack / "plugins" / pack / "skills" / skill
-        if _is_skill_dir(logic_src):
+        if bundled_pack_installed(pack) and _is_skill_dir(logic_src):
             return logic_src
         src = DATA_CATALOG_DIR / pack / skill
         return src if _is_skill_dir(src) else None
@@ -183,7 +195,8 @@ def _resolve_skill_source(cap: str) -> Optional[Path]:
         return src
     if _logic_catalog_is_bundled() and LOGIC_PACKS_ROOT.is_dir():
         for packdir in sorted(LOGIC_PACKS_ROOT.iterdir()):
-            if not packdir.is_dir() or packdir.name == "base-pack":
+            if not packdir.is_dir() or packdir.name == "base-pack" or \
+                    not bundled_pack_installed(packdir.name):
                 continue
             plugin_skills = packdir / "plugins" / packdir.name / "skills"
             cand = plugin_skills / cap
@@ -219,7 +232,8 @@ def _all_skill_names() -> list[str]:
                 _add(d.name)
     if _logic_catalog_is_bundled() and LOGIC_PACKS_ROOT.is_dir():
         for packdir in sorted(LOGIC_PACKS_ROOT.iterdir()):
-            if not packdir.is_dir() or packdir.name == "base-pack":
+            if not packdir.is_dir() or packdir.name == "base-pack" or \
+                    not bundled_pack_installed(packdir.name):
                 continue
             plugin_skills = packdir / "plugins" / packdir.name / "skills"
             if plugin_skills.is_dir():
@@ -237,7 +251,7 @@ def _pack_skill_names(pack: str) -> list[str]:
     if pack == "logic":
         pack = "base-pack"
     logic_pack_skills = LOGIC_PACKS_ROOT / pack / "plugins" / pack / "skills"
-    if logic_pack_skills.is_dir():
+    if bundled_pack_installed(pack) and logic_pack_skills.is_dir():
         for d in sorted(logic_pack_skills.iterdir()):
             if _is_skill_dir(d):
                 out.append(d.name if pack == "base-pack" else f"{pack}/{d.name}")

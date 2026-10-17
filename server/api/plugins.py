@@ -39,7 +39,7 @@ from pydantic import BaseModel
 
 from ..config import workspace_path
 from . import catalog, gateway_pdp, pack_deprovision, pack_mcp_mount, plugin_import
-from .plugin_import import RESERVED_PLUGIN_NAMES
+from .plugin_import import NON_REMOVABLE_PACK_NAMES
 
 LOG = logging.getLogger("agent-server.api.plugins")
 router = APIRouter()
@@ -171,7 +171,8 @@ def _collect_plugins() -> dict[str, dict[str, Any]]:
         bundled_logic = False
     if bundled_logic and logic_packs_root.is_dir():
         for packdir in sorted(logic_packs_root.iterdir()):
-            if not packdir.is_dir():
+            # A removed bundled pack is not listed from the image (#562).
+            if not packdir.is_dir() or not catalog.bundled_pack_installed(packdir.name):
                 continue
             plugin_name = packdir.name
             skills_dir = packdir / "plugins" / plugin_name / "skills"
@@ -424,7 +425,7 @@ async def delete_plugin(name: str, request: Request):
     principal = await gateway_pdp.require_authz_async(request, "mcp.remove")  # admin-only
     if not catalog._NAME_RE.fullmatch(name):
         return JSONResponse(status_code=400, content={"error": "nome non valido"})
-    if name in RESERVED_PLUGIN_NAMES:
+    if name in NON_REMOVABLE_PACK_NAMES:
         return JSONResponse(
             status_code=403, content={"error": f"'{name}' è un plugin nativo, non rimovibile"})
     # Snapshot prima della rimozione: i manifest sono la sola fonte di ciò che
