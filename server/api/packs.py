@@ -936,6 +936,35 @@ def _pack_plugins_of(name: str) -> list[str]:
     return [str(p) for p in (m.get("plugins") or [])]
 
 
+def _own_mounted(pack: str, principal: str) -> set[str]:
+    """Backends mounted in the gateway and stamped as `pack`'s (`mcp.list`).
+    Unreadable → empty: nothing is unmounted rather than the wrong thing."""
+    try:
+        status, data = gateway_pdp.gw_tool("mcp.list", {}, principal)
+    except Exception:  # noqa: BLE001
+        return set()
+    if status != 200:
+        return set()
+    res = (data or {}).get("result") if isinstance(data, dict) else None
+    if isinstance(res, str):
+        try:
+            import json as _json
+            res = _json.loads(res)
+        except Exception:  # noqa: BLE001
+            return set()
+    rows = (res or {}).get("mcp_backends") or [] if isinstance(res, dict) else []
+    return {str(r.get("name")) for r in rows
+            if isinstance(r, dict) and str(r.get("pack") or "") == pack}
+
+
+def _declared_configs(pack: str) -> dict[str, Any]:
+    """`{server: config}` declared by the pack's plugins (their plugin.yaml)."""
+    out: dict[str, Any] = {}
+    for plugin in _pack_plugins_of(pack):
+        out.update(pack_mcp_mount._manifest_mcp(plugin))
+    return out
+
+
 async def _restart_agents() -> int:
     try:
         from ..sdk_runtime.session import manager
@@ -982,16 +1011,23 @@ async def disable_pack(name: str, request: Request):
             pack_state.set_disabled(name, True)
         except ValueError as e:
             return JSONResponse(status_code=409, content={"error": str(e)})
-    servers = sorted({s for d in snap.values() for s in d.get("mcp_servers") or []})
+    declared = sorted({s for d in snap.values() for s in d.get("mcp_servers") or []})
     out: dict[str, Any] = {"disabled": name}
     if already:
         out["already"] = True
+    # Only what is REALLY mounted and stamped as THIS pack's: the gateway
+    # answers 200 to an unmount of a name that is not there, and a name alone
+    # may be an admin's own backend (review of clodia-logic#537).
+    own = await asyncio.to_thread(_own_mounted, name, principal)
+    servers = [s for s in declared if s in own]
     if servers:
+        configs = _declared_configs(name)
         rep = await asyncio.to_thread(pack_deprovision._unmount, servers, principal)
         out["mcp"] = rep
-        # What was really unmounted is what the enable mounts back — nothing
-        # the pack's own files could add.
-        pack_state.record_unmounted(name, rep.get("unmounted") or [])
+        # What was really unmounted, with the hash of its config, is what the
+        # enable may mount back — nothing the pack's files add or change later.
+        pack_state.record_unmounted(name, {
+            s: pack_state.config_hash(configs.get(s)) for s in (rep.get("unmounted") or [])})
         if rep.get("failed"):
             out["warning"] = ("alcuni server MCP del pack non sono stati smontati: "
                               "ripeti Disattiva per ritentare")
@@ -1027,7 +1063,12 @@ async def enable_pack(name: str, request: Request):
     # Mount back ONLY what the disable unmounted (recorded in the agent-server's
     # state, not in the pack's files): a third-party pack whose servers were
     # still `pending` at import does not get them mounted by disable+enable.
-    back = pack_state.take_unmounted(name)
+    recorded = pack_state.take_unmounted(name)
+    configs = _declared_configs(name)
+    # Same config as when it was unmounted: a re-import while disabled that
+    # changed a server's command does not get it mounted without review.
+    back = {s for s, h in recorded.items() if pack_state.config_hash(configs.get(s)) == h}
+    changed = sorted(set(recorded) - back)
     mount: dict[str, Any] = {"pack": name,
                              "plugins": [{"plugin": p} for p in _pack_plugins_of(name)]}
     if back:
@@ -1036,6 +1077,11 @@ async def enable_pack(name: str, request: Request):
     result: dict[str, Any] = {"enabled": name}
     if mount.get("mcp_mount"):
         result["mcp_mount"] = mount["mcp_mount"]
+    if changed:
+        result["mcp_pending"] = changed
+        result["warning"] = ("server MCP cambiati mentre il pack era disattivato: non "
+                             "rimontati, montali da Tools dopo averli rivisti: "
+                             + ", ".join(changed))
     result["agents_restarted"] = await _restart_agents()
     return result
 

@@ -99,6 +99,7 @@ def _atomic_write(path: Path, text: str) -> None:
     try:
         with os.fdopen(fd, "w", encoding="utf-8") as f:
             f.write(text)
+        os.chmod(tmp, 0o644)      # mkstemp makes 0600; the gateway reads these
         os.replace(tmp, path)
     except BaseException:
         Path(tmp).unlink(missing_ok=True)
@@ -135,22 +136,31 @@ def _state_path(pack: str) -> Path:
     return data_path("packs-state") / f"{pack}.json"
 
 
-def record_unmounted(pack: str, servers: list[str]) -> None:
+def record_unmounted(pack: str, servers: dict[str, str]) -> None:
+    """`servers`: `{name: sha256 of its config}` as it was when unmounted."""
     p = _state_path(pack)
     p.parent.mkdir(parents=True, exist_ok=True)
     try:
-        prev = set(json.loads(p.read_text(encoding="utf-8")).get("unmounted") or [])
+        prev = json.loads(p.read_text(encoding="utf-8")).get("unmounted") or {}
+        prev = prev if isinstance(prev, dict) else {}
     except Exception:  # noqa: BLE001
-        prev = set()
-    _atomic_write(p, json.dumps({"unmounted": sorted(prev | set(servers))}))
+        prev = {}
+    _atomic_write(p, json.dumps({"unmounted": {**prev, **servers}}, sort_keys=True))
 
 
-def take_unmounted(pack: str) -> set[str]:
-    """The servers to mount back, consumed."""
+def take_unmounted(pack: str) -> dict[str, str]:
+    """The servers to mount back with their config hash, consumed."""
     p = _state_path(pack)
     try:
-        out = set(json.loads(p.read_text(encoding="utf-8")).get("unmounted") or [])
+        out = json.loads(p.read_text(encoding="utf-8")).get("unmounted") or {}
+        out = out if isinstance(out, dict) else {}
     except Exception:  # noqa: BLE001
-        out = set()
+        out = {}
     p.unlink(missing_ok=True)
-    return out
+    return {str(k): str(v) for k, v in out.items()}
+
+
+def config_hash(config: Any) -> str:
+    import hashlib
+    return hashlib.sha256(json.dumps(config, sort_keys=True, default=str)
+                          .encode("utf-8")).hexdigest()
