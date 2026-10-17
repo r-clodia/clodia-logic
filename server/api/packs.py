@@ -703,14 +703,14 @@ async def _refresh_gateway_components(result: dict, principal: str) -> None:
         return
     import httpx
     base = gateway_pdp._gw_base()
-    async with httpx.AsyncClient(timeout=180.0) as client:
+    async with httpx.AsyncClient(timeout=httpx.Timeout(180.0, connect=5.0)) as client:
         for nm in packs:
             entry = _gc_entry(result, nm) or {}
             try:
                 r = await client.post(
                     f"{base}/internal/components/{nm}/refresh", json={},
                     headers={"Authorization": f"Bearer {gateway_pdp._token(principal)}"})
-            except httpx.HTTPError as e:
+            except Exception as e:  # noqa: BLE001 — never fails the Update
                 LOG.warning("component refresh %s: %s", nm, type(e).__name__)
                 entry["refreshed"] = {"ok": False, "reason": f"gateway unreachable ({type(e).__name__})"}
                 continue
@@ -718,10 +718,20 @@ async def _refresh_gateway_components(result: dict, principal: str) -> None:
                 LOG.warning("component refresh %s: HTTP %s", nm, r.status_code)
                 entry["refreshed"] = {"ok": False, "reason": f"gateway answered {r.status_code}"}
                 continue
-            rows = (r.json() or {}).get("components") or []
-            entry["refreshed"] = {"ok": True, "components": [
-                {k: row.get(k) for k in ("id", "status", "reason", "commit") if k in row}
-                for row in rows if isinstance(row, dict)]}
+            try:
+                body = r.json()
+                rows = [row for row in (body.get("components") or []) if isinstance(row, dict)]
+            except Exception:  # noqa: BLE001
+                entry["refreshed"] = {"ok": False, "reason": "unreadable gateway answer"}
+                continue
+            # A 200 is not a moved pin: a failed or refused fetch keeps the old
+            # commit and says why in `reason`. Only loaded rows without a
+            # reason are a success.
+            entry["refreshed"] = {
+                "ok": bool(rows) and all(row.get("status") == "loaded" and not row.get("reason")
+                                         for row in rows),
+                "components": [{k: row.get(k) for k in ("id", "status", "reason", "commit") if k in row}
+                               for row in rows]}
 
 
 def _gc_entry(result: dict, pack: str) -> dict | None:

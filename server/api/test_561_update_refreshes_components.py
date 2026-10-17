@@ -14,7 +14,8 @@ Measured here:
 2. an agent principal, or a human who is not admin, sends nothing and the
    result says why;
 3. a pack without gateway components sends nothing;
-4. a gateway refusal or an unreachable gateway does not fail the Update;
+4. a gateway refusal, an unreachable gateway or an unreadable answer does
+   not fail the Update, and a 200 that kept the old pin is not a success;
 5. a bundle refreshes each of its packs that declares components;
 6. `_perform_update` actually calls it.
 """
@@ -42,15 +43,19 @@ class _Gateway:
     def __init__(self, status: int = 200, fail: bool = False) -> None:
         self.status = status
         self.fail = fail
+        self.reason = ""
+        self.raw: bytes | None = None
         self.calls: list[httpx.Request] = []
 
     def handler(self, request: httpx.Request) -> httpx.Response:
         self.calls.append(request)
         if self.fail:
             raise httpx.ConnectError("down", request=request)
+        if self.raw is not None:
+            return httpx.Response(self.status, content=self.raw)
         pack = request.url.path.split("/")[3]
         return httpx.Response(self.status, json={"components": [
-            {"pack": pack, "id": "google", "status": "loaded", "reason": "",
+            {"pack": pack, "id": "google", "status": "loaded", "reason": self.reason,
              "commit": "abc123", "verbs": ["x"]}]})
 
 
@@ -109,6 +114,22 @@ class RefreshTests(unittest.IsolatedAsyncioTestCase):
         await packs._refresh_gateway_components(result, "davide")
         self.assertFalse(result["gateway_components"]["refreshed"]["ok"])
         self.assertIn("unreachable", result["gateway_components"]["refreshed"]["reason"])
+
+    async def test_a_200_that_kept_the_old_pin_is_not_a_success(self) -> None:
+        self.gw.reason = "fetch: upstream unreachable"
+        result = _single()
+        await packs._refresh_gateway_components(result, "davide")
+        self.assertFalse(result["gateway_components"]["refreshed"]["ok"])
+        self.assertEqual(result["gateway_components"]["refreshed"]["components"][0]["reason"],
+                         "fetch: upstream unreachable")
+
+    async def test_an_unreadable_answer_does_not_fail_the_update(self) -> None:
+        for raw in (b"not json", b"[1, 2]"):
+            self.gw.raw = raw
+            result = _single()
+            await packs._refresh_gateway_components(result, "davide")
+            self.assertEqual(result["gateway_components"]["refreshed"],
+                             {"ok": False, "reason": "unreadable gateway answer"})
 
     async def test_a_bundle_refreshes_each_declaring_pack(self) -> None:
         result = {"kind": "packs", "packs": [

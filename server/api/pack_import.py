@@ -487,14 +487,15 @@ def install_pack_from_root(root: Path, *, source: str,
                    if str(c.get("target") or "") == "gateway"]
     if gateway_ids:
         # The gateway pins a component on first sight and moves the pin only on
-        # a refresh, which a HUMAN admin asks for (never this service): the
-        # Update itself cannot do it, so it says what is left to do.
+        # a refresh a HUMAN admin asks for. A human admin's Update asks it, with
+        # that human's on-behalf token (`packs._refresh_gateway_components`,
+        # clodia-platform#561); an import does not, and says what is left to do.
         out["gateway_components"] = {
             "declared": gateway_ids,
             "refresh": f"POST /internal/components/{pack}/refresh",
             "note": ("the gateway fetches this pack's gateway component itself; "
-                     "after an Update a human admin asks it to move to the new "
-                     "upstream commit with the refresh above")}
+                     "a human admin's Update moves it to the new upstream commit, "
+                     "otherwise a human admin asks the refresh above")}
     _avvisi = [f"{a['name']}: {a['warning']}" for a in agents if a.get("warning")]
     # Inert connector declarations go into `warnings` too: `out["connectors"]`
     # is detail, `warnings` is what the person installing actually sees.
