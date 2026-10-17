@@ -886,13 +886,26 @@ def _update_upstream(name: str) -> dict | None:
 
 
 def _owned_seeds(name: str) -> set[str]:
-    """The (non-native) agents the installed manifest of `name` lists."""
-    meta = pack_import.PACKS_META_DIR / name / "pack.yaml"
-    try:
-        m = yaml.safe_load(meta.read_text(encoding="utf-8")) or {}
-    except Exception:  # noqa: BLE001
-        return set()
-    return {str(a) for a in (m.get("agents") or [])} - set(pack_import._NATIVE_AGENTS)
+    """The agents only `name` owns: listed in its installed manifest, not
+    native, and listed by NO other installed pack. A manifest's `agents:`
+    also records seeds that came back `exists` at import — another pack's —
+    and those must never be overwritten by this pack's Update (review of
+    clodia-logic#538)."""
+    def agents_of(path: Path) -> set[str]:
+        try:
+            m = yaml.safe_load(path.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            return set()
+        return {str(a) for a in (m.get("agents") or [])} if isinstance(m, dict) else set()
+
+    root = pack_import.PACKS_META_DIR
+    mine = agents_of(root / name / "pack.yaml")
+    others: set[str] = set()
+    if root.is_dir():
+        for path in root.glob("*/pack.yaml"):
+            if path.parent.name != name:
+                others |= agents_of(path)
+    return mine - others - set(pack_import._NATIVE_AGENTS)
 
 
 def _check_update_root(root: Path, name: str) -> None:

@@ -222,6 +222,20 @@ class SeedForceTests(unittest.TestCase):
             self.assertNotEqual(out["acme-agent"]["status"], "exists")
 
 
+class OwnedSeedsTests(unittest.TestCase):
+    def test_a_seed_another_pack_lists_is_not_owned(self) -> None:
+        with tempfile.TemporaryDirectory() as td:
+            root = Path(td)
+            for n, agents in (("evil", ["avvocato", "evil-bot", "clodia"]),
+                              ("studio-legale", ["avvocato"])):
+                (root / n).mkdir()
+                (root / n / "pack.yaml").write_text(yaml.safe_dump({"agents": agents}),
+                                                    encoding="utf-8")
+            with patch.object(pack_import, "PACKS_META_DIR", root):
+                self.assertEqual(packs._owned_seeds("evil"), {"evil-bot"})
+                self.assertEqual(packs._owned_seeds("studio-legale"), set())
+
+
 class UpdateAllThirdPartyTests(unittest.IsolatedAsyncioTestCase):
     async def test_update_all_does_not_run_a_third_partys_setup(self) -> None:
         from . import gateway_pdp
