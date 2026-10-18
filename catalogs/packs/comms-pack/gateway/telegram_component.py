@@ -20,8 +20,12 @@ here, and on `connectors: {telegram: pack}`:
 - the state (offset, per-chat queues, leases) is this component's private file
   on the gateway's volume (`host.state_path`).
 
-On `native` the component stays pinned on standby and the gateway's own
-Telegram code serves.
+From 2.2.0 two more services serve the gateway's own uses of the bot: the
+setup card's status (`telegram_status`) and the owner notification of a
+pending gate (`telegram_notify`) — the gateway keeps no Telegram client.
+
+On `native` the component stays pinned on standby; from clodia-tools 2.119.0
+nothing serves Telegram there (the native code is gone).
 """
 from __future__ import annotations
 
@@ -87,3 +91,22 @@ def register(host: Any) -> None:
             _handler(host, core.DISPATCH[name]))
     host.register_service("telegram_updates", lambda arguments: core.updates(dict(arguments or {})))
     host.register_service("telegram_download", lambda arguments: core.download(dict(arguments or {})))
+    # The gateway's own two uses of the bot (comms-pack 2.2.0, #522), so that
+    # it keeps no Telegram client of its own: the setup card's status, and the
+    # owner notification of a pending gate. Services, never agent verbs.
+    host.register_service("telegram_status", lambda arguments=None: core.status({}))
+    host.register_service("telegram_notify", lambda arguments: notify(dict(arguments or {})))
+
+
+def notify(a: dict) -> dict:
+    """A plain message from the GATEWAY to a numeric chat id (a person's
+    Telegram id from their agent card): no lease, no thread, no resolution of
+    names or of the current room — the gateway names the recipient."""
+    chat = str(a.get("chat_id") or "").strip()
+    if not chat.lstrip("-").isdigit():
+        raise ValueError("telegram_notify: chat_id must be a numeric Telegram id")
+    text = str(a.get("text") or "")
+    if not text.strip():
+        raise ValueError("telegram_notify: empty text")
+    res = core.api_call(core._token(), "sendMessage", {"chat_id": int(chat), "text": text})
+    return {"ok": True, "message_id": (res or {}).get("message_id")}

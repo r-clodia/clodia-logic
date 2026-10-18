@@ -89,7 +89,8 @@ class TelegramComponentTests(unittest.TestCase):
             "telegram.inbox", "telegram.lease_acquire", "telegram.poll", "telegram.send",
             "telegram.send_file", "telegram.lease_release", "telegram.roster",
             "telegram.status"})
-        self.assertEqual(set(self.host.services), {"telegram_updates", "telegram_download"})
+        self.assertEqual(set(self.host.services), {"telegram_updates", "telegram_download",
+                                                   "telegram_status", "telegram_notify"})
         self.assertNotIn("telegram.updates", self.host.verbs)   # never an agent verb
 
     def test_token_from_the_vault_field_and_state_from_the_host(self) -> None:
@@ -113,6 +114,41 @@ class TelegramComponentTests(unittest.TestCase):
         self.assertFalse(self.core.status({})["configured"])
         with self.assertRaises(RuntimeError):
             self.core._token()
+
+
+class GatewayServicesTests(unittest.TestCase):
+    """The gateway's own uses of the bot (comms-pack 2.2.0, #522)."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.mod = _load()
+        self.addCleanup(lambda: [sys.modules.pop(k) for k in list(sys.modules)
+                                 if k == PKG or k.startswith(PKG + ".")])
+        self.host = FakeHost(tmp.name)
+        self.mod.register(self.host)
+        self.core = sys.modules[f"{PKG}.telegram_core"]
+        self.calls = []
+        self.core.api_call = lambda token, method, params=None, timeout=15: (
+            self.calls.append((token, method, params)) or {"message_id": 7})
+
+    def test_status_never_carries_the_token(self) -> None:
+        st = self.host.services["telegram_status"]()
+        self.assertTrue(st["configured"])
+        self.assertNotIn("123:ABC", repr(st))
+
+    def test_notify_sends_to_the_numeric_chat_the_gateway_names(self) -> None:
+        out = self.host.services["telegram_notify"]({"chat_id": "76632169", "text": "gate"})
+        self.assertEqual(out, {"ok": True, "message_id": 7})
+        self.assertEqual(self.calls, [("123:ABC", "sendMessage",
+                                       {"chat_id": 76632169, "text": "gate"})])
+
+    def test_notify_refuses_names_and_empty_text(self) -> None:
+        for args in ({"chat_id": "Clodia Sviluppo", "text": "x"}, {"chat_id": "", "text": "x"},
+                     {"chat_id": "1", "text": "  "}):
+            with self.subTest(args=args), self.assertRaises(ValueError):
+                self.host.services["telegram_notify"](args)
+        self.assertEqual(self.calls, [])
 
 
 class CommsComponentTests(unittest.TestCase):

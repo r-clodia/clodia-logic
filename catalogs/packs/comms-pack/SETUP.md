@@ -52,6 +52,10 @@ Telegram, as before: the token stays in the gateway's vault
         https://<gateway>/internal/components/comms-pack/refresh
    ```
 
+**From 2.2.0** the component also offers the gateway two services,
+`telegram_status` and `telegram_notify`; clodia-tools ≥ 2.119.0 relies on them
+(it has no Telegram client of its own any more). Update comms-pack first.
+
 ## 4. Turning the connectors on
 
 Both are off until the instance profile switches them:
