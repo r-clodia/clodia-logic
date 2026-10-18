@@ -289,6 +289,7 @@ def list_emails(account, folder="INBOX", limit=10):
                     "to": decode_mime_header(msg["To"]),
                     "subject": decode_mime_header(msg["Subject"]),
                     "date": msg["Date"],
+                    "message_id": msg["Message-ID"],
                 })
     imap.logout()
     return result
@@ -363,6 +364,7 @@ def search_emails(account, query, folder="INBOX", limit=20):
                     "to": decode_mime_header(msg["To"]),
                     "subject": decode_mime_header(msg["Subject"]),
                     "date": msg["Date"],
+                    "message_id": msg["Message-ID"],
                 })
     imap.logout()
     return result

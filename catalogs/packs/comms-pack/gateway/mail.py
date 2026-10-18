@@ -690,6 +690,87 @@ def get_attachment_bytes(email_id: str, filename: str, account: str = "demo",
                  "content_type": r.get("content_type")}
 
 
+# ── the courier (#531): envelopes and attachments, never the body ─────────
+
+def envelope_key(row: dict) -> str:
+    """A stable key for one message: its Message-ID when it has one, else its
+    date|from|subject. IMAP sequence ids shift when a message is deleted; the
+    courier remembers what it delivered by this."""
+    import hashlib
+    mid = str(row.get("message_id") or "").strip()
+    raw = f"mid|{mid}" if mid else "|".join(
+        str(row.get(k) or "") for k in ("date", "from", "subject"))
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:24]
+
+
+def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
+                      skip: list | None = None) -> dict:
+    """The newest messages of a mailbox as ENVELOPES — id, key, from, to,
+    subject, date, Message-ID, attachment names — for the gateway's courier
+    (clodia-platform#531). Never the body: a message is read here only to
+    learn its attachments, and its text is dropped before returning.
+
+    Runs inside the ROOM's claims (the gateway's courier route sets them): the
+    mailbox must be in the room's `inbox:` list (`_secrets_env`), and on a
+    strict room only declared senders pass (#503), the others counted. `skip`
+    lists keys the courier already delivered: those are not read again."""
+    known = {str(k) for k in (skip or [])}
+    limit = max(1, min(int(limit), 50))
+    rows = _run_json(account, ["list", "--folder", folder, "--limit", str(limit)])
+    tolti = 0
+    scope = strict_scope()
+    if scope:
+        rows, tolti = _filter_by_sender(rows, scope, "courier.mail")
+    out = []
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict):
+            continue
+        key = envelope_key(row)
+        if key in known:
+            continue
+        full = _run_json(account, ["read", str(row.get("id")), "--folder", folder])
+        if not isinstance(full, dict):
+            continue
+        # IMAP ids are sequence numbers: between the listing and this read the
+        # same id can name ANOTHER message (an expunge in between). Only the
+        # message that was listed — same key — goes out, and on a strict room
+        # its sender is checked again on what was actually read.
+        if envelope_key(full) != key:
+            continue
+        if scope and not _sender_vetted(str(full.get("from") or ""), scope):
+            _record_ingress("courier.mail", "filter")
+            tolti += 1
+            continue
+        out.append({"id": str(row.get("id")), "key": key,
+                    "from": full.get("from"), "to": full.get("to"),
+                    "subject": full.get("subject"), "date": full.get("date"),
+                    "message_id": full.get("message_id"),
+                    "attachments": [str(a) for a in (full.get("attachments") or [])]})
+    return {"account": account, "folder": folder, "envelopes": out,
+            "withheld": tolti}
+
+
+def courier_attachment(account: str, email_id: str, filename: str,
+                       folder: str = "INBOX") -> dict:
+    """The decoded bytes (base64 for transport) of one attachment, for the
+    courier to store in the topic's files byte-identical (#531). Same room
+    rules as `courier_envelopes`: mailbox in the room's `inbox:` list, and on
+    a strict room a declared sender."""
+    if not filename:
+        raise ValueError("'filename' must be provided")
+    scope = strict_scope()
+    if scope:
+        _assert_sender_vetted("courier.mail", account, email_id, folder, scope)
+    r = _run_json(account, ["get-attachment", str(email_id), "--filename", filename,
+                            "--folder", folder])
+    if not isinstance(r, dict) or not r.get("data"):
+        raise ValueError(f"allegato '{filename}' non trovato nel messaggio {email_id}")
+    raw = base64.b64decode(r["data"])
+    return {"filename": safe_attachment_name(r.get("filename") or filename),
+            "content_type": r.get("content_type"), "size": len(raw),
+            "content_b64": base64.b64encode(raw).decode("ascii")}
+
+
 def search(query: str, account: str = "demo", folder: str = "INBOX", limit: int = 20) -> dict:
     """Cerca messaggi via query IMAP (es. FROM \"x@y.it\")."""
     tool_allowed("email.search")

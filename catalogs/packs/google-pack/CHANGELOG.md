@@ -4,6 +4,11 @@ Changelog of the `google-pack` pack ([Keep a Changelog](https://keepachangelog.c
 format, SemVer). The newest version is at the top; `pack.yaml` holds the current
 one.
 
+## [2.1.3] — 2026-10-18
+- The bundled Gmail client's `list`/`search` rows carry the `Message-ID`
+  (clodia-platform#531), as comms-pack's copy does: the two clients stay
+  identical.
+
 ## [2.1.2] — 2026-10-18
 - **TLS verified** (clodia-platform#556, security) and **non-ASCII attachment
   names** (clodia-platform#557) in the bundled Gmail client, as in the
