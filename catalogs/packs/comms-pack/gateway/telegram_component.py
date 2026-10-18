@@ -77,8 +77,31 @@ def register(host: Any) -> None:
     def token() -> str:
         return str(bundle().get("token") or "")
 
+    me: dict = {}
+
     def bot_username() -> str:
-        return str(bundle().get("bot_username") or "")
+        """The bot's @username: stored with the credential when the old
+        gateway handler wrote it, else asked to Telegram (`getMe`) and kept
+        for an hour (#522: the generic connect route stores the token only).
+        A failure is retried after a minute, never cached as the answer."""
+        stored = str(bundle().get("bot_username") or "")
+        if stored:
+            return stored
+        now = time.monotonic()
+        if me.get("until", 0.0) > now:
+            return me["name"]
+        try:
+            name = str((core.api_call(token(), "getMe") or {}).get("username") or "")
+        except Exception:  # noqa: BLE001 — unknown for now; never the token in a message
+            name = ""
+        me.update(name=name, until=now + (3600.0 if name else 60.0))
+        return name
+
+    def status(_arguments=None) -> dict:
+        st = core.status({})
+        if not st.get("bot_username") and st.get("configured"):
+            st["bot_username"] = bot_username() or None
+        return st
 
     core.TOKEN_SOURCE = token
     core.BOT_USERNAME_SOURCE = bot_username
@@ -95,7 +118,7 @@ def register(host: Any) -> None:
     # The gateway's own two uses of the bot (comms-pack 2.2.0, #522), so that
     # it keeps no Telegram client of its own: the setup card's status, and the
     # owner notification of a pending gate. Services, never agent verbs.
-    host.register_service("telegram_status", lambda arguments=None: core.status({}))
+    host.register_service("telegram_status", status)
     host.register_service("telegram_notify", lambda arguments: notify(dict(arguments or {})))
     # The ingress migration's read of a chat's administrators (#366/#522).
     host.register_service("telegram_chat_admins",

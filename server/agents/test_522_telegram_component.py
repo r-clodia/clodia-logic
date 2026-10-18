@@ -133,6 +133,16 @@ class GatewayServicesTests(unittest.TestCase):
         self.core.api_call = lambda token, method, params=None, timeout=15: (
             self.calls.append((token, method, params)) or {"message_id": 7})
 
+    def test_a_token_only_credential_gets_its_username_from_getme(self) -> None:
+        """The generic connect route stores `{token}` only: the component asks
+        Telegram once and remembers (#522 review)."""
+        self.host.creds.bundle = {"token": "123:ABC"}
+        self.core.api_call = lambda token, method, params=None, timeout=15: (
+            self.calls.append((token, method)) or {"username": "clodia_bot"})
+        self.assertEqual(self.host.services["telegram_status"]()["bot_username"], "clodia_bot")
+        self.assertEqual(self.core.BOT_USERNAME_SOURCE(), "clodia_bot")
+        self.assertEqual(self.calls, [("123:ABC", "getMe")])          # asked once
+
     def test_status_never_carries_the_token(self) -> None:
         st = self.host.services["telegram_status"]()
         self.assertTrue(st["configured"])
