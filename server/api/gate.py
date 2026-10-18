@@ -533,8 +533,12 @@ async def approve(request: Request):
                                  "non so in quale stanza ricordarlo: la richiesta "
                                  "non dichiara un canale")}
         else:
+            # The direction is the gate's own (`egress:…` / `ingress:…`): a
+            # source approved «always» goes into the INGRESS list, not the
+            # egress one (clodia-platform#569).
+            _dir = verb.split(":", 1)[0] if verb.startswith(("egress:", "ingress:")) else "egress"
             rr = _gw("POST", "/allow", principal,
-                     {"verb": verb, "direction": "egress", "scope": dove})
+                     {"verb": verb, "direction": _dir, "scope": dove})
             # `remembered` si scrive SEMPRE, anche in caso di errore. Lasciarlo
             # assente farebbe funzionare i controlli — una chiave mancante è
             # falsa — al prezzo di un corpo in cui «non ricordato» è
