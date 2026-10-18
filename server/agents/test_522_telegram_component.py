@@ -115,5 +115,28 @@ class TelegramComponentTests(unittest.TestCase):
             self.core._token()
 
 
+class EveryVerbIsClassifiedTests(unittest.TestCase):
+    """The gateway serves a COMPONENT verb only when the manifest classifies
+    it (egress/source mapping, taint, or `unmapped`): an unclassified one is
+    denied (review of clodia-logic#542 — five of eight were)."""
+
+    def test_each_agent_verb_is_classified_and_reading_ones_taint(self) -> None:
+        import yaml
+        doc = yaml.safe_load((GATEWAY.parent / "pack.yaml").read_text(encoding="utf-8"))
+        conn = next(c for c in doc["connectors"] if c["id"] == "telegram")
+        mapped = {str(v.get("verb")) for v in conn.get("verbs") or [] if isinstance(v, dict)}
+        taint = set(conn.get("taint") or [])
+        unmapped = set(conn.get("unmapped") or [])
+        mod = _load()
+        try:
+            agent = {f"telegram.{n}" for n in mod.AGENT_VERBS}
+        finally:
+            for k in [k for k in sys.modules if k == PKG or k.startswith(PKG + ".")]:
+                sys.modules.pop(k)
+        self.assertEqual(agent - (mapped | taint | unmapped), set())
+        # the verbs that return third-party text taint the channel
+        self.assertLessEqual({"telegram.inbox", "telegram.poll", "telegram.roster"}, taint)
+
+
 if __name__ == "__main__":
     unittest.main()

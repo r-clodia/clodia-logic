@@ -129,7 +129,7 @@ class IlPackPortaIlCodiceTests(unittest.TestCase):
         testo = ENTRYPOINT.read_text(encoding="utf-8")
         self.assertIn(f'CREDENTIAL = "{voce}"', testo)
         self.assertIn("token", campi)
-        self.assertIn('bundle.get("token")', testo)
+        self.assertIn('bundle().get("token")', testo)
         comp = next(c for c in _manifest()["components"] if c["id"] == "telegram")
         self.assertEqual(comp["credentials"], [voce])
 

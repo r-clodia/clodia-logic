@@ -49,14 +49,33 @@ def _handler(host: Any, fn):
     return handle
 
 
+#: How long the bundle read from the vault is reused: every read is an audit
+#: record, and the relay long-polls every ~25 s.
+_BUNDLE_TTL_S = 300.0
+
+
 def register(host: Any) -> None:
+    import time
+
     creds = host.credentials(CREDENTIAL)
+    cache: dict = {}
+
+    def bundle() -> dict:
+        now = time.monotonic()
+        if cache.get("until", 0.0) > now:
+            return cache["bundle"]
+        b = creds.read_internal(CREDENTIAL) or {}
+        cache.update(bundle=b, until=now + _BUNDLE_TTL_S)
+        return b
 
     def token() -> str:
-        bundle = creds.read_internal(CREDENTIAL) or {}
-        return str(bundle.get("token") or "")
+        return str(bundle().get("token") or "")
+
+    def bot_username() -> str:
+        return str(bundle().get("bot_username") or "")
 
     core.TOKEN_SOURCE = token
+    core.BOT_USERNAME_SOURCE = bot_username
     core.STATE_FILE = host.state_path("telegram-state.json")
     specs = {s["name"]: s for s in core.TOOL_SPECS}
     for name in AGENT_VERBS:

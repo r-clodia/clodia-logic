@@ -73,6 +73,10 @@ __version__ = "2.0.0"
 #: Set by `telegram_component.register(host)` (see the module docstring).
 TOKEN_SOURCE: Optional[Callable[[], str]] = None
 STATE_FILE: Optional[str] = None
+#: The bot's @username, stored with the token when the owner connected it: a
+#: reply to the bot counts as a mention, and the relay recognises a
+#: `/start@bot <token>` join (#549). Unset → the one in the state, if any.
+BOT_USERNAME_SOURCE: Optional[Callable[[], str]] = None
 
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 _DEFAULT_LEASE_MIN = 10
@@ -691,6 +695,13 @@ def _absorb_updates(got) -> dict:
     with _LOCK:
         st = _load_state()
         bot_uname = st.get("bot_username")
+        if not bot_uname and BOT_USERNAME_SOURCE is not None:
+            try:
+                bot_uname = BOT_USERNAME_SOURCE() or None
+            except Exception:  # noqa: BLE001 — unknown: the join check stays lenient
+                bot_uname = None
+            if bot_uname:
+                st["bot_username"] = bot_uname
         for upd in got or []:
             st["offset"] = max(st["offset"], int(upd["update_id"]) + 1)
             msg = upd.get("message") or upd.get("edited_message")

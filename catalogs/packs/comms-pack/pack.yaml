@@ -132,6 +132,14 @@ connectors:
       - telegram.inbox
       - telegram.receive
       - telegram.pull
+      # 2.1.0 (#522/#558): as a gateway component these are no longer proxied
+      # backend verbs, which tainted by default. `poll` returns the messages
+      # themselves, `roster` names and handles written by third parties.
+      - telegram.poll
+      - telegram.roster
+    # 2.1.0: no destination, no source, nothing third-party read — classified
+    # so the gateway serves them as component verbs (unclassified = denied).
+    unmapped: [telegram.lease_acquire, telegram.lease_release, telegram.status]
     # Il bottone del topic: oggi `topics_api.telegram_link`, che fa i DUE passi
     # insieme — whitelist `tg:<chat_id>` nelle due direzioni e binding del
     # canale. `binding: channel` è il secondo passo; senza, il messaggero non
