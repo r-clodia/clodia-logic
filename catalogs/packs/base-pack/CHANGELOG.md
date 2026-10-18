@@ -10,6 +10,13 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.39.0] — 2026-10-18
+- **`topic-files`: the Mac-shared folder is `shared/`** (clodia-platform#571).
+  The skill documents the new mount (one per topic, `ClodiaShared/<codename>/`
+  on the Mac), warns that `shared/` is a topic path and not the agent-server's
+  `/shared` envelope directory, and that old `local/<codename>/` paths still
+  resolve but should be written in the new form. Needs clodia-tools ≥ 2.116.0.
+
 ## [7.38.0] — 2026-10-18
 - **clodia: web search on request, through a gate** (clodia-platform#570).
   `gated_native_tools: [WebSearch]` and the `native.consent` verb: when clodia
