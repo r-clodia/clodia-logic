@@ -16,7 +16,7 @@ import unittest
 from pathlib import Path
 
 CORE = (Path(__file__).resolve().parents[2] / "catalogs" / "packs" / "comms-pack"
-        / "plugins" / "comms-pack" / "mcp")
+        / "gateway")
 
 _CHILD = r"""
 import json, sys, time
@@ -49,7 +49,7 @@ class LeaseIsExclusiveAcrossProcessesTests(unittest.TestCase):
                       "last_preview": "", "type": "group"}}}))
             env = {**os.environ, "CLODIA_TELEGRAM_STATE": str(state),
                    "TELEGRAM_BOT_TOKEN": "x"}
-            procs = [subprocess.Popen([sys.executable, "-c", _CHILD, str(CORE),
+            procs = [subprocess.Popen([sys.executable, "-B", "-c", _CHILD, str(CORE),
                                        f"agent-{i}"], env=env,
                                       stdout=subprocess.PIPE, text=True)
                      for i in range(8)]

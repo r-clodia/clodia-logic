@@ -135,9 +135,10 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.0.1")
+        self.assertEqual(doc["version"], "2.1.0")
         self.assertIs(doc["first_party"], True)
-        (c,) = doc["components"]
+        # 2.1.0 adds Telegram's component (#522, test_522_telegram_component).
+        (c,) = [x for x in doc["components"] if x["id"] == "mail"]
         self.assertEqual(c, {
             "id": "mail", "target": "gateway",
             "source": {"repo": "r-clodia/clodia-logic",
@@ -153,8 +154,8 @@ class ComponentsBlockTests(unittest.TestCase):
 
 class PluginTests(unittest.TestCase):
     def test_no_transport_left(self) -> None:
-        mount = json.loads((PLUGIN / ".mcp.json").read_text(encoding="utf-8"))["mcpServers"]
-        self.assertEqual(sorted(mount), ["telegram"])
+        # 2.1.0: no MCP backend at all — Telegram is a gateway component too.
+        self.assertFalse((PLUGIN / ".mcp.json").exists())
         for gone in ("mail_transport_mcp.py", "mail_transport_core.py", "email_client.py"):
             self.assertFalse((PLUGIN / "mcp" / gone).exists(), gone)
 
