@@ -8,6 +8,14 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.1.1] — 2026-10-18
+- **One gateway component, `comms`, for mail and Telegram.** 2.1.0 declared
+  two and the gateway refused the second ("a pack has at most one 'target:
+  gateway' component"): Telegram stayed on the old backend. `comms_component`
+  registers each half only where its switch is on `pack`. **Needs
+  clodia-tools ≥ 2.115.1.** The component id changes (`mail` → `comms`): the
+  gateway pins the new one by itself after the Update.
+
 ## [2.1.0] — 2026-10-18
 - **Telegram runs in the gateway as a component of this pack**
   (clodia-platform#522/#558). The MCP backend `telegram` (a stdio process per

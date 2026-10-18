@@ -110,13 +110,11 @@ class IlPackPortaIlCodiceTests(unittest.TestCase):
         self.assertTrue(CORE_FILE.is_file(), CORE_FILE)
         self.assertTrue(ENTRYPOINT.is_file(), ENTRYPOINT)
         self.assertFalse(MCP_JSON.exists(), "il backend MCP `telegram` non c'è più")
-        comp = [c for c in (_manifest().get("components") or []) if c.get("id") == "telegram"]
-        self.assertEqual(len(comp), 1)
-        (c,) = comp
+        (c,) = _manifest().get("components") or []     # one per pack
         self.assertEqual(c["target"], "gateway")
-        self.assertEqual(c["entry"], "telegram_component")
-        self.assertEqual(c["connectors"], ["telegram"])
-        self.assertEqual(c["credentials"], ["telegram_bot_token"])
+        self.assertEqual(c["entry"], "comms_component")
+        self.assertIn("telegram", c["connectors"])
+        self.assertIn("telegram_bot_token", c["credentials"])
 
     def test_il_token_e_quello_dichiarato_dal_connettore(self) -> None:
         """The component reads the vault entry the connector declares, and
@@ -130,8 +128,8 @@ class IlPackPortaIlCodiceTests(unittest.TestCase):
         self.assertIn(f'CREDENTIAL = "{voce}"', testo)
         self.assertIn("token", campi)
         self.assertIn('bundle().get("token")', testo)
-        comp = next(c for c in _manifest()["components"] if c["id"] == "telegram")
-        self.assertEqual(comp["credentials"], [voce])
+        (comp,) = _manifest()["components"]
+        self.assertIn(voce, comp["credentials"])
 
     def test_ogni_verbo_promesso_dal_manifest_esiste_nel_server(self) -> None:
         """Il difetto silenzioso: una mappatura di egress su un verbo che

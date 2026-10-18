@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 2.1.0
+version: 2.1.1
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -24,42 +24,30 @@ plugins:
 #                 repository's default branch, pinned by commit, and imported
 #                 inside the reference monitor. Never installed into the
 #                 datadir, never loaded from it.
-#   agent-server  `plugins/comms-pack`: the Telegram MCP backend and the skills
-#                 (check-email, telegram-1to1, helpdesk).
+#   agent-server  `plugins/comms-pack`: the skills (check-email,
+#                 telegram-1to1, helpdesk).
 #   webui         nothing to ship: the topic buttons and the Tools cards are
 #                 drawn from the `connectors:` manifest below (#520).
 #
-# The gateway runs the component only on `connectors: {mail: pack}` in the
-# instance profile; on `native` (the default) it stays pinned on standby and
-# the gateway's own mail code serves. Telegram is not part of it (its switch
-# and its MCP backend are #522's).
+# The gateway runs the component for the connectors whose instance switch is
+# on `pack` (`connectors: {mail: pack, telegram: pack}`), each half on its
+# own; with both on `native` (the default) it stays pinned on standby and the
+# gateway's own mail and Telegram code serve.
 components:
-  - id: mail
+  # ONE gateway component (the gateway allows one per pack: its pin carries
+  # this manifest). It serves mail (clodia-platform#558) and, from 2.1.0,
+  # Telegram (#522) — each only where the instance switch is on `pack`
+  # (`host.serves`, needs clodia-tools ≥ 2.115.1). Credentials: the gateway's
+  # custody, reachable per connector only while its switch is on `pack`.
+  - id: comms
     target: gateway
     source:
       repo: r-clodia/clodia-logic
       path: catalogs/packs/comms-pack/gateway
       ref: main
-    entry: mail_component
-    connectors: [mail]
-    # The gateway's custody (`builtin.CORE_CREDENTIALS_FOLLOW`): reachable only
-    # while the `mail` switch is on `pack`, checked at every access. Google
-    # accounts are NOT here: they are google-pack's, asked through its
-    # component's services.
-    credentials: [mailbox_]
-  # Telegram (clodia-platform#522/#558, comms-pack 2.1.0): the code that was
-  # this pack's MCP backend `telegram` runs here, inside the gateway. The bot
-  # token stays in the gateway's vault; the relay's long-poll and downloads are
-  # the component's services. Needs clodia-tools ≥ 2.115.0.
-  - id: telegram
-    target: gateway
-    source:
-      repo: r-clodia/clodia-logic
-      path: catalogs/packs/comms-pack/gateway
-      ref: main
-    entry: telegram_component
-    connectors: [telegram]
-    credentials: [telegram_bot_token]
+    entry: comms_component
+    connectors: [mail, telegram]
+    credentials: [mailbox_, telegram_bot_token]
 
 # Connettori dichiarati dal pack (grammatica di clodia-platform#516,
 # `server/connectors/SCHEMA.md` in clodia-tools). Una dichiarazione NON è una

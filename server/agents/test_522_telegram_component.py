@@ -115,6 +115,46 @@ class TelegramComponentTests(unittest.TestCase):
             self.core._token()
 
 
+class CommsComponentTests(unittest.TestCase):
+    """The ONE gateway component registers each half only where its switch is
+    on `pack` (`host.serves`)."""
+
+    def _register(self, served):
+        for k in [k for k in sys.modules if k == PKG or k.startswith(PKG + ".")]:
+            sys.modules.pop(k)
+        pkg = types.ModuleType(PKG)
+        pkg.__path__ = [str(GATEWAY)]
+        sys.modules[PKG] = pkg
+        spec = importlib.util.spec_from_file_location(f"{PKG}.comms_component",
+                                                      GATEWAY / "comms_component.py")
+        mod = importlib.util.module_from_spec(spec)
+        sys.modules[spec.name] = mod
+        before = sys.dont_write_bytecode
+        sys.dont_write_bytecode = True
+        try:
+            spec.loader.exec_module(mod)
+            calls = []
+            fake_mail = types.SimpleNamespace(register=lambda h: calls.append("mail"))
+            fake_tg = types.SimpleNamespace(register=lambda h: calls.append("telegram"))
+            sys.modules[f"{PKG}.mail_component"] = fake_mail
+            sys.modules[f"{PKG}.telegram_component"] = fake_tg
+            pkg.mail_component = fake_mail
+            pkg.telegram_component = fake_tg
+            host = types.SimpleNamespace(serves=lambda ns: ns in served)
+            mod.register(host)
+            return calls
+        finally:
+            sys.dont_write_bytecode = before
+            for k in [k for k in sys.modules if k == PKG or k.startswith(PKG + ".")]:
+                sys.modules.pop(k)
+
+    def test_each_half_where_its_switch_is_on_pack(self) -> None:
+        self.assertEqual(self._register({"email", "telegram"}), ["mail", "telegram"])
+        self.assertEqual(self._register({"telegram"}), ["telegram"])
+        self.assertEqual(self._register({"email"}), ["mail"])
+        self.assertEqual(self._register(set()), [])
+
+
 class EveryVerbIsClassifiedTests(unittest.TestCase):
     """The gateway serves a COMPONENT verb only when the manifest classifies
     it (egress/source mapping, taint, or `unmapped`): an unclassified one is
