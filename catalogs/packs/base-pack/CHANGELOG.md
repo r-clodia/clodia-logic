@@ -9,6 +9,13 @@ one.
 > the git history rather than invented, and marked as such — a changelog that
 > quietly fills its own gaps is worse than one that admits them.
 
+
+## [7.38.0] — 2026-10-18
+- **clodia: web search on request, through a gate** (clodia-platform#570).
+  `gated_native_tools: [WebSearch]` and the `native.consent` verb: when clodia
+  tries WebSearch, the room's owner gets a gate that explains the risk (the
+  search runs at the model provider, outside the gateway; results taint the
+  channel). Needs clodia-tools ≥ 2.114.0 and clodia-logic ≥ 6.310.0.
 ## [7.37.0] — 2026-10-15
 - **`messaggero` denies `telegram.updates` and `telegram.download`**
   (clodia-platform#522). With the Telegram implementation inside comms-pack,

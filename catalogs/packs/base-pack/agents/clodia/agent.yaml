@@ -132,6 +132,9 @@ tool_permissions:
 # scratch, mai nel contesto, stesso pattern di `gdrive.download`.
   - web.fetch
   - web.download
+  # `native.consent` (clodia-platform#570): chiede all'owner della stanza di
+  # usare WebSearch — vedi `gated_native_tools` sotto. Lo chiama l'agent-server.
+  - native.consent
   - email.send
   # Lettura e scrittura su Google Drive (18 set 2026, decisione di Davide),
   # enumerati uno per uno per la stessa ragione di sempre — niente wildcard
@@ -255,6 +258,15 @@ native_tools:
   - Agent
   - Workflow
   - Task*
+
+# Decisione di Davide, 18 ott 2026 (clodia-platform#570): quando le si chiede
+# una ricerca, `WebSearch` sì — ma SOLO dopo il sì dell'owner della stanza, a
+# ogni spawn e in ogni canale, con un gate che spiega il rischio (la ricerca la
+# esegue il provider, fuori dal gateway; i risultati contaminano il canale).
+# Non è in `native_tools`: resta negato ovunque il callback che chiede non
+# gira. Aprire un risultato resta `web.fetch`, con il suo gate (#569).
+gated_native_tools:
+  - WebSearch
 
 # Permessi del runtime. `bypassPermissions` = nessun prompt di conferma, e non è
 # una comodità: Clodia gira anche senza nessuno davanti — il fire di un job, una
