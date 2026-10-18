@@ -24,15 +24,15 @@ plugins:
 #                 repository's default branch, pinned by commit, and imported
 #                 inside the reference monitor. Never installed into the
 #                 datadir, never loaded from it.
-#   agent-server  `plugins/comms-pack`: the Telegram MCP backend and the skills
-#                 (check-email, telegram-1to1, helpdesk).
+#   agent-server  `plugins/comms-pack`: the skills (check-email,
+#                 telegram-1to1, helpdesk).
 #   webui         nothing to ship: the topic buttons and the Tools cards are
 #                 drawn from the `connectors:` manifest below (#520).
 #
-# The gateway runs the component only on `connectors: {mail: pack}` in the
-# instance profile; on `native` (the default) it stays pinned on standby and
-# the gateway's own mail code serves. Telegram is not part of it (its switch
-# and its MCP backend are #522's).
+# The gateway runs the component for the connectors whose instance switch is
+# on `pack` (`connectors: {mail: pack, telegram: pack}`), each half on its
+# own; with both on `native` (the default) it stays pinned on standby and the
+# gateway's own mail and Telegram code serve.
 components:
   # ONE gateway component (the gateway allows one per pack: its pin carries
   # this manifest). It serves mail (clodia-platform#558) and, from 2.1.0,
