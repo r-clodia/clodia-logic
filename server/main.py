@@ -242,6 +242,29 @@ async def _lifespan(app: FastAPI):
                  profile.edition)
         relay_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
 
+    # Corriere della posta (clodia-platform#531): codice, mai un modello e mai
+    # il corpo di un messaggio. Porta nel topic la BUSTA delle mail nuove delle
+    # caselle che la stanza ha nella propria lista `inbox:`, e ne salva gli
+    # allegati nei file del topic. Stesso gate del relay; spento con
+    # CLODIA_MAIL_COURIER=off.
+    async def _mail_courier_loop():
+        from .api import mail_courier
+        intervallo = int(os.environ.get("CLODIA_MAIL_COURIER_INTERVAL", "120"))
+        LOG.info("corriere posta attivo: un giro ogni %ds", intervallo)
+        while True:
+            try:
+                n = await mail_courier.run_cycle()
+                if n:
+                    LOG.info("corriere posta: %d mail consegnate", n)
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("corriere posta: %s", type(e).__name__)
+            await asyncio.sleep(intervallo)
+    if profile.features.channels and \
+            os.environ.get("CLODIA_MAIL_COURIER", "on").lower() not in ("off", "0", "false"):
+        mail_courier_task = asyncio.create_task(_mail_courier_loop())
+    else:
+        mail_courier_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
+
     # Idle reaper: evince periodicamente le sessioni chat idle (subprocess
     # claude/codex ancora vivo + spawn su disco) per recuperare RAM e disco.
     # Senza, le sessioni lasciate aperte si accumulano fino a saturare la
@@ -333,6 +356,7 @@ async def _lifespan(app: FastAPI):
     yield
     # --- shutdown ---
     relay_task.cancel()
+    mail_courier_task.cancel()
     reaper_task.cancel()
     goal_task.cancel()
     lag_task.cancel()

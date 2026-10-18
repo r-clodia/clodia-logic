@@ -1,4 +1,4 @@
-__version__ = "6.311.6"
+__version__ = "6.311.7"
 
 #: Versione COLLETTIVA di piattaforma (il tag che viene messo su tutti i repo a
 #: ogni release). Distinta da `__version__`, che è la semver di questo solo
