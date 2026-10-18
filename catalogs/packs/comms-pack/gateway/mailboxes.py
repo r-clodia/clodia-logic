@@ -21,6 +21,7 @@ then withdraws the entries itself (`egress.forget_mailbox`).
 """
 from __future__ import annotations
 
+import ssl
 import logging
 import re
 
@@ -96,10 +97,11 @@ def _prova_smtp(b: dict, account: str) -> str:
     try:
         # 465 è SMTPS implicito, 587 è STARTTLS.
         if porta == 465:
-            s = smtplib.SMTP_SSL(b.get("smtp_server"), porta, timeout=15)
+            s = smtplib.SMTP_SSL(b.get("smtp_server"), porta, timeout=15,
+                                 context=ssl.create_default_context())
         else:
             s = smtplib.SMTP(b.get("smtp_server"), porta, timeout=15)
-            s.starttls()
+            s.starttls(context=ssl.create_default_context())
         try:
             s.login(utente, pwd)
             return "ok"
@@ -150,7 +152,8 @@ def test_mailboxes() -> dict:
                 ok_tutti = False
             continue
         try:
-            imap = imaplib.IMAP4_SSL(server, int(b.get("imap_port") or 993), timeout=15)
+            imap = imaplib.IMAP4_SSL(server, int(b.get("imap_port") or 993), timeout=15,
+                                    ssl_context=ssl.create_default_context())
             try:
                 imap.login(b.get("email") or account, pwd)
                 esiti.append(f"{account}: ok")

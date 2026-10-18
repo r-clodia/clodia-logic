@@ -135,7 +135,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.0.0")
+        self.assertEqual(doc["version"], "2.0.1")
         self.assertIs(doc["first_party"], True)
         (c,) = doc["components"]
         self.assertEqual(c, {
@@ -762,6 +762,19 @@ class GatewaySourcesTests(unittest.TestCase):
         self.assertIn('("google-pack", "mail_accounts")', src)
         self.assertIn('("google-pack", "mail_exec")', src)
         self.assertIn('"mailbox_": "mail"', src)
+
+
+class StrictIngressNonListTests(_OnFakeHost):
+    """clodia-platform#560: a list/search result that is not a list (e.g.
+    `{"raw": …}` when the client's JSON did not parse) reveals nothing on a
+    strict channel."""
+
+    def test_a_non_list_result_reveals_nothing(self):
+        with patch.object(self.mail, "_record_ingress") as rec:
+            kept, hidden = self.mail._filter_by_sender({"raw": "From: x@evil"}, "s", "email.list")
+        self.assertEqual((kept, hidden), ([], 1))
+        rec.assert_called_once()
+        self.assertEqual(self.mail._filter_by_sender(None, "s", "email.list"), ([], 0))
 
 
 if __name__ == "__main__":  # pragma: no cover

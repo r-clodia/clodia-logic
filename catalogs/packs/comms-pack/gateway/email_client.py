@@ -14,7 +14,9 @@ it identical to the gateway copy except for this note.
 
 import imaplib
 import smtplib
+import ssl
 import email
+import email.utils
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -167,7 +169,10 @@ def _xoauth2_raw(email: str, access_token: str) -> bytes:
 
 
 def connect_imap(account):
-    imap = imaplib.IMAP4_SSL(account["imap_server"], account["imap_port"])
+    # Certificate AND hostname verified (clodia-platform#556): the default
+    # context of imaplib/smtplib checks neither.
+    imap = imaplib.IMAP4_SSL(account["imap_server"], account["imap_port"],
+                             ssl_context=ssl.create_default_context())
     if account.get("auth") == "oauth2":
         access = get_access_token(account["_name"])
         # imaplib base64-encoda da sé la stringa restituita dall'authobject
@@ -180,7 +185,7 @@ def connect_imap(account):
 
 def connect_smtp(account):
     server = smtplib.SMTP(account["smtp_server"], account["smtp_port"])
-    server.starttls()
+    server.starttls(context=ssl.create_default_context())
     if account.get("auth") == "oauth2":
         access = get_access_token(account["_name"])
         b64 = base64.b64encode(_xoauth2_raw(account["email"], access)).decode()
@@ -475,8 +480,14 @@ def reply_email(account, email_id, body, folder="INBOX", cc=None, attachments=No
     orig_subject = original["subject"] or ""
     subject = orig_subject if orig_subject.lower().startswith("re:") else f"Re: {orig_subject}"
 
-    # Destinatario = mittente originale
-    to = original["from"]
+    # Destinatario = mittente originale: UN indirizzo, il primo, quello che
+    # la PDP giudica (`address_of`). Un `From` con più indirizzi
+    # («Ok <ok@vetted.it>, evil@x.com») mandava la risposta a tutti mentre la
+    # PDP ne valutava uno solo (clodia-platform#559, review).
+    _parsed = [a for _, a in email.utils.getaddresses([original["from"] or ""]) if "@" in a]
+    to = _parsed[0] if _parsed else ""
+    if not to:
+        raise ValueError("mittente originale senza un indirizzo valido: risposta non inviata")
 
     # Threading headers
     orig_message_id = original.get("message_id", "")
@@ -508,10 +519,10 @@ def reply_email(account, email_id, body, folder="INBOX", cc=None, attachments=No
                     part = MIMEBase("application", "octet-stream")
                     part.set_payload(f.read())
                     encoders.encode_base64(part)
-                    part.add_header(
-                        "Content-Disposition",
-                        f"attachment; filename={path.name}",
-                    )
+                    # RFC 2231 parameter (clodia-platform#557): a non-ASCII
+                    # name in a raw header arrived as an unnamed attachment.
+                    part.add_header("Content-Disposition", "attachment",
+                                    filename=path.name)
                     msg.attach(part)
 
     with connect_smtp(account) as server:
@@ -649,10 +660,10 @@ def send_email(account, to, subject, body, cc=None, attachments=None):
                     part = MIMEBase("application", "octet-stream")
                     part.set_payload(f.read())
                     encoders.encode_base64(part)
-                    part.add_header(
-                        "Content-Disposition",
-                        f"attachment; filename={path.name}",
-                    )
+                    # RFC 2231 parameter (clodia-platform#557): a non-ASCII
+                    # name in a raw header arrived as an unnamed attachment.
+                    part.add_header("Content-Disposition", "attachment",
+                                    filename=path.name)
                     msg.attach(part)
 
     with connect_smtp(account) as server:

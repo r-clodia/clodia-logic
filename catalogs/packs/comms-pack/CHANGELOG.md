@@ -8,6 +8,20 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.0.1] — 2026-10-18
+- **TLS verified** (clodia-platform#556, security): the IMAP/SMTP client checks
+  the server certificate and hostname (`ssl.create_default_context()`); before,
+  imaplib/smtplib's default context checked neither. Also in the mailbox
+  login test, which sends the real password. **A mailbox on a server with a
+  self-signed or mismatched certificate now fails** on every verb with
+  `CERTIFICATE_VERIFY_FAILED`: there is no opt-out.
+- **A reply goes to ONE address** (clodia-platform#559 review): the first
+  address of the original `From`, the one the egress check judges. A `From`
+  listing several addresses used to send the reply to all of them.
+- **Non-ASCII attachment names** (clodia-platform#557) arrive named (RFC 2231).
+- **Strict ingress** (clodia-platform#560): a list/search result that is not a
+  list reveals nothing on a strict channel.
+
 ## [2.0.0] — 2026-10-17
 - **Mail runs in the gateway as a component of this pack** (clodia-platform#558,
   owner decision 2026-10-16; needs clodia-tools ≥ 2.110.0 and clodia-logic

@@ -314,8 +314,14 @@ def _filter_by_sender(rows: object, scope: str, verb: str) -> tuple[list, int]:
     """Tiene solo i messaggi di mittente vagliato; ritorna anche quanti ne ha
     tolti. Si filtra DOPO il client, mai con una query IMAP che scrive il
     chiamante; di ciò che si toglie esce solo il NUMERO."""
+    if rows is None:
+        return [], 0
     if not isinstance(rows, list):
-        return ([] if rows is None else rows), 0
+        # Not a list (e.g. `{"raw": …}` when the client's output did not
+        # parse): nothing here can be vetted, so nothing passes on a strict
+        # channel (clodia-platform#560). Counted as one hidden result.
+        _record_ingress(verb, "filter")
+        return [], 1
     tenuti = [r for r in rows
               if isinstance(r, dict) and _sender_vetted(str(r.get("from") or ""), scope)]
     tolti = len(rows) - len(tenuti)
