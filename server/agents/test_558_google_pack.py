@@ -199,7 +199,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 
     def test_pack_metadata(self) -> None:
         self.assertEqual(self.pack["name"], "google-pack")
-        self.assertEqual(self.pack["version"], "2.1.1")
+        self.assertEqual(self.pack["version"], "2.1.2")
         self.assertTrue(self.pack["first_party"])
         self.assertEqual(self.pack["upstream"], {"repo": "r-clodia/clodia-logic",
                                                  "path": "catalogs/packs/google-pack",

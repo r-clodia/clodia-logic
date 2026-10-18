@@ -8,6 +8,14 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.0.1] — 2026-10-18
+- **TLS verified** (clodia-platform#556, security): the IMAP/SMTP client checks
+  the server certificate and hostname (`ssl.create_default_context()`); before,
+  imaplib/smtplib's default context checked neither.
+- **Non-ASCII attachment names** (clodia-platform#557) arrive named (RFC 2231).
+- **Strict ingress** (clodia-platform#560): a list/search result that is not a
+  list reveals nothing on a strict channel.
+
 ## [2.0.0] — 2026-10-17
 - **Mail runs in the gateway as a component of this pack** (clodia-platform#558,
   owner decision 2026-10-16; needs clodia-tools ≥ 2.110.0 and clodia-logic

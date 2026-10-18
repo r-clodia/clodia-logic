@@ -4,6 +4,11 @@ Changelog of the `google-pack` pack ([Keep a Changelog](https://keepachangelog.c
 format, SemVer). The newest version is at the top; `pack.yaml` holds the current
 one.
 
+## [2.1.2] — 2026-10-18
+- **TLS verified** (clodia-platform#556, security) and **non-ASCII attachment
+  names** (clodia-platform#557) in the bundled Gmail client, as in the
+  gateway's vendored copy.
+
 ## [2.1.1] — 2026-10-17
 - **No code change.** Republished so that an instance already on 2.1.0 gets an
   Update again: with clodia-logic ≥ 6.306.1 a human admin's Update also moves
