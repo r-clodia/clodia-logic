@@ -35,7 +35,8 @@ from . import _host
 
 #: The services the gateway calls (`components.service("comms-pack", name)`).
 SERVICES = ("pdp_arguments", "diagnostics", "system_mailboxes", "mailbox_address",
-            "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes")
+            "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes",
+            "courier_envelopes", "courier_attachment")
 
 
 def register(host: Any) -> None:
@@ -57,3 +58,10 @@ def register(host: Any) -> None:
     host.register_service("mailbox_add", lambda body: mailboxes.mailbox_add(body))
     host.register_service("mailbox_remove", lambda account: mailboxes.mailbox_remove(account))
     host.register_service("test_mailboxes", lambda: mailboxes.test_mailboxes())
+    # The courier (#531): envelopes and attachment bytes, never the body.
+    host.register_service("courier_envelopes", lambda a: mail.courier_envelopes(
+        str(a.get("account") or ""), str(a.get("folder") or "INBOX"),
+        int(a.get("limit") or 20), list(a.get("skip") or [])))
+    host.register_service("courier_attachment", lambda a: mail.courier_attachment(
+        str(a.get("account") or ""), str(a.get("email_id") or ""),
+        str(a.get("filename") or ""), str(a.get("folder") or "INBOX")))

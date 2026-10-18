@@ -8,6 +8,16 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.3.0] — 2026-10-18
+- **Courier services for inbound mail without a model** (clodia-platform#531):
+  `courier_envelopes` returns the newest messages of a mailbox as envelopes —
+  from, to, subject, date, Message-ID, attachment names; never the body —
+  skipping the ones the courier already delivered; `courier_attachment`
+  returns an attachment's bytes for the topic's files. Both run inside the
+  room's claims set by the gateway: the room's `inbox:` list and, on a strict
+  room, its declared senders apply. Used by clodia-tools ≥ 2.122.0's courier
+  routes.
+
 ## [2.2.0] — 2026-10-18
 - **Three services for the gateway's own uses of the bot** (clodia-platform#522):
   `telegram_status` (the setup card's status, never the token) and

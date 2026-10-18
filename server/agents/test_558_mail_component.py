@@ -60,7 +60,8 @@ EMAIL_VERBS = sorted(["email.send", "email.folders", "email.list", "email.read",
                       "email.get_attachment", "email.save_attachment", "email.search",
                       "email.reply"])
 SERVICES = sorted(["pdp_arguments", "diagnostics", "system_mailboxes", "mailbox_address",
-                   "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes"])
+                   "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes",
+                   "courier_envelopes", "courier_attachment"])
 
 
 def _connector(doc: dict, cid: str = "mail") -> dict:
@@ -135,7 +136,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.2.0")
+        self.assertEqual(doc["version"], "2.3.0")
         self.assertIs(doc["first_party"], True)
         # ONE gateway component per pack (the gateway refuses a second): from
         # 2.1.1 it serves mail and Telegram (#522, test_522_telegram_component).
@@ -506,6 +507,82 @@ class StrictIngressTests(_OnFakeHost):
             with self.assertRaises(PermissionError) as e:
                 self.call("email.list", {"account": "studio"})
         self.assertIn("audit trail non disponibile", str(e.exception))
+
+
+class CourierTests(_OnFakeHost):
+    """The courier's services (#531): envelopes and attachment bytes, never
+    the body; the room's inbox list and strict senders apply."""
+
+    LIST = [{"id": "1", "from": "Fornitore <ordini@f.it>", "to": "studio@example.it",
+             "subject": "fattura", "date": "Sat, 18 Oct 2026 10:00:00 +0200"},
+            {"id": "2", "from": "spam@x.it", "to": "studio@example.it",
+             "subject": "offerta riservata", "date": "Sat, 18 Oct 2026 11:00:00 +0200"}]
+
+    def _fake(self, account, args, **kw):
+        cmd = args[0]
+        if cmd == "list":
+            return [dict(r) for r in self.LIST]
+        if cmd == "read":
+            row = next(r for r in self.LIST if r["id"] == args[1])
+            return {**row, "message_id": f"<m{row['id']}@x>",
+                    "body": "SEGRETO DEL CORPO", "attachments": ["a/b.pdf"]}
+        if cmd == "get-attachment":
+            return {"filename": "a/b.pdf", "content_type": "application/pdf",
+                    "data": base64.b64encode(b"%PDF-1").decode()}
+        raise AssertionError(cmd)
+
+    def svc(self, name, args):
+        return self.host.services[name](args)
+
+    def test_envelopes_carry_no_body(self) -> None:
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual([e["id"] for e in out["envelopes"]], ["1", "2"])
+        self.assertNotIn("SEGRETO DEL CORPO", repr(out))
+        self.assertNotIn("body", out["envelopes"][0])
+        self.assertEqual(out["envelopes"][0]["attachments"], ["a/b.pdf"])
+
+    def test_known_keys_are_not_read_again(self) -> None:
+        reads = []
+
+        def fake(account, args, **kw):
+            if args[0] == "read":
+                reads.append(args[1])
+            return self._fake(account, args)
+        key = self.mail.envelope_key(self.LIST[0])
+        with patch.object(self.mail, "_run_json", side_effect=fake):
+            out = self.svc("courier_envelopes", {"account": "studio", "skip": [key]})
+        self.assertEqual([e["id"] for e in out["envelopes"]], ["2"])
+        self.assertEqual(reads, ["2"])
+
+    def test_a_strict_room_gets_only_declared_senders(self) -> None:
+        self.host.perimeter.strict = "SEAL-1/acme"
+        self.host.perimeter.vetted.add("mailfrom:ordini@f.it")
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual([e["id"] for e in out["envelopes"]], ["1"])
+        self.assertEqual(out["withheld"], 1)
+        self.assertNotIn("offerta riservata", repr(out))
+
+    def test_a_mailbox_outside_the_rooms_inbox_list_is_refused(self) -> None:
+        self.host.perimeter.inbox.clear()
+        with self.assertRaises(PermissionError):
+            self.svc("courier_envelopes", {"account": "studio"})
+
+    def test_the_attachment_is_byte_identical_and_its_name_a_name(self) -> None:
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_attachment", {"account": "studio", "email_id": "1",
+                                                  "filename": "a/b.pdf"})
+        self.assertEqual(base64.b64decode(out["content_b64"]), b"%PDF-1")
+        self.assertEqual(out["filename"], "a-b.pdf")
+        self.assertEqual(out["size"], 6)
+
+    def test_a_strict_room_refuses_a_strangers_attachment(self) -> None:
+        self.host.perimeter.strict = "SEAL-1/acme"
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            with self.assertRaises(PermissionError):
+                self.svc("courier_attachment", {"account": "studio", "email_id": "2",
+                                                "filename": "a/b.pdf"})
 
 
 class GmailTests(_OnFakeHost):
