@@ -90,10 +90,11 @@ viene riscritto, quindi non c'è nessuna ri-etichettatura.
 Se il verbo non ce l'hai, **non surrogarlo con copia+ricarica**: dillo a chi ti
 ha dato il compito.
 
-## Cartella condivisa Mac↔container (`local/<nome>/`)
+## Cartella condivisa Mac↔container (`shared/`)
 
-Se `topic.files` mostra `local/<nome>/` con dentro file che nessuno ha
-caricato via chat, non è un errore: è una **cartella condivisa** agganciata
+Se `topic.files` mostra `shared/` accanto a `local/`, con dentro file che
+nessuno ha caricato via chat, non è un errore: è la **cartella condivisa**
+agganciata
 dall'owner (icona 🗂️ nella sidebar del topic, o `topic.local_folder_add` per
 chi ha quel verbo — riservato a `clodia`/`sysadmin`, come la whitelist
 globale). A differenza di un mount Drive (specchio, sincronizzato), qui è un
@@ -102,9 +103,20 @@ dall'altro. Si legge e si scrive con gli **stessi verbi** di ogni altro file
 del topic — `topic.fetch`/`put` per i binari, `topic.read_file`/`write_file`
 per il testo — nessun meccanismo diverso da imparare.
 
+- **Una per topic**, e nel topic si chiama sempre `shared/`. Sul Mac la stessa
+  cartella è `ClodiaShared/<codename-del-topic>/`: se l'owner ti cita quel
+  path, dentro il topic è `shared/…` (il campo `folder` della voce `shared` in
+  `topic.files` dice il nome sul Mac).
+- **`shared/` è un path del topic, non un path assoluto.** Non c'entra con la
+  directory `/shared` dell'agent-server (gli envelope cifrati di `put`/`fetch`
+  sopra): non leggerla né scriverla a mano.
+- **Path vecchi**: prima di clodia-platform#571 la cartella compariva come
+  `local/<codename>/`. Quei path, già scritti nei messaggi, risolvono ancora
+  agli stessi file, ma citali e scrivili nella forma nuova, `shared/…`.
+
 ## Topic collegato (`<nome>/`, sola lettura)
 
-Se `topic.files` mostra una cartella che non è `local/` e che ha accanto
+Se `topic.files` mostra una cartella che non è `local/` né `shared/` e che ha accanto
 l'etichetta del topic a cui appartiene, è un **topic collegato**
 (clodia-platform#477): due stanze dello stesso livello SEAL si vedono i file a
 vicenda. Si legge con i verbi di sempre (`topic.fetch`, `topic.read_file`) e i
