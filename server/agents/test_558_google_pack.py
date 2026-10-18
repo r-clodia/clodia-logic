@@ -860,8 +860,11 @@ class GatewaySourcesTests(unittest.TestCase):
         return _load(root / rel, name)
 
     def test_google_io_framing_is_the_gateways(self) -> None:
-        gw = ast.parse((Path(TOOLS_SRC) / "server" / "tools" / "google_io.py")
-                       .read_text(encoding="utf-8"))
+        native = Path(TOOLS_SRC) / "server" / "tools" / "google_io.py"
+        if not native.is_file():
+            self.skipTest("the gateway no longer has a Google client (clodia-tools "
+                          "≥ 2.121.0, #524): the component's is the only copy")
+        gw = ast.parse(native.read_text(encoding="utf-8"))
         mine = ast.parse((GATEWAY / "google_io.py").read_text(encoding="utf-8"))
 
         def defs(tree):
@@ -889,6 +892,9 @@ class GatewaySourcesTests(unittest.TestCase):
             if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") in (
                     "_GDRIVE_TOOLS", "_GCALENDAR_TOOLS", "_GDOCS_TOOLS", "_GSHEETS_TOOLS"):
                 exec(f"{node.target.id} = {ast.get_source_segment(src, node.value)}", ns)
+        if "_GDRIVE_TOOLS" not in ns:
+            self.skipTest("the gateway no longer declares the Google verbs (clodia-tools "
+                          "≥ 2.121.0, #524): these schemas are the only copy")
         native = (ns["_GDRIVE_TOOLS"] + ns["_GCALENDAR_TOOLS"] + ns["_GDOCS_TOOLS"]
                   + ns["_GSHEETS_TOOLS"])
         _load_component()
@@ -1126,9 +1132,11 @@ class GmailClientIsCommsPacksTests(unittest.TestCase):
 
     @unittest.skipUnless(TOOLS_SRC, "set CLODIA_TOOLS_SRC to a clodia-tools checkout")
     def test_the_bundled_client_is_the_gateways_copy(self) -> None:
-        self.assertEqual(self._body(CLIENT),
-                         (Path(TOOLS_SRC) / "vendor" / "email_client.py")
-                         .read_text(encoding="utf-8"))
+        gw = Path(TOOLS_SRC) / "vendor" / "email_client.py"
+        if not gw.is_file():
+            self.skipTest("the gateway no longer ships a mail client (clodia-tools "
+                          "≥ 2.120.0, #523)")
+        self.assertEqual(self._body(CLIENT), gw.read_text(encoding="utf-8"))
 
 
 class GmailRefusalTests(_IsolatedTmp):
