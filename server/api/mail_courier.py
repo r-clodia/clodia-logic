@@ -86,24 +86,28 @@ def attachment(room: dict, email_id: str, filename: str) -> dict:
 # ── state ─────────────────────────────────────────────────────────────────
 
 def _state_path(room: dict):
+    """One file per room+mailbox; the name is a hash of the three parts, so
+    `a_b`+`c` and `a`+`b_c` never share a file (review of #549)."""
+    import hashlib
     d = data_path("mail-courier-state")
     d.mkdir(parents=True, exist_ok=True)
-    key = f"{room['tier']}_{room['name']}_{room['account']}"
-    safe = "".join(c if c.isalnum() or c in "._-" else "_" for c in key)
-    return d / f"{safe}.json"
+    key = "\x00".join((room["tier"], room["name"], room["account"]))
+    return d / f"{hashlib.sha256(key.encode()).hexdigest()[:32]}.json"
 
 
 def _load(room: dict) -> dict:
     p = _state_path(room)
     try:
         s = json.loads(p.read_text(encoding="utf-8"))
-        return {"primed": bool(s.get("primed")), "keys": list(s.get("keys") or [])}
+        return {"primed": bool(s.get("primed")), "keys": list(s.get("keys") or []),
+                "fails": dict(s.get("fails") or {})}
     except (OSError, ValueError):
-        return {"primed": False, "keys": []}
+        return {"primed": False, "keys": [], "fails": {}}
 
 
 def _save(room: dict, state: dict) -> None:
     state["keys"] = list(state.get("keys") or [])[-_KEYS_CAP:]
+    state["fails"] = dict(list((state.get("fails") or {}).items())[-50:])
     _state_path(room).write_text(json.dumps(state), encoding="utf-8")
 
 
@@ -115,17 +119,28 @@ def _safe_filename(name: str) -> str:
     return (keep or "allegato")[:120]
 
 
+#: Attempts at one envelope before it is posted without what keeps failing.
+MAX_ATTEMPTS = 3
+
+
+def _plain(value, limit: int = 300) -> str:
+    """A sender-chosen header as one inert line: no line breaks (they would
+    forge lines of the post), no `@` that mentions an agent of the room."""
+    text = " ".join(str(value or "").split())
+    return text.replace("@", "＠")[:limit]
+
+
 def envelope_text(env: dict, saved: list[str], failed: list[str]) -> str:
     """The post: the envelope only. Never a body — the courier never has one."""
-    righe = [f"📧 Nuova mail da {env.get('from') or '?'}",
-             f"Oggetto: {env.get('subject') or '(senza oggetto)'}",
-             f"Data: {env.get('date') or '?'}"]
+    righe = [f"📧 Nuova mail da {_plain(env.get('from')) or '?'}",
+             f"Oggetto: {_plain(env.get('subject')) or '(senza oggetto)'}",
+             f"Data: {_plain(env.get('date'), 80) or '?'}"]
     if env.get("to"):
-        righe.append(f"A: {env['to']}")
+        righe.append(f"A: {_plain(env['to'])}")
     if saved:
         righe.append("Allegati salvati: " + ", ".join(f"`{p}`" for p in saved))
     if failed:
-        righe.append("Allegati non salvati: " + ", ".join(failed))
+        righe.append("Allegati non salvati: " + ", ".join(_plain(f, 120) for f in failed))
     righe.append(f"(id {env.get('id')} nella casella; il testo si legge con email.read)")
     return "\n".join(righe)
 
@@ -139,7 +154,7 @@ async def _deliver(room: dict, env: dict) -> None:
             fname = f"posta-{str(env.get('key') or '')[:8]}-{_safe_filename(got.get('filename') or name)}"
             await topics_client.async_put_file(
                 room["tier"], room["name"], fname,
-                base64.b64encode(raw).decode("ascii"))
+                base64.b64encode(raw).decode("ascii"), provenance="untrusted")
             saved.append(f"files/{fname}")
         except Exception as e:  # noqa: BLE001 — one attachment never stops the envelope
             LOG.warning("mail courier: attachment of %s/%s not saved (%s)",
@@ -170,14 +185,31 @@ async def run_room(room: dict) -> int:
         return 0
     consegnate = 0
     for env in reversed(nuove):           # oldest first
+        key = env.get("key")
         try:
             await _deliver(room, env)
             consegnate += 1
         except Exception as e:  # noqa: BLE001 — retried at the next pass
             LOG.warning("mail courier: envelope for %s/%s not posted (%s)",
                         room["tier"], room["name"], type(e).__name__)
-            continue
-        state["keys"].append(env["key"])
+            fails = state.setdefault("fails", {})
+            fails[key] = int(fails.get(key, 0)) + 1
+            if fails[key] < MAX_ATTEMPTS:
+                _save(room, state)
+                # Later mail waits: delivery stays in arrival order.
+                break
+            # Last attempt: the envelope alone, naming what could not be saved.
+            try:
+                await topics_client.async_post_message(
+                    room["tier"], room["name"], AUTHOR,
+                    envelope_text(env, [], list(env.get("attachments") or [])),
+                    kind="proxy")
+                consegnate += 1
+            except Exception:  # noqa: BLE001
+                LOG.warning("mail courier: envelope for %s/%s given up after %d attempts",
+                            room["tier"], room["name"], fails[key])
+        state.get("fails", {}).pop(key, None)
+        state["keys"].append(key)
         _save(room, state)
     return consegnate
 
