@@ -8,6 +8,15 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.2.0] — 2026-10-18
+- **Three services for the gateway's own uses of the bot** (clodia-platform#522):
+  `telegram_status` (the setup card's status, never the token) and
+  `telegram_notify` (a plain message to a numeric chat id, for the owner
+  notification of a pending gate), plus `telegram_chat_admins` for the
+  gateway's ingress migration. With them the gateway keeps no Telegram
+  client: clodia-tools 2.119.0 removes its native Telegram code. Update this
+  pack BEFORE that gateway, or gate notifications and the status card go quiet.
+
 ## [2.1.1] — 2026-10-18
 - **One gateway component, `comms`, for mail and Telegram.** 2.1.0 declared
   two and the gateway refused the second ("a pack has at most one 'target:
