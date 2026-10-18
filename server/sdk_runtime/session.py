@@ -1735,6 +1735,7 @@ class ChatSession:
         #: A consent asked for a gated native tool may wait for a person (#570).
         self._native_consent_timeout = float(
             os.environ.get("CLODIA_NATIVE_CONSENT_TIMEOUT", "7300"))
+        self._native_refused_until: dict[str, float] = {}
         #: The CLI process's own OTel trace id, when export is on (#463).
         self._otel_runtime_trace: Optional[str] = None
         self._runtime_override = runtime_override or {}
@@ -1928,10 +1929,20 @@ class ChatSession:
         spawn and the channel from signed claims. The gate waits for a person;
         anything but an explicit grant is a no."""
         import httpx as _httpx
+        import time as _time
+        # After a refusal, the same question does not come back for a while:
+        # an agent retrying (or searching in parallel) must not flood the room
+        # with cards (review of clodia-logic#541).
+        _no_until = self._native_refused_until.get(tool, 0.0)
+        if _time.monotonic() < _no_until:
+            return False, "rifiutato da poco: riprova più tardi, o chiedi all'owner"
         query = str((tool_input or {}).get("query") or "")[:300]
         token = pki.mint_session_token(
             self.kind, _execution_id(self._spawn),
-            ttl_seconds=int(self._native_consent_timeout) + 120,
+            # Never longer than this session's own token may live (a scoped
+            # grant must not be outlived by a token minted from it).
+            ttl_seconds=min(_runtime_token_ttl(self._runtime_override),
+                            int(self._native_consent_timeout) + 120),
             principal=self.principal,
             clearance=_effective_clearance(self.kind, self._runtime_override),
             chat=self.chat_id, scope_tier=getattr(self, "scope_tier", None),
@@ -1955,6 +1966,7 @@ class ChatSession:
             return True, ""
         why = res if isinstance(res, str) else (data.get("detail") or data.get("error")
                                                 if isinstance(data, dict) else "")
+        self._native_refused_until[tool] = _time.monotonic() + 300
         return False, str(why or f"HTTP {r.status_code}")[:300]
 
     async def _open_client(self) -> None:
