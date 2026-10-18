@@ -161,6 +161,61 @@ class GatewayServicesTests(unittest.TestCase):
         self.assertEqual(self.calls, [])
 
 
+class ForumThreadTests(unittest.TestCase):
+    """clodia-platform#548 on the component (moved from clodia-tools'
+    native-client tests, #522): the forum thread reaches Telegram, its absence
+    changes nothing, a meaningless value is refused before any call, and
+    inbound messages remember their thread."""
+
+    def setUp(self) -> None:
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        self.mod = _load()
+        self.addCleanup(lambda: [sys.modules.pop(k) for k in list(sys.modules)
+                                 if k == PKG or k.startswith(PKG + ".")])
+        self.host = FakeHost(tmp.name)
+        self.mod.register(self.host)
+        self.core = sys.modules[f"{PKG}.telegram_core"]
+        self.calls = []
+        self.core.api_call = lambda token, method, params=None, timeout=15: (
+            self.calls.append((method, dict(params or {}))) or {"message_id": 7})
+        self.core._post_multipart = lambda token, method, fields, *a, **k: (
+            self.calls.append((method, dict(fields))) or {"message_id": 8})
+
+    def test_send_forwards_the_thread(self) -> None:
+        self.core.send({"chat_id": "-1004433615610", "text": "ciao", "thread_id": 42})
+        self.assertEqual(self.calls[-1][1]["message_thread_id"], 42)
+
+    def test_without_thread_the_payload_is_unchanged(self) -> None:
+        self.core.send({"chat_id": "-1004433615610", "text": "ciao"})
+        self.assertNotIn("message_thread_id", self.calls[-1][1])
+
+    def test_send_file_forwards_the_thread(self) -> None:
+        import base64
+        self.core.send_file({"chat_id": "-1", "filename": "a.txt", "thread_id": "9",
+                             "content_b64": base64.b64encode(b"x").decode()})
+        self.assertEqual(self.calls[-1][1]["message_thread_id"], 9)
+
+    def test_a_meaningless_thread_is_refused_before_calling_telegram(self) -> None:
+        for bad in (0, -3, "abc", True):
+            with self.subTest(bad=bad), self.assertRaises(ValueError):
+                self.core.send({"chat_id": "-1", "text": "x", "thread_id": bad})
+        self.assertEqual(self.calls, [])
+
+    def test_thread_id_of_accepts_only_positive_ints(self) -> None:
+        self.assertIsNone(self.core.thread_id_of(None))
+        self.assertIsNone(self.core.thread_id_of(""))
+        self.assertEqual(self.core.thread_id_of("12"), 12)
+
+    def test_inbound_messages_keep_their_forum_thread(self) -> None:
+        upd = {"update_id": 1}
+        msg = {"message_id": 3, "text": "ciao", "is_topic_message": True,
+               "message_thread_id": 77, "chat": {"id": -1, "type": "supergroup",
+                                                 "title": "g"},
+               "from": {"id": 5, "username": "u"}, "date": 0}
+        self.assertEqual(self.core._message_row(upd, msg).get("thread_id"), 77)
+
+
 class CommsComponentTests(unittest.TestCase):
     """The ONE gateway component registers each half only where its switch is
     on `pack` (`host.serves`)."""
