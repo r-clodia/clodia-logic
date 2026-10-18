@@ -135,16 +135,17 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.1.0")
+        self.assertEqual(doc["version"], "2.1.1")
         self.assertIs(doc["first_party"], True)
-        # 2.1.0 adds Telegram's component (#522, test_522_telegram_component).
-        (c,) = [x for x in doc["components"] if x["id"] == "mail"]
+        # ONE gateway component per pack (the gateway refuses a second): from
+        # 2.1.1 it serves mail and Telegram (#522, test_522_telegram_component).
+        (c,) = doc["components"]
         self.assertEqual(c, {
-            "id": "mail", "target": "gateway",
+            "id": "comms", "target": "gateway",
             "source": {"repo": "r-clodia/clodia-logic",
                        "path": "catalogs/packs/comms-pack/gateway", "ref": "main"},
-            "entry": "mail_component", "connectors": ["mail"],
-            "credentials": ["mailbox_"]})
+            "entry": "comms_component", "connectors": ["mail", "telegram"],
+            "credentials": ["mailbox_", "telegram_bot_token"]})
 
     def test_the_source_path_and_entry_exist(self) -> None:
         self.assertTrue((GATEWAY / "mail_component.py").is_file())
