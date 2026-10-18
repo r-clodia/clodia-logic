@@ -69,3 +69,5 @@
 {"ts": "2026-10-17T16:25:42.133889+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}
 {"ts": "2026-10-17T16:27:32.643691+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}
 {"ts": "2026-10-18T08:58:00.621822+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}
+{"ts": "2026-10-18T10:43:44.711328+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}
+{"ts": "2026-10-18T10:45:12.648747+00:00", "origin": "exemplar", "chosen": ["clodia"], "mode": "exemplar", "confidence": 0.67, "topic_hash": null}

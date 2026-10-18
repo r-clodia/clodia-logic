@@ -566,6 +566,13 @@ class AgentSpec(BaseModel):
     #: `native_tools.redundant_declarations()` la dice per un seed, e un test la
     #: applica ai seed del base-pack (clodia-platform#199, punto 3).
     native_tools: Optional[list[str]] = None
+    #: Native tools this agent may use only after the room's owner says yes,
+    #: each time (clodia-platform#570). They are NOT in `native_tools`: the
+    #: Claude runtime's permission callback asks the gateway (`native.consent`,
+    #: a gate that explains the risk) when the agent tries one. Where that
+    #: callback does not run (another runtime, a non-root process) the tool
+    #: stays denied. Today only `WebSearch` can be gated.
+    gated_native_tools: Optional[list[str]] = None
     #: Come il runtime tratta le richieste di permesso di QUESTO agent, con i
     #: nomi dell'SDK: `default` (chiede), `acceptEdits`, `plan`,
     #: `bypassPermissions` (non chiede niente). `None` = il seed non si

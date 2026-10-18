@@ -519,7 +519,8 @@ DEFAULT_KIND = "clodia"
 #
 # Da qui `_permission_gate`: lo stesso «approva tutto» che serviva al flag, meno
 # ciò che qualcuno ha deciso di negare.
-def _permission_gate(disallowed: list[str] | None, chat_id: str = ""):
+def _permission_gate(disallowed: list[str] | None, chat_id: str = "",
+                     gated: set[str] | None = None, consent=None):
     """`can_use_tool` che approva tutto TRANNE ciò che è nella blocklist.
 
     Il confronto è sul nome del tool e sulla sua base (`Bash(rm:*)` → `Bash`):
@@ -534,10 +535,21 @@ def _permission_gate(disallowed: list[str] | None, chat_id: str = ""):
     """
     negati = {str(x).strip() for x in (disallowed or []) if str(x).strip()}
     basi = {n.split("(", 1)[0] for n in negati}
+    su_consenso = set(gated or ()) if consent is not None else set()
 
     async def _gate(tool_name: str, tool_input: dict,
                     ctx: ToolPermissionContext):
         nome = str(tool_name or "")
+        if nome in su_consenso:
+            # #570: a person decides, through the gateway's gate. Any failure
+            # to ask is a no.
+            try:
+                ok, why = await consent(nome, tool_input or {})
+            except Exception as e:  # noqa: BLE001
+                ok, why = False, f"consenso non ottenuto ({type(e).__name__})"
+            if ok:
+                return PermissionResultAllow()
+            return PermissionResultDeny(message=f"'{nome}' non approvato: {why}")
         if nome in negati or nome.split("(", 1)[0] in basi:
             if chat_id:
                 # Import LOCALE, non in testa al modulo: la dipendenza fra i due
@@ -1137,6 +1149,24 @@ def _resolve_native_denied(kind: str) -> list[str]:
     return _nt.disallowed_for(_resolve_native_allowed(kind))
 
 
+#: Native tools that can be gated (clodia-platform#570): those the gateway
+#: knows how to explain (`native.consent`).
+GATEABLE_NATIVE_TOOLS = frozenset({"WebSearch"})
+
+
+def _resolve_native_gated(kind: str) -> list[str]:
+    """The native tools this seed may use after a person's yes (#570)."""
+    try:
+        from ..agents.loader import registry
+        spec = registry.get_by_name(kind)
+        dichiarati = getattr(spec, "gated_native_tools", None) if spec else None
+    except Exception as e:  # noqa: BLE001 — unreadable: nothing gated, i.e. denied
+        LOG.warning("gated_native_tools di %s non leggibili (%s): restano negati",
+                    kind, type(e).__name__)
+        dichiarati = None
+    return [t for t in (dichiarati or []) if t in GATEABLE_NATIVE_TOOLS]
+
+
 def _resolve_disallowed_tools(kind: str) -> list[str]:
     if kind in KIND_DISALLOWED_TOOLS:
         return KIND_DISALLOWED_TOOLS[kind]
@@ -1702,6 +1732,9 @@ class ChatSession:
         # principal "cotto" nel token MCP del client attualmente avviato (per
         # capire quando ri-coniare se l'utente connesso cambia).
         self._token_principal: Optional[str] = None
+        #: A consent asked for a gated native tool may wait for a person (#570).
+        self._native_consent_timeout = float(
+            os.environ.get("CLODIA_NATIVE_CONSENT_TIMEOUT", "7300"))
         #: The CLI process's own OTel trace id, when export is on (#463).
         self._otel_runtime_trace: Optional[str] = None
         self._runtime_override = runtime_override or {}
@@ -1827,7 +1860,18 @@ class ChatSession:
         if permission_mode_override == "bypassPermissions" and _IS_ROOT:
             # Root: --dangerously-skip-permissions rifiutato dal CLI. Il callback
             # fa da bypass PER CIÒ CHE NON È NEGATO — non per tutto.
-            opts_kwargs["can_use_tool"] = _permission_gate(disallowed, self.chat_id)
+            # I nativi «su consenso» (#570) escono dai negati SOLO qui, dove il
+            # callback li ferma e chiede: altrove restano negati.
+            gated = [t for t in _resolve_native_gated(self.kind) if t in disallowed]
+            if gated:
+                disallowed = [t for t in disallowed if t not in gated]
+                if disallowed:
+                    opts_kwargs["disallowed_tools"] = disallowed
+                else:
+                    opts_kwargs.pop("disallowed_tools", None)
+            opts_kwargs["can_use_tool"] = _permission_gate(
+                disallowed, self.chat_id, gated=set(gated),
+                consent=self._native_consent if gated else None)
         elif permission_mode_override:
             opts_kwargs["permission_mode"] = permission_mode_override
         # clodia-tools via MCP HTTP (microservizio segregato): conio un token
@@ -1876,6 +1920,42 @@ class ChatSession:
         intro = KIND_AUTO_INTRO.get(self.kind)
         if intro:
             asyncio.create_task(self._do_send_bg(intro))
+
+    async def _native_consent(self, tool: str, tool_input: dict) -> tuple[bool, str]:
+        """Ask the gateway whether THIS spawn may use the gated native `tool`
+        now (clodia-platform#570): `native.consent`, with a token minted for
+        this session as for its MCP client, so the gateway knows the agent, the
+        spawn and the channel from signed claims. The gate waits for a person;
+        anything but an explicit grant is a no."""
+        import httpx as _httpx
+        query = str((tool_input or {}).get("query") or "")[:300]
+        token = pki.mint_session_token(
+            self.kind, _execution_id(self._spawn),
+            ttl_seconds=int(self._native_consent_timeout) + 120,
+            principal=self.principal,
+            clearance=_effective_clearance(self.kind, self._runtime_override),
+            chat=self.chat_id, scope_tier=getattr(self, "scope_tier", None),
+            origin=getattr(self, "origin", None),
+            scoped_tools=self._runtime_override.get("tools"),
+            unattended=getattr(self, "unattended", False))
+        base = CLODIA_TOOLS_MCP_URL.rstrip("/")
+        if base.endswith("/mcp"):
+            base = base[: -len("/mcp")]
+        async with _httpx.AsyncClient(timeout=self._native_consent_timeout) as c:
+            r = await c.post(f"{base}/internal/tool",
+                             headers={"Authorization": f"Bearer {token}"},
+                             json={"tool": "native.consent",
+                                   "arguments": {"tool": tool, "query": query}})
+        try:
+            data = r.json()
+        except Exception:  # noqa: BLE001
+            return False, f"risposta del gateway illeggibile (HTTP {r.status_code})"
+        res = data.get("result") if isinstance(data, dict) else None
+        if r.status_code == 200 and isinstance(res, dict) and res.get("granted") is True:
+            return True, ""
+        why = res if isinstance(res, str) else (data.get("detail") or data.get("error")
+                                                if isinstance(data, dict) else "")
+        return False, str(why or f"HTTP {r.status_code}")[:300]
 
     async def _open_client(self) -> None:
         """(Ri)apre il client SDK dalle opzioni già calcolate in start().

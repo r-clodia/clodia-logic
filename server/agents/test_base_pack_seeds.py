@@ -213,7 +213,10 @@ class ClodiaMandateTests(unittest.TestCase):
     NAMESPACE_AMMESSI = {"topic", "artifact", "agents", "memory", "fs", "github",
                          "runtime", "integrations", "providers", "mcp", "packs",
                          "jobs", "egress", "ingress", "rag", "web", "email", "gdrive",
-                         "copybrain"}
+                         "copybrain",
+                         # #570 (18 ott 2026): il consenso per WebSearch, chiesto
+                         # dall'agent-server quando clodia tenta lo strumento.
+                         "native"}
 
     #: clodia-platform#393: i mestieri di altri seed. Clodia li ottiene solo in
     #: prestito con `copybrain`, mai nel proprio set.
