@@ -136,7 +136,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.3.0")
+        self.assertEqual(doc["version"], "2.3.1")
         self.assertIs(doc["first_party"], True)
         # ONE gateway component per pack (the gateway refuses a second): from
         # 2.1.1 it serves mail and Telegram (#522, test_522_telegram_component).
@@ -542,6 +542,19 @@ class CourierTests(_OnFakeHost):
         self.assertNotIn("SEGRETO DEL CORPO", repr(out))
         self.assertNotIn("body", out["envelopes"][0])
         self.assertEqual(out["envelopes"][0]["attachments"], ["a/b.pdf"])
+
+    def test_keys_only_reads_no_message(self) -> None:
+        reads = []
+
+        def fake(account, args, **kw):
+            if args[0] == "read":
+                reads.append(args[1])
+            return self._fake(account, args)
+        with patch.object(self.mail, "_run_json", side_effect=fake):
+            out = self.svc("courier_envelopes", {"account": "studio", "keys_only": True})
+        self.assertEqual(reads, [])
+        self.assertEqual(out["keys"], [self.mail.envelope_key(r) for r in self.LIST])
+        self.assertNotIn("envelopes", out)
 
     def test_known_keys_are_not_read_again(self) -> None:
         reads = []

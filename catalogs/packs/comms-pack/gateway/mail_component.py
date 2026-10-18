@@ -61,7 +61,8 @@ def register(host: Any) -> None:
     # The courier (#531): envelopes and attachment bytes, never the body.
     host.register_service("courier_envelopes", lambda a: mail.courier_envelopes(
         str(a.get("account") or ""), str(a.get("folder") or "INBOX"),
-        int(a.get("limit") or 20), list(a.get("skip") or [])))
+        int(a.get("limit") or 20), list(a.get("skip") or []),
+        bool(a.get("keys_only"))))
     host.register_service("courier_attachment", lambda a: mail.courier_attachment(
         str(a.get("account") or ""), str(a.get("email_id") or ""),
         str(a.get("filename") or ""), str(a.get("folder") or "INBOX")))

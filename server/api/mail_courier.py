@@ -66,10 +66,11 @@ def rooms() -> list[dict]:
     return list(r.json().get("rooms") or [])
 
 
-def envelopes(room: dict, skip: list[str]) -> dict:
+def envelopes(room: dict, skip: list[str], keys_only: bool = False) -> dict:
     r = requests.post(f"{_base_url()}/envelopes", headers=_headers(), timeout=_HTTP_TIMEOUT,
                       json={"tier": room["tier"], "name": room["name"],
-                            "account": room["account"], "skip": list(skip)})
+                            "account": room["account"], "skip": list(skip),
+                            "keys_only": bool(keys_only)})
     r.raise_for_status()
     return r.json()
 
@@ -169,20 +170,23 @@ async def run_room(room: dict) -> int:
     delivered."""
     state = _load(room)
     try:
-        out = await asyncio.to_thread(envelopes, room, state["keys"])
+        out = await asyncio.to_thread(envelopes, room, state["keys"], not state["primed"])
     except requests.HTTPError as e:
         # 403: the room's rules refuse the mailbox now (list changed) — skip.
         LOG.info("mail courier: %s/%s skipped (%s)", room["tier"], room["name"],
                  getattr(e.response, "status_code", "?"))
         return 0
-    nuove = list(out.get("envelopes") or [])
     if not state["primed"]:
-        state["keys"].extend(e["key"] for e in nuove if e.get("key"))
+        chiavi = [k for k in (out.get("keys") or []) if k]
+        if not chiavi and out.get("envelopes"):        # a component without keys_only
+            chiavi = [e["key"] for e in out["envelopes"] if e.get("key")]
+        state["keys"].extend(chiavi)
         state["primed"] = True
         _save(room, state)
         LOG.info("mail courier: %s/%s primed with %d existing messages",
-                 room["tier"], room["name"], len(nuove))
+                 room["tier"], room["name"], len(chiavi))
         return 0
+    nuove = list(out.get("envelopes") or [])
     consegnate = 0
     for env in reversed(nuove):           # oldest first
         key = env.get("key")
