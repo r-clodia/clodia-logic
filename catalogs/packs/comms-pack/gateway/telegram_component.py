@@ -21,8 +21,9 @@ here, and on `connectors: {telegram: pack}`:
   on the gateway's volume (`host.state_path`).
 
 From 2.2.0 two more services serve the gateway's own uses of the bot: the
-setup card's status (`telegram_status`) and the owner notification of a
-pending gate (`telegram_notify`) — the gateway keeps no Telegram client.
+setup card's status (`telegram_status`), the owner notification of a
+pending gate (`telegram_notify`) and the ingress migration's read of a chat's
+administrators (`telegram_chat_admins`) — the gateway keeps no Telegram client.
 
 On `native` the component stays pinned on standby; from clodia-tools 2.119.0
 nothing serves Telegram there (the native code is gone).
@@ -96,6 +97,18 @@ def register(host: Any) -> None:
     # owner notification of a pending gate. Services, never agent verbs.
     host.register_service("telegram_status", lambda arguments=None: core.status({}))
     host.register_service("telegram_notify", lambda arguments: notify(dict(arguments or {})))
+    # The ingress migration's read of a chat's administrators (#366/#522).
+    host.register_service("telegram_chat_admins",
+                          lambda arguments: chat_admins(dict(arguments or {})))
+
+
+def chat_admins(a: dict) -> list:
+    """`getChatAdministrators` of a numeric chat id, as Telegram returns it
+    (the only member list a bot gets). For the gateway's ingress migration."""
+    chat = str(a.get("chat_id") or "").strip()
+    if not chat.lstrip("-").isdigit():
+        raise ValueError("telegram_chat_admins: chat_id must be a numeric Telegram id")
+    return core.api_call(core._token(), "getChatAdministrators", {"chat_id": int(chat)}) or []
 
 
 def notify(a: dict) -> dict:

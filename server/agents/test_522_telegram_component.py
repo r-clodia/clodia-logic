@@ -90,7 +90,8 @@ class TelegramComponentTests(unittest.TestCase):
             "telegram.send_file", "telegram.lease_release", "telegram.roster",
             "telegram.status"})
         self.assertEqual(set(self.host.services), {"telegram_updates", "telegram_download",
-                                                   "telegram_status", "telegram_notify"})
+                                                   "telegram_status", "telegram_notify",
+                                                   "telegram_chat_admins"})
         self.assertNotIn("telegram.updates", self.host.verbs)   # never an agent verb
 
     def test_token_from_the_vault_field_and_state_from_the_host(self) -> None:
@@ -142,6 +143,15 @@ class GatewayServicesTests(unittest.TestCase):
         self.assertEqual(out, {"ok": True, "message_id": 7})
         self.assertEqual(self.calls, [("123:ABC", "sendMessage",
                                        {"chat_id": 76632169, "text": "gate"})])
+
+    def test_chat_admins_of_a_numeric_chat(self) -> None:
+        self.core.api_call = lambda token, method, params=None, timeout=15: (
+            self.calls.append((method, params)) or [{"user": {"id": 1}}])
+        self.assertEqual(self.host.services["telegram_chat_admins"]({"chat_id": "-100"}),
+                         [{"user": {"id": 1}}])
+        self.assertEqual(self.calls, [("getChatAdministrators", {"chat_id": -100})])
+        with self.assertRaises(ValueError):
+            self.host.services["telegram_chat_admins"]({"chat_id": "@group"})
 
     def test_notify_refuses_names_and_empty_text(self) -> None:
         for args in ({"chat_id": "Clodia Sviluppo", "text": "x"}, {"chat_id": "", "text": "x"},
