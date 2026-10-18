@@ -8,6 +8,19 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.1.0] — 2026-10-18
+- **Telegram runs in the gateway as a component of this pack**
+  (clodia-platform#522/#558). The MCP backend `telegram` (a stdio process per
+  call, with the bot token in its environment) is gone: the same code
+  (`gateway/telegram_core.py`) is served by `gateway/telegram_component.py`.
+  Agent verbs unchanged (`telegram.inbox`, `.send`, `.send_file`, …); the
+  relay's long-poll and downloads are the component's services, out of any
+  agent's reach; the token is read from the gateway's vault only while
+  `connectors: {telegram: pack}`; the state (offset, queues, leases) is the
+  component's private file on the gateway's volume — known chat titles are
+  learned again as chats write. **Needs clodia-tools ≥ 2.115.0.** After the
+  Update, unmount the stale `telegram` backend (Tools → MCP).
+
 ## [2.0.1] — 2026-10-18
 - **TLS verified** (clodia-platform#556, security): the IMAP/SMTP client checks
   the server certificate and hostname (`ssl.create_default_context()`); before,

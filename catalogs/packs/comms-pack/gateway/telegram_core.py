@@ -1,5 +1,18 @@
-#!/usr/bin/env python3
 """telegram — il connettore Telegram di comms-pack: tutta la logica, zero MCP.
+
+**Dal comms-pack 2.1.0 gira DENTRO il gateway**, come componente
+(clodia-platform#522/#558, `telegram_component.py`): non più un backend MCP
+stdio. Cambiano solo due sorgenti, e le imposta `register(host)`:
+
+- il token: dal vault del gateway attraverso `host.credentials(
+  "telegram_bot_token")` (`TOKEN_SOURCE`), raggiungibile solo finché
+  l'interruttore è `connectors: {telegram: pack}`;
+- lo stato: il file privato del componente (`STATE_FILE`, sul volume del
+  gateway, non leggibile dall'agent-server).
+
+Senza `register` (le suite che caricano questo file da sole) valgono ancora
+`TELEGRAM_BOT_TOKEN` e `CLODIA_TELEGRAM_STATE`. Il resto qui sotto è il testo
+della versione backend, invariato.
 
 clodia-platform#522, metà «implementazione»: fin qui il pack DICHIARAVA il
 connettore (`pack.yaml`, fase 1) mentre a parlare con `api.telegram.org` era il
@@ -53,9 +66,17 @@ import urllib.error
 import urllib.request
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
-from typing import Optional
+from typing import Callable, Optional
 
-__version__ = "1.0.0"
+__version__ = "2.0.0"
+
+#: Set by `telegram_component.register(host)` (see the module docstring).
+TOKEN_SOURCE: Optional[Callable[[], str]] = None
+STATE_FILE: Optional[str] = None
+#: The bot's @username, stored with the token when the owner connected it: a
+#: reply to the bot counts as a mention, and the relay recognises a
+#: `/start@bot <token>` join (#549). Unset → the one in the state, if any.
+BOT_USERNAME_SOURCE: Optional[Callable[[], str]] = None
 
 _API_BASE = "https://api.telegram.org/bot{token}/{method}"
 _DEFAULT_LEASE_MIN = 10
@@ -146,6 +167,8 @@ def _poll_unlock(fd) -> None:
 # ── stato, token, API ────────────────────────────────────────────────────────
 
 def _state_path() -> Path:
+    if STATE_FILE:
+        return Path(STATE_FILE)
     return Path(os.environ.get("CLODIA_TELEGRAM_STATE")
                 or Path(__file__).resolve().parent.parent / "state"
                 / "telegram-state.json")
@@ -198,6 +221,17 @@ def _lease_active(chat: dict) -> Optional[dict]:
     return lease if exp > _now() else None
 
 
+def _raw_token() -> str:
+    """The token or "" — from the gateway's vault in a component, from the
+    environment otherwise. Never raises on «not configured»."""
+    if TOKEN_SOURCE is not None:
+        try:
+            return str(TOKEN_SOURCE() or "").strip()
+        except Exception:  # noqa: BLE001 — no access (switch back, no entry): none
+            return ""
+    return (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+
+
 def _token() -> str:
     """Il token del bot dall'ambiente del mount.
 
@@ -205,7 +239,7 @@ def _token() -> str:
     nel contesto, e chi può chiamare un verbo non per questo può spedire con
     un altro bot.
     """
-    tok = (os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()
+    tok = _raw_token()
     if not tok:
         raise RuntimeError(
             "telegram: nessun bot configurato per questa istanza "
@@ -621,7 +655,7 @@ def status(a: dict) -> dict:
     active = sum(1 for c in st["chats"].values()
                  if (c.get("queue") or []) or _lease_active(c))
     return {
-        "configured": bool((os.environ.get("TELEGRAM_BOT_TOKEN") or "").strip()),
+        "configured": bool(_raw_token()),
         "bot_username": st.get("bot_username"),
         "known_chats": len(st["chats"]),
         "active_chats": active,
@@ -661,6 +695,13 @@ def _absorb_updates(got) -> dict:
     with _LOCK:
         st = _load_state()
         bot_uname = st.get("bot_username")
+        if not bot_uname and BOT_USERNAME_SOURCE is not None:
+            try:
+                bot_uname = BOT_USERNAME_SOURCE() or None
+            except Exception:  # noqa: BLE001 — unknown: the join check stays lenient
+                bot_uname = None
+            if bot_uname:
+                st["bot_username"] = bot_uname
         for upd in got or []:
             st["offset"] = max(st["offset"], int(upd["update_id"]) + 1)
             msg = upd.get("message") or upd.get("edited_message")

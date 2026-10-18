@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 2.0.1
+version: 2.1.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -47,6 +47,19 @@ components:
     # accounts are NOT here: they are google-pack's, asked through its
     # component's services.
     credentials: [mailbox_]
+  # Telegram (clodia-platform#522/#558, comms-pack 2.1.0): the code that was
+  # this pack's MCP backend `telegram` runs here, inside the gateway. The bot
+  # token stays in the gateway's vault; the relay's long-poll and downloads are
+  # the component's services. Needs clodia-tools ≥ 2.115.0.
+  - id: telegram
+    target: gateway
+    source:
+      repo: r-clodia/clodia-logic
+      path: catalogs/packs/comms-pack/gateway
+      ref: main
+    entry: telegram_component
+    connectors: [telegram]
+    credentials: [telegram_bot_token]
 
 # Connettori dichiarati dal pack (grammatica di clodia-platform#516,
 # `server/connectors/SCHEMA.md` in clodia-tools). Una dichiarazione NON è una
@@ -119,6 +132,14 @@ connectors:
       - telegram.inbox
       - telegram.receive
       - telegram.pull
+      # 2.1.0 (#522/#558): as a gateway component these are no longer proxied
+      # backend verbs, which tainted by default. `poll` returns the messages
+      # themselves, `roster` names and handles written by third parties.
+      - telegram.poll
+      - telegram.roster
+    # 2.1.0: no destination, no source, nothing third-party read — classified
+    # so the gateway serves them as component verbs (unclassified = denied).
+    unmapped: [telegram.lease_acquire, telegram.lease_release, telegram.status]
     # Il bottone del topic: oggi `topics_api.telegram_link`, che fa i DUE passi
     # insieme — whitelist `tg:<chat_id>` nelle due direzioni e binding del
     # canale. `binding: channel` è il secondo passo; senza, il messaggero non

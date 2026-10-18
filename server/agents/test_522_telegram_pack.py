@@ -32,6 +32,7 @@ from __future__ import annotations
 
 import importlib.util
 import json
+import re
 import os
 import sys
 import tempfile
@@ -46,8 +47,10 @@ from ..config import workspace_path
 
 PACK = Path(workspace_path("catalogs/packs/comms-pack"))
 PLUGIN = PACK / "plugins" / "comms-pack"
-CORE_FILE = PLUGIN / "mcp" / "telegram_core.py"
-ENTRYPOINT = PLUGIN / "mcp" / "telegram_mcp.py"
+# comms-pack 2.1.0 (#522/#558): the code is the pack's GATEWAY component, no
+# longer an MCP backend.
+CORE_FILE = PACK / "gateway" / "telegram_core.py"
+ENTRYPOINT = PACK / "gateway" / "telegram_component.py"
 MCP_JSON = PLUGIN / ".mcp.json"
 MESSAGGERO = Path(workspace_path(
     "catalogs/packs/base-pack/agents/messaggero/agent.yaml"))
@@ -89,60 +92,46 @@ def _core():
     """
     spec = importlib.util.spec_from_file_location("telegram_core_pack", CORE_FILE)
     module = importlib.util.module_from_spec(spec)
-    spec.loader.exec_module(module)
+    before = sys.dont_write_bytecode
+    sys.dont_write_bytecode = True       # the gateway component ships no bytecode
+    try:
+        spec.loader.exec_module(module)
+    finally:
+        sys.dont_write_bytecode = before
     return module
 
 
 class IlPackPortaIlCodiceTests(unittest.TestCase):
     """I file ci sono e dicono la stessa cosa del manifest."""
 
-    def test_il_server_e_nel_pack_e_il_mount_lo_punta(self) -> None:
+    def test_il_codice_e_un_componente_del_gateway(self) -> None:
+        """comms-pack 2.1.0: Telegram is a `target: gateway` component, the
+        MCP backend is gone (no `.mcp.json` mount left in the plugin)."""
         self.assertTrue(CORE_FILE.is_file(), CORE_FILE)
         self.assertTrue(ENTRYPOINT.is_file(), ENTRYPOINT)
-        mount = json.loads(MCP_JSON.read_text(encoding="utf-8"))["mcpServers"]
-        # The plugin mounts only Telegram's backend: mail is comms-pack's
-        # GATEWAY component since 2.0.0 (#558, test_558_mail_component), and
-        # the backend must be named after its connector's namespace.
-        self.assertIn("telegram", mount,
-                      "il backend deve chiamarsi come il namespace del "
-                      "connettore: con un altro nome i verbi tornano come "
-                      "`<altro>.send` e nessuna mappatura li descrive più")
-        self.assertEqual(set(mount), {"telegram"})
-        telegram = mount["telegram"]
-        args = [str(x) for x in telegram.get("args") or []]
-        self.assertEqual(len(args), 1, args)
-        # Il percorso è quello in cui l'import copia `mcp/` del plugin
-        # (`plugin_import`): il file deve esistere QUI col nome che sta LÌ.
-        self.assertTrue(args[0].endswith(f"/{ENTRYPOINT.name}"), args[0])
-        self.assertIn("/plugins/comms-pack/mcp/", args[0])
+        self.assertFalse(MCP_JSON.exists(), "il backend MCP `telegram` non c'è più")
+        comp = [c for c in (_manifest().get("components") or []) if c.get("id") == "telegram"]
+        self.assertEqual(len(comp), 1)
+        (c,) = comp
+        self.assertEqual(c["target"], "gateway")
+        self.assertEqual(c["entry"], "telegram_component")
+        self.assertEqual(c["connectors"], ["telegram"])
+        self.assertEqual(c["credentials"], ["telegram_bot_token"])
 
     def test_il_token_e_quello_dichiarato_dal_connettore(self) -> None:
-        """Il mount inietta una credenziale del vault: dev'essere la voce che
-        il connettore dichiara, non un'altra. Un placeholder diverso darebbe al
-        processo del pack un segreto che il suo manifest non nomina — e che
-        nessun controllo di namespace ha mai visto.
-
-        E dev'essere nella forma col CAMPO, `${VAULT:voce.campo}`. La forma
-        nuda `${VAULT:voce}` risolve il campo `value` del bundle, che una
-        credenziale `kind: form` non ha: il placeholder resterebbe letterale e
-        il backend partirebbe con la stringa `${VAULT:…}` al posto del token —
-        un guasto che non si vede al mount, solo alla prima chiamata a
-        api.telegram.org.
-        """
-        env = json.loads(MCP_JSON.read_text(encoding="utf-8")) \
-            ["mcpServers"]["telegram"].get("env") or {}
+        """The component reads the vault entry the connector declares, and
+        the FIELD the credential form declares (`token`) — not another entry,
+        not the bare `value` a `kind: form` credential does not have."""
         credenziale = next(p["credential"] for p in _connector()["providers"]
                            if p.get("credential"))
         voce = credenziale["vault_entry"]
         campi = {c["name"] for c in credenziale.get("fields") or []}
-        self.assertTrue(campi, "la credenziale non dichiara campi")
-        ammessi = {f"${{VAULT:{voce}.{campo}}}" for campo in campi}
-        iniettati = [str(v) for v in env.values() if "VAULT:" in str(v)]
-        self.assertTrue(iniettati, "il mount non inietta nessuna credenziale")
-        for valore in iniettati:
-            self.assertIn(valore, ammessi,
-                          "il mount inietta una credenziale (o un campo) che "
-                          "il connettore non dichiara")
+        testo = ENTRYPOINT.read_text(encoding="utf-8")
+        self.assertIn(f'CREDENTIAL = "{voce}"', testo)
+        self.assertIn("token", campi)
+        self.assertIn('bundle().get("token")', testo)
+        comp = next(c for c in _manifest()["components"] if c["id"] == "telegram")
+        self.assertEqual(comp["credentials"], [voce])
 
     def test_ogni_verbo_promesso_dal_manifest_esiste_nel_server(self) -> None:
         """Il difetto silenzioso: una mappatura di egress su un verbo che
@@ -223,15 +212,14 @@ class IlPackPortaIlCodiceTests(unittest.TestCase):
         sorgente = ENTRYPOINT.read_text(encoding="utf-8")
         self.assertIn("core.TOOL_SPECS", sorgente)
         self.assertIn("core.DISPATCH", sorgente)
-        try:
-            spec = importlib.util.spec_from_file_location("telegram_mcp_pack", ENTRYPOINT)
-            modulo = importlib.util.module_from_spec(spec)
-            spec.loader.exec_module(modulo)
-        except Exception as e:  # noqa: BLE001 — `mcp` assente o di un'altra major
-            self.skipTest(f"involucro non importabile qui ({type(e).__name__}): "
-                          f"resta il controllo statico")
-        self.assertEqual([t.name for t in modulo._TOOLS],
-                         [s["name"] for s in _core().TOOL_SPECS])
+        # Every TOOL_SPEC is either an agent verb or one of the relay's two
+        # services — nothing declared and silently not served.
+        spec = importlib.util.spec_from_file_location("telegram_component_src", ENTRYPOINT)
+        testo = ENTRYPOINT.read_text(encoding="utf-8")
+        agent = set(re.findall(r'"([a-z_]+)"', testo.split("AGENT_VERBS = (", 1)[1].split(")", 1)[0]))
+        servizi = {"updates", "download"}
+        self.assertEqual(agent | servizi, {s["name"] for s in _core().TOOL_SPECS})
+        self.assertEqual(agent & servizi, set())
 
 
     def test_il_manifest_dichiara_la_chat_come_default(self) -> None:

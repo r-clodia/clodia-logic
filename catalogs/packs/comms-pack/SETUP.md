@@ -8,29 +8,29 @@ comms-pack 2.0.0 is a distribution of components (clodia-platform#558):
 
 | component | where it runs | what it is |
 |---|---|---|
-| `gateway/` (`components:`, `target: gateway`) | the gateway | mail: the eight `email.*` verbs, mailbox whitelist, strict ingress, topic attachments, reply recipient, the mailbox services of the Tools page, the IMAP/SMTP client |
-| `plugins/comms-pack` | the agent-server | the Telegram MCP backend and the skills (check-email, telegram-1to1, helpdesk) |
+| `gateway/` (`components:`, `target: gateway`) — `mail` | the gateway | the eight `email.*` verbs, mailbox whitelist, strict ingress, topic attachments, reply recipient, the mailbox services of the Tools page, the IMAP/SMTP client |
+| `gateway/` (`components:`, `target: gateway`) — `telegram` (2.1.0) | the gateway | the `telegram.*` agent verbs, the relay's long-poll and downloads (services), the Bot API client; token from the gateway's vault, state in the component's private file |
+| `plugins/comms-pack` | the agent-server | the skills (check-email, telegram-1to1, helpdesk) |
 | `connectors:` | gateway PDP + webui | `telegram` and `mail`: schemes, mappings, taint, topic buttons, Tools cards |
 
 The gateway component is never installed into the datadir: the gateway fetches
 it from r-clodia/clodia-logic (default branch), pins the commit in its own
 state directory and verifies it before every load.
 
-Requirements: clodia-tools (gateway) ≥ 2.110.0, clodia-logic ≥ 6.306.0; for
+Requirements: clodia-tools (gateway) ≥ 2.115.0 (Telegram component), clodia-logic ≥ 6.306.0; for
 Gmail accounts on `mail: pack`, google-pack ≥ 2.1.0 on `google: pack`.
 
 ## 1. Plugin dependencies (`requires`)
 
-None beyond the gateway image: the Telegram backend is stdlib Python plus the
-`mcp` package the gateway already has.
+None beyond the gateway image.
 
 ## 2. MCP servers
 
-`plugins/comms-pack/.mcp.json` mounts one stdio backend, **`telegram`** — the
-Telegram connector (clodia-platform#522). The bot token is injected from the
-gateway's vault (`${VAULT:telegram_bot_token.token}`); connect the bot from
-Tools → Telegram. (The `mail-transport` backend of 1.4.0 is gone: after the
-Update the gateway unmounts it.)
+None since 2.1.0. Telegram, the MCP backend `telegram` up to 2.0.x, is a
+gateway component (clodia-platform#522/#558): after the Update, unmount the
+stale `telegram` backend from Tools → MCP. Connect the bot from Tools →
+Telegram, as before: the token stays in the gateway's vault
+(`telegram_bot_token`).
 
 ## 3. The gateway component
 
