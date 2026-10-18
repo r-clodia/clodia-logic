@@ -8,6 +8,11 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.3.1] — 2026-10-18
+- `courier_envelopes(keys_only=True)`: the courier's first pass over a mailbox
+  gets the keys from the listing without reading any message (a mailbox with
+  large attachments timed out reading 20 of them, clodia-platform#531).
+
 ## [2.3.0] — 2026-10-18
 - **Courier services for inbound mail without a model** (clodia-platform#531):
   `courier_envelopes` returns the newest messages of a mailbox as envelopes —

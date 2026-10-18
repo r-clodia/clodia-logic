@@ -29,8 +29,11 @@ class _Fake:
         self.new = list(new)
         self.posts, self.files, self.skips = [], {}, []
 
-    def envelopes(self, room, skip):
+    def envelopes(self, room, skip, keys_only=False):
         self.skips.append(list(skip))
+        if keys_only:
+            self.primes = getattr(self, "primes", 0) + 1
+            return {"keys": [e["key"] for e in self.new], "withheld": 0}
         return {"envelopes": [e for e in self.new if e["key"] not in set(skip)],
                 "withheld": 0}
 
@@ -66,6 +69,7 @@ class CourierTests(unittest.TestCase):
         fake = _Fake([_env(1), _env(2)])
         self.assertEqual(self.run_with(fake), 0)
         self.assertEqual(fake.posts, [])
+        self.assertEqual(fake.primes, 1)                  # keys only, no reads
         fake.new.append(_env(3))
         self.assertEqual(self.run_with(fake), 1)
         self.assertEqual(len(fake.posts), 1)

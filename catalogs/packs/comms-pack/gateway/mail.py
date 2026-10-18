@@ -704,7 +704,7 @@ def envelope_key(row: dict) -> str:
 
 
 def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
-                      skip: list | None = None) -> dict:
+                      skip: list | None = None, keys_only: bool = False) -> dict:
     """The newest messages of a mailbox as ENVELOPES — id, key, from, to,
     subject, date, Message-ID, attachment names — for the gateway's courier
     (clodia-platform#531). Never the body: a message is read here only to
@@ -721,6 +721,12 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
     scope = strict_scope()
     if scope:
         rows, tolti = _filter_by_sender(rows, scope, "courier.mail")
+    if keys_only:
+        # The courier's first pass over a mailbox only records what is there:
+        # the keys come from the listing, no message is read.
+        return {"account": account, "folder": folder, "withheld": tolti,
+                "keys": [envelope_key(r) for r in (rows if isinstance(rows, list) else [])
+                         if isinstance(r, dict)]}
     out = []
     for row in rows if isinstance(rows, list) else []:
         if not isinstance(row, dict):
