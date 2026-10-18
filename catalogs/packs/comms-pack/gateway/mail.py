@@ -693,10 +693,13 @@ def get_attachment_bytes(email_id: str, filename: str, account: str = "demo",
 # ── the courier (#531): envelopes and attachments, never the body ─────────
 
 def envelope_key(row: dict) -> str:
-    """A stable key for one message from its headers. IMAP sequence ids shift
-    when a message is deleted; the courier remembers what it delivered by this."""
+    """A stable key for one message: its Message-ID when it has one, else its
+    date|from|subject. IMAP sequence ids shift when a message is deleted; the
+    courier remembers what it delivered by this."""
     import hashlib
-    raw = "|".join(str(row.get(k) or "") for k in ("date", "from", "subject"))
+    mid = str(row.get("message_id") or "").strip()
+    raw = f"mid|{mid}" if mid else "|".join(
+        str(row.get(k) or "") for k in ("date", "from", "subject"))
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:24]
 
 
@@ -712,7 +715,8 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
     strict room only declared senders pass (#503), the others counted. `skip`
     lists keys the courier already delivered: those are not read again."""
     known = {str(k) for k in (skip or [])}
-    rows = _run_json(account, ["list", "--folder", folder, "--limit", str(int(limit))])
+    limit = max(1, min(int(limit), 50))
+    rows = _run_json(account, ["list", "--folder", folder, "--limit", str(limit)])
     tolti = 0
     scope = strict_scope()
     if scope:
@@ -726,6 +730,16 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
             continue
         full = _run_json(account, ["read", str(row.get("id")), "--folder", folder])
         if not isinstance(full, dict):
+            continue
+        # IMAP ids are sequence numbers: between the listing and this read the
+        # same id can name ANOTHER message (an expunge in between). Only the
+        # message that was listed — same key — goes out, and on a strict room
+        # its sender is checked again on what was actually read.
+        if envelope_key(full) != key:
+            continue
+        if scope and not _sender_vetted(str(full.get("from") or ""), scope):
+            _record_ingress("courier.mail", "filter")
+            tolti += 1
             continue
         out.append({"id": str(row.get("id")), "key": key,
                     "from": full.get("from"), "to": full.get("to"),

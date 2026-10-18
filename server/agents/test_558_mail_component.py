@@ -514,9 +514,11 @@ class CourierTests(_OnFakeHost):
     the body; the room's inbox list and strict senders apply."""
 
     LIST = [{"id": "1", "from": "Fornitore <ordini@f.it>", "to": "studio@example.it",
-             "subject": "fattura", "date": "Sat, 18 Oct 2026 10:00:00 +0200"},
+             "subject": "fattura", "date": "Sat, 18 Oct 2026 10:00:00 +0200",
+             "message_id": "<m1@x>"},
             {"id": "2", "from": "spam@x.it", "to": "studio@example.it",
-             "subject": "offerta riservata", "date": "Sat, 18 Oct 2026 11:00:00 +0200"}]
+             "subject": "offerta riservata", "date": "Sat, 18 Oct 2026 11:00:00 +0200",
+             "message_id": "<m2@x>"}]
 
     def _fake(self, account, args, **kw):
         cmd = args[0]
@@ -524,8 +526,7 @@ class CourierTests(_OnFakeHost):
             return [dict(r) for r in self.LIST]
         if cmd == "read":
             row = next(r for r in self.LIST if r["id"] == args[1])
-            return {**row, "message_id": f"<m{row['id']}@x>",
-                    "body": "SEGRETO DEL CORPO", "attachments": ["a/b.pdf"]}
+            return {**row, "body": "SEGRETO DEL CORPO", "attachments": ["a/b.pdf"]}
         if cmd == "get-attachment":
             return {"filename": "a/b.pdf", "content_type": "application/pdf",
                     "data": base64.b64encode(b"%PDF-1").decode()}
@@ -563,6 +564,38 @@ class CourierTests(_OnFakeHost):
         self.assertEqual([e["id"] for e in out["envelopes"]], ["1"])
         self.assertEqual(out["withheld"], 1)
         self.assertNotIn("offerta riservata", repr(out))
+
+    def test_a_shifted_sequence_id_never_posts_another_message(self) -> None:
+        """Between the listing and the read an expunge can make id 1 name
+        another message: it is skipped, not posted under the listed key."""
+        other = {"id": "1", "from": "Estraneo <x@y.it>", "subject": "altro",
+                 "date": "ieri", "message_id": "<altro@y>", "body": "B",
+                 "attachments": []}
+
+        def fake(account, args, **kw):
+            if args[0] == "read" and args[1] == "1":
+                return dict(other)
+            return self._fake(account, args)
+        with patch.object(self.mail, "_run_json", side_effect=fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual([e["id"] for e in out["envelopes"]], ["2"])
+        self.assertNotIn("Estraneo", repr(out))
+
+    def test_on_a_strict_room_the_sender_read_is_checked_again(self) -> None:
+        """The listed row was vetted, but what was read carries another sender
+        (same Message-ID, forged): withheld."""
+        self.host.perimeter.strict = "SEAL-1/acme"
+        self.host.perimeter.vetted.add("mailfrom:ordini@f.it")
+
+        def fake(account, args, **kw):
+            if args[0] == "read" and args[1] == "1":
+                return {**self.LIST[0], "from": "spam@x.it", "body": "B",
+                        "attachments": []}
+            return self._fake(account, args)
+        with patch.object(self.mail, "_run_json", side_effect=fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual(out["envelopes"], [])
+        self.assertEqual(out["withheld"], 2)
 
     def test_a_mailbox_outside_the_rooms_inbox_list_is_refused(self) -> None:
         self.host.perimeter.inbox.clear()
