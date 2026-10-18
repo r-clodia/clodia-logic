@@ -7,7 +7,8 @@ one.
 ## [2.1.2] — 2026-10-18
 - **TLS verified** (clodia-platform#556, security) and **non-ASCII attachment
   names** (clodia-platform#557) in the bundled Gmail client, as in the
-  gateway's vendored copy.
+  gateway's vendored copy; a reply goes to one address, the first of the
+  original `From` (the one the egress check judges).
 
 ## [2.1.1] — 2026-10-17
 - **No code change.** Republished so that an instance already on 2.1.0 gets an

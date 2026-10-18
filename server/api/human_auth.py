@@ -8,6 +8,7 @@ inventati. Il nome NON viene chiesto: lo deriva il server dal cert.
 """
 from __future__ import annotations
 
+import ssl
 import hashlib
 import json
 import logging
@@ -117,7 +118,7 @@ def _notify_admin(text: str) -> list[str]:
             msg["To"] = em["to"]
             msg.set_content(text)
             with smtplib.SMTP(em["smtp_host"], int(em.get("smtp_port", 587)), timeout=20) as s:
-                s.starttls()
+                s.starttls(context=ssl.create_default_context())
                 if em.get("user"):
                     s.login(em["user"], em.get("password", ""))
                 s.send_message(msg)

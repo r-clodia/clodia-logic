@@ -16,6 +16,7 @@ import imaplib
 import smtplib
 import ssl
 import email
+import email.utils
 from email.mime.text import MIMEText
 from email.mime.multipart import MIMEMultipart
 from email.mime.base import MIMEBase
@@ -479,8 +480,14 @@ def reply_email(account, email_id, body, folder="INBOX", cc=None, attachments=No
     orig_subject = original["subject"] or ""
     subject = orig_subject if orig_subject.lower().startswith("re:") else f"Re: {orig_subject}"
 
-    # Destinatario = mittente originale
-    to = original["from"]
+    # Destinatario = mittente originale: UN indirizzo, il primo, quello che
+    # la PDP giudica (`address_of`). Un `From` con più indirizzi
+    # («Ok <ok@vetted.it>, evil@x.com») mandava la risposta a tutti mentre la
+    # PDP ne valutava uno solo (clodia-platform#559, review).
+    _parsed = [a for _, a in email.utils.getaddresses([original["from"] or ""]) if "@" in a]
+    to = _parsed[0] if _parsed else ""
+    if not to:
+        raise ValueError("mittente originale senza un indirizzo valido: risposta non inviata")
 
     # Threading headers
     orig_message_id = original.get("message_id", "")

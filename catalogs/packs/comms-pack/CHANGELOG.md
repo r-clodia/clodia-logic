@@ -11,7 +11,13 @@ one.
 ## [2.0.1] — 2026-10-18
 - **TLS verified** (clodia-platform#556, security): the IMAP/SMTP client checks
   the server certificate and hostname (`ssl.create_default_context()`); before,
-  imaplib/smtplib's default context checked neither.
+  imaplib/smtplib's default context checked neither. Also in the mailbox
+  login test, which sends the real password. **A mailbox on a server with a
+  self-signed or mismatched certificate now fails** on every verb with
+  `CERTIFICATE_VERIFY_FAILED`: there is no opt-out.
+- **A reply goes to ONE address** (clodia-platform#559 review): the first
+  address of the original `From`, the one the egress check judges. A `From`
+  listing several addresses used to send the reply to all of them.
 - **Non-ASCII attachment names** (clodia-platform#557) arrive named (RFC 2231).
 - **Strict ingress** (clodia-platform#560): a list/search result that is not a
   list reveals nothing on a strict channel.
