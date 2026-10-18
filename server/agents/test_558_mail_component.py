@@ -708,9 +708,12 @@ class ClientTests(unittest.TestCase):
 
     @unittest.skipUnless(TOOLS_SRC, "set CLODIA_TOOLS_SRC to a clodia-tools checkout")
     def test_the_gateways_copy(self) -> None:
+        gw = Path(TOOLS_SRC) / "vendor" / "email_client.py"
+        if not gw.is_file():
+            self.skipTest("the gateway no longer ships a mail client (clodia-tools "
+                          "≥ 2.120.0, #523): the component's is the only copy")
         self.assertEqual(_sans_note(CLIENT.read_text(encoding="utf-8")),
-                         (Path(TOOLS_SRC) / "vendor" / "email_client.py")
-                         .read_text(encoding="utf-8"))
+                         gw.read_text(encoding="utf-8"))
 
 
 # ══════════════════════════════════════════════════════════════════════════
@@ -728,6 +731,9 @@ class GatewaySourcesTests(unittest.TestCase):
             if isinstance(node, ast.AnnAssign) and getattr(node.target, "id", "") == \
                     "_EMAIL_TOOLS":
                 exec(f"_EMAIL_TOOLS = {ast.get_source_segment(src, node.value)}", ns)
+        if "_EMAIL_TOOLS" not in ns:
+            self.skipTest("the gateway no longer declares the mail verbs (clodia-tools "
+                          "≥ 2.120.0, #523): these schemas are the only copy")
         native = ns["_EMAIL_TOOLS"]
         _load_component()
         before = sys.dont_write_bytecode
@@ -743,7 +749,10 @@ class GatewaySourcesTests(unittest.TestCase):
         self.assertEqual([shape(t) for t in mine], [shape(t) for t in native])
 
     def test_the_refusal_phrase_is_the_gateways(self) -> None:
-        src = (Path(TOOLS_SRC) / "server" / "tools" / "email.py").read_text(encoding="utf-8")
+        native = Path(TOOLS_SRC) / "server" / "tools" / "email.py"
+        # The marker moved to `server/main.py` when the native client went (#523).
+        src = (native if native.is_file()
+               else Path(TOOLS_SRC) / "server" / "main.py").read_text(encoding="utf-8")
         self.assertIn('MITTENTE_NON_VAGLIATO = "mittente non vagliato"', src)
 
     def test_the_gateways_import_guard_finds_nothing(self) -> None:
