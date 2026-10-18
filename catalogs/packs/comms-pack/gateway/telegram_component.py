@@ -49,9 +49,10 @@ def _handler(host: Any, fn):
     return handle
 
 
-#: How long the bundle read from the vault is reused: every read is an audit
+#: How long the bundle read from the vault is reused (a disconnect or a new
+#: token takes effect within this): every read is an audit
 #: record, and the relay long-polls every ~25 s.
-_BUNDLE_TTL_S = 300.0
+_BUNDLE_TTL_S = 60.0
 
 
 def register(host: Any) -> None:
