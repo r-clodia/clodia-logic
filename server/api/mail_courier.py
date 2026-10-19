@@ -84,6 +84,15 @@ def attachment(room: dict, email_id: str, filename: str) -> dict:
     return r.json()
 
 
+def eml(room: dict, email_id: str) -> dict:
+    """The whole message (base64) for the topic's `.eml` copy (#576)."""
+    r = requests.post(f"{_base_url()}/eml", headers=_headers(), timeout=_HTTP_TIMEOUT,
+                      json={"tier": room["tier"], "name": room["name"],
+                            "account": room["account"], "email_id": str(email_id)})
+    r.raise_for_status()
+    return r.json()
+
+
 # ── state ─────────────────────────────────────────────────────────────────
 
 def _state_path(room: dict):
@@ -101,9 +110,10 @@ def _load(room: dict) -> dict:
     try:
         s = json.loads(p.read_text(encoding="utf-8"))
         return {"primed": bool(s.get("primed")), "keys": list(s.get("keys") or []),
-                "fails": dict(s.get("fails") or {})}
+                "fails": dict(s.get("fails") or {}),
+                "senders_sig": str(s.get("senders_sig") or "")}
     except (OSError, ValueError):
-        return {"primed": False, "keys": [], "fails": {}}
+        return {"primed": False, "keys": [], "fails": {}, "senders_sig": ""}
 
 
 def _save(room: dict, state: dict) -> None:
@@ -131,7 +141,24 @@ def _plain(value, limit: int = 300) -> str:
     return text.replace("@", "＠")[:limit]
 
 
-def envelope_text(env: dict, saved: list[str], failed: list[str]) -> str:
+#: Where the courier keeps the whole message of each delivery (#576).
+EML_DIR = "local/mailbox"
+
+
+def eml_name(env: dict) -> str:
+    """`local/mailbox/<YYYY-MM-DD>-<key8>.eml`: the date of the message when
+    its header parses, today's otherwise; the key makes it unique."""
+    from datetime import date
+    from email.utils import parsedate_to_datetime
+    try:
+        giorno = parsedate_to_datetime(str(env.get("date") or "")).date().isoformat()
+    except (TypeError, ValueError, IndexError):
+        giorno = date.today().isoformat()
+    return f"{EML_DIR}/{giorno}-{str(env.get('key') or 'x')[:8]}.eml"
+
+
+def envelope_text(env: dict, saved: list[str], failed: list[str],
+                  eml_path: str = "") -> str:
     """The post: the envelope only. Never a body — the courier never has one."""
     righe = [f"📧 Nuova mail da {_plain(env.get('from')) or '?'}",
              f"Oggetto: {_plain(env.get('subject')) or '(senza oggetto)'}",
@@ -142,6 +169,8 @@ def envelope_text(env: dict, saved: list[str], failed: list[str]) -> str:
         righe.append("Allegati salvati: " + ", ".join(f"`{p}`" for p in saved))
     if failed:
         righe.append("Allegati non salvati: " + ", ".join(_plain(f, 120) for f in failed))
+    if eml_path:
+        righe.append(f"Messaggio completo: `{eml_path}`")
     righe.append(f"(id {env.get('id')} nella casella; il testo si legge con email.read)")
     return "\n".join(righe)
 
@@ -161,14 +190,37 @@ async def _deliver(room: dict, env: dict) -> None:
             LOG.warning("mail courier: attachment of %s/%s not saved (%s)",
                         room["tier"], room["name"], type(e).__name__)
             failed.append(str(name))
+    # The whole message, untrusted, next to its attachments (#576). A copy
+    # that fails is named in the post, never retried at the envelope's cost.
+    eml_path = ""
+    try:
+        got = await asyncio.to_thread(eml, room, env["id"])
+        raw = base64.b64decode(got["content_b64"])
+        eml_path = eml_name(env)
+        await topics_client.async_put_file(
+            room["tier"], room["name"], eml_path,
+            base64.b64encode(raw).decode("ascii"), provenance="untrusted")
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("mail courier: .eml of %s/%s not saved (%s)",
+                    room["tier"], room["name"], type(e).__name__)
+        eml_path = ""
+        failed.append("messaggio completo (.eml)")
     await topics_client.async_post_message(room["tier"], room["name"], AUTHOR,
-                                           envelope_text(env, saved, failed), kind="proxy")
+                                           envelope_text(env, saved, failed, eml_path),
+                                           kind="proxy")
 
 
 async def run_room(room: dict) -> int:
     """One pass over one room's mailbox. Returns how many envelopes were
     delivered."""
     state = _load(room)
+    # The senders changed (one added, one removed): what is in the mailbox now
+    # is recorded, not delivered — a sender added today brings its mail from
+    # today, like a mailbox linked today (#576).
+    sig = str(room.get("senders_sig") or "")
+    if sig != state.get("senders_sig"):
+        state["primed"] = False
+        state["senders_sig"] = sig
     try:
         out = await asyncio.to_thread(envelopes, room, state["keys"], not state["primed"])
     except requests.HTTPError as e:
@@ -226,6 +278,10 @@ async def run_cycle() -> int:
         LOG.warning("mail courier: rooms unavailable (%s)", type(e).__name__)
         return 0
     for room in stanze:
+        # No sender declared by the room → nothing would be delivered: no
+        # IMAP at all (#576). A gateway that does not say counts as none.
+        if not room.get("senders"):
+            continue
         try:
             total += await run_room(room)
         except Exception as e:  # noqa: BLE001 — one room never stops the others

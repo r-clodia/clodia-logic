@@ -437,6 +437,25 @@ def download_attachments(account, email_id, output_dir=".", folder="INBOX"):
 
 
 
+def get_eml(account, email_id, folder="INBOX"):
+    """Il messaggio intero, RFC822, in base64 (copia .eml del corriere, #576)."""
+    imap = connect_imap(account)
+    imap.select(folder, readonly=True)
+    status, msg_data = imap.fetch(
+        email_id.encode() if isinstance(email_id, str) else email_id, "(RFC822)"
+    )
+    for response_part in msg_data or []:
+        if isinstance(response_part, tuple):
+            raw = response_part[1]
+            mid = email.message_from_bytes(raw).get("Message-ID", "")
+            imap.logout()
+            return {"id": str(email_id), "message_id": str(mid).strip(),
+                    "size": len(raw), "encoding": "base64",
+                    "data": base64.b64encode(raw).decode("ascii")}
+    imap.logout()
+    return {"error": f"messaggio {email_id} non trovato"}
+
+
 def get_attachment(account, email_id, filename, folder="INBOX"):
     """Ritorna il contenuto base64 di un singolo allegato (per nome file)."""
     imap = connect_imap(account)
@@ -749,6 +768,10 @@ def main():
     ga_parser.add_argument("--filename", required=True)
     ga_parser.add_argument("--folder", default="INBOX")
 
+    eml_parser = subparsers.add_parser("get-eml", help="Messaggio intero (RFC822) in base64")
+    eml_parser.add_argument("email_id")
+    eml_parser.add_argument("--folder", default="INBOX")
+
     # accounts
     subparsers.add_parser("accounts", help="Lista account configurati")
 
@@ -866,6 +889,9 @@ def main():
     elif args.command == "reply":
         result = reply_email(account, args.email_id, args.body, folder=args.folder, cc=args.cc, attachments=args.attachment)
         print(json.dumps({"status": "ok", "message": f"Reply inviato da {account['email']}", "to": result["to"], "subject": result["subject"]}))
+
+    elif args.command == "get-eml":
+        print(json.dumps(get_eml(account, args.email_id, args.folder), ensure_ascii=False))
 
     elif args.command == "get-attachment":
         result = get_attachment(account, args.email_id, args.filename, args.folder)

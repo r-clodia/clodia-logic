@@ -61,7 +61,7 @@ EMAIL_VERBS = sorted(["email.send", "email.folders", "email.list", "email.read",
                       "email.reply"])
 SERVICES = sorted(["pdp_arguments", "diagnostics", "system_mailboxes", "mailbox_address",
                    "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes",
-                   "courier_envelopes", "courier_attachment"])
+                   "courier_envelopes", "courier_attachment", "courier_eml"])
 
 
 def _connector(doc: dict, cid: str = "mail") -> dict:
@@ -136,7 +136,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.3.2")
+        self.assertEqual(doc["version"], "2.4.0")
         self.assertIs(doc["first_party"], True)
         # ONE gateway component per pack (the gateway refuses a second): from
         # 2.1.1 it serves mail and Telegram (#522, test_522_telegram_component).
@@ -228,6 +228,8 @@ class FakePerimeter:
         self.vetted: set[str] = set()
         self.strict = None
         self.legacy: dict = {}
+        #: Senders the CURRENT room itself declares (`mailfrom:`, #576).
+        self.room_senders: set[str] = set()
 
     def mailbox_allowed(self, direction, address, scope=None):
         return address in (self.inbox if direction == "inbox" else self.outbox)
@@ -242,6 +244,9 @@ class FakePerimeter:
 
     def source_vetted(self, uri, scope=None):
         return uri in self.vetted
+
+    def room_declares_sender(self, header):
+        return self.address_of(header) in self.room_senders
 
     def legacy_mail_accounts(self):
         return dict(self.legacy)
@@ -511,7 +516,12 @@ class StrictIngressTests(_OnFakeHost):
 
 class CourierTests(_OnFakeHost):
     """The courier's services (#531): envelopes and attachment bytes, never
-    the body; the room's inbox list and strict senders apply."""
+    the body; the room's inbox list applies, and only the senders the room
+    ITSELF declares pass (#576), strict or not."""
+
+    def setUp(self) -> None:
+        super().setUp()
+        self.host.perimeter.room_senders = {"ordini@f.it", "spam@x.it"}
 
     LIST = [{"id": "1", "from": "Fornitore <ordini@f.it>", "to": "studio@example.it",
              "subject": "fattura", "date": "Sat, 18 Oct 2026 10:00:00 +0200",
@@ -530,6 +540,9 @@ class CourierTests(_OnFakeHost):
         if cmd == "get-attachment":
             return {"filename": "a/b.pdf", "content_type": "application/pdf",
                     "data": base64.b64encode(b"%PDF-1").decode()}
+        if cmd == "get-eml":
+            return {"id": args[1], "message_id": "<m1@x>", "size": 9,
+                    "data": base64.b64encode(b"RAW-EML-1").decode()}
         raise AssertionError(cmd)
 
     def svc(self, name, args):
@@ -569,9 +582,8 @@ class CourierTests(_OnFakeHost):
         self.assertEqual([e["id"] for e in out["envelopes"]], ["2"])
         self.assertEqual(reads, ["2"])
 
-    def test_a_strict_room_gets_only_declared_senders(self) -> None:
-        self.host.perimeter.strict = "SEAL-1/acme"
-        self.host.perimeter.vetted.add("mailfrom:ordini@f.it")
+    def test_a_room_gets_only_its_declared_senders(self) -> None:
+        self.host.perimeter.room_senders = {"ordini@f.it"}
         with patch.object(self.mail, "_run_json", side_effect=self._fake):
             out = self.svc("courier_envelopes", {"account": "studio"})
         self.assertEqual([e["id"] for e in out["envelopes"]], ["1"])
@@ -594,11 +606,10 @@ class CourierTests(_OnFakeHost):
         self.assertEqual([e["id"] for e in out["envelopes"]], ["2"])
         self.assertNotIn("Estraneo", repr(out))
 
-    def test_on_a_strict_room_the_sender_read_is_checked_again(self) -> None:
-        """The listed row was vetted, but what was read carries another sender
+    def test_the_sender_read_is_checked_again(self) -> None:
+        """The listed row was declared, but what was read carries another sender
         (same Message-ID, forged): withheld."""
-        self.host.perimeter.strict = "SEAL-1/acme"
-        self.host.perimeter.vetted.add("mailfrom:ordini@f.it")
+        self.host.perimeter.room_senders = {"ordini@f.it"}
 
         def fake(account, args, **kw):
             if args[0] == "read" and args[1] == "1":
@@ -623,13 +634,47 @@ class CourierTests(_OnFakeHost):
         self.assertEqual(out["filename"], "a-b.pdf")
         self.assertEqual(out["size"], 6)
 
-    def test_a_strict_room_refuses_a_strangers_attachment(self) -> None:
-        self.host.perimeter.strict = "SEAL-1/acme"
+    def test_a_strangers_attachment_is_refused(self) -> None:
+        self.host.perimeter.room_senders = {"ordini@f.it"}
         with patch.object(self.mail, "_run_json", side_effect=self._fake):
             with self.assertRaises(PermissionError):
                 self.svc("courier_attachment", {"account": "studio", "email_id": "2",
                                                 "filename": "a/b.pdf"})
 
+
+    # ── #576 ───────────────────────────────────────────────────────────────
+    def test_a_room_that_declares_nobody_gets_nothing(self) -> None:
+        self.host.perimeter.room_senders = set()
+        self.host.perimeter.vetted.add("mailfrom:ordini@f.it")   # global: not enough
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+            keys = self.svc("courier_envelopes", {"account": "studio", "keys_only": True})
+        self.assertEqual(out["envelopes"], [])
+        self.assertEqual(out["withheld"], 2)
+        self.assertEqual(keys["keys"], [])
+
+    def test_the_eml_is_the_whole_message_of_a_declared_sender(self) -> None:
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_eml", {"account": "studio", "email_id": "1"})
+        self.assertEqual(base64.b64decode(out["content_b64"]), b"RAW-EML-1")
+        self.assertEqual(out["size"], 9)
+
+    def test_a_strangers_eml_is_refused(self) -> None:
+        self.host.perimeter.room_senders = {"ordini@f.it"}
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            with self.assertRaises(PermissionError):
+                self.svc("courier_eml", {"account": "studio", "email_id": "2"})
+
+    def test_an_older_gateway_delivers_nothing_rather_than_everything(self) -> None:
+        del self.host.perimeter.room_senders
+        orig = type(self.host.perimeter).room_declares_sender
+        try:
+            del type(self.host.perimeter).room_declares_sender
+            with patch.object(self.mail, "_run_json", side_effect=self._fake):
+                with self.assertRaises(RuntimeError):
+                    self.svc("courier_envelopes", {"account": "studio"})
+        finally:
+            type(self.host.perimeter).room_declares_sender = orig
 
 class GmailTests(_OnFakeHost):
     def setUp(self) -> None:

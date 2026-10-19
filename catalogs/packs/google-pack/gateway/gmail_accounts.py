@@ -111,7 +111,7 @@ def _oauth_files(credential: str) -> dict[str, str]:
 #: The email client commands the `email.*` verbs need (never `configure`,
 #: `download-attachments` to arbitrary paths, …).
 _ALLOWED_COMMANDS = frozenset({"folders", "list", "read", "search", "send",
-                               "reply", "get-attachment", "accounts"})
+                               "reply", "get-attachment", "get-eml", "accounts"})
 
 
 def mail_exec(payload: dict) -> dict:

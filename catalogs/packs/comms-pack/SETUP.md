@@ -42,8 +42,7 @@ Telegram, as before: the token stays in the gateway's vault
         https://<gateway>/internal/components
    ```
 
-   With the switch still on `native` its status is **`standby`** (pinned, not
-   imported, nothing served by it): expected.
+   Its status must then be **`loaded`**.
 2. **Every later Update**: the pin does NOT move by itself. A human admin asks
    the gateway to fetch the new head of `main`:
 
@@ -56,49 +55,55 @@ Telegram, as before: the token stays in the gateway's vault
 `telegram_status`, `telegram_notify` and `telegram_chat_admins`; clodia-tools ≥ 2.119.0 relies on them
 (it has no Telegram client of its own any more). Update comms-pack first.
 
-## 4. Turning the connectors on
+## 4. The connectors
 
-Both are off until the instance profile switches them:
+Telegram and mail are always comms-pack's (clodia-tools ≥ 2.124.0 retired the
+`connectors: native|pack` switch, clodia-platform#526; a leftover `connectors:`
+key in `profile.yaml` is ignored).
 
-```yaml
-# $CLODIA_DATA/profile.yaml
-connectors:
-  telegram: pack
-  mail: pack
-```
-
-then restart the gateway. With `native` (the default) the gateway keeps using
-its built-in code and the mail component stays on standby.
-
-On `mail: pack`:
 - **IMAP/SMTP mailboxes** (`mailbox_<acct>`) are served by the component. The
-  credentials stay in the gateway's vault with the same names: nothing to
-  re-enter. Tools → mailboxes keeps working (same URLs, same authentication;
-  the gateway's routes call the component).
+  credentials stay in the gateway's vault. Tools → mailboxes works as before.
 - **Gmail accounts** (`google_<acct>`) are served through google-pack's
-  component: they need google-pack ≥ 2.1.0 and `google: pack`. Otherwise they
-  are refused (the error names google-pack).
+  component (google-pack ≥ 2.2.0 for the courier's `.eml` copy).
 - **Legacy accounts** (`secrets/email_config.json`) are refused: move them to
-  the vault (Tools → mailboxes) first, or stay on `native`.
+  the vault (Tools → mailboxes).
 
 Mailboxes are authorised per topic with the admin-only "Autorizza una casella"
-button, whichever position the switch is in.
+button.
+
+## 4b. Mail into a topic: the courier (from 2.4.0, clodia-platform#576)
+
+The platform's courier brings mail into a topic only when the topic declares,
+among ITS OWN ingress entries, both:
+
+- `inbox:<mailbox>` — which mailbox it reads;
+- `mailfrom:<sender>` — whose mail concerns this topic (`*@domain` works).
+
+A mailbox feeds many topics; each gets only its declared senders. Global
+`mailfrom:` entries and the topic's participants do not count. A topic with an
+`inbox:` and no `mailfrom:` receives nothing. A sender added later brings its
+mail from then on (what is already in the mailbox is recorded, not delivered).
+
+Each delivery: an envelope post by `posta` (never the body), the attachments in
+`files/posta-<key8>-<name>`, the whole message in
+`local/mailbox/<date>-<key8>.eml` — all untrusted. Needs clodia-tools ≥ 2.126.0
+and clodia-logic ≥ 6.314.0.
 
 ## 5. Verification
 
-`GET /internal/components` → comms-pack/mail `loaded`, 8 verbs. Then, with
-`mail: pack`:
+`GET /internal/components` → comms-pack/mail `loaded`. Then:
 
 - `email.list`/`email.read` on an authorised IMAP mailbox, `email.send` to a
-  whitelisted `mailto:` (same results as `native`);
+  whitelisted `mailto:`;
 - `email.list` on a Google account by an agent with email tools (Gmail via
   google-pack);
 - on a strict-ingress channel, a message from an undeclared sender is withheld
   from `email.list` and refused by `email.read` ("mittente non vagliato");
 - Tools → mailboxes → Test: one line per mailbox;
-- `telegram: pack`: `telegram.status` reports the bot.
+- `telegram.status` reports the bot;
+- a topic with `inbox:` + `mailfrom:<you>`: a mail from you arrives (envelope +
+  `local/mailbox/*.eml`), one from another sender does not.
 
 If the component is missing, refused or failed, every `email.*` verb is
 refused (DENIED, naming the component) and the mailbox routes answer 503 —
-never served by the built-in code. Set `connectors: {mail: native}` and
-restart the gateway to go back.
+there is no built-in fallback.
