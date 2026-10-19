@@ -100,11 +100,8 @@ class ExpansionClosureTests(unittest.TestCase):
     """`add_participant` non è l'unico verbo che allarga la composizione: il
     catalogo trifecta conta come `expansion` anche `agents.*`."""
 
-    def test_messaggero_and_segretario_can_no_longer_expand(self) -> None:
-        seeds = _seeds()
-        for name in ("messaggero", "segretario"):
-            with self.subTest(seed=name):
-                self.assertFalse(trifecta.agent_profile(seeds[name])["expands"])
+    def test_segretario_can_no_longer_expand(self) -> None:
+        self.assertFalse(trifecta.agent_profile(_seeds()["segretario"])["expands"])
 
     def test_sysadmin_still_expands_through_agents_wildcard(self) -> None:
         """Caveat misurato, non dimenticanza.
@@ -167,100 +164,26 @@ class GrantHygieneTests(unittest.TestCase):
         sparire.
         """
         seeds = _seeds()
-        # messaggero è il postino: comunica e pianifica il polling. Gli allegati
-        # restano materializzati server-side (`email.topic_files`,
-        # `telegram.send_file`): i verbi di scrittura che ha dal 9 set 2026
-        # servono a DEPOSITARE nel topic ciò che trasporta, non a spedirlo, e
-        # stanno nel test dedicato qui sotto.
-        for verb in ("email.*", "telegram.*", "jobs.propose"):
-            with self.subTest(seed="messaggero", verb=verb):
-                self.assertIn(verb, seeds["messaggero"].tool_permissions)
+        # clodia risponde fuori dalla stanza da quando il messaggero è stato
+        # ritirato (clodia-platform#531): senza `channel.deliver` nessun seed
+        # risponderebbe più a un gruppo Telegram collegato.
+        for verb in ("channel.deliver", "email.send"):
+            with self.subTest(seed="clodia", verb=verb):
+                self.assertIn(verb, _grants(seeds["clodia"]))
         # sysadmin amministra: resta largo per natura del ruolo.
         self.assertGreater(len(_grants(seeds["sysadmin"])), 40)
         for verb in ("agents.*", "settings.*", "web.post"):
             with self.subTest(seed="sysadmin", verb=verb):
                 self.assertIn(verb, _grants(seeds["sysadmin"]))
 
-    def test_messaggero_writes_into_the_scope_but_still_cannot_read_it(self) -> None:
-        """La porta deposita, e continua a non leggere la stanza.
-
-        Fino al 9 set 2026 questo test asseriva l'opposto sulla scrittura
-        (`assertFalse({"topic.put", "topic.write_file"} & own)`), che era la
-        remediation A2/#193 per intero: né lettura né scrittura del fs dello
-        scope. **Decisione dell'owner del 2026-09-09** (clodia-platform#331):
-        messaggero deve poter persistere nel topic ciò che trasporta — il testo
-        integrale di un thread email — e i due verbi di scrittura tornano, in
-        modo permanente e non come grant d'istanza.
-
-        La riscrittura è deliberatamente PARZIALE, ed è il punto di questo test:
-        della clausola 2 di A2 cade la metà «non scrive», resta intera la metà
-        «non legge». Sono separabili perché è la LETTURA a rendere pericolosa la
-        posizione — un corriere che può leggere i documenti della stanza è una
-        via di esfiltrazione con il mezzo di consegna già attaccato, visto che
-        tiene le credenziali per spedire fuori. Depositare un testo che ha
-        prodotto lui non apre quella via: nulla di ciò che il messaggero scrive
-        gli era ignoto un istante prima.
-
-        Perciò `denied_tools` non si tocca, e `gdrive.*` — che raggiungerebbe i
-        *remote*, l'altra esclusione del mandato — resta fuori. Se un domani una
-        di queste due righe cadesse, non sarebbe un'estensione di #331: sarebbe
-        la clausola che #331 non ha superato.
-        """
-        spec = _seeds()["messaggero"]
-        own = set(spec.tool_permissions)
-        denied = set(spec.denied_tools or [])
-        # Ciò che la decisione del 2026-09-09 concede.
-        self.assertTrue(
-            {"topic.write_file", "topic.put"} <= own,
-            "clodia-platform#331: la scrittura nel topic è una decisione "
-            "dell'owner, e deve stare nel SEED — un grant d'istanza sparisce "
-            "silenziosamente al primo Update del pack")
-        # Ciò che di A2/#193 sopravvive, invariato.
-        self.assertTrue({"topic.files", "topic.read_file", "topic.read_document",
-                         "topic.fetch"} <= denied)
-        self.assertFalse(any(v.startswith("gdrive.") for v in own))
-
-    def test_the_postman_declares_the_retired_gate_empty(self) -> None:
-        """`gated_in_channel` è stato RITIRATO, e il seed deve dirlo azzerandolo.
-
-        Il gate era un surrogato della domanda «chi sta chiedendo?», posta per
-        approssimazione — *qualcuno è in un canale* — e sbagliava in due modi: una
-        DM è un canale, quindi chiedeva l'approvazione all'owner per la propria
-        richiesta nella propria stanza; e non guardava affatto CHI avesse chiesto,
-        che è ciò che diceva di proteggere. Oggi il presidio è la DESTINAZIONE
-        (`egress_allow`, che contiene solo recapiti dell'owner), in attesa che la
-        catena `origin` sia in enforcement.
-
-        Ciò che questo test protegge è la forma della rimozione: **dichiarata
-        vuota, non omessa**. `upsert_agent` non è distruttivo sui campi `None`, e
-        un campo assente significa «tieni quello che hai» — togliendo solo le
-        righe, il gate sarebbe rimasto vivo nella config del gateway (verificato
-        il 7 ago 2026: restava dopo il deploy).
-
-        I due test che stavano qui asserivano la decisione PRECEDENTE e sono stati
-        rossi dal ritiro fino al 16 ago 2026, senza che nessuno li eseguisse —
-        decision record 34.
-        """
-        spec = _seeds()["messaggero"]
-        gic = getattr(spec, "gated_in_channel", None)
-        self.assertIsNotNone(
-            gic,
-            "campo OMESSO invece che vuoto: `upsert_agent` lascerebbe il gate "
-            "vivo nella config del gateway, e la rimozione non arriverebbe mai")
-        self.assertEqual([], list(gic or []),
-                         "il gate ritirato deve restare dichiarato e vuoto")
-
-    def test_the_postman_still_holds_its_outbound_verbs(self) -> None:
-        """Ritirare il gate non toglie il mestiere: il corriere spedisce ancora.
-
-        È la coppia del test sopra: se un giorno sparissero i verbi invece del
-        gate, il seed resterebbe «coerente» e il postino muto.
-        """
-        grants = set(_grants(_seeds()["messaggero"]))
-        self.assertTrue(
-            {"email.*", "telegram.*"} <= grants or
-            {"email.send", "telegram.send"} <= grants,
-            f"il corriere non ha più i verbi d'uscita: {sorted(grants)}")
+    def test_the_postman_is_retired(self) -> None:
+        """Il messaggero non c'è più (clodia-platform#531): la posta entra col
+        corriere, che è codice, e si risponde con `channel.deliver`. Il verbo
+        d'uscita NON sta su `segretario`: gli accenderebbe la gamba d'uscita
+        della trifecta, fuori dal perimetro di sola lettura deciso in #192."""
+        seeds = _seeds()
+        self.assertNotIn("messaggero", seeds)
+        self.assertNotIn("channel.deliver", _grants(seeds["segretario"]))
 
 
 if __name__ == "__main__":  # pragma: no cover

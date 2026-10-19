@@ -208,7 +208,8 @@ class RelayGateTests(unittest.TestCase):
     def test_the_request_goes_to_the_coordinator_with_an_explicit_directive(self):
         """Sintassi decisa da Davide: «@clodia, riporto dal gruppo telegram … il
         seguente messaggio di utente telegram <nome>: '<testo>'». L'unica
-        convocazione è il coordinatore, che poi incarica il messaggero."""
+        convocazione è il coordinatore, che risponde con `channel.deliver`
+        (clodia-platform#531: il messaggero è stato ritirato)."""
         from . import mentions
         _i, postati, turni = self._run(False, testo="@clodia_topics_bot chiedi la lista delle issue",
                                        username="therealdadabit", group=True,
@@ -222,7 +223,8 @@ class RelayGateTests(unittest.TestCase):
         kw = self.turn_kw
         self.assertEqual(kw["responder_hint"], "clodia")
         self.assertEqual(kw["directive"], channel_relay._directive(_TG))
-        self.assertIn("incarica il messaggero", kw["directive"])
+        self.assertIn("channel.deliver", kw["directive"])
+        self.assertIn("tg:<chat_id>", kw["directive"])
         self.assertIn("chat_id numerico", kw["directive"])
         self.assertEqual(kw["trigger_kind"], "external")
 
@@ -233,7 +235,8 @@ class RelayGateTests(unittest.TestCase):
         self.assertEqual(len(postati), 1)
         self.assertEqual(["clodia"], mentions.extract_tags(postati[0]))
         self.assertIn("`@giocasu75`", postati[0])
-        self.assertEqual("ai", self.post_kinds[-1][1])
+        # The relay is code: its post is the connector's, not an agent turn.
+        self.assertEqual("proxy", self.post_kinds[-1][1])
 
     def test_an_attachment_on_the_request_is_saved_and_cited(self):
         async def _dl(file_id):

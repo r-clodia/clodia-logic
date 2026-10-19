@@ -10,6 +10,16 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.40.0] — 2026-10-19
+- **The `messaggero` seed is retired** (clodia-platform#531). Inbound mail and
+  Telegram reach the topics through deterministic code (the courier and the
+  relay: envelopes and attachments, never a model on the transport); the
+  topic's agents answer outside with the gateway verb `channel.deliver`,
+  granted to `clodia` (not to `segretario`, which stays inside its #192
+  perimeter). The constitution
+  (`platform-core`, principle 4) says so; the CRM datastore is `clodia`'s only.
+  See SETUP for removing the old agent from an instance.
+
 ## [7.39.0] — 2026-10-18
 - **`topic-files`: the Mac-shared folder is `shared/`** (clodia-platform#571).
   The skill documents the new mount (one per topic, `ClodiaShared/<codename>/`

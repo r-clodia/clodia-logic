@@ -54,8 +54,9 @@ restarting by writing `CLODIA_DATA/routing/router.yaml`; partial overrides are
 merged over the versioned defaults and picked up on the next routing decision.
 
 The bundled seeds are `archseed` (abstract, the ancestor that holds the base
-verbs and cannot be spawned), `clodia`, `ophelia`, `segretario`, `messaggero`,
-`sysadmin`. An instance's own agents live only in its datadir, never here.
+verbs and cannot be spawned), `clodia`, `ophelia`, `segretario`,
+`sysadmin`. The retired `messaggero` (clodia-platform#531) is replaced by the
+mail courier and the gateway verb `channel.deliver`. An instance's own agents live only in its datadir, never here.
 
 ## Agent SDK
 

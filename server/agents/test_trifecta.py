@@ -178,8 +178,7 @@ class SeedAgentsTests(unittest.TestCase):
         # conta eventi (taint) e fatti sullo scope (file davvero presenti,
         # destinazione davvero non confinata) — non le capacità di chi vi
         # partecipa.
-        expected = {"clodia": 3, "ophelia": 3, "sysadmin": 3, "messaggero": 3,
-                    "segretario": 2}
+        expected = {"clodia": 3, "ophelia": 3, "sysadmin": 3, "segretario": 2}
         got = {n: trifecta.agent_profile(_seed(n), all_specs=_all_seeds())["score"] for n in expected}
         self.assertEqual(got, expected)
 
@@ -198,7 +197,7 @@ class SeedAgentsTests(unittest.TestCase):
     def test_seed_shell_flags(self) -> None:
         self.assertTrue(trifecta.agent_profile(_seed("sysadmin"))["shell"])
         self.assertTrue(trifecta.agent_profile(_seed("clodia"))["shell"])
-        self.assertFalse(trifecta.agent_profile(_seed("messaggero"))["shell"])
+        self.assertFalse(trifecta.agent_profile(_seed("segretario"))["shell"])
 
 
 class ContextProfileTests(unittest.TestCase):

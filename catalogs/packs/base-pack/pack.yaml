@@ -2,9 +2,9 @@ name: base-pack
 description: >-
   Pack di base della piattaforma Clodia (first-party, sempre presente): solo le
   primitive trasversali di piattaforma + gli agent seed di sistema (clodia,
-  ophelia, messaggero, sysadmin, segretario). A differenza dei pack di terze parti è trusted per
+  ophelia, sysadmin, segretario). A differenza dei pack di terze parti è trusted per
   costruzione: non passa dal security-review gate e non è disinstallabile.
-version: 7.39.0
+version: 7.40.0
 license: AGPL-3.0-or-later
 first_party: true
 # Sorgente per Check update / Update (Opzione A): il pack si aggiorna dal suo
@@ -20,7 +20,6 @@ upstream:
 agents:
   - clodia
   - ophelia
-  - messaggero
   - sysadmin
   - segretario
 plugins:
@@ -39,4 +38,4 @@ datastores:
     pii: true
     backup: true
     clearance: "SEAL-1"
-    seeds: ["messaggero", "clodia"]
+    seeds: ["clodia"]

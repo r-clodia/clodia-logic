@@ -153,7 +153,7 @@ class AMentionedHumanIsNotOfferedTheInviteButtonTests(_FuoriStanza):
         nota = posts[-1]["text"]
         self.assertIn("davide", nota)
         self.assertNotIn("<!-- invite=", nota)
-        self.assertIn("messaggero", nota)
+        self.assertIn("channel.deliver", nota)
 
     async def test_a_mixed_mention_invites_only_the_bot(self) -> None:
         """`@accountant` (bot) e `@davide` (umano) nello stesso messaggio: la
@@ -164,7 +164,7 @@ class AMentionedHumanIsNotOfferedTheInviteButtonTests(_FuoriStanza):
         nota = posts[-1]["text"]
         self.assertIn("<!-- invite=accountant -->", nota)
         self.assertNotIn("davide" + " -->", nota)  # non nella pill
-        self.assertIn("messaggero", nota)
+        self.assertIn("channel.deliver", nota)
 
 
 class TheWatcherKeepsItsOwnDoorTests(_FuoriStanza):

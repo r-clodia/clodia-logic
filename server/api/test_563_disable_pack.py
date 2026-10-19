@@ -31,7 +31,7 @@ class _Req:
 def _manifest(root: Path, name: str, **extra) -> Path:
     d = root / "packs" / name
     d.mkdir(parents=True, exist_ok=True)
-    m = {"name": name, "version": "1.0.0", "agents": [f"{name}-agent", "messaggero"],
+    m = {"name": name, "version": "1.0.0", "agents": [f"{name}-agent", "ophelia"],
          "plugins": [name], **extra}
     p = d / "pack.yaml"
     p.write_text(yaml.safe_dump(m), encoding="utf-8")
@@ -100,7 +100,7 @@ class FlagTests(_Env):
 class WhatStopsTests(_Env):
     def test_agents_of_a_disabled_pack_are_not_loaded(self) -> None:
         agents = self.data / "agents"
-        for n in ("acme-pack-agent", "messaggero"):
+        for n in ("acme-pack-agent", "ophelia"):
             (agents / n).mkdir(parents=True)
             (agents / n / "agent.yaml").write_text(yaml.safe_dump({
                 "name": n, "display_name": n, "description": "x", "type": "normal",
@@ -113,7 +113,7 @@ class WhatStopsTests(_Env):
         reg.load()
         names = {s.name for s in reg.list()}
         self.assertNotIn("acme-pack-agent", names)
-        self.assertIn("messaggero", names)          # native: never switched off
+        self.assertIn("ophelia", names)             # native: never switched off
         self.assertTrue((agents / "acme-pack-agent" / "agent.yaml").is_file())  # kept
 
     def test_skills_and_rules_are_not_served(self) -> None:

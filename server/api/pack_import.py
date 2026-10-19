@@ -72,7 +72,7 @@ PACKS_META_DIR = data_path("packs")
 # stesso nome come UNA mention, non due.
 _AGENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,30}(?:\.[a-z0-9][a-z0-9_-]{0,30})?")
 # Nomi nativi non installabili da pack (allineato ad agent_registry._NATIVE_AGENTS).
-_NATIVE_AGENTS = {"clodia", "ophelia", "messaggero"}
+_NATIVE_AGENTS = {"clodia", "ophelia"}
 
 RESERVED_PACK_NAMES = plugin_import.RESERVED_PLUGIN_NAMES
 NON_REMOVABLE_PACK_NAMES = plugin_import.NON_REMOVABLE_PACK_NAMES
@@ -246,7 +246,7 @@ def _install_seed(sdir: Path, *, force: bool = False,
     if force and force_only is not None and name not in force_only:
         force = False
     if name in _NATIVE_AGENTS and not force:
-        # I nativi (clodia/ophelia/messaggero) sono installati da init-datadir.sh,
+        # I nativi (clodia/ophelia) sono installati da init-datadir.sh,
         # non da pack. Se già presenti (caso normale, es. re-install del base-pack)
         # li si SALTA silenziosamente ("exists"); se assenti, è un pack che tenta
         # di introdurre un nome nativo → errore. Con force (update first-party) si
