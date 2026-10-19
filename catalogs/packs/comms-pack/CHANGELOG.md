@@ -8,6 +8,14 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.3.2] — 2026-10-19
+- **No messaggero** (clodia-platform#531): the `check-email` skill describes the
+  courier (envelopes in the topic, attachments saved) and `channel.deliver` for
+  answers, instead of a polling job run by the messaggero agent. It also says
+  that `mailfrom:` does not bring mail in (only `inbox:` does, #503) and that
+  reading a mail does not authorize answering it (#415). Comments no longer
+  name it.
+
 ## [2.3.1] — 2026-10-18
 - `courier_envelopes(keys_only=True)`: the courier's first pass over a mailbox
   gets the keys from the listing without reading any message (a mailbox with

@@ -37,11 +37,11 @@ mailbox_parent: clodia
 #       gateway: dev'essere PARTICIPANT del topic e avere clearance ≥ tier; su un
 #       topic di cui NON è participant scatta il gate cross-topic (approvazione
 #       owner). Nessun accesso RAW-FS ai topic (deny_read topics/**): come per
-#       messaggero, il canale ai file sono i TOOL, non il filesystem.
+#       agenti di canale, il canale ai file sono i TOOL, non il filesystem.
 #     - Ispezione dal widget: `runtime.inspect_topic` (metadati + agenti + ultimi
 #       messaggi) anche da NON-participant, ma solo entro la clearance (SEAL < tier
 #       → 403). I confidenziali sopra la sua SEAL restano invisibili.
-#     - `topic.post_message` resta prerogativa di clodia/ophelia/messaggero (non di sysadmin).
+#     - `topic.post_message` resta prerogativa di clodia/ophelia (non di sysadmin).
 #   • NIENTE confidenziale: clearance SEAL-1 < soglia SEAL-2; nessun dato utente fuori
 #     dai datastore dichiarati dai pack.
 #   • NIENTE segreti: no secrets/, no vault, no keystore provider (pause/resume di un
@@ -101,10 +101,10 @@ tool_permissions:
   # repository e release e gestire il ciclo di vita delle issue, senza ottenere
   # permessi di scrittura su codice, branch, release o configurazione dei repo.
   # ── Front-of-house (ex janitor): lettura stato UI non sensibile per guidare ──
-  # ── File dei topic: stesse regole degli altri agent (es. messaggero) ──
+  # ── File dei topic: stesse regole degli altri agent  ──
   # list/read/put/delete file, open, summary/minute. Enforcement gateway:
   # participant + clearance ≥ tier; topic non-participant → gate cross-topic.
-  # post_message resta bloccato (prerogativa clodia/ophelia/messaggero) dal suo guard.
+  # post_message resta bloccato (prerogativa clodia/ophelia) dal suo guard.
   #
   # `topic.*` ESPLOSO nell'elenco puntuale per togliere UN SOLO verbo,
   # `topic.add_participant` (clodia-platform#104 §10.2): sysadmin amministra la

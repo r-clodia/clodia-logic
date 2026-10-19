@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 2.3.1
+version: 2.3.2
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -130,7 +130,7 @@ connectors:
     unmapped: [telegram.lease_acquire, telegram.lease_release, telegram.status]
     # Il bottone del topic: oggi `topics_api.telegram_link`, che fa i DUE passi
     # insieme — whitelist `tg:<chat_id>` nelle due direzioni e binding del
-    # canale. `binding: channel` è il secondo passo; senza, il messaggero non
+    # canale. `binding: channel` è il secondo passo; senza, il relay non
     # riporta nulla pur con la whitelist scritta.
     topic_actions:
       - id: telegram-link

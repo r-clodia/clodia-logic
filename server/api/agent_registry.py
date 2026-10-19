@@ -1063,14 +1063,14 @@ class AgentCreate(BaseModel):
 
 # Agenti NATIVI della piattaforma: seed nel repo (catalogs/agents-seed), clonati
 # con ogni istanza. Nome riservato → non ricreabili via API.
-_NATIVE_AGENTS = {"clodia", "ophelia", "messaggero"}
+_NATIVE_AGENTS = {"clodia", "ophelia"}
 
 
 @router.post("", status_code=201, response_model=AgentSpec)
 async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
     """Crea un nuovo agente USER-DEFINED generando lo scaffold direttamente dallo
     schema (single source of truth — niente file-template da tenere allineato),
-    poi reload. Gli agent nativi (clodia/ophelia/messaggero) sono seed nel repo."""
+    poi reload. Gli agent nativi (clodia/ophelia) sono seed nel repo."""
     # PRE-CLAIM: su un'istanza non ancora reclamata questa è l'UNICA azione
     # permessa, e chiedere un admin per crearne il primo è uno stallo — l'admin
     # non può esistere prima di sé stesso. Il middleware `_bootstrap_gate` lo
@@ -1100,6 +1100,10 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
         raise HTTPException(400, "nome invalido (usa [a-z0-9_-], inizia con alfanumerico)")
     if name in _NATIVE_AGENTS:
         raise HTTPException(409, f"'{name}' è un agent nativo della piattaforma, non ricreabile da qui")
+    from .pack_import import RETIRED_AGENTS
+    if name in RETIRED_AGENTS:
+        raise HTTPException(409, f"'{name}' è un agente ritirato dalla piattaforma: "
+                                 "il nome resta riservato")
     target = registry.base_dir / name
     if target.exists():
         raise HTTPException(409, f"agent '{name}' esiste già")

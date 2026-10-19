@@ -36,7 +36,7 @@ mkdir -p "$DATADIR/secrets/keystore"
 
 # Seed agent: installa gli agent NATIVI della piattaforma dal base-pack
 # (catalogs/packs/base-pack/agents/): clodia, ophelia — super; sysadmin — admin;
-# messaggero; janitor. Sono il genoma clonato con ogni istanza. Eventuali agent
+# segretario; janitor. Sono il genoma clonato con ogni istanza. Eventuali agent
 # aggiuntivi dell'istanza vivono in CLODIA_DATA/agents/ e non stanno nel repo.
 # Copia solo se manca, per non sovrascrivere editing locale.
 # Terraformazione (Modular Distro): se esiste $DATADIR/native-seeds (un nome

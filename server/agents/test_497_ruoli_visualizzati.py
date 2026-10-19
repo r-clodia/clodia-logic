@@ -175,9 +175,9 @@ class OrdineEFormaTests(unittest.TestCase):
 class SeedVeriTests(unittest.TestCase):
     """Gli attributi devono stare davvero nei file dei seed, non solo nel modello."""
 
-    def test_i_tre_seed_di_piattaforma_sono_staff(self) -> None:
+    def test_i_seed_di_piattaforma_sono_staff(self) -> None:
         seeds = _seeds_del_pack()
-        for nome in ("segretario", "messaggero", "sysadmin"):
+        for nome in ("segretario", "sysadmin"):
             self.assertTrue(seeds.get(nome, {}).get("staff"),
                             f"{nome} non dichiara `staff: true`")
 

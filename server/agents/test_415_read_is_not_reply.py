@@ -1,5 +1,9 @@
 """Un ordine di leggere non è un mandato a spedire (clodia-logic#415).
 
+Dal 19 ott 2026 (clodia-platform#531) il messaggero non esiste più e la regola
+vive nella costituzione `platform-core`, principio 4: la legge chiunque abbia
+`channel.deliver`. Il racconto qui sotto è quello dell'incidente originale.
+
 L'11 set 2026, canale SEAL-2 `titul-brightnode`: a `messaggero` è stato chiesto
 di **leggere** un'email che sollecitava conferme contrattuali. Ha risposto al
 mittente impegnando lo studio, senza che il testo fosse mai stato mostrato né
@@ -28,12 +32,16 @@ from pathlib import Path
 
 from ..config import workspace_path
 
+#: Since the messaggero was retired (clodia-platform#531) the rule lives in the
+#: constitution every agent reads: whoever holds `channel.deliver` is bound by it.
 PROMPT = Path(workspace_path(
-    "catalogs/packs/base-pack/agents/messaggero/system-prompt.md"))
+    "catalogs/packs/base-pack/constitutions/platform-core.md"))
 
 #: Il titolo della sottosezione introdotta da #415. Costante e non letterale
 #: ripetuto: se un giorno viene riformulato, il rosso arriva da un punto solo.
 TITOLO = "### Leggere non è rispondere"
+#: The principle the rule belongs to: the one about communicating outside.
+SEZIONE = "4. **"
 
 
 class LeggereNonERispondereTests(unittest.TestCase):
@@ -43,12 +51,12 @@ class LeggereNonERispondereTests(unittest.TestCase):
 
     def _policy_outbound(self) -> str:
         """Il testo della sola sezione che governa l'invio verso l'esterno."""
-        dopo = self.prompt.split("## Policy outbound", 1)
+        dopo = self.prompt.split(SEZIONE, 1)
         self.assertEqual(2, len(dopo),
-                         "sezione «Policy outbound» sparita dal mandato del "
-                         "messaggero: è lì che vive l'unico vincolo sul "
-                         "contenuto di ciò che spedisce")
-        return dopo[1].split("\n## ", 1)[0]
+                         "principio 4 (comunicare fuori dalla stanza) sparito "
+                         "dalla costituzione: è lì che vive l'unico vincolo sul "
+                         "contenuto di ciò che si spedisce")
+        return dopo[1].split("\n5. **", 1)[0]
 
     def test_la_disambiguazione_sta_nella_policy_outbound(self) -> None:
         """E non altrove nel file.

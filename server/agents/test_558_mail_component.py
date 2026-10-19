@@ -136,7 +136,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.3.1")
+        self.assertEqual(doc["version"], "2.3.2")
         self.assertIs(doc["first_party"], True)
         # ONE gateway component per pack (the gateway refuses a second): from
         # 2.1.1 it serves mail and Telegram (#522, test_522_telegram_component).

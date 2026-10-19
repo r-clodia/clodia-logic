@@ -34,7 +34,7 @@ sandbox:
 # SENZA `comms-pack` (agents-notebook A7, clodia-platform#198): la posta è il
 # mestiere del CORRIERE. Le skill del pack — `check-email`, `telegram-1to1`,
 # `helpdesk` — restano dichiarate una per una
-# su `messaggero` e `sysadmin`, che le hanno per ruolo; qui arrivavano solo dal
+# su `sysadmin`, che le hanno per ruolo; qui arrivavano solo dal
 # wildcard, e nessuna riga del system-prompt di clodia le nomina. Non è una
 # perdita di capacità: `email.send` è un VERBO (vedi `tool_permissions`), non
 # viene dal pack, quindi la relazione quotidiana continua a partire.
@@ -136,6 +136,12 @@ tool_permissions:
   # usare WebSearch — vedi `gated_native_tools` sotto. Lo chiama l'agent-server.
   - native.consent
   - email.send
+  # Rispondere fuori dalla stanza (clodia-platform#531): il messaggero non c'è
+  # più, e la risposta su Telegram o per posta esce con questo verbo verso una
+  # destinazione già dichiarata della stanza (PDP e gate del gateway invariati).
+  # NON sta su `segretario`: gli darebbe la gamba d'uscita della trifecta, fuori
+  # dal perimetro deciso in #192. Allargarlo è una decisione dell'owner.
+  - channel.deliver
   # Lettura e scrittura su Google Drive (18 set 2026, decisione di Davide),
   # enumerati uno per uno per la stessa ragione di sempre — niente wildcard
   # che si allarghi da solo al prossimo verbo gdrive aggiunto. `gdrive.share`

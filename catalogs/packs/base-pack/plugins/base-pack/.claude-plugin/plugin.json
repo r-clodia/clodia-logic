@@ -11,7 +11,7 @@
       "pii": true,
       "backup": true,
       "clearance": "SEAL-1",
-      "seeds": ["messaggero", "clodia"]
+      "seeds": ["clodia"]
     }
   ]
 }

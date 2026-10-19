@@ -3670,7 +3670,7 @@ class OpenCodeChatSession:
     #: risposto «presidiata» anche dopo la correzione.
     unattended: bool = False
 
-    def __init__(self, chat_id: str, kind: str = "messaggero", title: str = "",
+    def __init__(self, chat_id: str, kind: str = "clodia", title: str = "",
                  runtime_override: Optional[dict] = None) -> None:
         if not known_kind(kind):
             raise ValueError(f"unknown agent kind: {kind}")

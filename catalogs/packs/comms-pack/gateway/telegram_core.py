@@ -24,7 +24,7 @@ l'egress e il taint: **niente di ciò che controllava prima smette di controllar
 
 Modello invariato (deciso 29 giu 2026):
 - **outbound**: si scrive solo a chat che hanno già scritto al bot (niente
-  rubrica statica), e non serve il lease — il messaggero è l'unico mittente;
+  rubrica statica), e non serve il lease — l'invio passa dal gateway (`channel.deliver`);
 - **inbound con lease per-chat**: un agente prende il lease esclusivo su una
   chat per N minuti e finché è valido è l'unico a consumarne i messaggi;
 - **niente daemon**: l'inbound è lazy, `getUpdates` con offset persistito a ogni
@@ -547,8 +547,8 @@ def lease_release(a: dict) -> dict:
 
 
 def send(a: dict) -> dict:
-    """Invia un messaggio a una chat. LEASE-FREE: il messaggero è l'unico
-    mittente della colonia, un lease esclusivo qui sarebbe solo attrito."""
+    """Invia un messaggio a una chat. LEASE-FREE: l'invio passa dal
+    gateway (`channel.deliver`), un lease esclusivo qui sarebbe solo attrito."""
     text = str(a.get("text") or "")
     if not text.strip():
         raise ValueError("'text' non può essere vuoto")
@@ -671,7 +671,7 @@ def updates(a: dict) -> dict:
     entrare — relay compreso. Per questo il verbo esiste, e per questo non è un
     verbo da agente: chi lo chiamasse svuoterebbe la coda che il relay deve
     leggere. Il gateway lo tiene fuori dalla portata degli agenti (seed
-    `messaggero`, `denied_tools`) e lo usa per il proprio percorso interno.
+    nessun agente lo ha) e lo usa per il proprio percorso interno.
     """
     timeout = max(0, min(int(a.get("timeout") or 25), 60))
     # Il diritto a `getUpdates` per tutta l'attesa (vedi `_poll_lock`), ma

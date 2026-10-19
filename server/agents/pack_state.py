@@ -34,7 +34,7 @@ from ..config import data_path
 LOG = logging.getLogger("agent-server.agents.pack_state")
 
 #: Same set as `api.pack_import._NATIVE_AGENTS` (a test keeps them equal).
-NATIVE_AGENTS = frozenset({"clodia", "ophelia", "messaggero"})
+NATIVE_AGENTS = frozenset({"clodia", "ophelia"})
 
 #: Packs that can never be disabled (mirror of `NON_REMOVABLE_PACK_NAMES`).
 NEVER_DISABLED = frozenset({"base-pack", "logic"})

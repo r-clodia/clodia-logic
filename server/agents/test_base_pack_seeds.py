@@ -216,7 +216,10 @@ class ClodiaMandateTests(unittest.TestCase):
                          "copybrain",
                          # #570 (18 ott 2026): il consenso per WebSearch, chiesto
                          # dall'agent-server quando clodia tenta lo strumento.
-                         "native"}
+                         "native",
+                         # #531 (19 ott 2026): `channel.deliver`, la risposta
+                         # fuori dalla stanza che prima faceva il messaggero.
+                         "channel"}
 
     #: clodia-platform#393: i mestieri di altri seed. Clodia li ottiene solo in
     #: prestito con `copybrain`, mai nel proprio set.
@@ -350,34 +353,12 @@ class EngineDeclarationTests(unittest.TestCase):
     Il caso concreto della #370: `glm-5.3` passerebbe il glob `glm*` di Scaleway
     e cadrebbe sul fallback di famiglia a 200k, pur essendo — se esiste — un
     modello di cui nessuno qui conosce la finestra. Per questo il controllo sul
-    messaggero pinna il NUMERO, non la presenza: chi cambia il modello deve
+    seed pinna il NUMERO, non la presenza: chi cambia il modello deve
     tornare su `model_context` e dichiararne la finestra vera.
     """
 
     def setUp(self) -> None:
         self.seeds = _seeds()
-        self.messaggero = self.seeds["messaggero"]
-
-    def test_il_messaggero_gira_su_glm_5_2(self) -> None:
-        """#370: upgrade da `gpt-oss-120b`. Non 5.3: non è verificabile da qui
-        (nessun riferimento nel motore, finestra non mappata)."""
-        self.assertEqual("glm-5.2", self.messaggero.get("model"))
-
-    def test_il_reasoning_del_messaggero_e_spento_ESPLICITAMENTE(self) -> None:
-        """`_opencode_reasoning_effort` spegne già il reasoning di glm-5.2 quando
-        il seed tace — ma è un default del runtime, scritto per i pack importati
-        vecchi, e un default può cambiare. Il messaggero è un esecutore di tool:
-        la scelta è sua e va detta nel file, dove chi legge il seed la vede."""
-        self.assertEqual("none", self.messaggero.get("reasoning_effort"))
-
-    def test_la_finestra_del_messaggero_e_quella_del_modello_dichiarato(self) -> None:
-        from .model_context import model_context_window
-        self.assertEqual(
-            1_000_000,
-            model_context_window(self.messaggero.get("model"),
-                                 self.messaggero.get("agent_sdk")),
-            "finestra non mappata per questo modello: aggiorna model_context, "
-            "non lasciare che ripieghi sul fallback di famiglia")
 
     def test_la_finestra_di_ophelia_e_quella_del_modello_dichiarato(self) -> None:
         """#493: `gpt-6-astra`. Il numero è quello che la CLI stessa dichiara per

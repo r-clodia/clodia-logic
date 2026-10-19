@@ -52,8 +52,7 @@ PLUGIN = PACK / "plugins" / "comms-pack"
 CORE_FILE = PACK / "gateway" / "telegram_core.py"
 ENTRYPOINT = PACK / "gateway" / "telegram_component.py"
 MCP_JSON = PLUGIN / ".mcp.json"
-MESSAGGERO = Path(workspace_path(
-    "catalogs/packs/base-pack/agents/messaggero/agent.yaml"))
+SEEDS = Path(workspace_path("catalogs/packs/base-pack/agents"))
 
 
 def _manifest() -> dict:
@@ -408,16 +407,21 @@ class IlRelayRiconosceUnJoinTests(unittest.TestCase):
 class IVerbiInterniNonSonoDellAgenteTests(unittest.TestCase):
     """`updates`/`download` sono la porta del relay, non verbi d'agente."""
 
-    def test_il_messaggero_li_ha_negati(self) -> None:
-        """Il suo grant è `telegram.*`: senza una negazione esplicita il
-        wildcard li raggiungerebbe, e un `getUpdates` dell'agente svuoterebbe la
-        coda che il relay deve leggere — nessun errore, solo messaggi che non
-        arrivano più nel topic."""
-        seed = yaml.safe_load(MESSAGGERO.read_text(encoding="utf-8")) or {}
-        negati = {str(x) for x in (seed.get("denied_tools") or [])}
-        self.assertIn("telegram.*", {str(x) for x in seed.get("tool_permissions") or []})
-        self.assertIn("telegram.updates", negati)
-        self.assertIn("telegram.download", negati)
+    def test_chi_ha_il_namespace_li_ha_negati(self) -> None:
+        """Un grant `telegram.*` senza una negazione esplicita raggiungerebbe
+        `updates`/`download`, e un `getUpdates` dell'agente svuoterebbe la coda
+        che il relay deve leggere — nessun errore, solo messaggi che non
+        arrivano più nel topic. Il messaggero, che aveva quel grant, è stato
+        ritirato (clodia-platform#531): vale per qualunque seed lo riprenda."""
+        for f in sorted(SEEDS.glob("*/agent.yaml")):
+            seed = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+            grants = {str(x) for x in seed.get("tool_permissions") or []}
+            if not grants & {"telegram.*", "*"}:
+                continue
+            negati = {str(x) for x in (seed.get("denied_tools") or [])}
+            with self.subTest(seed=f.parent.name):
+                self.assertIn("telegram.updates", negati)
+                self.assertIn("telegram.download", negati)
 
     def test_il_manifest_non_li_dichiara_come_verbi(self) -> None:
         """Non sono destinazioni né letture da PDP: sono il trasporto. Se
