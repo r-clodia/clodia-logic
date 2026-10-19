@@ -1100,6 +1100,10 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
         raise HTTPException(400, "nome invalido (usa [a-z0-9_-], inizia con alfanumerico)")
     if name in _NATIVE_AGENTS:
         raise HTTPException(409, f"'{name}' è un agent nativo della piattaforma, non ricreabile da qui")
+    from .pack_import import RETIRED_AGENTS
+    if name in RETIRED_AGENTS:
+        raise HTTPException(409, f"'{name}' è un agente ritirato dalla piattaforma: "
+                                 "il nome resta riservato")
     target = registry.base_dir / name
     if target.exists():
         raise HTTPException(409, f"agent '{name}' esiste già")

@@ -30,6 +30,7 @@ class TelegramRelayAdapter(RelayAdapter):
     connector = "telegram"
     transport_label = "telegram"
     uri_scheme = "tg"
+    post_kind = "telegram"
 
     async def poll(self, timeout: int) -> list:
         """LONG-POLL del gateway: blocca (in un thread) fino a un messaggio o al

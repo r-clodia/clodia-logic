@@ -18,7 +18,9 @@ one.
   granted to `clodia` (not to `segretario`, which stays inside its #192
   perimeter). The constitution
   (`platform-core`, principle 4) says so; the CRM datastore is `clodia`'s only.
-  See SETUP for removing the old agent from an instance.
+  On existing instances the old seed is archived at boot and the name stays
+  reserved (clodia-logic 6.312.0). A room whose coordinator cannot deliver says
+  so on the Telegram group instead of acknowledging and going silent. See SETUP.
 
 ## [7.39.0] — 2026-10-18
 - **`topic-files`: the Mac-shared folder is `shared/`** (clodia-platform#571).

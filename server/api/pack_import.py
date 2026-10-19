@@ -73,6 +73,13 @@ PACKS_META_DIR = data_path("packs")
 _AGENT_NAME_RE = re.compile(r"[a-z0-9][a-z0-9_-]{0,30}(?:\.[a-z0-9][a-z0-9_-]{0,30})?")
 # Nomi nativi non installabili da pack (allineato ad agent_registry._NATIVE_AGENTS).
 _NATIVE_AGENTS = {"clodia", "ophelia"}
+#: Retired platform agents (clodia-platform#531: `messaggero`). An existing
+#: instance may still hold one, with its PKI identity, vault grants and gateway
+#: entry: the name stays RESERVED, so no pack and no API call can take it over
+#: and inherit them. `retire_agents()` archives the residue at boot.
+RETIRED_AGENTS = {"messaggero"}
+#: Every name a pack may never install or own.
+RESERVED_AGENT_NAMES = _NATIVE_AGENTS | RETIRED_AGENTS
 
 RESERVED_PACK_NAMES = plugin_import.RESERVED_PLUGIN_NAMES
 NON_REMOVABLE_PACK_NAMES = plugin_import.NON_REMOVABLE_PACK_NAMES
@@ -245,6 +252,9 @@ def _install_seed(sdir: Path, *, force: bool = False,
     # the seeds the pack already owned — never a native, never another pack's.
     if force and force_only is not None and name not in force_only:
         force = False
+    if name in RETIRED_AGENTS:
+        return {"name": name, "status": "error",
+                "detail": "nome di un agente ritirato dalla piattaforma, riservato"}
     if name in _NATIVE_AGENTS and not force:
         # I nativi (clodia/ophelia) sono installati da init-datadir.sh,
         # non da pack. Se già presenti (caso normale, es. re-install del base-pack)
@@ -691,7 +701,7 @@ def remove_pack(name: str) -> dict[str, Any]:
     agents_retained: list[dict[str, Any]] = []
     for agent in manifest.get("agents") or []:
         agent = str(agent)
-        if agent in _NATIVE_AGENTS or not _AGENT_NAME_RE.fullmatch(agent):
+        if agent in RESERVED_AGENT_NAMES or not _AGENT_NAME_RE.fullmatch(agent):
             continue
         adir = registry.base_dir / agent
         if not adir.is_dir():
@@ -726,6 +736,30 @@ def remove_pack(name: str) -> dict[str, Any]:
            "agents_archived": agents_archived, "agents_retained": agents_retained}
     if manifest_archived:
         out["manifest_archived"] = manifest_archived
+    return out
+
+
+def retire_agents() -> list[dict[str, Any]]:
+    """Archive the seeds of retired agents still on this instance (#531).
+
+    Moved aside like a removed pack's agent — memory included, nothing
+    deleted — so the agent-server no longer loads it. Its gateway entry and
+    vault grants are inert without a seed and the name stays reserved; the
+    owner revokes them when convenient (SETUP of base-pack 7.40.0)."""
+    out: list[dict[str, Any]] = []
+    for agent in sorted(RETIRED_AGENTS):
+        adir = registry.base_dir / agent
+        if not adir.is_dir():
+            continue
+        try:
+            dest = plugin_import.move_aside(adir, _agents_archive_root())
+        except OSError as e:
+            LOG.error("agente ritirato '%s' non archiviabile (%s): resta al suo "
+                      "posto", agent, str(e)[:120])
+            continue
+        out.append({"agent": agent, "archived": str(dest)})
+    if out:
+        registry.load()
     return out
 
 

@@ -87,7 +87,7 @@ class RelayGateTests(unittest.TestCase):
     BINDING = {"instance": "messaggero-1", "tier": "SEAL-1", "topic": "software-house"}
 
     def _run(self, vetted, testo="@clodia riassumi", username="therealdadabit",
-             group=False, extra=None, msgs=None):
+             group=False, extra=None, msgs=None, coordinatore="clodia", can_deliver=True):
         import tempfile
         from pathlib import Path
         inviati, postati, turni = [], [], []
@@ -123,9 +123,11 @@ class RelayGateTests(unittest.TestCase):
                 patch.object(channel_relay.topics_client, "async_open_topic", _open), \
                 patch.object(channel_relay.topics_client, "async_post_message", _post), \
                 patch.object(channel_relay, "run_topic_turn", _turn), \
+                patch.object(channel_relay, "_can_deliver", lambda a: can_deliver), \
                 patch("server.api.channels._pick_responder",
-                      lambda *a, **k: type("S", (), {"name": "clodia"})()):
+                      lambda *a, **k: type("S", (), {"name": coordinatore})()):
             asyncio.run(channel_relay._relay_chat("-5279916551", self.BINDING, msgs or [msg]))
+        self.inviati = inviati
         return inviati, postati, turni
 
     def test_a_vetted_sender_triggers_the_turn(self):
@@ -235,8 +237,32 @@ class RelayGateTests(unittest.TestCase):
         self.assertEqual(len(postati), 1)
         self.assertEqual(["clodia"], mentions.extract_tags(postati[0]))
         self.assertIn("`@giocasu75`", postati[0])
-        # The relay is code: its post is the connector's, not an agent turn.
-        self.assertEqual("proxy", self.post_kinds[-1][1])
+        # The relay is code: its post is the connector's, not an agent turn,
+        # and a vetted request does not taint the room (kind `telegram`).
+        self.assertEqual("telegram", self.post_kinds[-1][1])
+
+    # ── coordinatore senza `channel.deliver` (clodia-platform#531) ───────────
+    def test_a_coordinator_that_cannot_deliver_gets_no_turn_and_no_ack(self):
+        """`segretario` in una stanza senza Clodia: niente «Prendo in carico»
+        seguito dal silenzio. Lo si dice sul gruppo e all'owner nel topic."""
+        for group in (False, True):
+            with self.subTest(chat_in_whitelist=group):
+                inviati, postati, turni = self._run(
+                    True, testo="@clodia_topics_bot ciao", group=group,
+                    coordinatore="segretario", can_deliver=False)
+                self.assertEqual(turni, [])
+                self.assertFalse(any("Prendo in carico" in t for t in inviati), inviati)
+                self.assertTrue(any("non posso rispondere" in t for t in inviati), inviati)
+                self.assertEqual(len(postati), 1)
+                self.assertIn("channel.deliver", postati[0])
+                self.assertIn("segretario", postati[0])
+                self.assertNotIn("@segretario", postati[0])
+
+    def test_a_coordinator_that_can_deliver_is_acknowledged(self):
+        inviati, _p, turni = self._run(True, coordinatore="clodia", can_deliver=True)
+        self.assertEqual(len(turni), 1)
+        self.assertTrue(any("Prendo in carico" in t for t in inviati), inviati)
+
 
     def test_an_attachment_on_the_request_is_saved_and_cited(self):
         async def _dl(file_id):

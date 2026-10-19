@@ -905,7 +905,7 @@ def _owned_seeds(name: str) -> set[str]:
         for path in root.glob("*/pack.yaml"):
             if path.parent.name != name:
                 others |= agents_of(path)
-    return mine - others - set(pack_import._NATIVE_AGENTS)
+    return mine - others - set(pack_import.RESERVED_AGENT_NAMES)
 
 
 def _check_update_root(root: Path, name: str) -> None:

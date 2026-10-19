@@ -107,6 +107,14 @@ async def _lifespan(app: FastAPI):
                      "; ".join(f"{k}={v}" for k, v in riempiti.items()))
     except Exception as e:  # noqa: BLE001 — un seed mancante non blocca il boot
         LOG.warning("sync dei seed dal pack fallita: %s", e)
+    # Agents the platform retired (#531): their residue is archived, not
+    # deleted, so it stops loading and its name cannot be taken over.
+    try:
+        from .api.pack_import import retire_agents
+        for r in await asyncio.to_thread(retire_agents):
+            LOG.info("agente ritirato archiviato: %s → %s", r["agent"], r["archived"])
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("archiviazione degli agenti ritirati non eseguita: %s", e)
     # La gamba che non aveva una sync: dichiarazione del seed → gateway. La
     # registrazione avviene all'import di un pack, e basta: da lì in poi la
     # config del gateway è la fotografia di quel giorno mentre il seed è una

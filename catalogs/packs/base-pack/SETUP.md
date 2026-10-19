@@ -49,6 +49,15 @@ platform's deterministic courier (clodia-logic ≥ 6.311.8, clodia-tools ≥
 2.122.1, comms-pack ≥ 2.3.1); outbound messages use the gateway verb
 `channel.deliver` (clodia-tools ≥ 2.123.0), granted to `clodia`. It is not
 granted to `segretario`, whose read-only perimeter (#192) would gain the egress
-leg of the trifecta: an owner who wants it there grants it explicitly. After the Update an instance still has the old `messaggero` agent
-installed: remove it from the Agents page (or `DELETE /api/agents/messaggero`)
-and revoke its vault grants; the Telegram relay no longer needs it.
+leg of the trifecta: an owner who wants it there grants it explicitly.
+
+On an existing instance the agent-server (clodia-logic ≥ 6.312.0) archives the
+old `messaggero` seed at boot, memory included (`agents-archive/`), and keeps the
+name reserved: no pack and no API call can install an agent called `messaggero`
+and inherit its identity. Its gateway whitelist entry and vault grants are inert
+without a seed; revoke them as owner to tidy up. The Telegram relay no longer
+needs it.
+
+A room whose coordinator lacks `channel.deliver` (for example `segretario` in a
+room without Clodia) does not answer on a linked Telegram group: the relay says
+so on the group and leaves a notice for the owner in the topic.

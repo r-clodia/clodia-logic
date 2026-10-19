@@ -71,6 +71,11 @@ class RelayAdapter:
     #: schema degli URI di ingress di questo trasporto («tg»), per i messaggi
     #: d'errore e per chi legge: gli URI veri li costruiscono i metodi sotto.
     uri_scheme = ""
+    #: kind of the relay's posts in the room. A relayed request comes from a
+    #: vetted source (sender or chat in the room's ingress), so it must not
+    #: taint the room the way a `proxy` post does (gateway `post_message`).
+    #: A transport the gateway has no kind for stays `proxy`: tainting.
+    post_kind = "proxy"
 
     # ── inbound / outbound ───────────────────────────────────────────────────
     async def poll(self, timeout: int) -> list:

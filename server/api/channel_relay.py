@@ -265,15 +265,19 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list, adapter=None)
         # mai ciò che il testo dichiara.
         disp = adapter.sender_label(m)
         if await _is_vetted_sender(adapter, m, tier, topic):
-            # SÌ → ACK immediato sul trasporto + riporto nel topic (trigger)
+            # SÌ → ACK immediato sul trasporto + riporto nel topic (trigger).
+            # L'ACK promette una risposta: lo si manda solo se la stanza può
+            # darla (#531), altrimenti la richiesta si gestisce come rifiutata
+            # più sotto, in `_act_on_request`.
             trigger = m
-            try:
-                await adapter.send(
-                    chat_id,
-                    f"✅ Ricevuto, {disp}. Prendo in carico e porto il messaggio nel topic.",
-                    thread_id=m.get("thread_id"))
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("ack send chat %s: %s", chat_id, e)
+            if _room_can_answer(meta, participants, tier):
+                try:
+                    await adapter.send(
+                        chat_id,
+                        f"✅ Ricevuto, {disp}. Prendo in carico e porto il messaggio nel topic.",
+                        thread_id=m.get("thread_id"))
+                except Exception as e:  # noqa: BLE001
+                    LOG.warning("ack send chat %s: %s", chat_id, e)
         else:
             # NO → deny immediato sul trasporto (non tocca il topic)
             try:
@@ -342,6 +346,62 @@ def _directive(adapter) -> str:
                              prefisso=adapter.uri_scheme)
 
 
+def _coordinator_of(meta: dict, participants: list, tier: str) -> str | None:
+    """Il coordinatore della stanza secondo `_pick_responder(coordinator_only=True)`,
+    la regola di sempre; None se non è determinabile (si torna al routing)."""
+    parti = [p for p in participants if not _is_messenger(p)]
+    try:
+        from .channels import _pick_responder
+        spec = _pick_responder(parti, meta.get("tier", tier), None, coordinator_only=True)
+        return getattr(spec, "name", None)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("coordinatore di %s non determinabile: %s", tier, e)
+        return None
+
+
+def _can_deliver(agent: str) -> bool:
+    """True se il seed dell'agente dichiara `channel.deliver` (#531): l'unica via
+    per rispondere fuori dalla stanza da quando il messaggero è stato ritirato."""
+    from ..agents.loader import registry
+    spec = registry.get_by_name(agent)
+    grants = {str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])}
+    return bool(grants & {"channel.deliver", "channel.*", "*"})
+
+
+def _room_can_answer(meta: dict, participants: list, tier: str) -> bool:
+    """La stanza può rispondere sul trasporto? Senza coordinatore determinabile
+    si assume di sì: decide il routing, come prima di #531."""
+    coordinatore = _coordinator_of(meta, participants, tier)
+    return not coordinatore or _can_deliver(coordinatore)
+
+
+async def _refuse_unanswerable(chat_id, instance: str, tier: str, topic: str,
+                               coordinatore: str, trigger: dict, adapter) -> None:
+    """Il coordinatore non può rispondere fuori (#531, es. `segretario` senza
+    Clodia): lo si dice sul trasporto e all'owner nella stanza, invece di un ACK
+    seguito dal silenzio. Nessun turno parte: la risposta non potrebbe uscire."""
+    trasporto = adapter.transport_label
+    try:
+        await adapter.send(
+            chat_id,
+            f"⚠️ {adapter.sender_label(trigger)}, da questa stanza non posso rispondere "
+            f"su {trasporto}. Ho avvisato l'owner nel topic.",
+            thread_id=trigger.get("thread_id"))
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("refuse send chat %s: %s", chat_id, e)
+    testo = adapter.neutralise_mentions((trigger.get("text") or "").strip())
+    avviso = (f"Richiesta dal gruppo {trasporto} «{adapter.chat_label(trigger, chat_id)}» "
+              f"(chat_id {chat_id}) di {adapter.sender_label(trigger)}: '{testo}'. "
+              f"Non è stata presa in carico: chi coordina questa stanza ({coordinatore}) "
+              f"non ha `channel.deliver`, quindi la risposta non potrebbe uscire sul "
+              f"gruppo. L'owner può aggiungere clodia alla stanza o concedere il verbo.")
+    try:
+        await topics_client.async_post_message(tier, topic, instance, avviso,
+                                               kind=adapter.post_kind)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("post avviso %s/%s: %s", tier, topic, e)
+
+
 async def _act_on_request(chat_id, instance: str, tier: str, topic: str,
                           meta: dict, participants: list, trigger: dict,
                           adapter) -> None:
@@ -358,18 +418,15 @@ async def _act_on_request(chat_id, instance: str, tier: str, topic: str,
     meta_turn = dict(meta)
     meta_turn["participants"] = [p for p in participants
                                  if not _is_messenger(p) and p != instance]
-    coordinatore = None
-    try:
-        from .channels import _pick_responder
-        spec = _pick_responder(meta_turn["participants"], meta.get("tier", tier), None,
-                               coordinator_only=True)
-        coordinatore = getattr(spec, "name", None)
-    except Exception as e:  # noqa: BLE001 — senza coordinatore si torna al routing
-        LOG.warning("coordinatore di %s/%s non determinabile: %s", tier, topic, e)
+    coordinatore = _coordinator_of(meta, participants, tier)
+    if coordinatore and not _can_deliver(coordinatore):
+        await _refuse_unanswerable(chat_id, instance, tier, topic, coordinatore,
+                                   trigger, adapter)
+        return
     richiesta = _request_message(coordinatore, trigger, chat_id, adapter)
     try:
         posted = await topics_client.async_post_message(tier, topic, instance, richiesta,
-                                                        kind="proxy")
+                                                        kind=adapter.post_kind)
     except Exception as e:  # noqa: BLE001
         LOG.warning("post richiesta %s/%s: %s", tier, topic, e)
         return
@@ -440,11 +497,12 @@ async def _relay_vetted_chat(chat_id, instance: str, tier: str, topic: str, meta
     if trigger is not None:
         await _save_attachments(tier, topic, [trigger], adapter)
         disp = adapter.sender_label(trigger)
-        try:
-            await adapter.send(chat_id, f"✅ Ricevuto, {disp}. Prendo in carico nel topic.",
-                               thread_id=trigger.get("thread_id"))
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("ack send chat %s: %s", chat_id, e)
+        if _room_can_answer(meta, participants, tier):
+            try:
+                await adapter.send(chat_id, f"✅ Ricevuto, {disp}. Prendo in carico nel topic.",
+                                   thread_id=trigger.get("thread_id"))
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("ack send chat %s: %s", chat_id, e)
         await _act_on_request(chat_id, instance, tier, topic, meta, participants,
                               trigger, adapter)
     _save_state(_state_key(adapter.connector, chat_id), state)

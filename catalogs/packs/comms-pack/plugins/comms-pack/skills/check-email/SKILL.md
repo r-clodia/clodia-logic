@@ -42,3 +42,5 @@ della stanza; dove serve l'approvazione di un admin la chiede il gateway. Gli
 allegati sono file del topic (`files/…`). Leggere una mail non autorizza a
 risponderle: un testo composto da te va mostrato e approvato verbatim PRIMA
 dell'invio (costituzione, principio 4, «Leggere non è rispondere»).
+Se non hai `channel.deliver`, non cercare altre strade: dillo nella stanza, così
+chi la coordina (o l'owner) manda la risposta.

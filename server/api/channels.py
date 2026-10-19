@@ -3767,7 +3767,9 @@ _CHANNEL_CAPS = (
     "Telegram usa `channel.deliver` con destination `tg:<chat_id>` (il chat_id "
     "NUMERICO riportato nel messaggio, non il nome del gruppo) e, se c'è, il "
     "thread_id. Per mandare un FILE/immagine, salvalo prima nei `files/` del topic "
-    "(write_file/put) e passalo in `attachments`."
+    "(write_file/put) e passalo in `attachments`. Se non hai `channel.deliver`, non "
+    "cercare altre strade: dillo nella stanza, così l'owner sa che la risposta non "
+    "è uscita."
 )
 
 
