@@ -4,6 +4,12 @@ Changelog of the `google-pack` pack ([Keep a Changelog](https://keepachangelog.c
 format, SemVer). The newest version is at the top; `pack.yaml` holds the current
 one.
 
+## [2.2.0] — 2026-10-19
+- The bundled Gmail client gains `get-eml` (the whole message, RFC822, base64)
+  and `mail_exec` allows it: the mail courier keeps a `.eml` copy of each
+  delivered message in the topic (clodia-platform#576). The two clients stay
+  identical. Update together with comms-pack 2.4.0.
+
 ## [2.1.3] — 2026-10-18
 - The bundled Gmail client's `list`/`search` rows carry the `Message-ID`
   (clodia-platform#531), as comms-pack's copy does: the two clients stay

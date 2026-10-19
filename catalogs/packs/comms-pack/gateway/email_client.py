@@ -25,6 +25,7 @@ from email.header import decode_header
 import os
 import json
 import base64
+import re
 import argparse
 import sys
 from datetime import datetime
@@ -286,6 +287,7 @@ def list_emails(account, folder="INBOX", limit=10):
                 result.append({
                     "id": eid.decode(),
                     "from": decode_mime_header(msg["From"]),
+                    "from_raw": str(msg["From"] or ""),
                     "to": decode_mime_header(msg["To"]),
                     "subject": decode_mime_header(msg["Subject"]),
                     "date": msg["Date"],
@@ -331,6 +333,7 @@ def read_email(account, email_id, folder="INBOX"):
             result = {
                 "id": email_id,
                 "from": decode_mime_header(msg["From"]),
+                    "from_raw": str(msg["From"] or ""),
                 "to": decode_mime_header(msg["To"]),
                 "subject": decode_mime_header(msg["Subject"]),
                 "date": msg["Date"],
@@ -361,6 +364,7 @@ def search_emails(account, query, folder="INBOX", limit=20):
                 result.append({
                     "id": eid.decode(),
                     "from": decode_mime_header(msg["From"]),
+                    "from_raw": str(msg["From"] or ""),
                     "to": decode_mime_header(msg["To"]),
                     "subject": decode_mime_header(msg["Subject"]),
                     "date": msg["Date"],
@@ -437,6 +441,45 @@ def download_attachments(account, email_id, output_dir=".", folder="INBOX"):
 
 
 
+#: Largest message the courier copies as .eml (#576): bigger ones are named in
+#: the post, never pushed through base64/JSON at any size.
+EML_MAX_BYTES = 25 * 1024 * 1024
+
+
+def get_eml(account, email_id, folder="INBOX"):
+    """Il messaggio intero, RFC822, in base64 (copia .eml del corriere, #576),
+    con il `From:` COSÌ COM'È ARRIVATO (`from_raw`) per rivagliarlo sui byte
+    restituiti, e il Message-ID. Oltre `EML_MAX_BYTES` niente byte."""
+    imap = connect_imap(account)
+    try:
+        imap.select(folder, readonly=True)
+        eid = email_id.encode() if isinstance(email_id, str) else email_id
+        status, size_data = imap.fetch(eid, "(RFC822.SIZE)")
+        m = re.search(rb"RFC822\.SIZE (\d+)", b" ".join(
+            p if isinstance(p, bytes) else b"" for p in (size_data or [])))
+        if m and int(m.group(1)) > EML_MAX_BYTES:
+            return {"error": f"messaggio {email_id} troppo grande per la copia .eml "
+                             f"({int(m.group(1))} byte)"}
+        status, msg_data = imap.fetch(eid, "(RFC822)")
+        for response_part in msg_data or []:
+            if isinstance(response_part, tuple):
+                raw = response_part[1]
+                if len(raw) > EML_MAX_BYTES:
+                    return {"error": f"messaggio {email_id} troppo grande per la copia .eml"}
+                msg = email.message_from_bytes(raw)
+                return {"id": str(email_id),
+                        "message_id": str(msg.get("Message-ID", "")).strip(),
+                        "from_raw": str(msg["From"] or ""),
+                        "size": len(raw), "encoding": "base64",
+                        "data": base64.b64encode(raw).decode("ascii")}
+        return {"error": f"messaggio {email_id} non trovato"}
+    finally:
+        try:
+            imap.logout()
+        except Exception:
+            pass
+
+
 def get_attachment(account, email_id, filename, folder="INBOX"):
     """Ritorna il contenuto base64 di un singolo allegato (per nome file)."""
     imap = connect_imap(account)
@@ -459,6 +502,8 @@ def get_attachment(account, email_id, filename, folder="INBOX"):
                     if payload is None:
                         continue
                     target = {
+                        "from_raw": str(msg["From"] or ""),
+                        "message_id": str(msg.get("Message-ID", "")).strip(),
                         "filename": filename,
                         "size": len(payload),
                         "content_type": part.get_content_type(),
@@ -749,6 +794,10 @@ def main():
     ga_parser.add_argument("--filename", required=True)
     ga_parser.add_argument("--folder", default="INBOX")
 
+    eml_parser = subparsers.add_parser("get-eml", help="Messaggio intero (RFC822) in base64")
+    eml_parser.add_argument("email_id")
+    eml_parser.add_argument("--folder", default="INBOX")
+
     # accounts
     subparsers.add_parser("accounts", help="Lista account configurati")
 
@@ -866,6 +915,9 @@ def main():
     elif args.command == "reply":
         result = reply_email(account, args.email_id, args.body, folder=args.folder, cc=args.cc, attachments=args.attachment)
         print(json.dumps({"status": "ok", "message": f"Reply inviato da {account['email']}", "to": result["to"], "subject": result["subject"]}))
+
+    elif args.command == "get-eml":
+        print(json.dumps(get_eml(account, args.email_id, args.folder), ensure_ascii=False))
 
     elif args.command == "get-attachment":
         result = get_attachment(account, args.email_id, args.filename, args.folder)

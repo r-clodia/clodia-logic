@@ -703,6 +703,57 @@ def envelope_key(row: dict) -> str:
     return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:24]
 
 
+def _courier_sender_ok(sender: str) -> bool:
+    """Does the CURRENT room itself declare this sender (`mailfrom:` among its
+    own ingress entries, #576)? What the courier delivers there: the same
+    mailbox feeds many rooms, so global entries and participants do not count,
+    and a room that declares nobody gets nothing. Needs clodia-tools ≥ 2.126.0;
+    an older gateway delivers nothing rather than everything."""
+    ask = getattr(_perimeter(), "room_declares_sender", None)
+    if ask is None:
+        raise RuntimeError("the mail courier needs clodia-tools ≥ 2.126.0 "
+                           "(perimeter.room_declares_sender, clodia-platform#576)")
+    return bool(ask(sender or ""))
+
+
+def _courier_rows(rows: object) -> tuple[list, int]:
+    """The listed messages whose sender the room declares, and how many were
+    left out (counted, recorded, never shown)."""
+    if not isinstance(rows, list):
+        _record_ingress("courier.mail", "filter")
+        return [], 1 if rows else 0
+    tenuti = [r for r in rows if isinstance(r, dict) and _courier_sender_ok(_raw_from(r))]
+    tolti = len(rows) - len(tenuti)
+    if tolti:
+        _record_ingress("courier.mail", "filter")
+    return tenuti, tolti
+
+
+def _raw_from(row: dict) -> str:
+    """The `From:` header as SENT (`from_raw`): the decoded one can turn an
+    encoded display name into an address (review of clodia-tools#411). A
+    client that does not give it → "" → the sender is not declared."""
+    return str(row.get("from_raw") or "") if isinstance(row, dict) else ""
+
+
+def _deny_courier(header: str) -> None:
+    addr = _perimeter().address_of(header) or "?"
+    _record_ingress("courier.mail", "deny")
+    raise PermissionError(
+        f"{MITTENTE_NON_VAGLIATO}: il corriere consegna in questa stanza solo "
+        f"la posta dei mittenti che la stanza dichiara (mailfrom:{addr} fra i "
+        "suoi ingress, lo aggiunge l'owner)")
+
+
+def _assert_courier_sender(result: object) -> None:
+    """Refuse a fetched message whose sender the room does not declare (#576),
+    checked on the `From:` of what was ACTUALLY fetched: between two IMAP
+    sessions a sequence id can name another message (review of #553)."""
+    raw = _raw_from(result)
+    if not _courier_sender_ok(raw):
+        _deny_courier(raw)
+
+
 def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
                       skip: list | None = None, keys_only: bool = False) -> dict:
     """The newest messages of a mailbox as ENVELOPES — id, key, from, to,
@@ -711,16 +762,14 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
     learn its attachments, and its text is dropped before returning.
 
     Runs inside the ROOM's claims (the gateway's courier route sets them): the
-    mailbox must be in the room's `inbox:` list (`_secrets_env`), and on a
-    strict room only declared senders pass (#503), the others counted. `skip`
-    lists keys the courier already delivered: those are not read again."""
+    mailbox must be in the room's `inbox:` list (`_secrets_env`), and only the
+    senders the room ITSELF declares pass (#576; strict or not), the others
+    counted. `skip` lists keys the courier already delivered: those are not
+    read again."""
     known = {str(k) for k in (skip or [])}
     limit = max(1, min(int(limit), 50))
     rows = _run_json(account, ["list", "--folder", folder, "--limit", str(limit)])
-    tolti = 0
-    scope = strict_scope()
-    if scope:
-        rows, tolti = _filter_by_sender(rows, scope, "courier.mail")
+    rows, tolti = _courier_rows(rows)
     if keys_only:
         # The courier's first pass over a mailbox only records what is there:
         # the keys come from the listing, no message is read.
@@ -739,11 +788,11 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
             continue
         # IMAP ids are sequence numbers: between the listing and this read the
         # same id can name ANOTHER message (an expunge in between). Only the
-        # message that was listed — same key — goes out, and on a strict room
-        # its sender is checked again on what was actually read.
+        # message that was listed — same key — goes out, and its sender is
+        # checked again on what was actually read.
         if envelope_key(full) != key:
             continue
-        if scope and not _sender_vetted(str(full.get("from") or ""), scope):
+        if not _courier_sender_ok(_raw_from(full)):
             _record_ingress("courier.mail", "filter")
             tolti += 1
             continue
@@ -760,20 +809,35 @@ def courier_attachment(account: str, email_id: str, filename: str,
                        folder: str = "INBOX") -> dict:
     """The decoded bytes (base64 for transport) of one attachment, for the
     courier to store in the topic's files byte-identical (#531). Same room
-    rules as `courier_envelopes`: mailbox in the room's `inbox:` list, and on
-    a strict room a declared sender."""
+    rules as `courier_envelopes`: mailbox in the room's `inbox:` list, and a
+    sender the room itself declares (#576)."""
     if not filename:
         raise ValueError("'filename' must be provided")
-    scope = strict_scope()
-    if scope:
-        _assert_sender_vetted("courier.mail", account, email_id, folder, scope)
     r = _run_json(account, ["get-attachment", str(email_id), "--filename", filename,
                             "--folder", folder])
     if not isinstance(r, dict) or not r.get("data"):
         raise ValueError(f"allegato '{filename}' non trovato nel messaggio {email_id}")
+    _assert_courier_sender(r)
     raw = base64.b64decode(r["data"])
     return {"filename": safe_attachment_name(r.get("filename") or filename),
             "content_type": r.get("content_type"), "size": len(raw),
+            "content_b64": base64.b64encode(raw).decode("ascii")}
+
+
+def courier_eml(account: str, email_id: str, folder: str = "INBOX") -> dict:
+    """The whole message as RFC822 bytes (base64 for transport), for the
+    courier to keep a `.eml` copy in the topic (#576). Same room rules as
+    `courier_attachment`. The bytes go to the topic's files, untrusted, never
+    to a model."""
+    if not email_id:
+        raise ValueError("'email_id' must be provided")
+    r = _run_json(account, ["get-eml", str(email_id), "--folder", folder])
+    if not isinstance(r, dict) or not r.get("data"):
+        raise ValueError(str((r or {}).get("error") or f"messaggio {email_id} non trovato")
+                         if isinstance(r, dict) else f"messaggio {email_id} non trovato")
+    _assert_courier_sender(r)
+    raw = base64.b64decode(r["data"])
+    return {"size": len(raw), "message_id": r.get("message_id"),
             "content_b64": base64.b64encode(raw).decode("ascii")}
 
 

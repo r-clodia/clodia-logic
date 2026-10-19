@@ -4,8 +4,9 @@ description: |
   Come si segue la posta di un topic dal 19 ott 2026 (clodia-platform#531): non serve
   più "restare in attesa". Il corriere della piattaforma (codice, non un agente)
   porta nel topic, come BUSTA firmata `posta`, ogni mail nuova delle caselle che la
-  stanza ha nella propria lista `inbox:` — mittente, oggetto, data e allegati già
-  salvati nei file del topic. Questa skill dice cosa fare quando la busta arriva e
+  stanza ha nella propria lista `inbox:`, dei soli mittenti che la stanza dichiara
+  (`mailfrom:`) — mittente, oggetto, data, allegati e copia `.eml` già salvati nei
+  file del topic. Questa skill dice cosa fare quando la busta arriva e
   come rispondere.
 ---
 
@@ -16,18 +17,24 @@ L'utente chiede di "avvisarlo quando arriva la mail di X", di "tenere d'occhio l
 casella" o di rispondere a una mail arrivata nel topic.
 
 ## Come arriva la posta
-- Se la stanza ha la casella fra i suoi ingressi (`inbox:<indirizzo>`, la aggiunge
-  l'owner dal bottone «Autorizza una casella» del topic), **non c'è niente da
-  impostare**: ogni mail nuova compare nel topic come messaggio di `posta`, con gli
-  allegati già salvati in `files/posta-…`.
-- Se la casella NON è fra gli ingressi della stanza, la posta non arriva: dillo
-  all'utente e chiedi all'owner di autorizzarla. Non creare job di polling.
-- Su una stanza a ingresso stretto arrivano solo i mittenti dichiarati
-  (`mailfrom:`); gli altri non compaiono, nemmeno l'oggetto.
-- `mailfrom:<indirizzo>` **non fa arrivare la posta**: a portarla è solo
-  `inbox:<casella>`. Fuori dalle stanze a ingresso stretto, `mailfrom:` decide
-  soltanto se il contenuto di quel mittente è fidato; la mail di un mittente
-  non dichiarato arriva lo stesso, come contenuto non fidato (clodia-platform#503).
+Servono **due voci fra gli ingressi della stanza** (le aggiunge l'owner):
+- `inbox:<casella>` — da quale casella il corriere legge («Autorizza una casella»);
+- `mailfrom:<mittente>` — di chi è la posta che riguarda questa stanza. Una
+  casella serve molte stanze: ognuna riceve **solo** i mittenti che dichiara lei
+  (anche nella forma `mailfrom:*@dominio.it`). Le voci globali e i partecipanti
+  non bastano (clodia-platform#576).
+
+Con entrambe, ogni mail nuova di quei mittenti compare nel topic come messaggio di
+`posta`, con gli allegati in `files/posta-…` e il messaggio intero in
+`local/mailbox/<data>-<chiave>.eml`. Un mittente aggiunto oggi porta la posta da
+oggi: quella già in casella non viene riconsegnata.
+
+- Casella senza mittenti dichiarati → **non arriva niente**: dillo all'utente e
+  chiedi all'owner il `mailfrom:` giusto. Non creare job di polling.
+- Casella NON fra gli ingressi della stanza → la posta non arriva.
+- Fuori dal corriere, `mailfrom:` decide anche se il contenuto di quel mittente è
+  fidato (taint) quando un agente legge la casella con `email.read`/`email.search`
+  (clodia-platform#503).
 
 ## Leggere il testo
 La busta non contiene il corpo. Se serve, chi lavora sul topic lo legge con

@@ -8,6 +8,19 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.4.0] — 2026-10-19
+- **The courier delivers only the senders a room declares** (clodia-platform#576).
+  A mailbox can feed many topics: each receives only the mail of the
+  `mailfrom:` entries among ITS OWN ingress (domain form `*@x.it` included);
+  global entries and participants do not count, and a room that declares no
+  sender receives nothing. Strict and non-strict rooms alike.
+- **A `.eml` copy** of each delivered message in the topic, at
+  `local/mailbox/<date>-<key8>.eml`, untrusted (new service `courier_eml`, client
+  command `get-eml`).
+- The `check-email` skill says so. Needs clodia-tools ≥ 2.126.0 and
+  clodia-logic ≥ 6.314.0; with an older gateway the courier delivers nothing
+  rather than everything. Update google-pack to 2.2.0 too (Gmail mailboxes).
+
 ## [2.3.2] — 2026-10-19
 - **No messaggero** (clodia-platform#531): the `check-email` skill describes the
   courier (envelopes in the topic, attachments saved) and `channel.deliver` for

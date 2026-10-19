@@ -5,7 +5,7 @@ description: >-
   gateway component (verbs, folder/calendar perimeter, OAuth consent, Gmail)
   that runs inside the gateway; the credentials stay in the gateway's vault.
   Ships the skill to keep a topic in sync with a Drive folder.
-version: 2.1.3
+version: 2.2.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
