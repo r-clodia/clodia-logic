@@ -944,10 +944,17 @@ class GatewayValidatorTests(unittest.TestCase):
         p.start()
         self.addCleanup(p.stop)
         self.builtins = {}
-        for f in sorted((conn / "builtin_manifests").glob("*.yaml")):
-            doc = yaml.safe_load(f.read_text(encoding="utf-8"))
-            self.builtins[f.stem] = doc
-        self.google_builtin_file = conn / "builtin_manifests" / "google.yaml"
+        # Since clodia-tools 2.124.0 (clodia-platform#526) the gateway ships
+        # only `core`/`datastore`; its former declarations (mail, google, …)
+        # are kept as the parity reference in `testdata/former_builtin/`.
+        former = conn / "testdata" / "former_builtin"
+        dirs = [conn / "builtin_manifests"] + ([former] if former.is_dir() else [])
+        for d in dirs:
+            for f in sorted(d.glob("*.yaml")):
+                doc = yaml.safe_load(f.read_text(encoding="utf-8"))
+                self.builtins[f.stem] = doc
+        self.google_builtin_file = next(
+            d / "google.yaml" for d in reversed(dirs) if (d / "google.yaml").is_file())
 
     def registry(self, *, released: tuple[str, ...], packs: dict):
         own = {d["name"]: d for stem, d in self.builtins.items() if stem not in released}

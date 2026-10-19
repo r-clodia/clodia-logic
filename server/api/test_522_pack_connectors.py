@@ -204,8 +204,8 @@ class CommsPackDeclaresTelegramTests(unittest.TestCase):
                          [r"^-?\d+$", r"^@[A-Za-z0-9_]{5,32}$"])
 
     def test_the_link_action_writes_both_directions_and_binds(self):
-        """`topics_api.telegram_link` fa i DUE passi insieme: whitelist nelle due
-        direzioni E binding del canale. Senza il secondo il messaggero non
+        """Il bottone Telegram (`connectors.actions.apply` del gateway) fa i DUE
+        passi insieme: whitelist nelle due direzioni E binding del canale. Senza il secondo il messaggero non
         riporta nulla pur con la whitelist scritta — era il sintomo del 23 set
         2026, e una dichiarazione che lo dimenticasse lo farebbe tornare."""
         a = self.telegram["topic_actions"][0]

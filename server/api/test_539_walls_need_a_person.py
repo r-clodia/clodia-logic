@@ -61,12 +61,12 @@ class _Client:
     def open_topic(self, tier, name):
         return {"meta": self.meta}
 
-    def telegram_link_status(self, tier, name):
+    def connector_action_status(self, tier, name, connector, action):
         self.chiamate.append(("tg-status", tier, name))
-        return {"connected": False}
+        return {"connected": False, "admin_only": False}
 
-    def telegram_link_action(self, tier, name, action, **params):
-        self.chiamate.append(("tg-action", tier, name, action))
+    def connector_action_apply(self, tier, name, connector, action, body):
+        self.chiamate.append(("tg-action", tier, name, body.get("action")))
         return {"connected": True}
 
     def local_folder_action(self, tier, name, action, **params):
@@ -129,14 +129,15 @@ class _Base(unittest.TestCase):
 
 
 class AnAgentOwnerIsNotEnoughTests(_Base):
-    def test_telegram_link_refuses_the_agent_that_owns_the_topic(self) -> None:
-        self.rifiutata(T.telegram_link_action(
-            "SEAL-1", "ops", _Req({"action": "connect", "chat_id": "-100777"})),
+    def test_the_telegram_button_refuses_the_agent_that_owns_the_topic(self) -> None:
+        self.rifiutata(T.connector_action_apply(
+            "SEAL-1", "ops", "telegram", "telegram-link",
+            _Req({"action": "connect", "chat_id": "-100777"})),
             "clodia")
 
     def test_even_reading_the_link_state_refuses_it(self) -> None:
         """Lo stato nomina la chat legata: è l'altra metà della stessa porta."""
-        self.rifiutata(T.telegram_link_status("SEAL-1", "ops", _Req()), "clodia")
+        self.rifiutata(T.connector_action_status("SEAL-1", "ops", "telegram", "telegram-link", _Req()), "clodia")
 
     def test_local_folder_refuses_it_too(self) -> None:
         """Stessa classe: agganciare una cartella è dichiarare cosa il topic
@@ -153,8 +154,9 @@ class AnAgentOwnerIsNotEnoughTests(_Base):
         """Fail-closed: chi non è nel registry non è nessuno."""
         self.cli.meta = {"tier": "SEAL-1", "owner": "fantasma",
                          "participants": {"fantasma": "owner"}}
-        self.rifiutata(T.telegram_link_action(
-            "SEAL-1", "ops", _Req({"action": "connect", "chat_id": "-1"})),
+        self.rifiutata(T.connector_action_apply(
+            "SEAL-1", "ops", "telegram", "telegram-link",
+            _Req({"action": "connect", "chat_id": "-1"})),
             "fantasma")
 
 
@@ -166,13 +168,16 @@ class ThePeopleStillGetThroughTests(_Base):
         self.cli.meta = META_UMANO
 
     def test_the_human_owner_connects_as_before(self) -> None:
-        self.esegui(T.telegram_link_action(
-            "SEAL-1", "ops", _Req({"action": "connect", "chat_id": "-100777"})),
+        self.esegui(T.connector_action_apply(
+            "SEAL-1", "ops", "telegram", "telegram-link",
+            _Req({"action": "connect", "chat_id": "-100777"})),
             "davide")
-        self.assertEqual([("tg-action", "SEAL-1", "ops", "connect")], self.cli.chiamate)
+        # The generic route reads the action's state first (`admin_only`).
+        self.assertEqual([("tg-status", "SEAL-1", "ops"),
+                          ("tg-action", "SEAL-1", "ops", "connect")], self.cli.chiamate)
 
     def test_the_human_owner_reads_the_state_as_before(self) -> None:
-        self.esegui(T.telegram_link_status("SEAL-1", "ops", _Req()), "davide")
+        self.esegui(T.connector_action_status("SEAL-1", "ops", "telegram", "telegram-link", _Req()), "davide")
         self.assertEqual([("tg-status", "SEAL-1", "ops")], self.cli.chiamate)
 
     def test_the_human_owner_mounts_a_local_folder_as_before(self) -> None:
@@ -189,9 +194,12 @@ class ThePeopleStillGetThroughTests(_Base):
     def test_a_platform_admin_who_is_not_the_owner_still_passes(self) -> None:
         """Serve per i topic il cui owner è un agente: senza questa strada
         nessuno potrebbe più collegarli."""
-        self.esegui(T.telegram_link_action(
-            "SEAL-1", "ops", _Req({"action": "connect", "chat_id": "-1"})), "root")
-        self.assertEqual([("tg-action", "SEAL-1", "ops", "connect")], self.cli.chiamate)
+        self.esegui(T.connector_action_apply(
+            "SEAL-1", "ops", "telegram", "telegram-link",
+            _Req({"action": "connect", "chat_id": "-1"})), "root")
+        # The generic route reads the action's state first (`admin_only`).
+        self.assertEqual([("tg-status", "SEAL-1", "ops"),
+                          ("tg-action", "SEAL-1", "ops", "connect")], self.cli.chiamate)
 
 
 class TheRegistryTellsPeopleFromAgentsTests(_Base):

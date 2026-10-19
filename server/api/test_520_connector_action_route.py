@@ -2,8 +2,9 @@
 
 Il gateway esegue già le azioni che un manifest dichiara (#519), ma la sua rotta
 vive sotto `/internal/`, che il browser non raggiunge: la webui parla con
-l'agent-server. Questa è quella porta — la forma generica di `tg-link` e
-`mailbox-link`, che restano come alias finché la webui parla quella lingua.
+l'agent-server. Questa è quella porta — la forma generica di `mailbox-link`
+(che resta come alias finché la webui ne legge la forma) e dell'ex `tg-link`
+(tolto con clodia-platform#526).
 
 Le due cose che possono degradare in silenzio, e che qui si tengono ferme:
 
@@ -418,7 +419,7 @@ class IdLengthTests(_Base):
 class AnAgentRuntimeTokenIsNotAPersonTests(_Base):
     """Review of #521, reopening #539 §2: a topic created without an explicit
     owner is owned by `clodia`, whose runtime token lives in every spawn. The
-    generic routes must want a PERSON, like `tg-link` and `local-folder`."""
+    generic routes must want a PERSON, like `local-folder`."""
 
     def _cli_agente(self):
         cli = _Client()

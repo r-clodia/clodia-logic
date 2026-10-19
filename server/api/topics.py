@@ -974,44 +974,6 @@ async def local_folder(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
-@router.get("/api/topics/{tier}/{name}/tg-link")
-async def telegram_link_status(tier: str, name: str, request: Request):
-    """Stato del collegamento Telegram del topic. Whitelist e binding sono
-    due assi distinti (Davide, 23 set 2026) — questo legge il secondo."""
-    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
-    try:
-        return await topics_client.async_telegram_link_status(tier, name)
-    except topics_client.TopicsClientError as e:
-        raise HTTPException(502, str(e))
-
-
-@router.post("/api/topics/{tier}/{name}/tg-link")
-async def telegram_link_action(tier: str, name: str, request: Request):
-    """Connette/disconnette la chat Telegram del topic — whitelist E binding
-    insieme, non due passi scollegati (vedi `telegram_link_status`).
-
-    `accept_seal_downgrade` è la presa d'atto dell'owner sul cap SEAL del
-    channel (clodia-platform#405): su un topic sopra SEAL-1 il gateway rifiuta
-    finché non arriva, e questa rotta è l'unica strada che può fare. Si inoltra
-    SEMPRE, anche falsa: il gateway deve leggere ciò che l'owner ha dichiarato,
-    e l'assenza di un campo booleano non è una dichiarazione."""
-    await asyncio.to_thread(_require_human_topic_owner, request, tier, name)
-    try:
-        body = await request.json()
-    except Exception:  # noqa: BLE001
-        body = {}
-    body = body or {}
-    action = body.get("action")
-    if action not in ("connect", "disconnect"):
-        raise HTTPException(400, "richiesto 'action' (connect|disconnect)")
-    try:
-        return await topics_client.async_telegram_link_action(
-            tier, name, action, chat_id=body.get("chat_id"),
-            accept_seal_downgrade=bool(body.get("accept_seal_downgrade")))
-    except topics_client.TopicsClientError as e:
-        raise HTTPException(502, str(e))
-
-
 #: Same pattern as `topics_client.CONNECTOR_SEGMENT`, held here too because
 #: this check must not depend on the client module (tests replace it). Il
 #: tetto di 64 caratteri è nel pattern e non accanto, così le due copie
@@ -1109,9 +1071,10 @@ async def connector_action_status(tier: str, name: str, connector: str,
                                   action: str, request: Request):
     """Stato di un'azione di connettore su questo topic (clodia-platform#520).
 
-    La forma generica di `tg-link` e `mailbox-link`, che restano come alias
-    sottili finché la webui parla quella lingua: una stanza non ha un bottone
-    per vendor, ha i bottoni che i connettori installati dichiarano. Cosa
+    La forma generica di `mailbox-link` (che resta come alias finché la webui
+    ne legge la forma; `tg-link` è stato tolto con clodia-platform#526): una
+    stanza non ha un bottone per vendor, ha i bottoni che i connettori
+    installati dichiarano. Cosa
     l'azione chieda e cosa scriva lo dice il manifest, quindi un connettore che
     arriva con un pack compare qui senza una riga in più.
 
