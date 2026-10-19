@@ -151,6 +151,12 @@ class CourierTests(unittest.TestCase):
         self.assertEqual(self.run_with(fake, altra), 1)
         self.assertIn("ordine 6", fake.posts[0][3])
 
+    def test_a_hostile_date_never_names_the_file(self):
+        for d in ("Mon, 1 Jan 99999999999 10:00:00 +0000", "../../x", "", None):
+            with self.subTest(date=d):
+                nome = MC.eml_name({"date": d, "key": "abcdef1234"})
+                self.assertRegex(nome, r"^local/mailbox/\d{4}-\d{2}-\d{2}-abcdef12\.eml$")
+
     def test_a_room_without_declared_senders_is_not_even_read(self):
         letti = []
 

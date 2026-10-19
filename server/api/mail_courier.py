@@ -152,7 +152,7 @@ def eml_name(env: dict) -> str:
     from email.utils import parsedate_to_datetime
     try:
         giorno = parsedate_to_datetime(str(env.get("date") or "")).date().isoformat()
-    except (TypeError, ValueError, IndexError):
+    except Exception:  # noqa: BLE001 — a sender-chosen header never names the file
         giorno = date.today().isoformat()
     return f"{EML_DIR}/{giorno}-{str(env.get('key') or 'x')[:8]}.eml"
 

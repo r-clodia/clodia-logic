@@ -722,26 +722,36 @@ def _courier_rows(rows: object) -> tuple[list, int]:
     if not isinstance(rows, list):
         _record_ingress("courier.mail", "filter")
         return [], 1 if rows else 0
-    tenuti = [r for r in rows
-              if isinstance(r, dict) and _courier_sender_ok(str(r.get("from") or ""))]
+    tenuti = [r for r in rows if isinstance(r, dict) and _courier_sender_ok(_raw_from(r))]
     tolti = len(rows) - len(tenuti)
     if tolti:
         _record_ingress("courier.mail", "filter")
     return tenuti, tolti
 
 
-def _assert_courier_sender(account: str, email_id: str, folder: str) -> None:
-    """Refuse before returning anything of a message whose sender the room
-    does not declare (#576)."""
-    msg = _run_json(account, ["read", str(email_id), "--folder", folder])
-    mittente = str(msg.get("from") or "") if isinstance(msg, dict) else ""
-    if not _courier_sender_ok(mittente):
-        addr = _perimeter().address_of(mittente) or "?"
-        _record_ingress("courier.mail", "deny")
-        raise PermissionError(
-            f"{MITTENTE_NON_VAGLIATO}: il corriere consegna in questa stanza solo "
-            f"la posta dei mittenti che la stanza dichiara (mailfrom:{addr} fra i "
-            "suoi ingress, lo aggiunge l'owner)")
+def _raw_from(row: dict) -> str:
+    """The `From:` header as SENT (`from_raw`): the decoded one can turn an
+    encoded display name into an address (review of clodia-tools#411). A
+    client that does not give it → "" → the sender is not declared."""
+    return str(row.get("from_raw") or "") if isinstance(row, dict) else ""
+
+
+def _deny_courier(header: str) -> None:
+    addr = _perimeter().address_of(header) or "?"
+    _record_ingress("courier.mail", "deny")
+    raise PermissionError(
+        f"{MITTENTE_NON_VAGLIATO}: il corriere consegna in questa stanza solo "
+        f"la posta dei mittenti che la stanza dichiara (mailfrom:{addr} fra i "
+        "suoi ingress, lo aggiunge l'owner)")
+
+
+def _assert_courier_sender(result: object) -> None:
+    """Refuse a fetched message whose sender the room does not declare (#576),
+    checked on the `From:` of what was ACTUALLY fetched: between two IMAP
+    sessions a sequence id can name another message (review of #553)."""
+    raw = _raw_from(result)
+    if not _courier_sender_ok(raw):
+        _deny_courier(raw)
 
 
 def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
@@ -782,7 +792,7 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
         # checked again on what was actually read.
         if envelope_key(full) != key:
             continue
-        if not _courier_sender_ok(str(full.get("from") or "")):
+        if not _courier_sender_ok(_raw_from(full)):
             _record_ingress("courier.mail", "filter")
             tolti += 1
             continue
@@ -803,11 +813,11 @@ def courier_attachment(account: str, email_id: str, filename: str,
     sender the room itself declares (#576)."""
     if not filename:
         raise ValueError("'filename' must be provided")
-    _assert_courier_sender(account, email_id, folder)
     r = _run_json(account, ["get-attachment", str(email_id), "--filename", filename,
                             "--folder", folder])
     if not isinstance(r, dict) or not r.get("data"):
         raise ValueError(f"allegato '{filename}' non trovato nel messaggio {email_id}")
+    _assert_courier_sender(r)
     raw = base64.b64decode(r["data"])
     return {"filename": safe_attachment_name(r.get("filename") or filename),
             "content_type": r.get("content_type"), "size": len(raw),
@@ -821,10 +831,11 @@ def courier_eml(account: str, email_id: str, folder: str = "INBOX") -> dict:
     to a model."""
     if not email_id:
         raise ValueError("'email_id' must be provided")
-    _assert_courier_sender(account, email_id, folder)
     r = _run_json(account, ["get-eml", str(email_id), "--folder", folder])
     if not isinstance(r, dict) or not r.get("data"):
-        raise ValueError(f"messaggio {email_id} non trovato")
+        raise ValueError(str((r or {}).get("error") or f"messaggio {email_id} non trovato")
+                         if isinstance(r, dict) else f"messaggio {email_id} non trovato")
+    _assert_courier_sender(r)
     raw = base64.b64decode(r["data"])
     return {"size": len(raw), "message_id": r.get("message_id"),
             "content_b64": base64.b64encode(raw).decode("ascii")}

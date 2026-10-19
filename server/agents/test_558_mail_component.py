@@ -523,10 +523,12 @@ class CourierTests(_OnFakeHost):
         super().setUp()
         self.host.perimeter.room_senders = {"ordini@f.it", "spam@x.it"}
 
-    LIST = [{"id": "1", "from": "Fornitore <ordini@f.it>", "to": "studio@example.it",
+    LIST = [{"id": "1", "from": "Fornitore <ordini@f.it>",
+             "from_raw": "Fornitore <ordini@f.it>", "to": "studio@example.it",
              "subject": "fattura", "date": "Sat, 18 Oct 2026 10:00:00 +0200",
              "message_id": "<m1@x>"},
-            {"id": "2", "from": "spam@x.it", "to": "studio@example.it",
+            {"id": "2", "from": "spam@x.it", "from_raw": "spam@x.it",
+             "to": "studio@example.it",
              "subject": "offerta riservata", "date": "Sat, 18 Oct 2026 11:00:00 +0200",
              "message_id": "<m2@x>"}]
 
@@ -538,10 +540,14 @@ class CourierTests(_OnFakeHost):
             row = next(r for r in self.LIST if r["id"] == args[1])
             return {**row, "body": "SEGRETO DEL CORPO", "attachments": ["a/b.pdf"]}
         if cmd == "get-attachment":
+            row = next(r for r in self.LIST if r["id"] == args[1])
             return {"filename": "a/b.pdf", "content_type": "application/pdf",
+                    "from_raw": row["from_raw"],
                     "data": base64.b64encode(b"%PDF-1").decode()}
         if cmd == "get-eml":
-            return {"id": args[1], "message_id": "<m1@x>", "size": 9,
+            row = next(r for r in self.LIST if r["id"] == args[1])
+            return {"id": args[1], "message_id": row["message_id"], "size": 9,
+                    "from_raw": row["from_raw"],
                     "data": base64.b64encode(b"RAW-EML-1").decode()}
         raise AssertionError(cmd)
 
@@ -613,8 +619,8 @@ class CourierTests(_OnFakeHost):
 
         def fake(account, args, **kw):
             if args[0] == "read" and args[1] == "1":
-                return {**self.LIST[0], "from": "spam@x.it", "body": "B",
-                        "attachments": []}
+                return {**self.LIST[0], "from": "spam@x.it", "from_raw": "spam@x.it",
+                        "body": "B", "attachments": []}
             return self._fake(account, args)
         with patch.object(self.mail, "_run_json", side_effect=fake):
             out = self.svc("courier_envelopes", {"account": "studio"})
@@ -641,6 +647,36 @@ class CourierTests(_OnFakeHost):
                 self.svc("courier_attachment", {"account": "studio", "email_id": "2",
                                                 "filename": "a/b.pdf"})
 
+
+    def test_an_eml_read_from_another_message_is_refused(self) -> None:
+        """Review of #553 (B3): between the check and the download the same
+        IMAP id can name another message — the bytes are checked."""
+        self.host.perimeter.room_senders = {"ordini@f.it"}
+
+        def fake(account, args, **kw):
+            if args[0] in ("get-eml", "get-attachment"):
+                out = self._fake(account, args)
+                return {**out, "from_raw": "spam@x.it"}
+            return self._fake(account, args)
+        with patch.object(self.mail, "_run_json", side_effect=fake):
+            with self.assertRaises(PermissionError):
+                self.svc("courier_eml", {"account": "studio", "email_id": "1"})
+            with self.assertRaises(PermissionError):
+                self.svc("courier_attachment", {"account": "studio", "email_id": "1",
+                                                "filename": "a/b.pdf"})
+
+    def test_only_the_header_as_sent_counts(self) -> None:
+        """B2: a client row without `from_raw` (decoded `from` only) is not
+        delivered — the decoded header can be forged into a declared address."""
+        rows = [{**r} for r in self.LIST]
+        for r in rows:
+            r.pop("from_raw")
+        with patch.object(self.mail, "_run_json",
+                          side_effect=lambda a, args, **k: [dict(r) for r in rows]
+                          if args[0] == "list" else self._fake(a, args)):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual(out["envelopes"], [])
+        self.assertEqual(out["withheld"], 2)
 
     # ── #576 ───────────────────────────────────────────────────────────────
     def test_a_room_that_declares_nobody_gets_nothing(self) -> None:

@@ -86,8 +86,16 @@ mail from then on (what is already in the mailbox is recorded, not delivered).
 
 Each delivery: an envelope post by `posta` (never the body), the attachments in
 `files/posta-<key8>-<name>`, the whole message in
-`local/mailbox/<date>-<key8>.eml` — all untrusted. Needs clodia-tools ≥ 2.126.0
-and clodia-logic ≥ 6.314.0.
+`local/mailbox/<date>-<key8>.eml` (messages over 25 MB are named, not copied) —
+all untrusted. Needs clodia-tools ≥ 2.126.0 and clodia-logic ≥ 6.314.0; update
+google-pack to ≥ 2.2.0 too, or Gmail mailboxes deliver nothing.
+
+Limits to know:
+- The sender is the `From:` header **as sent**, exactly one address; it is not
+  authenticated (no SPF/DKIM check), so a forged `From:` of a declared sender
+  passes like any mail client would show it. Declare senders, not trust.
+- `mailfrom:*` opens the mailbox's whole mail to that one room: an explicit
+  choice of the owner, never a default.
 
 ## 5. Verification
 
