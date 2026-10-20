@@ -982,6 +982,18 @@ def _refuse_if_abstract(kind: str) -> None:
             f"spawnato. Spawna un seed che discende da lui.")
 
 
+#: Native tools a job's UNATTENDED session never gets (clodia-platform#581):
+#: whatever leaves work running after the turn — a background subagent, a
+#: workflow, a monitor, a wakeup or cron, a remote trigger, a task — outlives
+#: it, and the job run closes with the turn: the results never come back and
+#: `jobs.report_status` is never called. `Bash` with `run_in_background` cannot
+#: be denied by name: the job prompt's own closing instruction covers it.
+_UNATTENDED_DENIED: tuple[str, ...] = (
+    "Agent", "Workflow", "Monitor", "ScheduleWakeup", "CronCreate", "CronDelete",
+    "RemoteTrigger", "TaskCreate", "TaskOutput", "TaskStop", "TaskUpdate",
+)
+
+
 def _effective_clearance(kind: str, override: dict | None = None) -> Optional[str]:
     """Clearance EFFETTIVA (per il token) = SEAL del PROVIDER su cui gira QUESTO SPAWN.
 
@@ -1847,6 +1859,9 @@ class ChatSession:
         # e deve conoscerla: passarla solo a `disallowed_tools` la rendeva inerte.
         disallowed = list(_resolve_disallowed_tools(self.kind))
         for t in _resolve_native_denied(self.kind):
+            if t not in disallowed:
+                disallowed.append(t)
+        for t in _UNATTENDED_DENIED if getattr(self, "unattended", False) else ():
             if t not in disallowed:
                 disallowed.append(t)
         if disallowed:
