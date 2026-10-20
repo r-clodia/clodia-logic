@@ -534,6 +534,29 @@ def _backfill_start(job: dict, now: datetime) -> Optional[datetime]:
     return max(max(noti), now - timedelta(days=_BACKFILL_HORIZON_DAYS))
 
 
+def catch_up_due(job: dict, *, now: Optional[datetime] = None) -> Optional[datetime]:
+    """The most recent fire missed while the process was down, IF it is still
+    within the job's grace: it is run once at boot instead of only being
+    recorded as `missed` (clodia-platform#530). A deploy at 13:30 no longer
+    swallows the 09:00 digest — the grace already said it may run late.
+    Topic triggers are left out: their grace is short by design."""
+    if not job.get("enabled") or job.get("mode") == "topic_trigger":
+        return None
+    adesso = now or datetime.now(_SCHED_TZ)
+    if adesso.tzinfo is None:
+        adesso = adesso.replace(tzinfo=timezone.utc)
+    inizio = _backfill_start(job, adesso)
+    if inizio is None or inizio >= adesso:
+        return None
+    fires, _ = missed_fires_since(job, inizio, adesso)
+    if not fires:
+        return None
+    ultimo = fires[-1]
+    if (adesso - ultimo).total_seconds() > misfire_grace_for(job):
+        return None
+    return ultimo
+
+
 def backfill_missed_fires(job: dict, *, now: Optional[datetime] = None) -> int:
     """Scrive una riga `missed` per ogni fire mai generato. Ritorna quante.
 
@@ -605,6 +628,35 @@ def _job_id_from_key(key: str) -> Optional[int]:
         return None
 
 
+#: How often the scheduler is woken up to look at the WALL clock (#530).
+_WAKEUP_S = 60
+
+
+def _start_wakeup_ticker(sched: BackgroundScheduler) -> None:
+    """Wake APScheduler every `_WAKEUP_S` seconds (clodia-platform#530).
+
+    APScheduler sleeps until the next fire on a MONOTONIC wait. When the host
+    sleeps (terra is a Mac: OrbStack's VM is suspended at night) the monotonic
+    clock stops, so after the wake the scheduler keeps waiting for hours that
+    already passed on the wall clock — the 09:00 digest fired in the evening,
+    or never if a restart came first. A wakeup recomputes from the wall clock:
+    after a suspension the due fire runs within a minute, within its grace."""
+    import threading
+    import time as _time
+
+    def _loop() -> None:
+        while True:
+            _time.sleep(_WAKEUP_S)
+            try:
+                if not sched.running:
+                    return
+                sched.wakeup()
+            except Exception:  # noqa: BLE001 — a tick never kills the ticker
+                pass
+
+    threading.Thread(target=_loop, name="scheduler-wakeup", daemon=True).start()
+
+
 def start_scheduler(loop: asyncio.AbstractEventLoop) -> BackgroundScheduler:
     """Avvia lo scheduler. Idempotente: se già avviato ritorna l'istanza
     esistente. Salva una reference al loop FastAPI per bridging async."""
@@ -621,6 +673,7 @@ def start_scheduler(loop: asyncio.AbstractEventLoop) -> BackgroundScheduler:
     _scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
     _scheduler.add_listener(_on_job_submitted, EVENT_JOB_SUBMITTED)
     _scheduler.start()
+    _start_wakeup_ticker(_scheduler)
     LOG.info("Scheduler avviato (timezone=Europe/Rome, jobs da %s)", db.JOBS_DIR)
     return _scheduler
 
@@ -836,11 +889,33 @@ def reload_all_enabled_jobs() -> int:
         # registrazione e dentro un try: un boot che non registra i job perché
         # la ricostruzione è esplosa sarebbe un rimedio peggiore del difetto —
         # lì i fire smetterebbero di avvenire davvero.
+        # Il fire più recente perso entro la tolleranza si recupera (#530): va
+        # deciso PRIMA del backfill, che sposta la filigrana oltre di lui.
+        try:
+            recupero = catch_up_due(job)
+        except Exception as e:  # noqa: BLE001
+            recupero = None
+            LOG.error("job %s: recupero non valutato (%s: %s)",
+                      job.get("id"), type(e).__name__, e)
         try:
             backfill_missed_fires(job)
         except Exception as e:  # noqa: BLE001
             LOG.error("job %s: fire mancanti non ricostruiti (%s: %s)",
                       job.get("id"), type(e).__name__, e)
+        if recupero is not None:
+            try:
+                _scheduler.add_job(
+                    _fire_job_threadsafe, trigger="date",
+                    run_date=datetime.now(_SCHED_TZ) + timedelta(seconds=30),
+                    id=f"{_job_key(job['id'])}-catchup", replace_existing=True,
+                    args=[job["id"]], name=f"{job['name']} (recupero)",
+                    misfire_grace_time=3600)
+                LOG.warning("Job id=%s name=%s: fire del %s perso a processo "
+                            "fermo, entro la tolleranza → eseguito ora (#530)",
+                            job.get("id"), job.get("name"), recupero.isoformat())
+            except Exception as e:  # noqa: BLE001
+                LOG.error("job %s: recupero non pianificato (%s: %s)",
+                          job.get("id"), type(e).__name__, e)
     LOG.info("Reloaded %d enabled jobs from db", n)
     return n
 
