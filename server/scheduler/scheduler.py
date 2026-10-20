@@ -904,12 +904,13 @@ def reload_all_enabled_jobs() -> int:
                       job.get("id"), type(e).__name__, e)
         if recupero is not None:
             try:
-                _scheduler.add_job(
-                    _fire_job_threadsafe, trigger="date",
-                    run_date=datetime.now(_SCHED_TZ) + timedelta(seconds=30),
-                    id=f"{_job_key(job['id'])}-catchup", replace_existing=True,
-                    args=[job["id"]], name=f"{job['name']} (recupero)",
-                    misfire_grace_time=3600)
+                # The SAME job, fired earlier: its next fire moves to now+30s
+                # and the trigger resumes from there. A separate catch-up job
+                # would run beside a regular fire due in the same minutes —
+                # two backups at 22:00 (review of #555). One job, one run.
+                _scheduler.modify_job(
+                    _job_key(job["id"]),
+                    next_run_time=datetime.now(_SCHED_TZ) + timedelta(seconds=30))
                 LOG.warning("Job id=%s name=%s: fire del %s perso a processo "
                             "fermo, entro la tolleranza → eseguito ora (#530)",
                             job.get("id"), job.get("name"), recupero.isoformat())

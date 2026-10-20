@@ -50,6 +50,26 @@ class CatchUpTests(JobsDirTestCase):
                                                  now=ORA))
 
 
+class OneJobOneRunTests(JobsDirTestCase):
+    """Review of #555: the catch-up moves the job's OWN next fire; it never adds
+    a second job that could run beside a regular fire due minutes later."""
+
+    def test_the_catch_up_moves_the_regular_job(self):
+        job = self._job_fermo_da(timedelta(hours=27), cron_expr="0 9 * * *",
+                                 name="digest")
+        sched = MagicMock()
+        with patch.object(scheduler, "_scheduler", sched), \
+                patch.object(scheduler.db, "iter_enabled_jobs", lambda: [job]), \
+                patch.object(scheduler, "register_job", lambda j: None), \
+                patch.object(scheduler, "catch_up_due", lambda j: ORA), \
+                patch.object(scheduler, "backfill_missed_fires", lambda j: 0):
+            scheduler.reload_all_enabled_jobs()
+        sched.add_job.assert_not_called()
+        (args, kwargs), = sched.modify_job.call_args_list
+        self.assertEqual(args[0], scheduler._job_key(job["id"]))
+        self.assertIn("next_run_time", kwargs)
+
+
 class WakeupTickerTests(unittest.TestCase):
     def test_the_ticker_wakes_the_scheduler(self):
         sched = MagicMock()

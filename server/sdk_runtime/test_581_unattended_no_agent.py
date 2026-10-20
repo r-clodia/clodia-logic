@@ -12,8 +12,14 @@ from . import session as S
 
 
 class UnattendedTests(unittest.TestCase):
-    def test_agent_is_denied_to_unattended_sessions(self):
-        self.assertIn("Agent", S._UNATTENDED_DENIED)
+    def test_background_work_is_denied_to_unattended_sessions(self):
+        for t in ("Agent", "Workflow", "Monitor", "ScheduleWakeup", "CronCreate",
+                  "RemoteTrigger", "TaskCreate"):
+            self.assertIn(t, S._UNATTENDED_DENIED)
+
+    def test_every_denied_name_is_a_real_native_tool(self):
+        from . import native_tools as nt
+        self.assertEqual(set(S._UNATTENDED_DENIED) - set(nt.KNOWN_FALLBACK), set())
 
     def test_the_denial_joins_the_blocklist_before_the_root_branch(self):
         """Same place as the seed's own denials, so the root permission
