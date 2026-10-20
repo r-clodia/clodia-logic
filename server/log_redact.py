@@ -12,10 +12,15 @@ from __future__ import annotations
 import logging
 import re
 
-#: Query parameter names whose value is never written (case-insensitive).
+#: Query parameter names whose value is never written (case-insensitive): any
+#: name ENDING in a credential word (`x-api-key`, `secret_key`, `db_password`,
+#: `X-Amz-Signature`, `access_token`, …), plus an OAuth `code`. A useful
+#: parameter that happens to end that way (`?key=theme`) is masked too: a log
+#: line that hides a harmless value is cheaper than one that keeps a secret.
 SENSITIVE = re.compile(
-    r"(?i)([?&](?:[a-z0-9_.-]*token|[a-z0-9_.-]*secret|password|passwd|api[_-]?key|key|"
-    r"code|signature|sig|auth|authorization)=)[^&#\s\"']*")
+    r"(?i)([?&](?:[a-z0-9_.%-]*(?:token|secret|password|passwd|pwd|pass|key|"
+    r"signature|sig|credential|session|sid|jwt|auth|authorization)|code)=)"
+    r"[^&#\s\"']*")
 
 
 def redact(text: str) -> str:

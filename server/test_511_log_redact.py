@@ -15,6 +15,9 @@ class RedactTests(unittest.TestCase):
             "/cb?code=4/0Ab&state=s": "/cb?code=***&state=s",
             "/x?api_key=K&API-KEY=K2": "/x?api_key=***&API-KEY=***",
             "/x?client_secret=S": "/x?client_secret=***",
+            "/x?x-api-key=K&secret_key=S&db_password=P": "/x?x-api-key=***&secret_key=***&db_password=***",
+            "/f?X-Amz-Signature=abc&X-Amz-Date=1": "/f?X-Amz-Signature=***&X-Amz-Date=1",
+            "/x?pwd=1&session=2&jwt=3&credential=4": "/x?pwd=***&session=***&jwt=***&credential=***",
         }
         for raw, want in cases.items():
             with self.subTest(raw=raw):
