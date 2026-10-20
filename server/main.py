@@ -64,6 +64,10 @@ except Exception as _e:  # noqa: BLE001 — il file di log non deve mai bloccare
 @asynccontextmanager
 async def _lifespan(app: FastAPI):
     # --- startup ---
+    # No credential from a query string in the access log (#511). Here and not
+    # before `uvicorn.run`: uvicorn configures its loggers when it starts.
+    from . import log_redact
+    log_redact.install()
     # Sweep degli spawn ORFANI: al boot nessuna sessione è viva, quindi tutte le
     # cartelle spawn rimaste da prima del restart/crash sono garbage (le sessioni
     # ne materializzano di nuove on-demand, non riusano le vecchie). Le rimuove

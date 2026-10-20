@@ -61,12 +61,25 @@ class StreamPrincipalTests(unittest.TestCase):
         chi, _, _stanza = agents._stream_principal(self._Req())
         self.assertIsNone(chi)
 
-    def test_the_token_may_come_from_the_query_because_eventsource_cannot_send_headers(self):
+    def test_a_token_in_the_query_is_refused(self):
+        """#511: the query string is written in clear to the access log. A
+        token there is refused, even next to a valid header — its value is
+        already in the log."""
+        ok = lambda _t: {"principal": "davide", "agent": "clodia"}  # noqa: E731
+        with patch("server.colony.pki.verify_session_token", ok), \
+             patch.object(agents.registry, "get_by_name", lambda _n: None):
+            chi, _, _ = agents._stream_principal(self._Req(query={"token": "ckt1.x"}))
+            self.assertIsNone(chi)
+            chi, _, _ = agents._stream_principal(self._Req(
+                headers={"authorization": "Bearer ckt1.x"}, query={"token": "ckt1.x"}))
+            self.assertIsNone(chi)
+
+    def test_the_token_comes_from_the_authorization_header(self):
         with patch("server.colony.pki.verify_session_token",
                    lambda _t: {"principal": "davide", "agent": "clodia"}), \
              patch.object(agents.registry, "get_by_name", lambda _n: None):
             chi, is_proxy, _stanza = agents._stream_principal(
-                self._Req(query={"token": "ckt1.x"}))
+                self._Req(headers={"authorization": "Bearer ckt1.x"}))
         self.assertEqual(chi, "davide")
         self.assertFalse(is_proxy)
 
