@@ -313,16 +313,18 @@ def _stream_principal(request: Request):
     vorrebbe dire verificare il token due volte per due domande, e due verifiche
     sono due posti in cui una può divergere dall'altra.
 
-    Il token arriva dall'header quando il client è un programma, e dalla query
-    quando è un browser: `EventSource` non sa mandare header, e senza questa
-    seconda via l'endpoint resterebbe aperto — che è esattamente com'era.
+    Il token arriva SOLO dall'header `Authorization` (#511): la webui legge lo
+    stream con `fetch`, non più con `EventSource`. Un token in query finiva in
+    chiaro nell'access log; una richiesta che lo porta ancora è rifiutata,
+    anche se ha l'header, perché il valore è già stato scritto nel log.
     """
     from ..colony import pki
 
+    if "token" in request.query_params:
+        LOG.warning("events: token in query string rifiutato (clodia-platform#511)")
+        return None, False, None
     auth = request.headers.get("authorization", "")
     token = auth[7:].strip() if auth.lower().startswith("bearer ") else ""
-    if not token:
-        token = (request.query_params.get("token") or "").strip()
     if not token:
         return None, False, None
     try:
@@ -379,8 +381,9 @@ async def events(request: Request):
     chi, is_proxy, stanza = _stream_principal(request)
     if not chi:
         return JSONResponse(
-            {"error": "questo stream richiede un token: header Authorization "
-                      "oppure ?token= (EventSource non manda header)"},
+            {"error": "questo stream richiede il token nell'header Authorization "
+                      "(Bearer); un token in query string è rifiutato "
+                      "(clodia-platform#511)"},
             status_code=401)
 
     async def event_stream():
