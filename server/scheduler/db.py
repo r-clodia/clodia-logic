@@ -66,8 +66,14 @@ _FIELDS = (
     "only_if_new_mail", "mail_seen",
 )
 
-#: Names remembered in `mail_seen`: the newest, enough for weeks of mail.
-MAIL_SEEN_CAP = 500
+#: Names remembered in `mail_seen`. The scheduler compares the SAME window of
+#: the folder (`mail_window`), so a folder larger than the cap never makes old
+#: names look new (review of #558).
+MAIL_SEEN_CAP = 5000
+
+
+def mail_window(names: Iterable[str]) -> list[str]:
+    return sorted({str(n) for n in names})[-MAIL_SEEN_CAP:]
 
 # Agent di fallback per job senza il campo `agent` (creati prima del 19 giu 2026).
 _LEGACY_DEFAULT_AGENT = "looper"
@@ -673,7 +679,7 @@ def set_mail_seen(job_id: int, names: Iterable[str]) -> None:
     d = get_job(job_id)
     if d is None:
         return
-    d["mail_seen"] = sorted({str(n) for n in names})[-MAIL_SEEN_CAP:]
+    d["mail_seen"] = mail_window(names)
     d["updated_at"] = _now_iso()
     _write(d)
 

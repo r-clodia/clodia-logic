@@ -103,8 +103,34 @@ class OnlyIfNewMailTests(unittest.IsolatedAsyncioTestCase):
             body.only_if_new_mail = False
             out = await api.api_put_topic_cron_trigger("SEAL-1", "ops", body, object())
         self.assertIs(out["trigger"]["only_if_new_mail"], False)
-        self.assertIs(api.TopicCronTriggerUpsert(interval_minutes=10, prompt="p")
-                      .only_if_new_mail, False)
+
+    async def test_an_edit_without_the_field_keeps_it(self):
+        """Review of #558: a client that does not know the field must not
+        switch it off."""
+        topic = {"meta": {"owner": "davide", "participants": ["davide", "clodia"]}}
+        with mock.patch.object(api, "_caller", return_value="davide"), \
+                mock.patch.object(api.topics_client, "open_topic", return_value=topic), \
+                mock.patch.object(api, "_require_valid_agent"), \
+                mock.patch.object(api.scheduler, "register_job"):
+            await api.api_put_topic_cron_trigger("SEAL-1", "ops", api.TopicCronTriggerUpsert(
+                interval_minutes=10, prompt="p", only_if_new_mail=True), object())
+            out = await api.api_put_topic_cron_trigger("SEAL-1", "ops", api.TopicCronTriggerUpsert(
+                interval_minutes=10, prompt="p2"), object())
+            self.assertIs(out["trigger"]["only_if_new_mail"], True)
+            new = await api.api_put_topic_cron_trigger("SEAL-1", "nuovo", api.TopicCronTriggerUpsert(
+                interval_minutes=10, prompt="p"), object())
+        self.assertIs(new["trigger"]["only_if_new_mail"], False)
+
+    async def test_a_folder_larger_than_the_cap_does_not_look_new(self):
+        t = self._trigger()
+        with mock.patch.object(db, "MAIL_SEEN_CAP", 3):
+            self.mailbox = [f"2026-10-{d:02d}-x.eml" for d in range(1, 8)]
+            await self.fire(t["id"])                              # first look
+            out = await self.fire(t["id"])
+            self.assertEqual(out["status"], "skipped")
+            self.mailbox.append("2026-10-30-y.eml")
+            out = await self.fire(t["id"])
+        self.assertEqual(out["status"], "dispatched")
 
 
 if __name__ == "__main__":

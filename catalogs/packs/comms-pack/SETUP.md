@@ -101,6 +101,18 @@ Limits to know:
   they stay in the untrusted `.eml` and `files/`). Reading that file does not
   taint the session. An IMAP mailbox authenticates nothing unless its vault
   bundle names the receiving server's `authserv_id`.
+- What the trusted text is: the message's BODY part only (no part with a file
+  name, nothing under `message/*`), cut at the first forward or quoted-reply
+  header and without `>` lines. **Residual risk:** an inline forward whose
+  client writes no recognisable header carries third-party text as trusted —
+  forward to a topic only what you would type yourself.
+- The verdict is read from the TOPMOST `Authentication-Results` with a trusted
+  `authserv-id`. **Assumption:** the receiving server adds one to every message
+  it delivers (Gmail does on SMTP delivery); an IMAP mailbox whose server may
+  not must not declare `authserv_id`. DMARC is authoritative when present; a
+  DKIM signer counts only for the From: domain or its subdomains.
+- Trust follows the declared senders, wildcards included: `mailfrom:*@domain`
+  makes every authenticated sender of that domain trusted in that topic.
 - `mailfrom:*` opens the mailbox's whole mail to that one room: an explicit
   choice of the owner, never a default.
 
@@ -125,7 +137,10 @@ colony mailbox → the feature is off and the topic page says so.
 The courier reads the colony mailbox ONCE per cycle (`courier_box_index`, mail
 of the last two days) and searches a topic's box only when that index names
 mail it has not seen: the cost does not grow with the number of topics. A
-message-box mail left undelivered for more than two days is not delivered.
+message-box mail left undelivered for more than two days is not delivered. A
+change of the senders (a topic's own, or the global `mailfrom:` list, which
+every message box counts) records the mail already there instead of
+delivering it, as for 4b.
 
 To have such mail **acted upon**, give the topic a trigger (topic page →
 trigger) with "Solo se è arrivata posta nuova" (clodia-logic ≥ 6.317.0): it

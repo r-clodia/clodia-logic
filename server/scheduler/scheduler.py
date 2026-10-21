@@ -1042,6 +1042,8 @@ async def _fire_topic_trigger(job: dict) -> dict:
         # #586: code decides, no model call — a turn every N minutes on an
         # empty mailbox would spend tokens for nothing.
         mail_now = await asyncio.to_thread(_mailbox_names, tier, name)
+        if mail_now is not None:
+            mail_now = db.mail_window(mail_now)
         if mail_now is None:
             status = "skipped (message box del topic non leggibile)"
             db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")

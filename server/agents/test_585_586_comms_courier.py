@@ -161,3 +161,81 @@ class AuthenticationTests(_Base):
         self.host.vault["mailbox_studio"] = {**self.host.vault["mailbox_studio"],
                                              "authserv_id": "mx.example.it"}
         self.assertEqual(self.mail._authserv_ids("studio"), {"mx.example.it"})
+
+
+class ReviewFixesTests(_Base):
+    """Review of clodia-logic#558."""
+
+    def test_refused_keys_are_reported_for_an_only_pass(self) -> None:
+        self.host.perimeter.room_senders = {"ordini@f.it"}
+        k1, k2 = (self.mail.envelope_key(r) for r in self.LIST)
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio", "only": [k1, k2]})
+            plain = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual([e["id"] for e in out["envelopes"]], ["1"])
+        self.assertEqual(out["withheld_keys"], [k2])
+        self.assertNotIn("withheld_keys", plain)
+
+    def test_an_unreachable_message_is_not_reported_refused(self) -> None:
+        k1 = self.mail.envelope_key(self.LIST[0])
+
+        def fake(account, args, **kw):
+            if args[0] == "read":
+                return None                     # the read failed
+            return self._fake(account, args)
+        with patch.object(self.mail, "_run_json", side_effect=fake):
+            out = self.svc("courier_envelopes", {"account": "studio", "only": [k1]})
+        self.assertEqual((out["envelopes"], out["withheld_keys"]), ([], []))
+
+    def test_the_eml_of_another_message_is_refused(self) -> None:
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            with self.assertRaises(PermissionError):
+                self.svc("courier_eml", {"account": "studio", "email_id": "1",
+                                         "key": self.mail.envelope_key(self.LIST[1])})
+            ok = self.svc("courier_eml", {"account": "studio", "email_id": "1",
+                                          "key": self.mail.envelope_key(self.LIST[0])})
+        self.assertEqual(ok["size"], 9)
+
+    def test_an_eml_without_message_id_is_never_authenticated(self) -> None:
+        raw = _raw(f"Authentication-Results: {GMAIL_AR}", "From: ordini@f.it")
+
+        def fake(account, args, **kw):
+            out = self._fake(account, args)
+            if args[0] == "get-eml":
+                import base64
+                return {**out, "message_id": "", "data": base64.b64encode(raw).decode()}
+            return out
+        with patch.object(self.mail, "_run_json", side_effect=fake), \
+                patch.object(self.mail, "_authserv_ids", lambda a: {"mx.google.com"}):
+            out = self.svc("courier_eml", {"account": "studio", "email_id": "1", "key": "k"})
+        self.assertFalse(out["auth"]["authenticated"])
+
+
+class ParserReviewTests(_Base):
+    IDS = {"mx.google.com"}
+
+    def auth(self, ar, frm="From: a@gmail.com"):
+        return self.mail.mail_authentication(_raw(f"Authentication-Results: {ar}", frm),
+                                             self.IDS)
+
+    def test_a_result_injected_in_a_quoted_string_or_comment_is_data(self) -> None:
+        ar = ('mx.google.com; spf=pass (x;dmarc=pass header.from=gmail.com;y) '
+              'smtp.mailfrom="a);dmarc=pass header.from=gmail.com;(b"@evil.com; '
+              'dmarc=fail header.from=gmail.com')
+        self.assertFalse(self.auth(ar)["authenticated"])
+
+    def test_a_failing_dmarc_wins_over_a_passing_one(self) -> None:
+        ar = "mx.google.com; dmarc=pass header.from=gmail.com; dmarc=fail header.from=gmail.com"
+        self.assertFalse(self.auth(ar)["authenticated"])
+
+    def test_dmarc_fail_is_not_rescued_by_dkim(self) -> None:
+        ar = "mx.google.com; dkim=pass header.i=@gmail.com; dmarc=fail header.from=gmail.com"
+        self.assertFalse(self.auth(ar)["authenticated"])
+
+    def test_a_parent_domain_signer_is_not_aligned(self) -> None:
+        ar = "mx.google.com; dkim=pass header.d=myshopify.com"
+        self.assertFalse(self.auth(ar, "From: x@shop1.myshopify.com")["authenticated"])
+
+    def test_nested_comments(self) -> None:
+        ar = "mx.google.com (a (b; dmarc=fail) c); dmarc=pass (p=NONE) header.from=gmail.com"
+        self.assertTrue(self.auth(ar)["authenticated"])

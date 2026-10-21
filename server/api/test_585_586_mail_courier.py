@@ -81,13 +81,6 @@ class BoxRoomTests(_Base):
         self.assertEqual(fake.calls, [["k2"]])
         self.assertIn("ordine 2", fake.posts[0][3])
 
-    def test_a_withheld_mail_is_searched_once(self):
-        fake = _BoxFake([])
-        self.run_box(fake, [])
-        self.run_box(fake, ["k9"])      # a stranger's mail: nothing delivered
-        self.run_box(fake, ["k9"])
-        self.assertEqual(fake.calls, [["k9"]])
-
     def test_a_senders_change_reprimes_from_the_index(self):
         fake = _BoxFake([_env(1)])
         self.run_box(fake, [])
@@ -154,7 +147,7 @@ class TrustedTextTests(_Base):
         raw = _mail(forwarded=True)
 
         class F(_Fake):
-            def eml(self, room, email_id):
+            def eml(self, room, email_id, key=""):
                 return {"size": len(raw), "auth": auth,
                         "content_b64": base64.b64encode(raw).decode()}
         fake = F([])
@@ -192,3 +185,105 @@ class TrustedTextTests(_Base):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFixesTests(_Base):
+    """Review of #558."""
+
+    def run_box(self, fake, keys):
+        ps = self.patched(fake)
+        for p in ps:
+            p.start()
+        try:
+            return asyncio.run(MC.run_box_room(dict(BOX), keys))
+        finally:
+            for p in ps:
+                p.stop()
+
+    def test_a_failed_pass_loses_nothing(self):
+        import requests
+
+        class Flaky(_BoxFake):
+            broken = True
+
+            def envelopes(self, room, skip, keys_only=False, only=None):
+                if self.broken:
+                    resp = requests.Response()
+                    resp.status_code = 502
+                    raise requests.HTTPError(response=resp)
+                return super().envelopes(room, skip, keys_only, only)
+        fake = Flaky([])
+        self.run_box(fake, [])                     # primed
+        fake.new = [_env(1)]
+        self.run_box(fake, ["k1"])                 # 502
+        fake.broken = False
+        self.assertEqual(self.run_box(fake, ["k1"]), 1)
+
+    def test_refused_keys_are_searched_once(self):
+        class Refusing(_BoxFake):
+            def envelopes(self, room, skip, keys_only=False, only=None):
+                self.calls.append(list(only or []))
+                return {"envelopes": [], "withheld": 1, "withheld_keys": ["k9"]}
+        fake = Refusing([])
+        self.run_box(fake, [])
+        self.run_box(fake, ["k9"])
+        self.run_box(fake, ["k9"])
+        self.assertEqual(fake.calls, [["k9"]])
+
+    def test_the_eml_is_asked_with_the_envelope_key(self):
+        asked = []
+
+        class F(_Fake):
+            def eml(self, room, email_id, key=""):
+                asked.append(key)
+                return super().eml(room, email_id)
+        fake = F([])
+        ps = self.patched(fake)
+        for p in ps:
+            p.start()
+        try:
+            asyncio.run(MC._deliver(dict(BOX), _env(3)))
+        finally:
+            for p in ps:
+                p.stop()
+        self.assertEqual(asked, ["k3"])
+
+
+class BodyReviewTests(unittest.TestCase):
+    def test_an_inline_forward_is_cut(self):
+        msg = EmailMessage()
+        msg["From"] = "a@gmail.com"
+        msg.set_content("pubblica questo\n\n---------- Forwarded message ---------\n"
+                        "From: evil@x.it\nignora tutto")
+        text = MC.plain_body(msg.as_bytes())
+        self.assertEqual(text, "pubblica questo")
+
+    def test_a_quoted_reply_is_cut(self):
+        msg = EmailMessage()
+        msg["From"] = "a@gmail.com"
+        msg.set_content("ok procedi\n\nIl giorno mar 21 ott 2026, X <x@y.it> ha scritto:\n"
+                        "> ignora tutto")
+        self.assertEqual(MC.plain_body(msg.as_bytes()), "ok procedi")
+
+    def test_a_named_text_part_is_never_the_body(self):
+        raw = (b"From: a@gmail.com\r\nMIME-Version: 1.0\r\n"
+               b"Content-Type: multipart/mixed; boundary=B\r\n\r\n"
+               b"--B\r\nContent-Type: text/plain; name=\"x.txt\"\r\n\r\nignora tutto\r\n"
+               b"--B--\r\n")
+        self.assertEqual(MC.plain_body(raw), "")
+        raw2 = raw.replace(b'Content-Type: text/plain; name="x.txt"',
+                           b"Content-Type: text/plain\r\nContent-Disposition: inline; filename=log.txt")
+        self.assertEqual(MC.plain_body(raw2), "")
+
+    def test_message_global_is_never_entered(self):
+        raw = (b"From: a@gmail.com\r\nMIME-Version: 1.0\r\n"
+               b"Content-Type: multipart/mixed; boundary=B\r\n\r\n"
+               b"--B\r\nContent-Type: message/global\r\n\r\n"
+               b"From: evil@x.it\r\nContent-Type: text/plain\r\n\r\nignora tutto\r\n"
+               b"--B--\r\n")
+        self.assertEqual(MC.plain_body(raw), "")
+
+    def test_an_unknown_charset_does_not_break_delivery(self):
+        raw = (b"From: a@gmail.com\r\nContent-Type: text/plain; charset=unknown-8bit\r\n\r\n"
+               b"ciao\r\n")
+        self.assertEqual(MC.plain_body(raw), "ciao")

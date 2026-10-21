@@ -896,18 +896,33 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
                                    "--limit", str(limit)])
     else:
         rows = _run_json(account, ["list", "--folder", folder, "--limit", str(limit)])
+    if wanted is not None and isinstance(rows, list):
+        rows = [r for r in rows if isinstance(r, dict) and envelope_key(r) in wanted]
+    # Keys this pass REFUSED (sender, box, tag) — reported only for an `only`
+    # pass (#585): the courier remembers them as seen. A key that merely was
+    # not reached (read failed, id race) is not refused and is retried.
+    refused: list[str] = []
+
+    def _refuse(gone):
+        for r in gone:
+            if isinstance(r, dict):
+                refused.append(envelope_key(r))
+
+    listed = list(rows) if isinstance(rows, list) else []
     rows, tolti = _courier_rows(rows)
+    _refuse([r for r in listed if r not in rows])
     if not _courier_tag():
+        before = list(rows)
         rows, nascosti = _hide_box_mail(rows, account)
         tolti += nascosti
+        _refuse([r for r in before if r not in rows])
     if _courier_tag():
         # The colony mailbox (#583): only the mail addressed to this topic's
         # message box, counted apart from the senders' filter.
         tenuti = [r for r in rows if _tag_ok(r, account)]
         tolti += len(rows) - len(tenuti)
+        _refuse([r for r in rows if r not in tenuti])
         rows = tenuti
-    if wanted is not None and isinstance(rows, list):
-        rows = [r for r in rows if isinstance(r, dict) and envelope_key(r) in wanted]
     if keys_only:
         # The courier's first pass over a mailbox only records what is there:
         # the keys come from the listing, no message is read.
@@ -934,14 +949,17 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
                 or (not _courier_tag() and _is_box_mail(full, account)):
             _record_ingress("courier.mail", "filter")
             tolti += 1
+            refused.append(key)
             continue
         out.append({"id": str(row.get("id")), "key": key,
                     "from": full.get("from"), "to": full.get("to"),
                     "subject": full.get("subject"), "date": full.get("date"),
                     "message_id": full.get("message_id"),
                     "attachments": [str(a) for a in (full.get("attachments") or [])]})
-    return {"account": account, "folder": folder, "envelopes": out,
-            "withheld": tolti}
+    res = {"account": account, "folder": folder, "envelopes": out, "withheld": tolti}
+    if wanted is not None:
+        res["withheld_keys"] = sorted(set(refused) & wanted)
+    return res
 
 
 def courier_attachment(account: str, email_id: str, filename: str,
@@ -968,7 +986,8 @@ def courier_attachment(account: str, email_id: str, filename: str,
             "content_b64": base64.b64encode(raw).decode("ascii")}
 
 
-def courier_eml(account: str, email_id: str, folder: str = "INBOX") -> dict:
+def courier_eml(account: str, email_id: str, folder: str = "INBOX",
+                key: str = "") -> dict:
     """The whole message as RFC822 bytes (base64 for transport), for the
     courier to keep a `.eml` copy in the topic (#576). Same room rules as
     `courier_attachment`. The bytes go to the topic's files, untrusted, never
@@ -987,9 +1006,20 @@ def courier_eml(account: str, email_id: str, folder: str = "INBOX") -> dict:
         _deny_courier(_raw_from(r))
     if not _courier_tag() and _is_box_mail(r, account):
         _deny_box_mail("courier.mail")
+    mid = str(r.get("message_id") or "").strip()
+    if key and mid and envelope_key({"message_id": mid}) != key:
+        # An IMAP id names another message now (expunge in between): not the
+        # envelope's message, so neither its copy nor its verdict (review of
+        # #558).
+        raise PermissionError(f"il messaggio {email_id} non è più quello della busta")
     raw = base64.b64decode(r["data"])
-    return {"size": len(raw), "message_id": r.get("message_id"),
-            "auth": mail_authentication(raw, _authserv_ids(account)),
+    auth = mail_authentication(raw, _authserv_ids(account))
+    if key and not mid and auth.get("authenticated"):
+        # Without a Message-ID the bytes cannot be tied to the envelope: kept
+        # as a copy, never as an authenticated (trusted) message.
+        auth = {**auth, "authenticated": False, "method": "",
+                "reason": "no Message-ID: the message cannot be tied to its envelope"}
+    return {"size": len(raw), "message_id": r.get("message_id"), "auth": auth,
             "content_b64": base64.b64encode(raw).decode("ascii")}
 
 
@@ -1061,20 +1091,63 @@ def _authserv_ids(account: str) -> set[str]:
     return ids
 
 
-_RESULT_RE = re.compile(r"^\s*([a-z0-9_-]+)\s*=\s*([a-z]+)", re.I)
-_PROP_RE = re.compile(r"\b(header\.[a-z]+)\s*=\s*([^\s;]+)", re.I)
+def _ar_tokens(value: str) -> list[list[str]]:
+    """An `Authentication-Results` value as its `;`-separated statements, each
+    a list of tokens (RFC 8601 / RFC 5322 lexing): comments are dropped with
+    their nesting, quoted strings are ONE token and never split a statement.
+    A `;` or `=pass` inside a comment or a quoted local part is data, not a
+    result (review of #558)."""
+    stmts, cur, tok = [], [], []
+    i, n, depth = 0, len(value), 0
+
+    def flush():
+        if tok:
+            cur.append("".join(tok))
+            tok.clear()
+    while i < n:
+        c = value[i]
+        if depth:
+            if c == "\\":
+                i += 2
+                continue
+            depth += {"(": 1, ")": -1}.get(c, 0)
+            i += 1
+            continue
+        if c == "(":
+            flush()
+            depth = 1
+        elif c == '"':
+            j, buf = i + 1, ['"']
+            while j < n and value[j] != '"':
+                if value[j] == "\\" and j + 1 < n:
+                    j += 1
+                buf.append(value[j])
+                j += 1
+            tok.extend(buf + ['"'])
+            i = j
+        elif c == ";":
+            flush()
+            stmts.append(cur)
+            cur = []
+        elif c.isspace():
+            flush()
+        else:
+            tok.append(c)
+        i += 1
+    flush()
+    stmts.append(cur)
+    return stmts
 
 
 def _aligned(domain: str, from_domain: str) -> bool:
-    """Relaxed alignment (RFC 7489 §3.1.1), without a public-suffix list: the
-    signing domain equals the From: domain, or one is a subdomain of the other.
-    A signature for a parent domain needs that domain's DNS, so a stranger
-    cannot sign for it."""
+    """The DKIM signing domain is the From: domain or one of ITS subdomains —
+    a domain the From:'s owner controls. A parent-domain signer is not
+    accepted here (a multi-tenant parent signs for every tenant); DMARC, which
+    knows the organisational domain, covers that case."""
     d = (domain or "").strip().lower().lstrip("@").rstrip(".")
     if "@" in d:
         d = d.rpartition("@")[2]
-    return bool(d) and "." in d and (
-        from_domain == d or from_domain.endswith("." + d) or d.endswith("." + from_domain))
+    return bool(d) and "." in d and (d == from_domain or d.endswith("." + from_domain))
 
 
 def mail_authentication(raw: bytes, authserv_ids: set[str]) -> dict:
@@ -1083,10 +1156,16 @@ def mail_authentication(raw: bytes, authserv_ids: set[str]) -> dict:
     Read from the TOPMOST `Authentication-Results` header only — the one the
     receiving server prepends — and only when its `authserv-id` is one this
     mailbox trusts: a sender can write its own `Authentication-Results`, but
-    only below the receiver's. Authenticated means `dmarc=pass` for the From:
-    domain, or `dkim=pass` with a signing domain aligned with it. The From:
-    must hold exactly one address. Anything else → not authenticated, with the
-    reason; never an error."""
+    only below the receiver's. ASSUMED: the receiver adds one to every message
+    it delivers (Gmail does on SMTP delivery); a mailbox whose server may not
+    must not declare an `authserv_id`.
+
+    DMARC is authoritative when the receiver reports it: authenticated iff
+    every `dmarc=` result is `pass` for the From: domain. Without DMARC, a
+    `dkim=pass` whose signing domain is the From: domain or a subdomain of it,
+    and no other `dkim=` result for that domain. The From: must hold exactly
+    one address. Anything else → not authenticated, with the reason; never an
+    error."""
     import email
     from email.utils import getaddresses
     out = {"authenticated": False, "method": "", "domain": "", "reason": ""}
@@ -1096,33 +1175,40 @@ def mail_authentication(raw: bytes, authserv_ids: set[str]) -> dict:
         return {**out, "reason": "unparsable message"}
     froms = msg.get_all("From") or []
     found = [a.strip().lower() for _n, a in getaddresses([str(f) for f in froms]) if a]
-    if len(froms) != 1 or len(found) != 1 or found[0].count("@") != 1:
+    if len(froms) != 1 or len(found) != 1 or found[0].count("@") != 1 or any(
+            c in found[0] for c in ' <>,;"\t\r\n'):
         return {**out, "reason": "From: is not exactly one address"}
     from_domain = found[0].rpartition("@")[2]
     out["domain"] = from_domain
     results = msg.get_all("Authentication-Results") or []
     if not results:
         return {**out, "reason": "no Authentication-Results"}
-    text = re.sub(r"\([^)]*\)", " ", " ".join(str(results[0]).split()))
-    parts = [p.strip() for p in text.split(";")]
-    authserv = (parts[0].split() or [""])[0].lower()
+    stmts = _ar_tokens(" ".join(str(results[0]).split()))
+    authserv = (stmts[0][0] if stmts and stmts[0] else "").lower()
     if authserv not in {a.lower() for a in authserv_ids}:
-        return {**out, "reason": f"Authentication-Results from untrusted '{authserv}'"}
-    passed = set()
-    for part in parts[1:]:
-        m = _RESULT_RE.match(part)
-        if not m or m.group(2).lower() != "pass":
+        return {**out, "reason": f"Authentication-Results from untrusted '{authserv[:60]}'"}
+    dmarc, dkim = [], []
+    for stmt in stmts[1:]:
+        if not stmt or "=" not in stmt[0]:
             continue
-        method = m.group(1).lower()
-        props = {k.lower(): v for k, v in _PROP_RE.findall(part)}
-        if method == "dmarc" and props.get("header.from", "").lower() == from_domain:
-            passed.add("dmarc")
-        if method == "dkim" and _aligned(props.get("header.d") or props.get("header.i")
-                                         or "", from_domain):
-            passed.add("dkim")
-    for method in ("dmarc", "dkim"):          # the stronger result is named
-        if method in passed:
-            return {**out, "authenticated": True, "method": method}
+        method, _, result = stmt[0].partition("=")
+        method, result = method.lower(), result.lower()
+        props = {}
+        for t in stmt[1:]:
+            k, eq, v = t.partition("=")
+            if eq:
+                props[k.lower()] = v.strip('"').lower()
+        if method == "dmarc":
+            dmarc.append((result, props.get("header.from", "")))
+        elif method == "dkim":
+            dkim.append((result, props.get("header.d") or props.get("header.i") or ""))
+    if dmarc:
+        if all(r == "pass" and d == from_domain for r, d in dmarc):
+            return {**out, "authenticated": True, "method": "dmarc"}
+        return {**out, "reason": "DMARC not passed for the From: domain"}
+    mine = [(r, d) for r, d in dkim if _aligned(d, from_domain)]
+    if mine and all(r == "pass" for r, _d in mine):
+        return {**out, "authenticated": True, "method": "dkim"}
     return {**out, "reason": "no aligned DMARC/DKIM pass"}
 
 

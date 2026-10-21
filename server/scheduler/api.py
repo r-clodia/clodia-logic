@@ -96,8 +96,10 @@ class TopicCronTriggerUpsert(BaseModel):
     repeat_count: int = Field(0, ge=0)
     prompt: str = Field(..., min_length=1)
     agent: Optional[str] = Field(None, max_length=100)
-    # #586: fire only when new mail reached the topic's message box.
-    only_if_new_mail: bool = False
+    # #586: fire only when new mail reached the topic's message box. None =
+    # unchanged on an edit (a client that does not know the field must not
+    # switch it off), off on creation.
+    only_if_new_mail: Optional[bool] = None
     # Un vecchio client che manda ancora il cron non deve vederselo IGNORARE in
     # silenzio (creerebbe un trigger con una cadenza che nessuno ha chiesto):
     # il campo è dichiarato apposta per poterlo rifiutare con un motivo.
@@ -259,7 +261,7 @@ async def api_put_topic_cron_trigger(
             trigger = db.create_topic_trigger(
                 tier, name, prompt, interval_minutes=req.interval_minutes,
                 repeat_count=req.repeat_count, agent=agent, owner=owner,
-                only_if_new_mail=req.only_if_new_mail,
+                only_if_new_mail=bool(req.only_if_new_mail),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(409, "questo topic ha già un trigger cron")

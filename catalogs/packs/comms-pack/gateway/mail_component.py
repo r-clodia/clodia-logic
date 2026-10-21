@@ -78,4 +78,4 @@ def register(host: Any) -> None:
     host.register_service("courier_message_box", lambda: {"version": 1})
     host.register_service("courier_eml", lambda a: mail.courier_eml(
         str(a.get("account") or ""), str(a.get("email_id") or ""),
-        str(a.get("folder") or "INBOX")))
+        str(a.get("folder") or "INBOX"), str(a.get("key") or "")))

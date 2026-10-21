@@ -39,7 +39,7 @@ class _Fake:
         return {"envelopes": [e for e in self.new if e["key"] not in set(skip)],
                 "withheld": 0}
 
-    def eml(self, room, email_id):
+    def eml(self, room, email_id, key=""):
         return {"size": len(EML), "content_b64": base64.b64encode(EML).decode()}
 
     def attachment(self, room, email_id, filename):

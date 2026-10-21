@@ -65,7 +65,11 @@ def _headers() -> dict[str, str]:
 # ── the gateway ───────────────────────────────────────────────────────────
 
 def rooms() -> list[dict]:
-    r = requests.get(f"{_base_url()}/rooms", headers=_headers(), timeout=_HTTP_TIMEOUT)
+    # `indexed=1`: this courier reads message-box rows through the index
+    # (#585), so the gateway may offer one per topic. An older courier does
+    # not ask, and gets only the rows it can afford (review of #558).
+    r = requests.get(f"{_base_url()}/rooms", headers=_headers(), timeout=_HTTP_TIMEOUT,
+                     params={"indexed": "1"})
     r.raise_for_status()
     return list(r.json().get("rooms") or [])
 
@@ -114,12 +118,13 @@ def attachment(room: dict, email_id: str, filename: str) -> dict:
     return r.json()
 
 
-def eml(room: dict, email_id: str) -> dict:
-    """The whole message (base64) for the topic's `.eml` copy (#576)."""
+def eml(room: dict, email_id: str, key: str = "") -> dict:
+    """The whole message (base64) for the topic's `.eml` copy (#576). `key`:
+    the envelope's, so the gateway refuses another message under the same id."""
     r = requests.post(f"{_base_url()}/eml", headers=_headers(), timeout=_HTTP_TIMEOUT,
                       json={"tier": room["tier"], "name": room["name"],
                             "account": room["account"], "email_id": str(email_id),
-                            **_tag(room)})
+                            "key": str(key or ""), **_tag(room)})
     r.raise_for_status()
     return r.json()
 
@@ -196,33 +201,83 @@ def body_name(eml_path: str) -> str:
     return eml_path[:-len(".eml")] + ".txt" if eml_path.endswith(".eml") else ""
 
 
+#: Lines that start someone else's text inside the sender's own: a forward
+#: or a quoted reply. The trusted text stops at the first one (#586).
+_FOREIGN_MARKERS = (
+    "---------- forwarded message", "-------- original message",
+    "-----original message-----", "begin forwarded message",
+    "---------- messaggio inoltrato", "-------- messaggio originale",
+    "inizio messaggio inoltrato", "messaggio inoltrato",
+)
+_WROTE_RE = __import__("re").compile(
+    r"^(on|il giorno|il) .{0,200}(wrote|ha scritto)\s*:\s*$", __import__("re").I)
+
+
+def _own_lines(text: str) -> str:
+    """The sender's own lines: up to the first forward/quote header, without
+    quoted (`>`) lines."""
+    keep = []
+    for line in text.splitlines():
+        low = line.strip().lower()
+        if any(low.startswith(m) for m in _FOREIGN_MARKERS) or _WROTE_RE.match(line.strip()):
+            break
+        if low.startswith(">"):
+            continue
+        keep.append(line)
+    return "\n".join(keep).strip()
+
+
+def _decode(part) -> str:
+    payload = part.get_payload(decode=True) or b""
+    try:
+        return payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+    except LookupError:   # an unknown charset name (e.g. unknown-8bit)
+        return payload.decode("utf-8", errors="replace")
+
+
+def _is_body_part(part) -> bool:
+    return (part.get_content_type() == "text/plain"
+            and not part.get_filename()
+            and not part.get_param("name")
+            and "attachment" not in str(part.get("Content-Disposition") or "").lower())
+
+
 def plain_body(raw: bytes) -> str:
-    """The sender's own text of a message (#586): the first `text/plain` part
-    that is neither an attachment nor inside a forwarded message
-    (`message/rfc822`) — those are third-party content and stay in the
-    untrusted `.eml`. "" when there is no such part."""
+    """The sender's own text of a message (#586), or "".
+
+    Only the BODY: a top-level `text/plain`, or the `text/plain` of a
+    top-level `multipart/alternative`, or the first part of a top-level
+    `multipart/mixed`/`related` when it is one of those. Never a part with a
+    file name, never anything under a `message/*` part. Then cut at the first
+    forward or quoted-reply header (`_own_lines`): what follows is someone
+    else's text and stays in the untrusted `.eml`. An inline forward the
+    client did not mark is the residual risk, documented in SETUP."""
     import email
     try:
         msg = email.message_from_bytes(raw)
     except Exception:  # noqa: BLE001
         return ""
 
-    def walk(part):
-        if part.get_content_type() == "message/rfc822":
-            return ""
-        if part.is_multipart():
-            for sub in part.get_payload() or []:
-                found = walk(sub)
-                if found:
-                    return found
-            return ""
-        if part.get_content_type() != "text/plain" or \
-                "attachment" in str(part.get("Content-Disposition") or "").lower():
-            return ""
-        payload = part.get_payload(decode=True) or b""
-        return payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+    def from_alternative(part) -> str:
+        for sub in part.get_payload() or []:
+            if _is_body_part(sub):
+                return _decode(sub)
+        return ""
 
-    return walk(msg)
+    ctype = msg.get_content_type()
+    text = ""
+    if _is_body_part(msg):
+        text = _decode(msg)
+    elif ctype == "multipart/alternative":
+        text = from_alternative(msg)
+    elif ctype in ("multipart/mixed", "multipart/related"):
+        parts = msg.get_payload() or []
+        first = parts[0] if parts else None
+        if first is not None and _is_body_part(first):
+            text = _decode(first)
+        elif first is not None and first.get_content_type() == "multipart/alternative":
+            text = from_alternative(first)
+    return _own_lines(text)
 
 
 def auth_line(auth: dict | None) -> str:
@@ -278,7 +333,7 @@ async def _deliver(room: dict, env: dict) -> None:
     # that fails is named in the post, never retried at the envelope's cost.
     eml_path, auth, body_path = "", None, ""
     try:
-        got = await asyncio.to_thread(eml, room, env["id"])
+        got = await asyncio.to_thread(eml, room, env["id"], str(env.get("key") or ""))
         raw = base64.b64decode(got["content_b64"])
         auth = got.get("auth") if isinstance(got.get("auth"), dict) else None
         eml_path = eml_name(env)
@@ -341,6 +396,13 @@ async def run_room(room: dict, only: list[str] | None = None) -> int:
         LOG.info("mail courier: %s/%s primed with %d existing messages",
                  room["tier"], room["name"], len(chiavi))
         return 0
+    if only is not None:
+        # #585: what comms-pack REFUSED for this room (sender, tag) is seen —
+        # searched once, not every cycle. A key it did not reach is retried.
+        rifiutate = [k for k in (out.get("withheld_keys") or []) if k in set(only)]
+        if rifiutate:
+            state["keys"].extend(k for k in rifiutate if k not in state["keys"])
+            _save(room, state)
     nuove = list(out.get("envelopes") or [])
     consegnate = 0
     for env in reversed(nuove):           # oldest first
@@ -390,15 +452,7 @@ async def run_box_room(room: dict, keys: list[str]) -> int:
     nuove = [k for k in keys if k not in state["keys"]]
     if not nuove:
         return 0
-    consegnate = await run_room(room, only=nuove)
-    # What the pass did not deliver was withheld (a sender the room does not
-    # declare): remembered as seen, or every cycle would search for it again.
-    # Not while a delivery is pending a retry — order is kept for that.
-    state = _load(room)
-    if not state.get("fails"):
-        state["keys"].extend(k for k in nuove if k not in state["keys"])
-        _save(room, state)
-    return consegnate
+    return await run_room(room, only=nuove)
 
 
 async def run_cycle() -> int:
