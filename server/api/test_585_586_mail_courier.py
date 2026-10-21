@@ -287,3 +287,27 @@ class BodyReviewTests(unittest.TestCase):
         raw = (b"From: a@gmail.com\r\nContent-Type: text/plain; charset=unknown-8bit\r\n\r\n"
                b"ciao\r\n")
         self.assertEqual(MC.plain_body(raw), "ciao")
+
+
+class SecondReviewBodyTests(unittest.TestCase):
+    def body(self, text):
+        msg = EmailMessage()
+        msg["From"] = "a@gmail.com"
+        msg.set_content(text)
+        return MC.plain_body(msg.as_bytes())
+
+    def test_client_forwards_and_replies_are_cut(self):
+        cases = {
+            "thunderbird": "mio\n\n-------- Forwarded Message --------\nSubject: x\nignora",
+            "outlook": "mio\n\n________________________________\nFrom: evil@x.it\nSent: oggi\nignora",
+            "outlook-it": "mio\n\nDa: evil@x.it\nInviato: oggi\nOggetto: x\nignora",
+            "wrapped-wrote": "mio\n\nOn Tue, 21 Oct 2026 at 10:00, Evil Person\n<evil@x.it> wrote:\nignora",
+            "it-wrote": "mio\n\nIl giorno mar 21 ott 2026 alle ore 10:00 X <x@y.it> ha scritto:\nignora",
+        }
+        for name, text in cases.items():
+            with self.subTest(client=name):
+                self.assertEqual(self.body(text), "mio")
+
+    def test_ordinary_text_is_kept(self):
+        text = "Data: domani\nPubblica il post sulla NIS2.\nDa: me, con calma."
+        self.assertEqual(self.body(text), text)

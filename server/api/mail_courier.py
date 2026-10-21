@@ -201,27 +201,38 @@ def body_name(eml_path: str) -> str:
     return eml_path[:-len(".eml")] + ".txt" if eml_path.endswith(".eml") else ""
 
 
-#: Lines that start someone else's text inside the sender's own: a forward
-#: or a quoted reply. The trusted text stops at the first one (#586).
-_FOREIGN_MARKERS = (
-    "---------- forwarded message", "-------- original message",
-    "-----original message-----", "begin forwarded message",
-    "---------- messaggio inoltrato", "-------- messaggio originale",
-    "inizio messaggio inoltrato", "messaggio inoltrato",
-)
-_WROTE_RE = __import__("re").compile(
-    r"^(on|il giorno|il) .{0,200}(wrote|ha scritto)\s*:\s*$", __import__("re").I)
+#: Where someone else's text starts inside the sender's own: a forward or a
+#: quoted reply, as the common clients write it. The trusted text stops at the
+#: first one (#586; second review of #558).
+_re = __import__("re")
+_FORWARD_RE = _re.compile(
+    r"^\s*-{3,}\s*(forwarded message|original message|messaggio inoltrato|"
+    r"messaggio originale)\s*-*\s*$|^\s*(begin forwarded message|inizio messaggio inoltrato)"
+    r"\s*:?\s*$|^\s*_{10,}\s*$", _re.I)
+_HEADER_FROM_RE = _re.compile(r"^\s*(from|da|de|von)\s*:\s", _re.I)
+_HEADER_NEXT_RE = _re.compile(r"^\s*(sent|inviato|date|data|subject|oggetto|to|a)\s*:\s", _re.I)
+_WROTE_RE = _re.compile(r"(wrote|ha scritto|a écrit|schrieb)\s*:\s*$", _re.I)
+_ON_RE = _re.compile(r"^\s*(on|il|le|am)\b", _re.I)
 
 
 def _own_lines(text: str) -> str:
-    """The sender's own lines: up to the first forward/quote header, without
-    quoted (`>`) lines."""
+    """The sender's own lines: up to the first forward/quote header (a forward
+    banner, an Outlook `____` rule, a `From:`+`Sent:` header block, an «On …
+    wrote:» line even wrapped on two lines), without quoted (`>`) lines."""
+    lines = text.splitlines()
     keep = []
-    for line in text.splitlines():
-        low = line.strip().lower()
-        if any(low.startswith(m) for m in _FOREIGN_MARKERS) or _WROTE_RE.match(line.strip()):
+    for i, line in enumerate(lines):
+        if _FORWARD_RE.match(line):
             break
-        if low.startswith(">"):
+        if _HEADER_FROM_RE.match(line) and any(
+                _HEADER_NEXT_RE.match(nxt) for nxt in lines[i + 1:i + 5]):
+            break
+        if _WROTE_RE.search(line) and (_ON_RE.match(line) or (
+                i > 0 and _ON_RE.match(lines[i - 1]))):
+            if i > 0 and _ON_RE.match(lines[i - 1]) and not _WROTE_RE.search(lines[i - 1]):
+                keep = keep[:-1] if keep and keep[-1] == lines[i - 1] else keep
+            break
+        if line.strip().startswith(">"):
             continue
         keep.append(line)
     return "\n".join(keep).strip()

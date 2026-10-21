@@ -1014,6 +1014,13 @@ def courier_eml(account: str, email_id: str, folder: str = "INBOX",
         raise PermissionError(f"il messaggio {email_id} non è più quello della busta")
     raw = base64.b64decode(r["data"])
     auth = mail_authentication(raw, _authserv_ids(account))
+    if _courier_tag() and auth.get("authenticated") and not _box_in_to_cc(raw, account):
+        # A DKIM-signed mail of a declared sender, re-sent unchanged to the box
+        # (`Delivered-To` is not signed): genuine text, not written for this
+        # topic. Only a mail whose signed To:/Cc: names the box is trusted
+        # (second review of #558); a Bcc to the box is delivered, not trusted.
+        auth = {**auth, "authenticated": False, "method": "",
+                "reason": "the message box is not in the signed To:/Cc:"}
     if key and not mid and auth.get("authenticated"):
         # Without a Message-ID the bytes cannot be tied to the envelope: kept
         # as a copy, never as an authenticated (trusted) message.
@@ -1021,6 +1028,18 @@ def courier_eml(account: str, email_id: str, folder: str = "INBOX",
                 "reason": "no Message-ID: the message cannot be tied to its envelope"}
     return {"size": len(raw), "message_id": r.get("message_id"), "auth": auth,
             "content_b64": base64.b64encode(raw).decode("ascii")}
+
+
+def _box_in_to_cc(raw: bytes, account: str) -> bool:
+    import email
+    from email.utils import getaddresses
+    want = _box_address(account, _courier_tag())
+    try:
+        msg = email.message_from_bytes(raw)
+    except Exception:  # noqa: BLE001
+        return False
+    heads = [str(h) for k in ("To", "Cc") for h in (msg.get_all(k) or [])]
+    return bool(want) and want in {a.strip().lower() for _n, a in getaddresses(heads) if a}
 
 
 # ── the message-box index (#585) ──────────────────────────────────────────
@@ -1123,6 +1142,8 @@ def _ar_tokens(value: str) -> list[list[str]]:
                     j += 1
                 buf.append(value[j])
                 j += 1
+            if j >= n:                   # an unterminated quoted string
+                return [["\x00unterminated"]]
             tok.extend(buf + ['"'])
             i = j
         elif c == ";":
@@ -1136,6 +1157,9 @@ def _ar_tokens(value: str) -> list[list[str]]:
         i += 1
     flush()
     stmts.append(cur)
+    if depth:
+        # An unterminated comment swallowed the rest: fail closed.
+        return [["\x00unterminated"]]
     return stmts
 
 
@@ -1183,7 +1207,8 @@ def mail_authentication(raw: bytes, authserv_ids: set[str]) -> dict:
     results = msg.get_all("Authentication-Results") or []
     if not results:
         return {**out, "reason": "no Authentication-Results"}
-    stmts = _ar_tokens(" ".join(str(results[0]).split()))
+    # `dmarc = fail` is `dmarc=fail`: spaces around `=` are not a new token.
+    stmts = _ar_tokens(re.sub(r"\s*=\s*", "=", " ".join(str(results[0]).split())))
     authserv = (stmts[0][0] if stmts and stmts[0] else "").lower()
     if authserv not in {a.lower() for a in authserv_ids}:
         return {**out, "reason": f"Authentication-Results from untrusted '{authserv[:60]}'"}

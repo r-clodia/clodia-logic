@@ -103,9 +103,13 @@ Limits to know:
   bundle names the receiving server's `authserv_id`.
 - What the trusted text is: the message's BODY part only (no part with a file
   name, nothing under `message/*`), cut at the first forward or quoted-reply
-  header and without `>` lines. **Residual risk:** an inline forward whose
-  client writes no recognisable header carries third-party text as trusted —
-  forward to a topic only what you would type yourself.
+  header (Gmail, Thunderbird, Outlook banners and `From:`/`Sent:` blocks, «On …
+  wrote:» / «Il … ha scritto:») and without `>` lines. **Residual risk:** an
+  inline forward in a form not recognised carries third-party text as trusted
+  — forward to a topic only what you would type yourself.
+- On a message box, a mail is trusted only if the box address is in its
+  (DKIM-signed) `To:`/`Cc:`: a signed mail re-sent unchanged to the box, or a
+  Bcc to it, is delivered but not trusted.
 - The verdict is read from the TOPMOST `Authentication-Results` with a trusted
   `authserv-id`. **Assumption:** the receiving server adds one to every message
   it delivers (Gmail does on SMTP delivery); an IMAP mailbox whose server may

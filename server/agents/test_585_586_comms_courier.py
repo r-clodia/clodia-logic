@@ -239,3 +239,42 @@ class ParserReviewTests(_Base):
     def test_nested_comments(self) -> None:
         ar = "mx.google.com (a (b; dmarc=fail) c); dmarc=pass (p=NONE) header.from=gmail.com"
         self.assertTrue(self.auth(ar)["authenticated"])
+
+
+class SecondReviewTests(_Base):
+    IDS = {"mx.google.com"}
+
+    def auth(self, ar):
+        return self.mail.mail_authentication(
+            _raw(f"Authentication-Results: {ar}", "From: a@gmail.com"), self.IDS)
+
+    def test_unterminated_comment_or_quote_fails_closed(self):
+        self.assertFalse(self.auth("mx.google.com; dkim=pass header.i=@gmail.com; "
+                                   "spf=pass (domain of a(b@evil.com) x; dmarc=fail "
+                                   "header.from=gmail.com")["authenticated"])
+        self.assertFalse(self.auth('mx.google.com; dkim=pass header.i=@gmail.com; '
+                                   'spf=pass smtp.mailfrom="a@x')["authenticated"])
+
+    def test_spaces_around_equals(self):
+        self.assertFalse(self.auth("mx.google.com; dkim=pass header.i=@gmail.com; "
+                                   "dmarc = fail header.from=gmail.com")["authenticated"])
+
+    def eml_auth(self, to_header):
+        import base64
+        raw = _raw(f"Authentication-Results: {GMAIL_AR}", "From: ordini@f.it",
+                   "Message-ID: <m1@x>", to_header)
+        raw = raw.replace(b"header.from=gmail.com", b"header.from=f.it")
+        self.host.perimeter.tag = "DJ56K"
+
+        def fake(account, args, **kw):
+            out = self._fake(account, args)
+            if args[0] == "get-eml":
+                return {**out, "data": base64.b64encode(raw).decode()}
+            return out
+        with patch.object(self.mail, "_run_json", side_effect=fake), \
+                patch.object(self.mail, "_authserv_ids", lambda a: {"mx.google.com"}):
+            return self.svc("courier_eml", {"account": "studio", "email_id": "1"})["auth"]
+
+    def test_a_replayed_mail_is_not_trusted_on_the_box(self):
+        self.assertFalse(self.eml_auth("To: someone@else.it")["authenticated"])
+        self.assertTrue(self.eml_auth("To: Studio <studio+DJ56K@example.it>")["authenticated"])
