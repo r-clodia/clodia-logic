@@ -62,7 +62,7 @@ EMAIL_VERBS = sorted(["email.send", "email.folders", "email.list", "email.read",
 SERVICES = sorted(["pdp_arguments", "diagnostics", "system_mailboxes", "mailbox_address",
                    "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes",
                    "courier_envelopes", "courier_attachment", "courier_eml",
-                   "courier_message_box"])
+                   "courier_message_box", "courier_box_index"])
 
 
 def _connector(doc: dict, cid: str = "mail") -> dict:

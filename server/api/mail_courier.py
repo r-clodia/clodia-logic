@@ -76,13 +76,33 @@ def _tag(room: dict) -> dict:
     return {"tag": room["tag"]} if room.get("tag") else {}
 
 
-def envelopes(room: dict, skip: list[str], keys_only: bool = False) -> dict:
+def envelopes(room: dict, skip: list[str], keys_only: bool = False,
+              only: list[str] | None = None) -> dict:
+    body = {"tier": room["tier"], "name": room["name"], "account": room["account"],
+            "skip": list(skip), "keys_only": bool(keys_only), **_tag(room)}
+    if only is not None:
+        body["only"] = list(only)
     r = requests.post(f"{_base_url()}/envelopes", headers=_headers(), timeout=_HTTP_TIMEOUT,
-                      json={"tier": room["tier"], "name": room["name"],
-                            "account": room["account"], "skip": list(skip),
-                            "keys_only": bool(keys_only), **_tag(room)})
+                      json=body)
     r.raise_for_status()
     return r.json()
+
+
+def box() -> dict | None:
+    """The message-box index (#585): `{account, tags: {CODE: [keys]}}` from ONE
+    search of the colony mailbox. None when the gateway or comms-pack cannot
+    give it (older versions, or the search failed)."""
+    try:
+        r = requests.post(f"{_base_url()}/box", headers=_headers(), timeout=_HTTP_TIMEOUT,
+                          json={})
+    except requests.RequestException as e:
+        LOG.warning("mail courier: message-box index unavailable (%s)", type(e).__name__)
+        return None
+    if r.status_code != 200:
+        LOG.warning("mail courier: message-box index unavailable (%s)", r.status_code)
+        return None
+    tags = (r.json() or {}).get("tags") or {}
+    return {str(k).upper(): [str(x) for x in (v or [])] for k, v in tags.items()}
 
 
 def attachment(room: dict, email_id: str, filename: str) -> dict:
@@ -171,9 +191,55 @@ def eml_name(env: dict) -> str:
     return f"{EML_DIR}/{giorno}-{str(env.get('key') or 'x')[:8]}.eml"
 
 
+def body_name(eml_path: str) -> str:
+    """The trusted text of an authenticated mail sits next to its `.eml` (#586)."""
+    return eml_path[:-len(".eml")] + ".txt" if eml_path.endswith(".eml") else ""
+
+
+def plain_body(raw: bytes) -> str:
+    """The sender's own text of a message (#586): the first `text/plain` part
+    that is neither an attachment nor inside a forwarded message
+    (`message/rfc822`) — those are third-party content and stay in the
+    untrusted `.eml`. "" when there is no such part."""
+    import email
+    try:
+        msg = email.message_from_bytes(raw)
+    except Exception:  # noqa: BLE001
+        return ""
+
+    def walk(part):
+        if part.get_content_type() == "message/rfc822":
+            return ""
+        if part.is_multipart():
+            for sub in part.get_payload() or []:
+                found = walk(sub)
+                if found:
+                    return found
+            return ""
+        if part.get_content_type() != "text/plain" or \
+                "attachment" in str(part.get("Content-Disposition") or "").lower():
+            return ""
+        payload = part.get_payload(decode=True) or b""
+        return payload.decode(part.get_content_charset() or "utf-8", errors="replace")
+
+    return walk(msg)
+
+
+def auth_line(auth: dict | None) -> str:
+    """The envelope's line on the sender's authentication (#586)."""
+    if not isinstance(auth, dict):
+        return ""
+    if auth.get("authenticated"):
+        return (f"Mittente autenticato ({str(auth.get('method') or '').upper()}, "
+                f"dominio {_plain(auth.get('domain'), 120)})")
+    return f"Mittente NON autenticato: {_plain(auth.get('reason'), 160) or 'esito assente'}"
+
+
 def envelope_text(env: dict, saved: list[str], failed: list[str],
-                  eml_path: str = "") -> str:
-    """The post: the envelope only. Never a body — the courier never has one."""
+                  eml_path: str = "", auth: dict | None = None,
+                  body_path: str = "") -> str:
+    """The post: the envelope only, never a body. An authenticated mail's own
+    text is a FILE of the topic (#586), named here, not quoted."""
     righe = [f"📧 Nuova mail da {_plain(env.get('from')) or '?'}",
              f"Oggetto: {_plain(env.get('subject')) or '(senza oggetto)'}",
              f"Data: {_plain(env.get('date'), 80) or '?'}"]
@@ -183,9 +249,13 @@ def envelope_text(env: dict, saved: list[str], failed: list[str],
         righe.append("Allegati salvati: " + ", ".join(f"`{p}`" for p in saved))
     if failed:
         righe.append("Allegati non salvati: " + ", ".join(_plain(f, 120) for f in failed))
+    if auth_line(auth):
+        righe.append(auth_line(auth))
+    if body_path:
+        righe.append(f"Testo (fidato): `{body_path}`")
     if eml_path:
-        righe.append(f"Messaggio completo: `{eml_path}`")
-    righe.append(f"(id {env.get('id')} nella casella; il testo si legge con email.read)")
+        righe.append(f"Messaggio completo (non fidato): `{eml_path}`")
+    righe.append(f"(id {env.get('id')} nella casella)")
     return "\n".join(righe)
 
 
@@ -206,10 +276,11 @@ async def _deliver(room: dict, env: dict) -> None:
             failed.append(str(name))
     # The whole message, untrusted, next to its attachments (#576). A copy
     # that fails is named in the post, never retried at the envelope's cost.
-    eml_path = ""
+    eml_path, auth, body_path = "", None, ""
     try:
         got = await asyncio.to_thread(eml, room, env["id"])
         raw = base64.b64decode(got["content_b64"])
+        auth = got.get("auth") if isinstance(got.get("auth"), dict) else None
         eml_path = eml_name(env)
         await topics_client.async_put_file(
             room["tier"], room["name"], eml_path,
@@ -219,14 +290,31 @@ async def _deliver(room: dict, env: dict) -> None:
                     room["tier"], room["name"], type(e).__name__)
         eml_path = ""
         failed.append("messaggio completo (.eml)")
-    await topics_client.async_post_message(room["tier"], room["name"], AUTHOR,
-                                           envelope_text(env, saved, failed, eml_path),
-                                           kind="proxy")
+    if eml_path and auth and auth.get("authenticated") is True:
+        # #586: a sender the room declares (checked by comms-pack on these
+        # very bytes) AND authenticated by the receiving server: its own text
+        # is trusted — reading it does not taint. Forwarded parts and
+        # attachments stay in the untrusted `.eml` and `files/`.
+        text = plain_body(raw)
+        if text.strip():
+            try:
+                body_path = body_name(eml_path)
+                await topics_client.async_put_file(
+                    room["tier"], room["name"], body_path,
+                    base64.b64encode(text.encode("utf-8")).decode("ascii"),
+                    provenance="trusted")
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("mail courier: text of %s/%s not saved (%s)",
+                            room["tier"], room["name"], type(e).__name__)
+                body_path = ""
+    await topics_client.async_post_message(
+        room["tier"], room["name"], AUTHOR,
+        envelope_text(env, saved, failed, eml_path, auth, body_path), kind="proxy")
 
 
-async def run_room(room: dict) -> int:
+async def run_room(room: dict, only: list[str] | None = None) -> int:
     """One pass over one room's mailbox. Returns how many envelopes were
-    delivered."""
+    delivered. `only`: the keys the message-box index named (#585)."""
     state = _load(room)
     # The senders changed (one added, one removed): what is in the mailbox now
     # is recorded, not delivered — a sender added today brings its mail from
@@ -236,7 +324,8 @@ async def run_room(room: dict) -> int:
         state["primed"] = False
         state["senders_sig"] = sig
     try:
-        out = await asyncio.to_thread(envelopes, room, state["keys"], not state["primed"])
+        out = await asyncio.to_thread(envelopes, room, state["keys"], not state["primed"],
+                                      only)
     except requests.HTTPError as e:
         # 403: the room's rules refuse the mailbox now (list changed) — skip.
         LOG.info("mail courier: %s/%s skipped (%s)", room["tier"], room["name"],
@@ -284,6 +373,34 @@ async def run_room(room: dict) -> int:
     return consegnate
 
 
+async def run_box_room(room: dict, keys: list[str]) -> int:
+    """A message-box row read through the index (#585): no IMAP unless the
+    index names keys this room has not seen. Priming records the index's keys
+    for the code — nothing is read."""
+    state = _load(room)
+    sig = str(room.get("senders_sig") or "")
+    if sig != state.get("senders_sig") or not state["primed"]:
+        state["keys"].extend(k for k in keys if k not in state["keys"])
+        state.update(primed=True, senders_sig=sig)
+        _save(room, state)
+        if keys:
+            LOG.info("mail courier: %s/%s primed with %d existing messages",
+                     room["tier"], room["name"], len(keys))
+        return 0
+    nuove = [k for k in keys if k not in state["keys"]]
+    if not nuove:
+        return 0
+    consegnate = await run_room(room, only=nuove)
+    # What the pass did not deliver was withheld (a sender the room does not
+    # declare): remembered as seen, or every cycle would search for it again.
+    # Not while a delivery is pending a retry — order is kept for that.
+    state = _load(room)
+    if not state.get("fails"):
+        state["keys"].extend(k for k in nuove if k not in state["keys"])
+        _save(room, state)
+    return consegnate
+
+
 async def run_cycle() -> int:
     total = 0
     try:
@@ -291,12 +408,21 @@ async def run_cycle() -> int:
     except Exception as e:  # noqa: BLE001
         LOG.warning("mail courier: rooms unavailable (%s)", type(e).__name__)
         return 0
+    indice = None
+    if any(r.get("tag") and r.get("indexed") and r.get("senders") for r in stanze):
+        indice = await asyncio.to_thread(box)
     for room in stanze:
         # No sender declared by the room → nothing would be delivered: no
         # IMAP at all (#576). A gateway that does not say counts as none.
         if not room.get("senders"):
             continue
         try:
+            if room.get("tag") and room.get("indexed"):
+                # Without the index this row is skipped, never searched on its
+                # own: one search per topic is what #585 removed.
+                if indice is not None:
+                    total += await run_box_room(room, indice.get(str(room["tag"]).upper(), []))
+                continue
             total += await run_room(room)
         except Exception as e:  # noqa: BLE001 — one room never stops the others
             LOG.warning("mail courier: %s/%s failed (%s)", room.get("tier"),

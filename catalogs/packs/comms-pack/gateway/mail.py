@@ -733,6 +733,18 @@ def _courier_tag() -> str:
     return str(ask() or "") if ask else ""
 
 
+#: The gateway's tag for the message-box INDEX call (#585): every code at
+#: once, keys only. Never a topic's code.
+BOX_INDEX_TAG = "*"
+
+
+def _refuse_index_tag() -> None:
+    """A per-room courier call never runs under the index tag: that tag opens
+    the colony mailbox for every code, so it serves `courier_box_index` only."""
+    if _courier_tag() == BOX_INDEX_TAG:
+        raise PermissionError("the message-box index tag serves courier_box_index only")
+
+
 def _box_address(account: str, tag: str) -> str:
     """`local+TAG@domain` of `account`'s mailbox, lower-case."""
     addr = _mailbox_addr(account)
@@ -853,7 +865,8 @@ def _assert_courier_sender(result: object) -> None:
 
 
 def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
-                      skip: list | None = None, keys_only: bool = False) -> dict:
+                      skip: list | None = None, keys_only: bool = False,
+                      only: list | None = None) -> dict:
     """The newest messages of a mailbox as ENVELOPES — id, key, from, to,
     subject, date, Message-ID, attachment names — for the gateway's courier
     (clodia-platform#531). Never the body: a message is read here only to
@@ -863,8 +876,11 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
     mailbox must be in the room's `inbox:` list (`_secrets_env`), and only the
     senders the room ITSELF declares pass (#576; strict or not), the others
     counted. `skip` lists keys the courier already delivered: those are not
-    read again."""
+    read again. `only`, when given, restricts the pass to those keys (#585: the
+    message-box index named them) — older mail of the same box stays out."""
+    _refuse_index_tag()
     known = {str(k) for k in (skip or [])}
+    wanted = None if only is None else {str(k) for k in only}
     limit = max(1, min(int(limit), 50))
     tag = _courier_tag()
     if tag:
@@ -890,6 +906,8 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
         tenuti = [r for r in rows if _tag_ok(r, account)]
         tolti += len(rows) - len(tenuti)
         rows = tenuti
+    if wanted is not None and isinstance(rows, list):
+        rows = [r for r in rows if isinstance(r, dict) and envelope_key(r) in wanted]
     if keys_only:
         # The courier's first pass over a mailbox only records what is there:
         # the keys come from the listing, no message is read.
@@ -932,6 +950,7 @@ def courier_attachment(account: str, email_id: str, filename: str,
     courier to store in the topic's files byte-identical (#531). Same room
     rules as `courier_envelopes`: mailbox in the room's `inbox:` list, and a
     sender the room itself declares (#576)."""
+    _refuse_index_tag()
     if not filename:
         raise ValueError("'filename' must be provided")
     r = _run_json(account, ["get-attachment", str(email_id), "--filename", filename,
@@ -953,7 +972,10 @@ def courier_eml(account: str, email_id: str, folder: str = "INBOX") -> dict:
     """The whole message as RFC822 bytes (base64 for transport), for the
     courier to keep a `.eml` copy in the topic (#576). Same room rules as
     `courier_attachment`. The bytes go to the topic's files, untrusted, never
-    to a model."""
+    to a model. `auth` (#586): whether the receiving server authenticated the
+    sender (`mail_authentication`), for the courier to decide the copy's
+    provenance."""
+    _refuse_index_tag()
     if not email_id:
         raise ValueError("'email_id' must be provided")
     r = _run_json(account, ["get-eml", str(email_id), "--folder", folder])
@@ -967,7 +989,141 @@ def courier_eml(account: str, email_id: str, folder: str = "INBOX") -> dict:
         _deny_box_mail("courier.mail")
     raw = base64.b64decode(r["data"])
     return {"size": len(raw), "message_id": r.get("message_id"),
+            "auth": mail_authentication(raw, _authserv_ids(account)),
             "content_b64": base64.b64encode(raw).decode("ascii")}
+
+
+# ── the message-box index (#585) ──────────────────────────────────────────
+
+#: How far back the index looks: a message-box mail not delivered within this
+#: window (gateway down for days) is not delivered by the courier any more.
+BOX_INDEX_DAYS = 2
+BOX_INDEX_LIMIT = 200
+_CODE_RE = re.compile(r"^[A-Z0-9]{1,16}$")
+
+
+def courier_box_index(account: str, days: int = BOX_INDEX_DAYS,
+                      limit: int = BOX_INDEX_LIMIT) -> dict:
+    """The colony mailbox's recent mail addressed to a plus sub-address, as
+    `{CODE: [keys]}` (#585): ONE search per courier cycle for every topic's
+    message box, instead of one per topic. Keys only — no sender, subject or
+    body leaves here; the courier then reads, room by room, only the codes
+    named, through `courier_envelopes(only=…)` with that room's rules.
+
+    Runs only under the gateway's index tag, and only on the colony mailbox
+    (the perimeter allows no other mailbox under that tag)."""
+    from datetime import datetime, timedelta, timezone
+    from email.utils import getaddresses
+    if _courier_tag() != BOX_INDEX_TAG:
+        raise PermissionError("courier_box_index runs only under the gateway's index tag")
+    ask = getattr(_perimeter(), "colony_address", None)
+    colony = str(ask() or "").strip().lower() if ask else ""
+    if not colony or _mailbox_addr(account) != colony:
+        raise PermissionError("courier_box_index reads the colony mailbox only")
+    local, _at, domain = colony.partition("@")
+    since = (datetime.now(timezone.utc) - timedelta(days=max(1, int(days)))
+             ).strftime("%d-%b-%Y")
+    rows = _run_json(account, ["search", f"SINCE {since}", "--folder", "INBOX",
+                               "--limit", str(max(1, min(int(limit), 500)))])
+    tags: dict[str, list[str]] = {}
+    for row in rows if isinstance(rows, list) else []:
+        if not isinstance(row, dict) or "rcpt_raw" not in row:
+            continue
+        key = envelope_key(row)
+        for _n, a in getaddresses([str(x) for x in (row.get("rcpt_raw") or [])]):
+            a = (a or "").strip().lower()
+            if not (a.endswith("@" + domain) and a.startswith(local + "+")):
+                continue
+            code = a[len(local) + 1:-(len(domain) + 1)].upper()
+            if _CODE_RE.match(code) and key not in tags.setdefault(code, []):
+                tags[code].append(key)
+    return {"account": account, "tags": tags}
+
+
+# ── sender authentication (#586) ──────────────────────────────────────────
+
+def _authserv_ids(account: str) -> set[str]:
+    """The `authserv-id`s whose `Authentication-Results` this mailbox trusts:
+    the receiving server's own. A Google account → `mx.google.com`; an IMAP
+    mailbox → the `authserv_id` its vault bundle declares, if any. None → no
+    mail of that mailbox counts as authenticated."""
+    ids: set[str] = set()
+    try:
+        if vault.has_credential(_gmail_cred(account)):
+            ids.add("mx.google.com")
+        elif vault.has_credential(_mailbox_cred(account)):
+            v = str((vault.read_internal(_mailbox_cred(account)) or {})
+                    .get("authserv_id") or "").strip().lower()
+            if v:
+                ids.add(v)
+    except Exception:  # noqa: BLE001 — unknown → nothing trusted
+        return set()
+    return ids
+
+
+_RESULT_RE = re.compile(r"^\s*([a-z0-9_-]+)\s*=\s*([a-z]+)", re.I)
+_PROP_RE = re.compile(r"\b(header\.[a-z]+)\s*=\s*([^\s;]+)", re.I)
+
+
+def _aligned(domain: str, from_domain: str) -> bool:
+    """Relaxed alignment (RFC 7489 §3.1.1), without a public-suffix list: the
+    signing domain equals the From: domain, or one is a subdomain of the other.
+    A signature for a parent domain needs that domain's DNS, so a stranger
+    cannot sign for it."""
+    d = (domain or "").strip().lower().lstrip("@").rstrip(".")
+    if "@" in d:
+        d = d.rpartition("@")[2]
+    return bool(d) and "." in d and (
+        from_domain == d or from_domain.endswith("." + d) or d.endswith("." + from_domain))
+
+
+def mail_authentication(raw: bytes, authserv_ids: set[str]) -> dict:
+    """Did the RECEIVING server authenticate this message's sender (#586)?
+
+    Read from the TOPMOST `Authentication-Results` header only — the one the
+    receiving server prepends — and only when its `authserv-id` is one this
+    mailbox trusts: a sender can write its own `Authentication-Results`, but
+    only below the receiver's. Authenticated means `dmarc=pass` for the From:
+    domain, or `dkim=pass` with a signing domain aligned with it. The From:
+    must hold exactly one address. Anything else → not authenticated, with the
+    reason; never an error."""
+    import email
+    from email.utils import getaddresses
+    out = {"authenticated": False, "method": "", "domain": "", "reason": ""}
+    try:
+        msg = email.message_from_bytes(raw)
+    except Exception:  # noqa: BLE001
+        return {**out, "reason": "unparsable message"}
+    froms = msg.get_all("From") or []
+    found = [a.strip().lower() for _n, a in getaddresses([str(f) for f in froms]) if a]
+    if len(froms) != 1 or len(found) != 1 or found[0].count("@") != 1:
+        return {**out, "reason": "From: is not exactly one address"}
+    from_domain = found[0].rpartition("@")[2]
+    out["domain"] = from_domain
+    results = msg.get_all("Authentication-Results") or []
+    if not results:
+        return {**out, "reason": "no Authentication-Results"}
+    text = re.sub(r"\([^)]*\)", " ", " ".join(str(results[0]).split()))
+    parts = [p.strip() for p in text.split(";")]
+    authserv = (parts[0].split() or [""])[0].lower()
+    if authserv not in {a.lower() for a in authserv_ids}:
+        return {**out, "reason": f"Authentication-Results from untrusted '{authserv}'"}
+    passed = set()
+    for part in parts[1:]:
+        m = _RESULT_RE.match(part)
+        if not m or m.group(2).lower() != "pass":
+            continue
+        method = m.group(1).lower()
+        props = {k.lower(): v for k, v in _PROP_RE.findall(part)}
+        if method == "dmarc" and props.get("header.from", "").lower() == from_domain:
+            passed.add("dmarc")
+        if method == "dkim" and _aligned(props.get("header.d") or props.get("header.i")
+                                         or "", from_domain):
+            passed.add("dkim")
+    for method in ("dmarc", "dkim"):          # the stronger result is named
+        if method in passed:
+            return {**out, "authenticated": True, "method": method}
+    return {**out, "reason": "no aligned DMARC/DKIM pass"}
 
 
 def search(query: str, account: str = "demo", folder: str = "INBOX", limit: int = 20) -> dict:

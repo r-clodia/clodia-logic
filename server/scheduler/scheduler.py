@@ -1007,6 +1007,26 @@ async def _fire_logic_job(job: dict) -> dict:
         return {"chat_id": None, "status": f"error: {e}", "steps": steps}
 
 
+#: Where the mail courier keeps each delivered message (#576).
+_MAILBOX_DIR = "local/mailbox"
+
+
+def _mailbox_names(tier: str, name: str) -> list[str] | None:
+    """The `.eml` names in the topic's message box, None when unreadable. A
+    topic that never received mail has no folder: that is an empty list."""
+    from ..api import topics_client
+    try:
+        files = topics_client.list_files(tier, name, _MAILBOX_DIR)
+    except Exception as e:  # noqa: BLE001
+        if "404" in str(e) or "non trovat" in str(e).lower() or "not found" in str(e).lower():
+            return []
+        LOG.warning("topic trigger %s/%s: message box unreadable (%s)",
+                    tier, name, type(e).__name__)
+        return None
+    return sorted(str(f.get("name") or "") for f in files
+                  if f.get("kind") == "file" and str(f.get("name") or "").endswith(".eml"))
+
+
 async def _fire_topic_trigger(job: dict) -> dict:
     """Post the configured prompt into its topic and use channel routing."""
     from ..api import channels
@@ -1017,6 +1037,26 @@ async def _fire_topic_trigger(job: dict) -> dict:
         raise RuntimeError("topic trigger senza tier/name")
     prompt = str(job.get("prompt") or "").strip()
     agent = str(job.get("agent") or "").strip()
+    mail_now = None
+    if job.get("only_if_new_mail"):
+        # #586: code decides, no model call — a turn every N minutes on an
+        # empty mailbox would spend tokens for nothing.
+        mail_now = await asyncio.to_thread(_mailbox_names, tier, name)
+        if mail_now is None:
+            status = "skipped (message box del topic non leggibile)"
+            db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")
+            return {"chat_id": f"topic:{tier}/{name}", "status": "skipped",
+                    "topic": f"{tier}/{name}", "skipped": []}
+        seen = job.get("mail_seen")
+        if seen is None:
+            # First look: the mail already there is not new to this trigger.
+            db.set_mail_seen(job["id"], mail_now)
+            seen = mail_now
+        if not (set(mail_now) - set(seen)):
+            status = "skipped (nessuna posta nuova)"
+            db.mark_run(job["id"], status=status, chat_id=f"topic:{tier}/{name}")
+            return {"chat_id": f"topic:{tier}/{name}", "status": "skipped",
+                    "topic": f"{tier}/{name}", "skipped": []}
     # SKIP-IF-BUSY (issue #46): se il turno precedente del responder è ancora in
     # corso, NON triggerare il successivo. Per un agente esplicito lo verifichiamo
     # PRIMA di postare (salta l'intero fire, niente prompt-stale accumulato); per
@@ -1058,6 +1098,8 @@ async def _fire_topic_trigger(job: dict) -> dict:
     if recorded is not None and str(recorded) != run_id:
         LOG.warning("topic trigger %s: audit trail names run %s, the run is %s",
                     job["id"], run_id, recorded)
+    if outcome == "dispatched" and mail_now is not None:
+        db.set_mail_seen(job["id"], mail_now)
     esaurito = False
     if outcome == "dispatched":
         # Una ripetizione è spesa solo se il messaggio è davvero partito: uno

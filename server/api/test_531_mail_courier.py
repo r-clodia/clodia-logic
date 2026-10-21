@@ -31,7 +31,7 @@ class _Fake:
         self.new = list(new)
         self.posts, self.files, self.skips = [], {}, []
 
-    def envelopes(self, room, skip, keys_only=False):
+    def envelopes(self, room, skip, keys_only=False, only=None):
         self.skips.append(list(skip))
         if keys_only:
             self.primes = getattr(self, "primes", 0) + 1
@@ -160,7 +160,7 @@ class CourierTests(unittest.TestCase):
     def test_a_room_without_declared_senders_is_not_even_read(self):
         letti = []
 
-        def envelopes(room, skip, keys_only=False):
+        def envelopes(room, skip, keys_only=False, only=None):
             letti.append(room["name"])
             return {"keys": [], "envelopes": []}
         stanze = [{**ROOM, "senders": 0}, {**ROOM, "name": "altro", "senders": 1},

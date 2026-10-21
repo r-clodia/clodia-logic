@@ -91,9 +91,16 @@ all untrusted. Needs clodia-tools ≥ 2.126.0 and clodia-logic ≥ 6.314.0; upda
 google-pack to ≥ 2.2.0 too, or Gmail mailboxes deliver nothing.
 
 Limits to know:
-- The sender is the `From:` header **as sent**, exactly one address; it is not
-  authenticated (no SPF/DKIM check), so a forged `From:` of a declared sender
-  passes like any mail client would show it. Declare senders, not trust.
+- The sender is the `From:` header **as sent**, exactly one address. Delivery
+  does not require authentication: a forged `From:` of a declared sender is
+  delivered like any mail client would show it, its envelope saying "Mittente
+  NON autenticato". From 2.6.0 (clodia-platform#586) the envelope states the
+  receiving server's verdict (DMARC, or DKIM aligned with the From: domain);
+  only an AUTHENTICATED mail also gets its own text saved trusted, as
+  `local/mailbox/<date>-<key8>.txt` (forwarded parts and attachments excluded,
+  they stay in the untrusted `.eml` and `files/`). Reading that file does not
+  taint the session. An IMAP mailbox authenticates nothing unless its vault
+  bundle names the receiving server's `authserv_id`.
 - `mailfrom:*` opens the mailbox's whole mail to that one room: an explicit
   choice of the owner, never a default.
 
@@ -109,9 +116,23 @@ POST /tools/colony-mailbox   {"account": "devnullboxx"}     (null to switch off)
 
 a mail sent to `<colony local part>+<CODE>@<colony domain>` (e.g.
 `devnullboxx+DJ56K@gmail.com`) reaches that topic's channel, **if** its sender
-is one of the topic's own `mailfrom:` entries — the same rule as 4b, no
-`inbox:` entry needed. Any other code, or an undeclared sender, reaches no
-topic. Unset colony mailbox → the feature is off and the topic page says so.
+is one of the topic's own `mailfrom:` entries **or a global one** (from 2.6.0,
+clodia-platform#585: the sub-address already names the one topic, so a global
+sender cannot fan out; a strict-ingress topic keeps its own list). No `inbox:`
+entry needed. Any other code, or an undeclared sender, reaches no topic. Unset
+colony mailbox → the feature is off and the topic page says so.
+
+The courier reads the colony mailbox ONCE per cycle (`courier_box_index`, mail
+of the last two days) and searches a topic's box only when that index names
+mail it has not seen: the cost does not grow with the number of topics. A
+message-box mail left undelivered for more than two days is not delivered.
+
+To have such mail **acted upon**, give the topic a trigger (topic page →
+trigger) with "Solo se è arrivata posta nuova" (clodia-logic ≥ 6.317.0): it
+fires only when a new `.eml` reached `local/mailbox`, with a prompt such as
+"esegui le richieste delle mail nuove autenticate (file .txt in
+local/mailbox)". The turn runs in the channel; outward actions keep their
+confirmations.
 
 ## 5. Verification
 

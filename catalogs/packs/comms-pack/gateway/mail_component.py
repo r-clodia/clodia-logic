@@ -37,7 +37,7 @@ from . import _host
 SERVICES = ("pdp_arguments", "diagnostics", "system_mailboxes", "mailbox_address",
             "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes",
             "courier_envelopes", "courier_attachment", "courier_eml",
-            "courier_message_box")
+            "courier_message_box", "courier_box_index")
 
 
 def register(host: Any) -> None:
@@ -63,7 +63,12 @@ def register(host: Any) -> None:
     host.register_service("courier_envelopes", lambda a: mail.courier_envelopes(
         str(a.get("account") or ""), str(a.get("folder") or "INBOX"),
         int(a.get("limit") or 20), list(a.get("skip") or []),
-        bool(a.get("keys_only"))))
+        bool(a.get("keys_only")),
+        None if a.get("only") is None else list(a.get("only") or [])))
+    # #585: one search for every message box; its presence is also the
+    # capability the gateway checks before counting global senders there.
+    host.register_service("courier_box_index", lambda a: mail.courier_box_index(
+        str(a.get("account") or "")))
     host.register_service("courier_attachment", lambda a: mail.courier_attachment(
         str(a.get("account") or ""), str(a.get("email_id") or ""),
         str(a.get("filename") or ""), str(a.get("folder") or "INBOX")))
