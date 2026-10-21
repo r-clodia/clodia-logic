@@ -786,6 +786,11 @@ def _is_box_mail(row: object, account: str) -> bool:
     local, at, domain = colony.partition("@")
     if not account or _mailbox_addr(account) != colony:
         return False
+    if "rcpt_raw" not in row:
+        # A client that does not say whom the mail was for (google-pack <
+        # 2.3.0): on the colony mailbox it might be any topic's — hidden, not
+        # shown (second review of #416).
+        return True
     from email.utils import getaddresses
     for _n, a in getaddresses([str(x) for x in (row.get("rcpt_raw") or [])]):
         a = (a or "").strip().lower()

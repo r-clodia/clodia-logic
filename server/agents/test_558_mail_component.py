@@ -61,7 +61,8 @@ EMAIL_VERBS = sorted(["email.send", "email.folders", "email.list", "email.read",
                       "email.reply"])
 SERVICES = sorted(["pdp_arguments", "diagnostics", "system_mailboxes", "mailbox_address",
                    "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes",
-                   "courier_envelopes", "courier_attachment", "courier_eml"])
+                   "courier_envelopes", "courier_attachment", "courier_eml",
+                   "courier_message_box"])
 
 
 def _connector(doc: dict, cid: str = "mail") -> dict:
@@ -799,6 +800,14 @@ class CourierTests(_OnFakeHost):
         with patch.object(self.mail, "_run_json", side_effect=self._fake):
             out = self.svc("courier_envelopes", {"account": "studio"})
         self.assertEqual([e["id"] for e in out["envelopes"]], ["1"])
+
+    def test_an_old_client_on_the_colony_mailbox_shows_nothing(self) -> None:
+        self.host.perimeter.colony = "studio@example.it"
+        rows = [{k: v for k, v in r.items() if k != "rcpt_raw"} for r in self.LIST]
+        with patch.object(self.mail, "_run_json",
+                          side_effect=lambda a, args, **k: [dict(r) for r in rows]):
+            lst = self.call("email.list", {"account": "studio"})
+        self.assertEqual(lst["messages"], [])
 
     def test_another_mailbox_is_untouched(self) -> None:
         self.host.perimeter.colony = "colony@altrove.it"
