@@ -81,6 +81,29 @@ def _con_i_rifiuti(stato: str, dettaglio: Optional[str],
     return stato, (f"{dettaglio} — {nota}" if dettaglio else nota)
 
 
+#: What every agentic job turn is told on top of its own prompt (#582): the
+#: runner takes the terminal state from `jobs.report_status` (#206), so the
+#: agent must be asked to declare it — until #582 nothing did, and a job that
+#: did all its work was recorded as `error`.
+REPORT_STATUS_DIRECTIVE = (
+    "\n\n---\nCHIUSURA DEL RUN (piattaforma): questo è un job pianificato, senza "
+    "nessuno davanti. Prima di terminare il turno chiama `jobs.report_status` "
+    "(caricalo con ToolSearch se non lo vedi) con `status` = `success` se hai "
+    "fatto il lavoro, `error` se l'hai consegnato ma con qualità compromessa, "
+    "`fatal` se non è stato fatto, e un `detail` di una frase su cosa è andato "
+    "storto (o «ok»). Senza "
+    "questa dichiarazione il run risulta in errore anche se il lavoro è andato "
+    "a buon fine. Non lasciare lavoro in sospeso dopo il turno: tutto deve "
+    "concludersi qui."
+)
+
+
+def job_prompt(prompt: str) -> str:
+    """The job's prompt as the agent receives it: its own text, then the
+    platform's closing directive (#582)."""
+    return f"{prompt or ''}{REPORT_STATUS_DIRECTIVE}"
+
+
 async def _complete_agentic_run(job_id: int, run_id: str, chat, prompt: str) -> None:
     """Esegue il turno di un job agentico e ne registra lo stato TERMINALE.
 
@@ -121,7 +144,7 @@ async def _complete_agentic_run(job_id: int, run_id: str, chat, prompt: str) -> 
     handover = audit_events.hand_over(turn) if turn is not None else None
     try:
         with audit_events.caused_by({"kind": "job", "job_id": job_id, "run_id": run_id}):
-            reply = await chat.send_user_message(prompt)
+            reply = await chat.send_user_message(job_prompt(prompt))
     except Exception as exc:  # noqa: BLE001
         if turn is not None:
             await turn.end(status="failed", error=audit_events.failure_class(exc),

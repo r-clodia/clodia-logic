@@ -6,6 +6,7 @@ Copre:
 """
 from __future__ import annotations
 
+import asyncio
 import tempfile
 import unittest
 from pathlib import Path
@@ -325,3 +326,34 @@ class AsyncScopeHasOneAgentTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReportStatusDirectiveTests(unittest.TestCase):
+    """#582: the runner asks for the declaration it requires."""
+
+    def setUp(self) -> None:
+        self._tmp = tempfile.TemporaryDirectory()
+        self._old = db.JOBS_DIR
+        db.JOBS_DIR = Path(self._tmp.name)
+
+    def tearDown(self) -> None:
+        db.JOBS_DIR = self._old
+        self._tmp.cleanup()
+
+    def test_the_prompt_sent_carries_the_closing_directive(self) -> None:
+        sent = []
+        chat = mock.MagicMock(chat_id="job:582")
+
+        async def _turno(prompt):
+            sent.append(prompt)
+            return "done"
+
+        chat.send_user_message = _turno
+        job = db.create_job("digest-582", "0 9 * * *", "Prepara il digest.")
+        run_id = db.mark_run(job["id"], status="dispatched", chat_id="job:582")
+        asyncio.run(scheduler._complete_agentic_run(job["id"], run_id, chat,
+                                                    "Prepara il digest."))
+        self.assertTrue(sent[0].startswith("Prepara il digest."))
+        self.assertIn("jobs.report_status", sent[0])
+        for word in ("success", "error", "fatal", "detail"):
+            self.assertIn(word, sent[0])
