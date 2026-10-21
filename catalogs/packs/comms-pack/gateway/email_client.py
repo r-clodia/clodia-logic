@@ -288,6 +288,7 @@ def list_emails(account, folder="INBOX", limit=10):
                     "id": eid.decode(),
                     "from": decode_mime_header(msg["From"]),
                     "from_raw": str(msg["From"] or ""),
+                    "rcpt_raw": _rcpt_raw(msg),
                     "to": decode_mime_header(msg["To"]),
                     "subject": decode_mime_header(msg["Subject"]),
                     "date": msg["Date"],
@@ -334,6 +335,7 @@ def read_email(account, email_id, folder="INBOX"):
                 "id": email_id,
                 "from": decode_mime_header(msg["From"]),
                     "from_raw": str(msg["From"] or ""),
+                    "rcpt_raw": _rcpt_raw(msg),
                 "to": decode_mime_header(msg["To"]),
                 "subject": decode_mime_header(msg["Subject"]),
                 "date": msg["Date"],
@@ -365,6 +367,7 @@ def search_emails(account, query, folder="INBOX", limit=20):
                     "id": eid.decode(),
                     "from": decode_mime_header(msg["From"]),
                     "from_raw": str(msg["From"] or ""),
+                    "rcpt_raw": _rcpt_raw(msg),
                     "to": decode_mime_header(msg["To"]),
                     "subject": decode_mime_header(msg["Subject"]),
                     "date": msg["Date"],
@@ -446,6 +449,14 @@ def download_attachments(account, email_id, output_dir=".", folder="INBOX"):
 EML_MAX_BYTES = 25 * 1024 * 1024
 
 
+
+def _rcpt_raw(msg):
+    """The recipient headers AS SENT (#583): the plus sub-address of a topic's
+    message box is read from them — `Delivered-To` first (set by the receiving
+    server, Bcc included), then `X-Original-To`, `To`, `Cc`."""
+    return [str(v) for h in ("Delivered-To", "X-Original-To", "To", "Cc")
+            for v in (msg.get_all(h) or [])]
+
 def get_eml(account, email_id, folder="INBOX"):
     """Il messaggio intero, RFC822, in base64 (copia .eml del corriere, #576),
     con il `From:` COSÌ COM'È ARRIVATO (`from_raw`) per rivagliarlo sui byte
@@ -470,6 +481,7 @@ def get_eml(account, email_id, folder="INBOX"):
                 return {"id": str(email_id),
                         "message_id": str(msg.get("Message-ID", "")).strip(),
                         "from_raw": str(msg["From"] or ""),
+                        "rcpt_raw": _rcpt_raw(msg),
                         "size": len(raw), "encoding": "base64",
                         "data": base64.b64encode(raw).decode("ascii")}
         return {"error": f"messaggio {email_id} non trovato"}
@@ -503,6 +515,7 @@ def get_attachment(account, email_id, filename, folder="INBOX"):
                         continue
                     target = {
                         "from_raw": str(msg["From"] or ""),
+                        "rcpt_raw": _rcpt_raw(msg),
                         "message_id": str(msg.get("Message-ID", "")).strip(),
                         "filename": filename,
                         "size": len(payload),

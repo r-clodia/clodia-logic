@@ -8,6 +8,16 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.5.0] — 2026-10-21
+- **Per-topic message box** (clodia-platform#583): the courier can read the
+  instance's **colony mailbox** for a topic, keeping only the mail addressed to
+  that topic's plus sub-address (`box+CODE@…`) and from a sender the topic
+  declares (`mailfrom:`, as since 2.4.0). The code comes from the gateway (the
+  courier call's `courier_tag`, never an argument); the recipient headers are
+  read as sent (`rcpt_raw`: Delivered-To, X-Original-To, To, Cc) on the list,
+  on the message read, and on the .eml/attachment bytes. Needs clodia-tools ≥
+  2.127.0 and clodia-logic ≥ 6.316.0; update google-pack to 2.3.0 too.
+
 ## [2.4.0] — 2026-10-19
 - **The courier delivers only the senders a room declares** (clodia-platform#576).
   A mailbox can feed many topics: each receives only the mail of the

@@ -4,6 +4,12 @@ Changelog of the `google-pack` pack ([Keep a Changelog](https://keepachangelog.c
 format, SemVer). The newest version is at the top; `pack.yaml` holds the current
 one.
 
+## [2.3.0] — 2026-10-21
+- The bundled Gmail client returns the recipient headers as sent (`rcpt_raw`)
+  in list/read/search, get-eml and get-attachment, as comms-pack's copy does:
+  the courier routes a mail to a topic's message box by its plus sub-address
+  (clodia-platform#583). The two clients stay identical.
+
 ## [2.2.0] — 2026-10-19
 - The bundled Gmail client gains `get-eml` (the whole message, RFC822, base64)
   and `mail_exec` allows it: the mail courier keeps a `.eml` copy of each

@@ -66,11 +66,17 @@ def rooms() -> list[dict]:
     return list(r.json().get("rooms") or [])
 
 
+def _tag(room: dict) -> dict:
+    """The row's message-box tag (#583), passed back exactly as `rooms()` gave
+    it: the gateway accepts only the (room, mailbox, tag) it offered."""
+    return {"tag": room["tag"]} if room.get("tag") else {}
+
+
 def envelopes(room: dict, skip: list[str], keys_only: bool = False) -> dict:
     r = requests.post(f"{_base_url()}/envelopes", headers=_headers(), timeout=_HTTP_TIMEOUT,
                       json={"tier": room["tier"], "name": room["name"],
                             "account": room["account"], "skip": list(skip),
-                            "keys_only": bool(keys_only)})
+                            "keys_only": bool(keys_only), **_tag(room)})
     r.raise_for_status()
     return r.json()
 
@@ -79,7 +85,7 @@ def attachment(room: dict, email_id: str, filename: str) -> dict:
     r = requests.post(f"{_base_url()}/attachment", headers=_headers(), timeout=_HTTP_TIMEOUT,
                       json={"tier": room["tier"], "name": room["name"],
                             "account": room["account"], "email_id": str(email_id),
-                            "filename": filename})
+                            "filename": filename, **_tag(room)})
     r.raise_for_status()
     return r.json()
 
@@ -88,7 +94,8 @@ def eml(room: dict, email_id: str) -> dict:
     """The whole message (base64) for the topic's `.eml` copy (#576)."""
     r = requests.post(f"{_base_url()}/eml", headers=_headers(), timeout=_HTTP_TIMEOUT,
                       json={"tier": room["tier"], "name": room["name"],
-                            "account": room["account"], "email_id": str(email_id)})
+                            "account": room["account"], "email_id": str(email_id),
+                            **_tag(room)})
     r.raise_for_status()
     return r.json()
 
@@ -101,7 +108,10 @@ def _state_path(room: dict):
     import hashlib
     d = data_path("mail-courier-state")
     d.mkdir(parents=True, exist_ok=True)
-    key = "\x00".join((room["tier"], room["name"], room["account"]))
+    parts = [room["tier"], room["name"], room["account"]]
+    if room.get("tag"):
+        parts.append("tag:" + str(room["tag"]))   # #583: the message-box row
+    key = "\x00".join(parts)
     return d / f"{hashlib.sha256(key.encode()).hexdigest()[:32]}.json"
 
 

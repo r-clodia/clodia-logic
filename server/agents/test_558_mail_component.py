@@ -136,7 +136,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.4.0")
+        self.assertEqual(doc["version"], "2.5.0")
         self.assertIs(doc["first_party"], True)
         # ONE gateway component per pack (the gateway refuses a second): from
         # 2.1.1 it serves mail and Telegram (#522, test_522_telegram_component).
@@ -230,6 +230,8 @@ class FakePerimeter:
         self.legacy: dict = {}
         #: Senders the CURRENT room itself declares (`mailfrom:`, #576).
         self.room_senders: set[str] = set()
+        #: The message-box code of the courier call in progress (#583).
+        self.tag = ""
 
     def mailbox_allowed(self, direction, address, scope=None):
         return address in (self.inbox if direction == "inbox" else self.outbox)
@@ -247,6 +249,9 @@ class FakePerimeter:
 
     def room_declares_sender(self, header):
         return self.address_of(header) in self.room_senders
+
+    def courier_tag(self):
+        return self.tag
 
     def legacy_mail_accounts(self):
         return dict(self.legacy)
@@ -525,10 +530,11 @@ class CourierTests(_OnFakeHost):
 
     LIST = [{"id": "1", "from": "Fornitore <ordini@f.it>",
              "from_raw": "Fornitore <ordini@f.it>", "to": "studio@example.it",
+             "rcpt_raw": ["studio+DJ56K@example.it", "Studio <studio@example.it>"],
              "subject": "fattura", "date": "Sat, 18 Oct 2026 10:00:00 +0200",
              "message_id": "<m1@x>"},
             {"id": "2", "from": "spam@x.it", "from_raw": "spam@x.it",
-             "to": "studio@example.it",
+             "to": "studio@example.it", "rcpt_raw": ["studio@example.it"],
              "subject": "offerta riservata", "date": "Sat, 18 Oct 2026 11:00:00 +0200",
              "message_id": "<m2@x>"}]
 
@@ -542,12 +548,12 @@ class CourierTests(_OnFakeHost):
         if cmd == "get-attachment":
             row = next(r for r in self.LIST if r["id"] == args[1])
             return {"filename": "a/b.pdf", "content_type": "application/pdf",
-                    "from_raw": row["from_raw"],
+                    "from_raw": row["from_raw"], "rcpt_raw": row["rcpt_raw"],
                     "data": base64.b64encode(b"%PDF-1").decode()}
         if cmd == "get-eml":
             row = next(r for r in self.LIST if r["id"] == args[1])
             return {"id": args[1], "message_id": row["message_id"], "size": 9,
-                    "from_raw": row["from_raw"],
+                    "from_raw": row["from_raw"], "rcpt_raw": row["rcpt_raw"],
                     "data": base64.b64encode(b"RAW-EML-1").decode()}
         raise AssertionError(cmd)
 
@@ -711,6 +717,51 @@ class CourierTests(_OnFakeHost):
                     self.svc("courier_envelopes", {"account": "studio"})
         finally:
             type(self.host.perimeter).room_declares_sender = orig
+
+    # ── #583: the message box ──────────────────────────────────────────────
+    def test_outside_a_message_box_call_the_tag_changes_nothing(self) -> None:
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual([e["id"] for e in out["envelopes"]], ["1", "2"])
+
+    def test_a_message_box_call_keeps_only_mail_to_box_plus_tag(self) -> None:
+        self.host.perimeter.tag = "DJ56K"
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+            keys = self.svc("courier_envelopes", {"account": "studio", "keys_only": True})
+        self.assertEqual([e["id"] for e in out["envelopes"]], ["1"])
+        self.assertEqual(out["withheld"], 1)
+        self.assertEqual(keys["keys"], [self.mail.envelope_key(self.LIST[0])])
+
+    def test_another_tag_gets_nothing(self) -> None:
+        self.host.perimeter.tag = "ZZZZZ"
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual(out["envelopes"], [])
+
+    def test_eml_and_attachment_are_checked_on_their_own_recipients(self) -> None:
+        self.host.perimeter.tag = "DJ56K"
+
+        def fake(account, args, **kw):
+            out = self._fake(account, args)
+            if args[0] in ("get-eml", "get-attachment"):
+                return {**out, "rcpt_raw": ["studio@example.it"]}
+            return out
+        with patch.object(self.mail, "_run_json", side_effect=fake):
+            with self.assertRaises(PermissionError):
+                self.svc("courier_eml", {"account": "studio", "email_id": "1"})
+            with self.assertRaises(PermissionError):
+                self.svc("courier_attachment", {"account": "studio", "email_id": "1",
+                                                "filename": "a/b.pdf"})
+
+    def test_a_client_without_recipients_delivers_nothing_in_a_box_call(self) -> None:
+        self.host.perimeter.tag = "DJ56K"
+        rows = [{k: v for k, v in r.items() if k != "rcpt_raw"} for r in self.LIST]
+        with patch.object(self.mail, "_run_json",
+                          side_effect=lambda a, args, **k: [dict(r) for r in rows]
+                          if args[0] == "list" else self._fake(a, args)):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual(out["envelopes"], [])
 
 class GmailTests(_OnFakeHost):
     def setUp(self) -> None:

@@ -716,6 +716,46 @@ def _courier_sender_ok(sender: str) -> bool:
     return bool(ask(sender or ""))
 
 
+def _courier_tag() -> str:
+    """The message-box code of this courier call (#583), "" outside one. Set
+    by the gateway's courier route, never by a caller; an older gateway → ""."""
+    ask = getattr(_perimeter(), "courier_tag", None)
+    return str(ask() or "") if ask else ""
+
+
+def _box_address(account: str, tag: str) -> str:
+    """`local+TAG@domain` of `account`'s mailbox, lower-case."""
+    addr = str(mailbox_address(account) or "").strip().lower()
+    if not addr:
+        # A Google account (the colony mailbox may be one): its address comes
+        # from the same list the gateway names the colony mailbox from.
+        try:
+            for row in system_mailboxes() or []:
+                if str(row.get("account") or "") == account:
+                    addr = str(row.get("email") or "").strip().lower()
+                    break
+        except Exception:  # noqa: BLE001 — no address, no delivery
+            addr = ""
+    local, at, domain = addr.partition("@")
+    return f"{local}+{tag.lower()}@{domain}" if (at and tag) else ""
+
+
+def _tag_ok(row: object, account: str) -> bool:
+    """Outside a message-box call: always. Inside: only a mail whose recipient
+    headers AS SENT (`rcpt_raw`) name `box+TAG@…` — no fallback, a client
+    without them delivers nothing (#583)."""
+    tag = _courier_tag()
+    if not tag:
+        return True
+    want = _box_address(account, tag)
+    if not want or not isinstance(row, dict):
+        return False
+    from email.utils import getaddresses
+    seen = {a.strip().lower() for _n, a in getaddresses(
+        [str(x) for x in (row.get("rcpt_raw") or [])]) if a}
+    return want in seen
+
+
 def _courier_rows(rows: object) -> tuple[list, int]:
     """The listed messages whose sender the room declares, and how many were
     left out (counted, recorded, never shown)."""
@@ -770,6 +810,12 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
     limit = max(1, min(int(limit), 50))
     rows = _run_json(account, ["list", "--folder", folder, "--limit", str(limit)])
     rows, tolti = _courier_rows(rows)
+    if _courier_tag():
+        # The colony mailbox (#583): only the mail addressed to this topic's
+        # message box, counted apart from the senders' filter.
+        tenuti = [r for r in rows if _tag_ok(r, account)]
+        tolti += len(rows) - len(tenuti)
+        rows = tenuti
     if keys_only:
         # The courier's first pass over a mailbox only records what is there:
         # the keys come from the listing, no message is read.
@@ -792,7 +838,7 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
         # checked again on what was actually read.
         if envelope_key(full) != key:
             continue
-        if not _courier_sender_ok(_raw_from(full)):
+        if not _courier_sender_ok(_raw_from(full)) or not _tag_ok(full, account):
             _record_ingress("courier.mail", "filter")
             tolti += 1
             continue
@@ -818,6 +864,8 @@ def courier_attachment(account: str, email_id: str, filename: str,
     if not isinstance(r, dict) or not r.get("data"):
         raise ValueError(f"allegato '{filename}' non trovato nel messaggio {email_id}")
     _assert_courier_sender(r)
+    if not _tag_ok(r, account):
+        _deny_courier(_raw_from(r))
     raw = base64.b64decode(r["data"])
     return {"filename": safe_attachment_name(r.get("filename") or filename),
             "content_type": r.get("content_type"), "size": len(raw),
@@ -836,6 +884,8 @@ def courier_eml(account: str, email_id: str, folder: str = "INBOX") -> dict:
         raise ValueError(str((r or {}).get("error") or f"messaggio {email_id} non trovato")
                          if isinstance(r, dict) else f"messaggio {email_id} non trovato")
     _assert_courier_sender(r)
+    if not _tag_ok(r, account):
+        _deny_courier(_raw_from(r))
     raw = base64.b64decode(r["data"])
     return {"size": len(raw), "message_id": r.get("message_id"),
             "content_b64": base64.b64encode(raw).decode("ascii")}
