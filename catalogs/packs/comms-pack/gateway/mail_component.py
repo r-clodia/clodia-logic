@@ -36,7 +36,8 @@ from . import _host
 #: The services the gateway calls (`components.service("comms-pack", name)`).
 SERVICES = ("pdp_arguments", "diagnostics", "system_mailboxes", "mailbox_address",
             "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes",
-            "courier_envelopes", "courier_attachment", "courier_eml")
+            "courier_envelopes", "courier_attachment", "courier_eml",
+            "courier_message_box")
 
 
 def register(host: Any) -> None:
@@ -67,6 +68,9 @@ def register(host: Any) -> None:
         str(a.get("account") or ""), str(a.get("email_id") or ""),
         str(a.get("filename") or ""), str(a.get("folder") or "INBOX")))
     # #576: the whole message, for the topic's `.eml` copy.
+    # #583: the capability the gateway checks before handing this component a
+    # tagged (message-box) row: an older comms-pack would ignore the tag.
+    host.register_service("courier_message_box", lambda: {"version": 1})
     host.register_service("courier_eml", lambda a: mail.courier_eml(
         str(a.get("account") or ""), str(a.get("email_id") or ""),
         str(a.get("folder") or "INBOX")))

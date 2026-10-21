@@ -233,3 +233,41 @@ class NoModelOnThePathTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MessageBoxRowTests(unittest.TestCase):
+    """#583: a message-box row carries its tag back to the gateway on every
+    call, and keeps its own state apart from the room's ordinary row."""
+
+    def test_the_tag_travels_on_every_call(self):
+        sent = []
+
+        class _R:
+            status_code = 200
+
+            def raise_for_status(self):
+                pass
+
+            def json(self):
+                return {}
+
+        def post(url, headers=None, timeout=None, json=None):
+            sent.append(json)
+            return _R()
+        room = {**ROOM, "account": "devnullboxx", "tag": "DJ56K"}
+        with patch.object(MC.requests, "post", post), \
+                patch.object(MC, "_headers", lambda: {}):
+            MC.envelopes(room, [], True)
+            MC.attachment(room, "1", "a.pdf")
+            MC.eml(room, "1")
+            MC.envelopes(dict(ROOM), [], True)
+        self.assertEqual([j.get("tag") for j in sent], ["DJ56K", "DJ56K", "DJ56K", None])
+
+    def test_the_state_of_a_tagged_row_is_its_own(self):
+        import tempfile
+        from pathlib import Path
+        tmp = tempfile.mkdtemp()
+        with patch.object(MC, "data_path", lambda n: Path(tmp) / n):
+            a = MC._state_path({**ROOM, "account": "devnullboxx"})
+            b = MC._state_path({**ROOM, "account": "devnullboxx", "tag": "DJ56K"})
+        self.assertNotEqual(a, b)

@@ -97,6 +97,22 @@ Limits to know:
 - `mailfrom:*` opens the mailbox's whole mail to that one room: an explicit
   choice of the owner, never a default.
 
+## 4c. The topics' message boxes (from 2.5.0, clodia-platform#583)
+
+Every topic has a random 5-character code (`meta.mailbox_code`, shown on the
+topic page). With a **colony mailbox** set for the instance — one of its
+receiving mailboxes, chosen by a human admin:
+
+```
+POST /tools/colony-mailbox   {"account": "devnullboxx"}     (null to switch off)
+```
+
+a mail sent to `<colony local part>+<CODE>@<colony domain>` (e.g.
+`devnullboxx+DJ56K@gmail.com`) reaches that topic's channel, **if** its sender
+is one of the topic's own `mailfrom:` entries — the same rule as 4b, no
+`inbox:` entry needed. Any other code, or an undeclared sender, reaches no
+topic. Unset colony mailbox → the feature is off and the topic page says so.
+
 ## 5. Verification
 
 `GET /internal/components` → comms-pack/mail `loaded`. Then:
