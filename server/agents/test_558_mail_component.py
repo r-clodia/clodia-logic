@@ -62,7 +62,7 @@ EMAIL_VERBS = sorted(["email.send", "email.folders", "email.list", "email.read",
 SERVICES = sorted(["pdp_arguments", "diagnostics", "system_mailboxes", "mailbox_address",
                    "mailboxes_list", "mailbox_add", "mailbox_remove", "test_mailboxes",
                    "courier_envelopes", "courier_attachment", "courier_eml",
-                   "courier_message_box"])
+                   "courier_message_box", "courier_box_index"])
 
 
 def _connector(doc: dict, cid: str = "mail") -> dict:
@@ -137,7 +137,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.5.0")
+        self.assertEqual(doc["version"], "2.6.0")
         self.assertIs(doc["first_party"], True)
         # ONE gateway component per pack (the gateway refuses a second): from
         # 2.1.1 it serves mail and Telegram (#522, test_522_telegram_component).

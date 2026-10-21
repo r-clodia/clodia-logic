@@ -8,6 +8,25 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.6.0] — 2026-10-21
+- **Message-box index** (clodia-platform#585): `courier_box_index` lists, with
+  ONE search of the colony mailbox (`SINCE` two days), which message-box codes
+  have recent mail and their keys — hashes only, no sender, subject or body.
+  The courier reads a topic's box only when the index names keys it has not
+  seen, and `courier_envelopes(only=…)` keeps the pass to those keys. With it
+  the gateway counts **global** `mailfrom:` entries on the message box (the
+  sub-address already names the one topic); a linked `inbox:` keeps own
+  entries only. The index runs only under the gateway's index tag and on the
+  colony mailbox; that tag opens no per-room read.
+- **Sender authentication** (clodia-platform#586): `courier_eml` returns
+  `auth` — whether the receiving server authenticated the sender, read from the
+  TOPMOST `Authentication-Results` with a trusted `authserv-id` (Google
+  accounts: `mx.google.com`; an IMAP mailbox: the `authserv_id` its vault
+  bundle declares, none by default): `dmarc=pass` for the From: domain, or
+  `dkim=pass` with an aligned signing domain. The courier then saves the
+  sender's own text as a trusted file.
+- Needs clodia-tools ≥ 2.129.0 and clodia-logic ≥ 6.317.0.
+
 ## [2.5.0] — 2026-10-21
 - **Per-topic message box** (clodia-platform#583): the courier can read the
   instance's **colony mailbox** for a topic, keeping only the mail addressed to

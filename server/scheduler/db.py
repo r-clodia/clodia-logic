@@ -59,7 +59,21 @@ _FIELDS = (
     # perché `runs` è cappato: quando le righe vecchie scorrono via, un controllo
     # basato su di esse ricomincerebbe a scrivere i fire già registrati.
     "missed_scan_at",
+    # Topic trigger «only if new mail» (clodia-platform#586): the fire is
+    # skipped, with no model call, unless `local/mailbox` has `.eml` files not
+    # in `mail_seen` (the names seen at the last dispatched fire; None = never
+    # looked, the first fire only records).
+    "only_if_new_mail", "mail_seen",
 )
+
+#: Names remembered in `mail_seen`. The scheduler compares the SAME window of
+#: the folder (`mail_window`), so a folder larger than the cap never makes old
+#: names look new (review of #558).
+MAIL_SEEN_CAP = 5000
+
+
+def mail_window(names: Iterable[str]) -> list[str]:
+    return sorted({str(n) for n in names})[-MAIL_SEEN_CAP:]
 
 # Agent di fallback per job senza il campo `agent` (creati prima del 19 giu 2026).
 _LEGACY_DEFAULT_AGENT = "looper"
@@ -145,6 +159,9 @@ def _read(p: Path) -> Optional[dict]:
     d["interval_minutes"] = _pos_int_or_none(d.get("interval_minutes"))
     d["repeat_count"] = _non_neg_int(d.get("repeat_count"))
     d["fired_count"] = _non_neg_int(d.get("fired_count"))
+    d["only_if_new_mail"] = bool(d.get("only_if_new_mail"))
+    seen = d.get("mail_seen")
+    d["mail_seen"] = [str(x) for x in seen] if isinstance(seen, list) else None
     return d
 
 
@@ -235,7 +252,8 @@ def create_job(name: str, cron_expr: str, prompt: str,
                plan: list | None = None, tier: str = "",
                topic_tier: str = "", topic_name: str = "",
                interval_minutes: Optional[int] = None,
-               repeat_count: int = 0) -> dict:
+               repeat_count: int = 0,
+               only_if_new_mail: bool = False) -> dict:
     """Crea un nuovo job. Solleva sqlite3.IntegrityError se 'name' è duplicato
     (contratto invariato con api.py → HTTP 409). `owner` = principal umano che ne
     è proprietario (solo lui, o un admin, può agirvi).
@@ -265,6 +283,7 @@ def create_job(name: str, cron_expr: str, prompt: str,
         # Periodicità a intervallo (#239): alternativa a `cron_expr`, non aggiunta.
         "interval_minutes": _pos_int_or_none(interval_minutes),
         "repeat_count": _non_neg_int(repeat_count), "fired_count": 0,
+        "only_if_new_mail": bool(only_if_new_mail), "mail_seen": None,
         "enabled": bool(enabled), "last_run_at": None, "last_status": None,
         "last_chat_id": None, "created_at": now, "updated_at": now,
     }
@@ -323,6 +342,7 @@ def create_topic_trigger(
     repeat_count: int = 0,
     agent: str = "",
     owner: str = "",
+    only_if_new_mail: bool = False,
 ) -> dict:
     """Crea il trigger di un topic: «ogni `interval_minutes`, per `repeat_count`
     volte» (`repeat_count = 0` = senza fine, #239).
@@ -343,6 +363,7 @@ def create_topic_trigger(
         topic_name=name,
         interval_minutes=interval_minutes,
         repeat_count=repeat_count,
+        only_if_new_mail=only_if_new_mail,
     )
 
 
@@ -358,6 +379,7 @@ def update_job(
     interval_minutes: Optional[int] = None,
     repeat_count: Optional[int] = None,
     fired_count: Optional[int] = None,
+    only_if_new_mail: Optional[bool] = None,
 ) -> Optional[dict]:
     """Aggiorna i campi non None. Ritorna il job aggiornato o None se non esiste.
 
@@ -392,6 +414,11 @@ def update_job(
         d["repeat_count"] = nuovo_rc
     if fired_count is not None:
         d["fired_count"] = _non_neg_int(fired_count)
+    if only_if_new_mail is not None:
+        if bool(only_if_new_mail) and not d.get("only_if_new_mail"):
+            # Switched on now: the mail already there is not «new» for it.
+            d["mail_seen"] = None
+        d["only_if_new_mail"] = bool(only_if_new_mail)
     if prompt is not None:
         d["prompt"] = prompt
     if agent is not None:
@@ -645,6 +672,16 @@ def complete_run(job_id: int, run_id: str, *, status: Optional[str] = None,
     d["updated_at"] = finished_at
     _write(d)
     return True
+
+
+def set_mail_seen(job_id: int, names: Iterable[str]) -> None:
+    """Record the `.eml` names a topic trigger has seen (#586)."""
+    d = get_job(job_id)
+    if d is None:
+        return
+    d["mail_seen"] = mail_window(names)
+    d["updated_at"] = _now_iso()
+    _write(d)
 
 
 def count_fire(job_id: int) -> Optional[dict]:
