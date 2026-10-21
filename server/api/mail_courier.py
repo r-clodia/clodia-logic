@@ -55,7 +55,11 @@ def _base_url() -> str:
 
 
 def _headers() -> dict[str, str]:
-    return {"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL)}"}
+    # The service role: the gateway's courier routes accept the agent-server
+    # only, never a spawn whose token also says `clodia` (review of #416).
+    tok = pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL,
+                                 role=pki.ROLE_AGENT_SERVER)
+    return {"Authorization": f"Bearer {tok}"}
 
 
 # ── the gateway ───────────────────────────────────────────────────────────

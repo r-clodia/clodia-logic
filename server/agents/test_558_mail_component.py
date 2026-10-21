@@ -253,6 +253,12 @@ class FakePerimeter:
     def courier_tag(self):
         return self.tag
 
+    #: The colony mailbox's address (#583), "" = no colony.
+    colony = ""
+
+    def colony_address(self):
+        return self.colony
+
     def legacy_mail_accounts(self):
         return dict(self.legacy)
 
@@ -540,6 +546,12 @@ class CourierTests(_OnFakeHost):
 
     def _fake(self, account, args, **kw):
         cmd = args[0]
+        if cmd == "search":
+            # The message-box search by recipient (#583): an IMAP server
+            # answers with the rows addressed to the box.
+            box = args[1].split('"')[1].lower()
+            return [dict(r) for r in self.LIST
+                    if any(box in x.lower() for x in r.get("rcpt_raw") or [])]
         if cmd == "list":
             return [dict(r) for r in self.LIST]
         if cmd == "read":
@@ -679,7 +691,7 @@ class CourierTests(_OnFakeHost):
             r.pop("from_raw")
         with patch.object(self.mail, "_run_json",
                           side_effect=lambda a, args, **k: [dict(r) for r in rows]
-                          if args[0] == "list" else self._fake(a, args)):
+                          if args[0] in ("list", "search") else self._fake(a, args)):
             out = self.svc("courier_envelopes", {"account": "studio"})
         self.assertEqual(out["envelopes"], [])
         self.assertEqual(out["withheld"], 2)
@@ -730,7 +742,6 @@ class CourierTests(_OnFakeHost):
             out = self.svc("courier_envelopes", {"account": "studio"})
             keys = self.svc("courier_envelopes", {"account": "studio", "keys_only": True})
         self.assertEqual([e["id"] for e in out["envelopes"]], ["1"])
-        self.assertEqual(out["withheld"], 1)
         self.assertEqual(keys["keys"], [self.mail.envelope_key(self.LIST[0])])
 
     def test_another_tag_gets_nothing(self) -> None:
@@ -757,11 +768,43 @@ class CourierTests(_OnFakeHost):
     def test_a_client_without_recipients_delivers_nothing_in_a_box_call(self) -> None:
         self.host.perimeter.tag = "DJ56K"
         rows = [{k: v for k, v in r.items() if k != "rcpt_raw"} for r in self.LIST]
-        with patch.object(self.mail, "_run_json",
-                          side_effect=lambda a, args, **k: [dict(r) for r in rows]
-                          if args[0] == "list" else self._fake(a, args)):
+
+        def fake(a, args, **k):
+            if args[0] in ("list", "search"):
+                return [dict(r) for r in rows]
+            out = self._fake(a, args)
+            return {k2: v for k2, v in out.items() if k2 != "rcpt_raw"} \
+                if isinstance(out, dict) else out
+        with patch.object(self.mail, "_run_json", side_effect=fake):
             out = self.svc("courier_envelopes", {"account": "studio"})
         self.assertEqual(out["envelopes"], [])
+
+    # ── review of #416: message-box mail is the topic's only ──────────────
+    def test_agents_and_untagged_rows_never_see_message_box_mail(self) -> None:
+        self.host.perimeter.colony = "studio@example.it"
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+            self.assertEqual([e["id"] for e in out["envelopes"]], ["2"])
+            lst = self.call("email.list", {"account": "studio"})
+            self.assertEqual([m["id"] for m in lst["messages"]], ["2"])
+            self.assertEqual(lst["message_box_withheld"], 1)
+            with self.assertRaises(PermissionError):
+                self.call("email.read", {"account": "studio", "email_id": "1"})
+            with self.assertRaises(PermissionError):
+                self.svc("courier_eml", {"account": "studio", "email_id": "1"})
+
+    def test_the_tagged_courier_call_still_gets_it(self) -> None:
+        self.host.perimeter.colony = "studio@example.it"
+        self.host.perimeter.tag = "DJ56K"
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual([e["id"] for e in out["envelopes"]], ["1"])
+
+    def test_another_mailbox_is_untouched(self) -> None:
+        self.host.perimeter.colony = "colony@altrove.it"
+        with patch.object(self.mail, "_run_json", side_effect=self._fake):
+            out = self.svc("courier_envelopes", {"account": "studio"})
+        self.assertEqual([e["id"] for e in out["envelopes"]], ["1", "2"])
 
 class GmailTests(_OnFakeHost):
     def setUp(self) -> None:

@@ -624,6 +624,9 @@ def list_messages(account: str = "demo", folder: str = "INBOX", limit: int = 10)
         "folder": folder,
         "messages": _run_json(account, ["list", "--folder", folder, "--limit", str(limit)]),
     }
+    out["messages"], nascosti = _hide_box_mail(out["messages"], account)
+    if nascosti:
+        out["message_box_withheld"] = nascosti
     scope = strict_scope()
     if scope:
         out["messages"], tolti = _filter_by_sender(out["messages"], scope, "email.list")
@@ -642,6 +645,8 @@ def read_message(email_id: str, account: str = "demo", folder: str = "INBOX") ->
     """Legge un singolo messaggio per ID."""
     tool_allowed("email.read")
     out = _run_json(account, ["read", str(email_id), "--folder", folder])
+    if _is_box_mail(out, account):
+        _deny_box_mail("email.read")
     scope = strict_scope()
     # Sul RISULTATO, prima di restituirlo: il corpo non ha ancora lasciato il
     # gateway.
@@ -667,8 +672,11 @@ def get_attachment(email_id: str, filename: str, account: str = "demo",
     scope = strict_scope()
     if scope:
         _assert_sender_vetted("email.get_attachment", account, email_id, folder, scope)
-    return _run_json(account, ["get-attachment", str(email_id), "--filename", filename,
-                               "--folder", folder])
+    r = _run_json(account, ["get-attachment", str(email_id), "--filename", filename,
+                            "--folder", folder])
+    if _is_box_mail(r, account):
+        _deny_box_mail("email.get_attachment")
+    return r
 
 
 def get_attachment_bytes(email_id: str, filename: str, account: str = "demo",
@@ -685,6 +693,8 @@ def get_attachment_bytes(email_id: str, filename: str, account: str = "demo",
                             "--folder", folder])
     if not isinstance(r, dict) or not r.get("data"):
         raise ValueError(f"allegato '{filename}' non trovato nel messaggio {email_id}")
+    if _is_box_mail(r, account):
+        _deny_box_mail("email.save_attachment")
     raw = base64.b64decode(r["data"])
     return raw, {"filename": r.get("filename") or filename,
                  "content_type": r.get("content_type")}
@@ -725,6 +735,13 @@ def _courier_tag() -> str:
 
 def _box_address(account: str, tag: str) -> str:
     """`local+TAG@domain` of `account`'s mailbox, lower-case."""
+    addr = _mailbox_addr(account)
+    local, at, domain = addr.partition("@")
+    return f"{local}+{tag.lower()}@{domain}" if (at and tag) else ""
+
+
+def _mailbox_addr(account: str) -> str:
+    """The address of `account`'s mailbox, lower-case, "" if unknown."""
     addr = str(mailbox_address(account) or "").strip().lower()
     if not addr:
         # A Google account (the colony mailbox may be one): its address comes
@@ -736,8 +753,7 @@ def _box_address(account: str, tag: str) -> str:
                     break
         except Exception:  # noqa: BLE001 — no address, no delivery
             addr = ""
-    local, at, domain = addr.partition("@")
-    return f"{local}+{tag.lower()}@{domain}" if (at and tag) else ""
+    return addr
 
 
 def _tag_ok(row: object, account: str) -> bool:
@@ -754,6 +770,43 @@ def _tag_ok(row: object, account: str) -> bool:
     seen = {a.strip().lower() for _n, a in getaddresses(
         [str(x) for x in (row.get("rcpt_raw") or [])]) if a}
     return want in seen
+
+
+def _is_box_mail(row: object, account: str) -> bool:
+    """Is this a message-box mail (#583): on the COLONY mailbox and addressed to
+    one of its plus sub-addresses (`local+X@domain`)? Such mail belongs to the
+    topic whose code is X and to nobody else — not to a room that reads the
+    colony mailbox through its own `inbox:`, not to an agent's `email.*`
+    (review of clodia-tools#416). An older gateway (no `colony_address`) →
+    never: there is no message box to protect."""
+    ask = getattr(_perimeter(), "colony_address", None)
+    colony = str(ask() or "").strip().lower() if ask else ""
+    if not colony or not isinstance(row, dict):
+        return False
+    local, at, domain = colony.partition("@")
+    if not account or _mailbox_addr(account) != colony:
+        return False
+    from email.utils import getaddresses
+    for _n, a in getaddresses([str(x) for x in (row.get("rcpt_raw") or [])]):
+        a = (a or "").strip().lower()
+        if a.endswith("@" + domain) and a.startswith(local + "+"):
+            return True
+    return False
+
+
+def _hide_box_mail(rows: object, account: str) -> tuple[object, int]:
+    """Rows without the message-box mail, and how many were hidden."""
+    if not isinstance(rows, list):
+        return rows, 0
+    tenuti = [r for r in rows if not _is_box_mail(r, account)]
+    return tenuti, len(rows) - len(tenuti)
+
+
+def _deny_box_mail(verb: str) -> None:
+    _record_ingress(verb, "deny")
+    raise PermissionError(
+        "questo messaggio è indirizzato alla message box di un topic: lo riceve "
+        "solo quel topic (clodia-platform#583)")
 
 
 def _courier_rows(rows: object) -> tuple[list, int]:
@@ -808,8 +861,24 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
     read again."""
     known = {str(k) for k in (skip or [])}
     limit = max(1, min(int(limit), 50))
-    rows = _run_json(account, ["list", "--folder", folder, "--limit", str(limit)])
+    tag = _courier_tag()
+    if tag:
+        # The message box (#583): searched by recipient, not taken from the
+        # newest N of the whole colony mailbox — busy between two passes, a
+        # tagged mail would fall out of that window (review of #416).
+        box = _box_address(account, tag)
+        if not box:
+            return {"account": account, "folder": folder, "withheld": 0,
+                    **({"keys": []} if keys_only else {"envelopes": []})}
+        query = f'OR OR TO "{box}" CC "{box}" HEADER Delivered-To "{box}"'
+        rows = _run_json(account, ["search", query, "--folder", folder,
+                                   "--limit", str(limit)])
+    else:
+        rows = _run_json(account, ["list", "--folder", folder, "--limit", str(limit)])
     rows, tolti = _courier_rows(rows)
+    if not _courier_tag():
+        rows, nascosti = _hide_box_mail(rows, account)
+        tolti += nascosti
     if _courier_tag():
         # The colony mailbox (#583): only the mail addressed to this topic's
         # message box, counted apart from the senders' filter.
@@ -838,7 +907,8 @@ def courier_envelopes(account: str, folder: str = "INBOX", limit: int = 20,
         # checked again on what was actually read.
         if envelope_key(full) != key:
             continue
-        if not _courier_sender_ok(_raw_from(full)) or not _tag_ok(full, account):
+        if not _courier_sender_ok(_raw_from(full)) or not _tag_ok(full, account) \
+                or (not _courier_tag() and _is_box_mail(full, account)):
             _record_ingress("courier.mail", "filter")
             tolti += 1
             continue
@@ -866,6 +936,8 @@ def courier_attachment(account: str, email_id: str, filename: str,
     _assert_courier_sender(r)
     if not _tag_ok(r, account):
         _deny_courier(_raw_from(r))
+    if not _courier_tag() and _is_box_mail(r, account):
+        _deny_box_mail("courier.mail")
     raw = base64.b64decode(r["data"])
     return {"filename": safe_attachment_name(r.get("filename") or filename),
             "content_type": r.get("content_type"), "size": len(raw),
@@ -886,6 +958,8 @@ def courier_eml(account: str, email_id: str, folder: str = "INBOX") -> dict:
     _assert_courier_sender(r)
     if not _tag_ok(r, account):
         _deny_courier(_raw_from(r))
+    if not _courier_tag() and _is_box_mail(r, account):
+        _deny_box_mail("courier.mail")
     raw = base64.b64decode(r["data"])
     return {"size": len(raw), "message_id": r.get("message_id"),
             "content_b64": base64.b64encode(raw).decode("ascii")}
@@ -901,6 +975,9 @@ def search(query: str, account: str = "demo", folder: str = "INBOX", limit: int 
         "query": query,
         "results": _run_json(account, ["search", query, "--folder", folder, "--limit", str(limit)]),
     }
+    out["results"], nascosti = _hide_box_mail(out["results"], account)
+    if nascosti:
+        out["message_box_withheld"] = nascosti
     scope = strict_scope()
     if scope:
         out["results"], tolti = _filter_by_sender(out["results"], scope, "email.search")
@@ -927,6 +1004,13 @@ def reply(email_id: str, body: str, account: str = "demo",
     if scope:
         _assert_sender_vetted("email.reply", account, email_id, folder, scope,
                               direction="outbox")
+    # Only on the colony mailbox (#583): elsewhere no extra read — it would ask
+    # the `inbox` permission of a mailbox the room may hold for `outbox` only.
+    ask = getattr(_perimeter(), "colony_address", None)
+    colony = str(ask() or "").strip().lower() if ask else ""
+    if colony and _mailbox_addr(account) == colony and _is_box_mail(
+            _run_json(account, ["read", str(email_id), "--folder", folder]), account):
+        _deny_box_mail("email.reply")
     args = ["reply", str(email_id), "--body", body, "--folder", folder]
     if cc:
         args += ["--cc", cc]
