@@ -83,7 +83,11 @@ async def channel_data(tier: str, name: str, request: Request) -> dict:
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
-    who = _require_scope_owner(request, topic.get("meta", {}))
+    who = _person(request)
+    if not admin.is_admin(who):
+        # The owner, or a platform admin (a topic owned by an agent has no
+        # person to own it otherwise; the gateway admits admins too).
+        who = _require_scope_owner(request, topic.get("meta", {}))
     if not admin.is_human(who):
         raise HTTPException(403, "i dati di un topic li governa una persona, non un agente")
     body = await request.json()

@@ -68,6 +68,21 @@ class ChannelDataTests(_Base):
         self.assertEqual(r.status_code, 200)
         self.assertEqual((self.sent[-1]["by"], self.sent[-1]["by_clearance"]), ("davide", "SEAL-3"))
 
+    def test_an_admin_who_does_not_own_the_topic(self):
+        def not_owner(r, m):
+            raise AssertionError("an admin is not asked to own the topic")
+        with patch("server.api.channels._require_scope_owner", not_owner):
+            r = self.client("davide", admin_=True).post("/clodia/channels/SEAL-2/x/data", json={
+                "action": "grant", "kind": "rag", "resource": "c", "agent": "clodia", "mode": "read"})
+        self.assertEqual(r.status_code, 200)
+
+    def test_the_body_cannot_name_another_person(self):
+        with patch("server.api.channels._require_scope_owner", lambda r, m: "davide"):
+            self.client("davide").post("/clodia/channels/SEAL-2/x/data", json={
+                "action": "import", "kind": "rag", "resource": "c",
+                "by": "mario", "by_admin": True, "by_clearance": "SEAL-4"})
+        self.assertEqual((self.sent[-1]["by"], self.sent[-1]["by_admin"]), ("davide", False))
+
     def test_unknown_action_and_agents(self):
         with patch("server.api.channels._require_scope_owner", lambda r, m: "davide"):
             self.assertEqual(self.client("davide").post(
