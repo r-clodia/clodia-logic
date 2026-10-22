@@ -352,6 +352,33 @@ def drive_folder_action(tier: str, name: str, action: str, **params) -> dict:
     return r.json()
 
 
+def topic_data_action(tier: str, name: str, body: dict) -> dict:
+    """Data imported by a topic (#590): import/remove/grant → gateway."""
+    url = f"{_base()}/{tier}/{name}/data"
+    try:
+        r = _gw_http.post(url, headers=_headers(), json=body, timeout=60)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway data irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("data", r)
+    return r.json()
+
+
+def data_catalog(body: dict | None = None) -> dict:
+    """The instance data catalog (#590): GET without `body`, POST with it."""
+    url = _base().rsplit("/topics", 1)[0] + "/data-catalog"
+    try:
+        if body is None:
+            r = _gw_http.get(url, headers=_headers(), timeout=60)
+        else:
+            r = _gw_http.post(url, headers=_headers(), json=body, timeout=300)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway data-catalog irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("data-catalog", r)
+    return r.json()
+
+
 def local_folder_action(tier: str, name: str, action: str, **params) -> dict:
     """Cartella condivisa Mac↔container per un topic (add/remove) → gateway.
 
