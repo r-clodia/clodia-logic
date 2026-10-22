@@ -101,3 +101,28 @@ async def channel_data(tier: str, name: str, request: Request) -> dict:
                                        {**body, **_actor(who)})
     except topics_client.TopicsClientError as e:
         raise _gw(e)
+
+
+@router.post("/clodia/channels/{tier}/{name}/index")
+async def channel_index(tier: str, name: str, request: Request) -> dict:
+    """The topic's own RAG index on/off (#599): the owner (or an admin), a person.
+    Off drops the collection's documents."""
+    from .channels import _require_scope_owner
+    topic = await topics_client.async_open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    who = _person(request)
+    if not admin.is_admin(who):
+        who = _require_scope_owner(request, topic.get("meta", {}))
+    if not admin.is_human(who):
+        raise HTTPException(403, "l'indice di un topic lo governa una persona, non un agente")
+    body = await request.json()
+    enabled = (body or {}).get("enabled")
+    if not isinstance(enabled, bool):
+        raise HTTPException(400, "enabled: true | false")
+    try:
+        return await asyncio.to_thread(topics_client.topic_index_action, tier, name,
+                                       {"action": "enable" if enabled else "disable",
+                                        **_actor(who)})
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)

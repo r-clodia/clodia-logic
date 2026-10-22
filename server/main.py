@@ -277,6 +277,25 @@ async def _lifespan(app: FastAPI):
     else:
         mail_courier_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
 
+    # Topic indexer (clodia-platform#601): every topic in its own RAG
+    # collection. The gateway does the work; this loop sets the pace.
+    async def _topic_indexer_loop():
+        from .api import topic_indexer
+        intervallo = int(os.environ.get("CLODIA_TOPIC_INDEX_INTERVAL", "300"))
+        LOG.info("indicizzatore topic attivo: un giro ogni %ds", intervallo)
+        await asyncio.sleep(60)          # let the boot settle first
+        while True:
+            try:
+                await topic_indexer.run_cycle()
+            except Exception as e:  # noqa: BLE001
+                LOG.warning("indicizzatore topic: %s", type(e).__name__)
+            await asyncio.sleep(intervallo)
+    if profile.features.channels and \
+            os.environ.get("CLODIA_TOPIC_INDEX", "on").lower() not in ("off", "0", "false"):
+        topic_indexer_task = asyncio.create_task(_topic_indexer_loop())
+    else:
+        topic_indexer_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
+
     # Idle reaper: evince periodicamente le sessioni chat idle (subprocess
     # claude/codex ancora vivo + spawn su disco) per recuperare RAM e disco.
     # Senza, le sessioni lasciate aperte si accumulano fino a saturare la
@@ -369,6 +388,7 @@ async def _lifespan(app: FastAPI):
     # --- shutdown ---
     relay_task.cancel()
     mail_courier_task.cancel()
+    topic_indexer_task.cancel()
     reaper_task.cancel()
     goal_task.cancel()
     lag_task.cancel()

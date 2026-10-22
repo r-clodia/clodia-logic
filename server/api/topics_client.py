@@ -364,6 +364,18 @@ def topic_data_action(tier: str, name: str, body: dict) -> dict:
     return r.json()
 
 
+def topic_index_action(tier: str, name: str, body: dict) -> dict:
+    """The topic's RAG index (#599): enable/disable → gateway."""
+    url = _base().rsplit("/topics", 1)[0] + f"/topic-index/{tier}/{name}"
+    try:
+        r = _gw_http.post(url, headers=_headers(), json=body, timeout=120)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway topic-index irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("topic-index", r)
+    return r.json()
+
+
 def data_catalog(body: dict | None = None) -> dict:
     """The instance data catalog (#590): GET without `body`, POST with it."""
     url = _base().rsplit("/topics", 1)[0] + "/data-catalog"
