@@ -60,7 +60,7 @@ async def get_catalog(request: Request) -> dict:
     if not admin.is_admin(who):
         # What they may import, without the topics that import it (topic names
         # of rooms they may not be in).
-        out["entries"] = [{k: v for k, v in e.items() if k != "importing_topics"}
+        out["entries"] = [{k: v for k, v in e.items() if k not in ("importing_topics", "topic")}
                           for e in out.get("entries") or []
                           if who in (e.get("importers") or [])]
     return out
