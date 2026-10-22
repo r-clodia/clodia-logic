@@ -10,6 +10,9 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.40.1] — 2026-10-22
+- clodia: grant `jobs.report_status` (clodia-platform#582). The job directive asks the agent to declare its run's outcome, but the verb was not in the seed, so every run ended «error» even when the work was done (Daily digest GRC, run 118).
+
 ## [7.40.0] — 2026-10-19
 - **The `messaggero` seed is retired** (clodia-platform#531). Inbound mail and
   Telegram reach the topics through deterministic code (the courier and the
