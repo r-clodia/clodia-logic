@@ -36,6 +36,7 @@ CONTROL_SURFACES = (
     ("/clodia/cert-request", "pki"),
     ("/api/cert-requests", "pki"),
     ("/clodia/datastores", "datastore"),
+    ("/clodia/data-catalog", "data_catalog"),
     ("/api/channel-aliases", "alias"),
     ("/api/admin", "admin"),
 )
