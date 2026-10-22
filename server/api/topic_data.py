@@ -114,6 +114,8 @@ async def channel_index(tier: str, name: str, request: Request) -> dict:
     who = _person(request)
     if not admin.is_admin(who):
         who = _require_scope_owner(request, topic.get("meta", {}))
+    if not admin.is_human(who):
+        raise HTTPException(403, "l'indice di un topic lo governa una persona, non un agente")
     body = await request.json()
     enabled = (body or {}).get("enabled")
     if not isinstance(enabled, bool):
