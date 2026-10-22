@@ -200,6 +200,9 @@ tool_permissions:
   - packs.list
   - packs.show
   - jobs.list
+  # #582: a job run declares its outcome; without the grant the directive
+  # asks for a verb the spawn cannot load (run 118: digest sent, run «error»).
+  - jobs.report_status
   - egress.list
   - ingress.list
   # Whitelist GLOBALE (clodia-platform#374): decisione di Davide, «egress/
