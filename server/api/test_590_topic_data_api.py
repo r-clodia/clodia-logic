@@ -24,7 +24,8 @@ class _Base(unittest.TestCase):
               patch.object(T.topics_client, "data_catalog",
                            lambda body=None: self.sent.append(body) or {
                                "entries": [{"key": "datastore:a/b", "importers": ["@admin"]},
-                                           {"key": "rag:c", "importers": ["mario"]}]}),
+                                           {"key": "rag:c", "importers": ["mario"],
+                                            "importing_topics": ["SEAL-3/segreto"]}]}),
               patch.object(T.topics_client, "topic_data_action",
                            lambda t, n, b: self.sent.append(b) or {"ok": True})]
         for p in ps:
@@ -42,6 +43,7 @@ class CatalogTests(_Base):
     def test_a_non_admin_sees_what_they_may_import(self):
         out = self.client("mario").get("/clodia/data-catalog").json()
         self.assertEqual([e["key"] for e in out["entries"]], ["rag:c"])
+        self.assertNotIn("importing_topics", out["entries"][0])
         out = self.client("davide", admin_=True).get("/clodia/data-catalog").json()
         self.assertEqual(len(out["entries"]), 2)
 
