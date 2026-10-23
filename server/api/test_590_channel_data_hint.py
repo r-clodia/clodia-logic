@@ -16,7 +16,7 @@ META = {"index": {"collection": "topic-own"},
 
 class DataHintTests(unittest.TestCase):
     def hint(self, agent, meta=META):
-        channels._CATALOG_CACHE.update(at=0.0, rows={})
+        channels._CATALOG_CACHE.update(at=float("-inf"), rows={})   # stale on any clock
         with patch.object(channels.topics_client, "open_topic", lambda t, n: {"meta": meta}), \
                 patch.object(channels.topics_client, "data_catalog", lambda: {"entries": [
                     {"name": "topic-da98f920", "topic": "SEAL-1/corso-confindustria"}]}):
