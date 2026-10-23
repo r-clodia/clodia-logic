@@ -6032,16 +6032,22 @@ def _channel_trifecta(meta: dict, tainted: bool | None = None,
         remote_egress = any(trifecta.uri_allowed(u) is not True for u in uris)
         riservati = (_channel_private_data(tier, name, meta)
                      if tier and name else None)
+        # `room_meta`: da #606 i due lati statici contano anche i verbi che la
+        # STANZA rende raggiungibili — la sua toolbox (#605) e i dati importati
+        # (#590) — perché è su `seed ∪ stanza` che il gateway decide ogni
+        # chiamata (`main._agent_tool_reachable`).
         prof = trifecta.context_profile(meta.get("participants") or [],
                                         tainted=tainted,
                                         remote_egress=remote_egress,
-                                        channel_private_data=riservati)
+                                        channel_private_data=riservati,
+                                        room_meta=meta)
         # «Reset trifecta»: l'owner dichiara di rispondere lui di questo canale.
         # Non si nasconde il punteggio — si affianca la firma, e la CAPACITÀ resta
         # esposta: un azzeramento anonimo sarebbe indistinguibile da un difetto di
         # calcolo. Decade da sé se la composizione cambia (`trifecta_reset`).
         if prof and tier and name:
-            voce = trifecta_reset.active(tier, name, meta.get("participants") or [])
+            voce = trifecta_reset.active(tier, name,
+                                         meta.get("participants") or [], meta)
             if voce:
                 prof.update(_dopo_il_reset(prof, voce, tier, name, meta))
         return prof
@@ -6368,7 +6374,7 @@ async def channel_trifecta_reset(tier: str, name: str, request: Request) -> dict
     # La baseline: ciò che c'è ADESSO è approvato, e da qui si riparte a misurare.
     trovati = await asyncio.to_thread(_private_data_paths, tier, name, meta)
     voce = trifecta_reset.set_reset(tier, name, principal or "owner", parts,
-                                    data_paths=trovati or [])
+                                    data_paths=trovati or [], meta=meta)
     # Il primo bit è un evento: si azzera ora e si riaccenderà al primo ingresso
     # successivo. È la parte che rende il reset una RIBASATURA e non un
     # silenziamento — senza, un canale contaminato resterebbe a 1 per sempre e
