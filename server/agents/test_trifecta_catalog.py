@@ -193,6 +193,31 @@ class OpenQuestionTests(unittest.TestCase):
                 self.assertFalse(legs["egress"])
 
 
+class DatastoreTests(unittest.TestCase):
+    """v3 — `datastore.*` non era in nessun lato (#606).
+
+    Finché quei verbi stavano solo nei seed era un caso raro. Da #590 un
+    database si importa in una STANZA e il verbo arriva a chiunque abbia il
+    grant, quindi il fail-closed di #119 accendeva `private_data` + `egress` su
+    ogni canale che importa dati: metà giusta e metà inventata.
+    """
+
+    def test_reading_a_datastore_is_private_data_only(self) -> None:
+        legs = _legs("datastore.read")
+        self.assertTrue(legs["private_data"])
+        self.assertFalse(legs["egress"])
+
+    def test_writing_stays_inside_clodia_so_it_lights_nothing(self) -> None:
+        # Stessa regola di `topic.write_file`: è egress solo ciò che attraversa
+        # il confine dell'istanza.
+        self.assertEqual(_score("datastore.write"), 0)
+
+    def test_the_namespace_is_known_so_it_no_longer_falls_closed(self) -> None:
+        cfg = trifecta.load_config(force=True)
+        self.assertEqual([], trifecta.unclassified_namespaces(
+            ["datastore.read", "datastore.write"], cfg))
+
+
 class PatternHygieneTests(unittest.TestCase):
     """Invariante strutturale del catalogo, indipendente dai singoli verbi."""
 

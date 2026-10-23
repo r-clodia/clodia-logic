@@ -57,6 +57,18 @@
 #   - scritture interne a Clodia (`topic.write_file`, `memory.put`, …) e verbi
 #     di sola introspezione locale (`packs.list`, `mcp.list`, `jobs.list`).
 #
+# ── v3 (clodia-platform#606) ────────────────────────────────────────────────
+# `datastore.*` non era in nessun lato. Finché quei verbi stavano solo nei seed
+# era un caso raro; da #590 un database si importa in una STANZA e il verbo
+# arriva a chi ha il grant, quindi il fail-closed di #119 — che su un namespace
+# ignoto assume `private_data` + `egress` — accendeva un'USCITA inventata su
+# ogni canale che importa dati. La lettura di dati privati è vera e resta; la
+# scrittura va DENTRO Clodia, come `topic.write_file`, e non attraversa nessun
+# confine. Classificato come `leads.*`, che è il caso gemello (record
+# strutturati dell'istanza): private_data e nulla più — se un giorno i record
+# strutturati diventano anche `untrusted_input`, la decisione si prende per
+# entrambi insieme, non per uno solo.
+#
 # CHIUSO il 3 ago 2026 (#119): i corpora di dominio montati come MCP esterni —
 # `normattiva.*`, `contabilita.*`, `sedia.*` — erano deliberatamente NON
 # classificati, ed erano indicati come candidati a `untrusted_input`. Il default
@@ -64,7 +76,7 @@
 # non hanno: ora sono classificati su `untrusted_input` e nulla più. Questo
 # sposta di un lato i numeri per i tre seed documentali rispetto a #102, che li
 # aveva misurati senza.
-version: 2
+version: 3
 
 private_data:
   # topic: contenuti, file e documenti dei canali dell'istanza
@@ -143,6 +155,11 @@ private_data:
   # corpora indicizzati dell'istanza
   - rag.*
   - eu_corpus.*
+  # database dichiarati da un pack e importati in una stanza (#590): anagrafiche,
+  # contatti, pratiche. `datastore.write` è scrittura interna a Clodia, quindi
+  # non legge e non fa uscire niente (vedi la nota v3 in testa).
+  - datastore.*
+  - -datastore.write
 
 untrusted_input:
   # web aperto
