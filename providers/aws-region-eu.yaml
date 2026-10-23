@@ -68,6 +68,8 @@ model_ids:
   claude-sonnet-5: "eu.anthropic.claude-sonnet-5"
   claude-sonnet-4-6: "eu.anthropic.claude-sonnet-4-6"
   claude-sonnet-4-5: "eu.anthropic.claude-sonnet-4-5-20250929-v1:0"
+  # Confermato dall'owner in console su eu-west-1, 23 ott 2026.
+  claude-haiku-5-5: "eu.anthropic.claude-haiku-5-5"
   claude-haiku-4-5: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
   claude-haiku-4-5-20251001: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 # SDK di esecuzione: i modelli Claude via Bedrock.
