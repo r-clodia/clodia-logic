@@ -3706,7 +3706,7 @@ def _channel_files_hint(tier: str, name: str) -> str:
             f"di rifare un lavoro già fatto):\n{righe}")
 
 
-_CATALOG_CACHE: dict = {"at": 0.0, "rows": {}}
+_CATALOG_CACHE: dict = {"at": float("-inf"), "rows": {}}   # stale on any clock
 
 
 def _catalog_labels() -> dict:
