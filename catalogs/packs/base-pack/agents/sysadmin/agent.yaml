@@ -116,6 +116,11 @@ tool_permissions:
   # conserva `agents.*`, che il catalogo trifecta classifica come `expansion`
   # (grant/revoke di capability = fabbricare autorità). Per sysadmin il §10.2 va
   # completato dallo split di `agents.*` previsto in #104 §8. Vedi il PR.
+  # clodia-platform#587: the web through the gateway (lists, gates,
+  # taint). Native WebFetch goes through the default-deny egress
+  # proxy, which no authorisation reaches: it can only fail.
+  - web.fetch
+  - web.download
   - "agents.*"          # capability degli altri agent (grant/revoke, gated) + list/show
   - "app_runtime.get"
   - "app_runtime.health"
@@ -204,4 +209,3 @@ system_prompt: system-prompt.md
 # quindi darebbe a un agente con la shell una porta d'ingresso non mediata.
 native_tools:
   - Bash
-  - WebFetch

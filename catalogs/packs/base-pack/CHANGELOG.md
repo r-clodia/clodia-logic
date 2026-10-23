@@ -10,6 +10,9 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.40.2] — 2026-10-23
+- sysadmin: `web.fetch` and `web.download` (clodia-platform#587); native `WebFetch` removed — it exits through the default-deny egress proxy and can only fail. `web.post` stays.
+
 ## [7.40.1] — 2026-10-22
 - clodia: grant `jobs.report_status` (clodia-platform#582). The job directive asks the agent to declare its run's outcome, but the verb was not in the seed, so every run ended «error» even when the work was done (Daily digest GRC, run 118).
 
