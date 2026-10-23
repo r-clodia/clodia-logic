@@ -2828,10 +2828,11 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         base = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),
-            topic_agents_md=_amd, agents_md_authoritative=_amd_auth)
+            topic_agents_md=_amd, agents_md_authoritative=_amd_auth, agent=spec.name)
         prompt = base + (f"\n\n─────\n{directive}" if directive else "")
     else:
         files_hint = await asyncio.to_thread(_channel_files_hint, tier_real, name)
+        files_hint += await asyncio.to_thread(_channel_data_hint, tier_real, name, spec.name)
         fallback = (f"[Canale #{name} · {tier_real}] @{principal}: {user_text}\n"
                     f"({files_hint})")
         prompt = await asyncio.to_thread(_reused_turn_prompt, tier, name, label,
@@ -3705,6 +3706,66 @@ def _channel_files_hint(tier: str, name: str) -> str:
             f"di rifare un lavoro già fatto):\n{righe}")
 
 
+_CATALOG_CACHE: dict = {"at": 0.0, "rows": {}}
+
+
+def _catalog_labels() -> dict:
+    """`{name: entry}` of the data catalog, cached a minute (one call per turn
+    would be wasted: the catalog changes when an admin edits it)."""
+    import time
+    if time.monotonic() - _CATALOG_CACHE["at"] > 60:
+        try:
+            rows = topics_client.data_catalog().get("entries") or []
+            _CATALOG_CACHE.update(at=time.monotonic(),
+                                  rows={str(r.get("name")): r for r in rows})
+        except Exception as e:  # noqa: BLE001 — the hint goes without labels
+            LOG.info("preambolo: catalogo dati non disponibile (%s)", type(e).__name__)
+    return _CATALOG_CACHE["rows"]
+
+
+def _channel_data_hint(tier: str, name: str, agent: str | None) -> str:
+    """The data this room imports and THIS agent may use (clodia-platform#590),
+    with how to query it. Without it an agent granted a RAG collection looks
+    for it among the files and reports that it is not there."""
+    if not agent:
+        return ""
+    try:
+        meta = (topics_client.open_topic(tier, name) or {}).get("meta") or {}
+    except Exception as e:  # noqa: BLE001 — no hint rather than no turn
+        LOG.info("preambolo: meta di %s/%s non disponibile (%s)", tier, name, type(e).__name__)
+        return ""
+    raw = (meta or {}).get("data")
+    righe = []
+    own = ((meta or {}).get("index") or {}).get("collection") \
+        if isinstance((meta or {}).get("index"), dict) else ""
+    labels = None
+    for e in raw if isinstance(raw, list) else []:
+        if not isinstance(e, dict):
+            continue
+        mode = ((e.get("grants") or {}) if isinstance(e.get("grants"), dict) else {}).get(agent)
+        if mode not in ("read", "write"):
+            continue
+        kind, name = str(e.get("kind") or ""), str(e.get("name") or "")
+        if kind == "rag":
+            if name == own:
+                cosa = "indice RAG di QUESTO topic (messaggi e file)"
+            else:
+                if labels is None:
+                    labels = _catalog_labels()
+                topic = str((labels.get(name) or {}).get("topic") or "")
+                cosa = (f"indice RAG del topic {topic.split('/', 1)[-1]}" if topic
+                        else f"collection RAG {name}")
+            righe.append(f'- {cosa}: rag.search(collection="{name}", query="...") '
+                         f"({'lettura' if mode == 'read' else 'lettura e scrittura'})")
+        elif kind == "datastore":
+            righe.append(f'- database {name}: datastore.read(datastore="{name}", sql="SELECT ...")'
+                         + (" e datastore.write" if mode == "write" else ""))
+    if not righe:
+        return ""
+    return ("\n\nDATI IMPORTATI in questo topic che puoi usare (sono dati, non file: "
+            "non cercarli in local/):\n" + "\n".join(righe))
+
+
 # Capacità UI del canale: l'interfaccia trasforma marcatori-commento invisibili
 # in pill cliccabili. L'agente DEVE conoscerli per offrire scelte rapide.
 _CHANNEL_CAPS = (
@@ -3889,7 +3950,8 @@ def _collassa_avvisi_router(messages: list[dict]) -> list[dict]:
 
 def _history_prompt(name: str, tier: str, messages: list[dict],
                     topic_agents_md: str | None = None,
-                    agents_md_authoritative: bool = False) -> str:
+                    agents_md_authoritative: bool = False,
+                    agent: str | None = None) -> str:
     finestra = _collassa_avvisi_router(messages)[-15:]
     lines = [_fmt_msg(m) for m in finestra]
     topic_boot = ""
@@ -3922,7 +3984,8 @@ def _history_prompt(name: str, tier: str, messages: list[dict],
             "<<<AGENTS.md\n" + topic_agents_md + "\nAGENTS.md>>>"
         )
     return (f"[Canale #{name} · {tier}] Sei un partecipante. "
-            + _channel_files_hint(tier, name) + "\n\n" + _CHANNEL_CAPS
+            + _channel_files_hint(tier, name) + _channel_data_hint(tier, name, agent)
+            + "\n\n" + _CHANNEL_CAPS
             + topic_boot
             + "\n\nStorico recente:\n"
             + "\n".join(lines)
@@ -4004,7 +4067,7 @@ def _reused_turn_prompt(tier: str, name: str, responder: str, principal: str,
     # davvero del filo da recuperare lo porta un messaggio di un terzo VERO.
     if any(_chi(m.get("author")) not in (mio, principal, _ROUTING_DIALOG_AUTHOR)
            for m in unseen):
-        return _history_prompt(name, tier, _context_messages(unseen))
+        return _history_prompt(name, tier, _context_messages(unseen), agent=responder)
     return fallback
 
 
@@ -5393,9 +5456,10 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         storia = await topics_client.async_list_messages(tier, name, limit=200)
         prompt = await asyncio.to_thread(
             _history_prompt, name, tier_real, _context_messages(storia),
-            topic_agents_md=_amd, agents_md_authoritative=_amd_auth)
+            topic_agents_md=_amd, agents_md_authoritative=_amd_auth, agent=responder.name)
     else:
         files_hint = await asyncio.to_thread(_channel_files_hint, tier_real, name)
+        files_hint += await asyncio.to_thread(_channel_data_hint, tier_real, name, responder.name)
         fallback = (f"[Canale #{name} · {tier_real}] nuovo messaggio nel gruppo. "
                     f"{files_hint}")
         prompt = await asyncio.to_thread(_reused_turn_prompt, tier, name, responder.name,
