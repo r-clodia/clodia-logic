@@ -10,6 +10,31 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.41.0] — 2026-10-24
+- **`segretario` becomes the room's coordinator** (clodia-platform#607, R3 of
+  #604). It was a minute-taker with `routing_mode: state_writer_only` keeping it
+  out of the conversation; it now talks with the user and hands work to the
+  agents, while the topic's written state stays its job — one task among
+  others, no longer its perimeter.
+  - **Stacks**: `claude-sonnet-5-5` on claude-team → claude-pro-max →
+    anthropic-api → aws-region-eu, with `gemma-4-26b-a4b-it` on Scaleway as the
+    only SEAL-3 fallback. Coordination is judgement work; the small model does
+    not disappear, it becomes the sovereign fallback for confidential rooms.
+  - **Rule `topic-state-boundary` removed** from this seed: it declared out of
+    domain «using tools other than the topic's state tools» and prescribed a
+    short refusal — correct for a minute-taker, a dead end for the coordinator
+    the room has to address. The rule stays in the catalogue for whoever needs it.
+  - **Three verbs**: `topic.goal_progress`, `runtime.agents` and
+    `channel.deliver`. The last one was Clodia's only, with a note saying that
+    widening it was the owner's call: taken on 24 Oct 2026, and not for
+    convenience — with the secretary coordinating every room,
+    `channel_relay._room_can_answer` would have muted every room connected to
+    Telegram or to a mailbox. It turns on the trifecta's outbound leg wherever
+    the secretary sits, which is everywhere.
+  - **`topic.add_participant` stays out**: #192's decision 1 (recommend, do not
+    execute) is unchanged — convening is the `@mention` plus the
+    `<!-- invite=… -->` marker the owner presses.
+
 ## [7.40.2] — 2026-10-23
 - sysadmin: `web.fetch` and `web.download` (clodia-platform#587); native `WebFetch` removed — it exits through the default-deny egress proxy and can only fail. `web.post` stays.
 

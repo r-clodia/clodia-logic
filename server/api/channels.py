@@ -2214,9 +2214,16 @@ def _decompose_intents(message: str) -> list[str]:
 def _is_state_writer_request(message: str) -> bool:
     """True per richieste esplicite di manutenzione dello stato del topic.
 
-    Gli agenti `routing_mode: state_writer_only` (es. segretario) sono
-    verbalizzatori, non responder generalisti: il routing automatico li può
-    scegliere solo davanti a segnali espliciti di summary/minute/verbale/stato.
+    Gli agenti `routing_mode: state_writer_only` sono verbalizzatori, non
+    responder generalisti: il routing automatico li può scegliere solo davanti
+    a segnali espliciti di summary/minute/verbale/stato.
+
+    Dal 24 ott 2026 (#607) **nessun seed del base-pack lo dichiara**: era di
+    `segretario`, che nel frattempo è diventato il coordinatore della stanza e
+    deve prendere proprio i messaggi che quel filtro gli toglieva. Il
+    meccanismo resta perché è una proprietà del seed, non di quel seed: serve
+    al prossimo agente a mestiere unico che non deve diventare una calamita
+    per il traffico ordinario.
     """
     return bool(_STATE_WRITER_RE.search(message or ""))
 
@@ -3156,6 +3163,113 @@ def reconcile_membership(tier: str, name: str, meta: dict) -> list[str]:
     return rimossi
 
 
+def _auto_participant_missing(meta: dict, tier: str | None) -> str | None:
+    """Il coordinatore che deve sedere in OGNI stanza, e qui non c'è ancora.
+
+    Gemello di `reconcile_membership`, e l'unico punto di questo file che
+    AGGIUNGE qualcuno senza che una persona l'abbia chiesto. Serve a #607: il
+    segretario coordina la stanza, ma `_pick_responder` sceglie fra i
+    PARTECIPANTI — in una stanza dove non è mai stato invitato semplicemente
+    non esiste, e il messaggio che non è per nessuno cade sul rango, cioè su un
+    agente che nessuno ha designato a coordinare.
+
+    **Chi**: l'ULTIMO di `coordinator.DECLARED`, non un nome scritto qui.
+    L'ordine di quella tupla è una precedenza, e l'ultimo è quello che non ha
+    nessuno dietro di sé: la rete della stanza. Scritto così, #608 — Clodia
+    esce dal coordinamento dei canali — accorcia una riga sola e questa
+    funzione continua a dire la cosa giusta.
+
+    **Quando no**: se lo stack DICHIARATO non regge il tier. La condizione è
+    quella di `reconcile_membership` letta al contrario, e deve restare la
+    stessa: aggiungere dove la riconciliazione espelle produce un ping-pong —
+    seduto all'apertura, cacciato al giro dopo, con l'annuncio di uscita ogni
+    volta.
+    """
+    if not meta:
+        return None
+    nome = coordinator_mod.DECLARED[-1] if coordinator_mod.DECLARED else None
+    if not nome:
+        return None
+    raw = meta.get("participants")
+    presenti = list(raw.keys()) if isinstance(raw, dict) else list(raw or [])
+    if nome in presenti or nome == meta.get("owner"):
+        return None
+    spec = registry.get_by_name(nome)
+    if spec is None or getattr(spec, "type", None) != "bot":
+        return None
+    if _declared_below_tier(spec, meta.get("tier", tier)):
+        return None
+    return nome
+
+
+def _seat_taken(tier: str, name: str, meta: dict, nome: str) -> str:
+    """Registra la seduta nel `meta` che il chiamante ha già in mano.
+
+    Il turno in corso instrada su QUELLA lista: senza questa riga il segretario
+    è partecipante sul gateway e invisibile al messaggio che l'ha fatto entrare.
+    La forma di `participants` è quella del chiamante (lista legacy o mappa dei
+    ruoli): si aggiunge una voce, non si sostituisce la struttura.
+
+    Non si annuncia in chat. Un ingresso automatico, uguale in ogni stanza e una
+    volta sola, raccontato come l'invito di una persona sarebbe rumore in tutte
+    le stanze esistenti al primo passaggio dopo il deploy; il badge «staff»
+    nella lista dei partecipanti lo dice già, e l'impronta per chi indaga resta
+    nel log delle attività.
+    """
+    parti = meta.get("participants")
+    if isinstance(parti, dict):
+        parti.setdefault(nome, "contributor")
+    elif isinstance(parti, list):
+        parti.append(nome)
+    else:
+        meta["participants"] = [nome]
+    LOG.info("coordinatore %s seduto d'ufficio in %s/%s (#607)", nome, tier, name)
+    try:
+        activity_log.append(nome, "auto_participant",
+                            {"channel": f"{tier}/{name}",
+                             "tier": meta.get("tier", tier)})
+    except Exception as e:  # noqa: BLE001 — un log non fa fallire un ingresso
+        LOG.warning("seduta di %s su %s/%s non registrata: %s", nome, tier, name, e)
+    return nome
+
+
+def ensure_auto_participant(tier: str, name: str, meta: dict) -> str | None:
+    """Fa sedere il coordinatore nella stanza, se manca. Ritorna il nome aggiunto.
+
+    Best-effort: un gateway muto non deve impedire di aprire un canale. In quel
+    caso `meta` NON viene toccato — dire che è dentro mentre non lo è manderebbe
+    il turno su un agente che la stanza non ha.
+    """
+    nome = _auto_participant_missing(meta, tier)
+    if not nome:
+        return None
+    try:
+        topics_client.set_participant(tier, name, nome, add=True)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("coordinatore %s non seduto in %s/%s: %s", nome, tier, name, e)
+        return None
+    return _seat_taken(tier, name, meta, nome)
+
+
+async def async_ensure_auto_participant(tier: str, name: str, meta: dict) -> str | None:
+    """Gemella async di `ensure_auto_participant`, per i percorsi di turno.
+
+    Due funzioni e non una perché la scrittura passa dal gateway: in un handler
+    async la versione sincrona bloccherebbe il loop, e un guardrail AST lo vieta.
+    La DECISIONE resta una sola (`_auto_participant_missing`), che è la parte
+    che potrebbe divergere.
+    """
+    nome = _auto_participant_missing(meta, tier)
+    if not nome:
+        return None
+    try:
+        await topics_client.async_set_participant(tier, name, nome, add=True)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("coordinatore %s non seduto in %s/%s: %s", nome, tier, name, e)
+        return None
+    return _seat_taken(tier, name, meta, nome)
+
+
 def _eligibility(spec, tier: str | None) -> dict:
     """Idoneità di un AeI al tier del topic, per la UI. Due campi, due domande
     (clodia-platform#190):
@@ -3363,11 +3477,14 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         contesto della stanza. L'esito può essere «questa è per Aitiero», che il
         rango non sa produrre.
 
-        Si pesca da `ai_all`, cioè PRIMA del filtro `_auto_routing_allowed`, ed è
-        il punto della ruling: `state_writer_only` toglie `segretario` dalla gara
-        di rilevanza, non dal ruolo di ultimo ripiego — «never chosen by
-        relevance, always available as fallback». Il profilo resta stretto, e con
-        lui la calamita che non nasce.
+        Si pesca da `ai_all`, cioè PRIMA del filtro `_auto_routing_allowed`.
+        Fino al 24 ott 2026 quella riga serviva a `segretario`, che era
+        `state_writer_only` e andava tenuto fuori dalla gara di rilevanza senza
+        perdere il ruolo di ultimo ripiego — «never chosen by relevance, always
+        available as fallback». Con #607 il segretario non ha più quel vincolo,
+        ma `ai_all` resta: un coordinatore a mestiere stretto deve poter essere
+        scelto QUI anche quando il filtro lo toglierebbe dalla rilevanza, ed è
+        la proprietà che tiene in piedi il ripiego, non il seed che la usava.
         """
         chosen, reason = coordinator_mod.pick(ai_all)
         if chosen is not None:
@@ -4363,6 +4480,48 @@ def _ruoli_mostrati(meta: dict, tier: str) -> list[dict]:
     return display_roles(meta, manager=manager, seeds=seeds)
 
 
+def _stato_coordinatore(meta: dict, tier: str) -> dict:
+    """Chi coordina questa stanza ADESSO, e se non c'è nessuno, perché (#607).
+
+    La clearance effettiva di un agente è quella del suo PROVIDER, e i provider
+    del catalogo che arrivano a SEAL-3 sono uno solo: basta metterlo in pausa
+    perché una stanza confidenziale resti senza nessuno che possa prenderne i
+    turni. Fino a qui l'unico modo di accorgersene era mandare un messaggio e
+    non vedere arrivare niente — `_announce_provider_inadeguato` parla quando un
+    turno NON parte, cioè dopo. Questo bit lo dice prima, e lo consuma la webui
+    (R5, #609).
+
+    Il rango NON vale: `_pick_responder` ha una rete che fa rispondere il più
+    alto in grado quando nessun coordinatore è idoneo, ed è giusta per non far
+    ammutolire una stanza — ma «risponde qualcuno» non è «la stanza ha un
+    coordinatore», e confondere le due cose spegnerebbe proprio la segnalazione
+    che serve. Qui si chiede a `coordinator.pick`, cioè alla riga unica dove la
+    precedenza è scritta, filtrando come fa il router.
+    """
+    tier_real = meta.get("tier", tier)
+    raw = meta.get("participants")
+    parti = list(raw.keys()) if isinstance(raw, dict) else list(raw or [])
+    specs = [registry.get_by_name(n) for n in parti]
+    idonei = [s for s in specs
+              if s is not None and getattr(s, "type", None) == "bot"
+              and _provider_seal_ok(s, tier_real)]
+    scelto, _reason = coordinator_mod.pick(idonei)
+    if scelto is not None:
+        return {"name": scelto.name, "available": True, "reason": None}
+    # Chi AVREBBE dovuto coordinare: il primo coordinatore dichiarato che siede
+    # in questa stanza. Senza il nome, la segnalazione dice che la stanza è
+    # ferma e non quale provider collegare per rimetterla in piedi.
+    atteso = next((n for n in coordinator_mod.DECLARED if n in parti), None)
+    if atteso:
+        motivo = (f"nessun provider con SEAL ≥ {_norm(tier_real)} è disponibile "
+                  f"per **{atteso}**: in questa stanza non c'è un coordinatore "
+                  "che possa prendere i turni.")
+    else:
+        motivo = (f"nessun coordinatore dichiarato ({' o '.join(coordinator_mod.DECLARED)}) "
+                  "partecipa a questa stanza.")
+    return {"name": None, "available": False, "reason": motivo}
+
+
 async def _annuncia_cambio_coordinatore(tier: str, name: str, tier_real: str,
                                         participants: list[str] | None = None) -> None:
     """Il tier della stanza è cambiato e con esso chi coordina: lo dice in chat.
@@ -4550,6 +4709,11 @@ async def post_channel_message(
         raise HTTPException(404, "canale non trovato")
     meta = topic.get("meta", {})
     tier_real = meta.get("tier", tier)
+    # Il coordinatore siede in ogni stanza (#607), e qui PRIMA di leggere i
+    # partecipanti: è questa lista che instrada il messaggio appena arrivato.
+    # Una stanza aperta prima del deploy, o creata con Clodia alla guida, lo
+    # acquisisce al primo messaggio invece che «da qualche parte, più avanti».
+    await async_ensure_auto_participant(tier, name, meta)
     participants = meta.get("participants", [])
     if (not trusted_internal and principal not in participants
             and principal != meta.get("owner")):
@@ -6064,6 +6228,11 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     # far uscire) e la stanza che conta è quella che si sta aprendo.
     topic["membership_removed"] = reconcile_membership(tier, name,
                                                        topic.get("meta", {}))
+    # …e si completa, nello stesso momento e con la condizione opposta: il
+    # coordinatore siede in ogni stanza (#607). DOPO la riconciliazione, non
+    # prima: l'ordine inverso lo farebbe entrare e uscire nella stessa risposta
+    # in una stanza di tier troppo alto.
+    ensure_auto_participant(tier, name, topic.get("meta", {}))
     _partecipanti = topic.get("meta", {}).get("participants", [])
     # `active_responders` resta una lista di SEED (contratto invariato per la UI
     # esistente); `participant_instances` è il dettaglio per il super-nodo.
@@ -6077,6 +6246,10 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     # risposta che la pagina già chiede — un endpoint a parte raddoppierebbe le
     # richieste per un dato che cambia esattamente quando cambia la composizione.
     topic["display_roles"] = _ruoli_mostrati(topic.get("meta", {}), tier)
+    # Chi coordina, e la segnalazione quando nessuno può farlo (#607): sta qui
+    # e non in un endpoint suo per la stessa ragione di `display_roles` — cambia
+    # esattamente quando cambia la composizione della stanza.
+    topic["coordinator"] = _stato_coordinatore(topic.get("meta", {}), tier)
     # Il primo bit del vettore viene dal gateway insieme al topic: senza, il
     # punteggio conterebbe solo i due bit statici — cioè quelli che non cambiano.
     _t = topic.get("taint") or {}

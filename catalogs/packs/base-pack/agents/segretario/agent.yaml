@@ -1,15 +1,19 @@
-# Seed "Segretario" — verbalizzatore del topic. Compito unico e ristretto:
-# mantenere summary.md (prima riga = TLDR + sezione "Prossimi passi") e le minute
-# del topic. NON è un responder di conversazione: il routing lo sceglie SOLO
-# quando si tratta di salvare/aggiornare lo stato del topic. Niente git, niente
-# email/web/fs generale: solo i verbi di scrittura-stato del topic di cui è
-# partecipante, più la sola proposta read-only della squadra quando sostituisce
-# Clodia nel bootstrap. Modello piccolo ed economico (24B EU-sovrano su Scaleway): il
-# task è regolare, non richiede ragionamento pesante.
+# Seed "Segretario" — il COORDINATORE della stanza (clodia-platform#607, R3
+# dell'epic #604). Fino al 24 ott 2026 era un verbalizzatore e basta: mestiere
+# unico (summary + minute), modello piccolo, e `routing_mode: state_writer_only`
+# a tenerlo fuori dalla conversazione. La decisione dell'owner del 23 ott 2026
+# gli dà il centro della stanza — parla con l'utente, delega agli agenti, e
+# raccoglie i loro report — perché Clodia esce dal coordinamento dei canali
+# (#608) e una stanza non può restare senza qualcuno che risponda a un messaggio
+# che non è per nessuno in particolare.
+#
+# Lo stato scritto del topic RESTA suo: è un compito fra gli altri, non più il
+# perimetro. Quello che non cambia: niente git, niente email/web/fs generale,
+# nessuna scrittura di file arbitrari (#212).
 name: segretario
 parents: [archseed]
 display_name: Segretario
-description: "Segretario del topic: verbalizza minute e stato; se Clodia non è disponibile introduce il topic e propone la squadra."
+description: "Coordinatore della stanza: parla con l'utente, delega agli agenti e raccoglie i report; tiene il summary e le minute del topic."
 type: bot
 clearance: SEAL-2
 
@@ -27,17 +31,43 @@ staff: true
 # badge va scritto «acting manager» quando capita.
 deputy: true
 constitution: platform-core
-agent_sdk: opencode
-routing_mode: state_writer_only
+agent_sdk: claude
+# `routing_mode` torna al default `normal` (la riga `state_writer_only` è stata
+# tolta): quel vincolo esisteva per impedire che un verbalizzatore su modello
+# piccolo venisse scelto per rilevanza. Ora è lui che deve prendere i messaggi
+# non indirizzati, e tenerlo fuori dalla gara significherebbe tenerlo fuori dal
+# proprio mestiere.
 all_tier: true
-# Modello piccolo ottimizzato per task AGENTICI: gemma-4-26b-a4b-it su Scaleway
-# (EU-hosted, SEAL-2). Scelto perché il segretario DEVE invocare i verbi
-# (topic.save_summary/add_minute) da solo: verificato che con tool_choice=auto
-# chiama i tool, mentre mistral-small-24b in auto tendeva a rispondere in prosa
-# (chiacchierava invece di salvare lo stato). Costo basso, tool-use affidabile.
-model: gemma-4-26b-a4b-it
-providers: [scaleway]
-provider_models: {}
+
+# ── Stack di inferenza, in ordine di PREFERENZA (clodia-platform#93) ──────────
+#
+# Coordinare è un lavoro di giudizio — classificare una richiesta, scegliere a
+# chi passarla, decidere quando l'obiettivo è raggiunto — e #607 lo dice in una
+# riga: «a capable model (Sonnet 5.5)». Il modello piccolo non sparisce, scende
+# a ripiego: `gemma-4-26b-a4b-it` su Scaleway è l'UNICO provider SEAL-3 del
+# catalogo, cioè l'unico motore che può trattare i dati di una stanza
+# confidenziale. La clearance effettiva è quella del PROVIDER: in una stanza
+# SEAL-3 il segretario gira lì, e dove nemmeno quello basta la stanza viene
+# segnalata invece di essere servita da un motore inadeguato.
+#
+# L'ordine qui sotto è il dato, non un'estetica: `effective_provider_for_tier`
+# sceglie il meno costoso solo quando i modelli coincidono, e segue la
+# preferenza dichiarata quando sono diversi (Scaleway ha `cost_rank: 5` contro
+# i 10-20 dei provider Anthropic — col minimo sul costo questo seed girerebbe
+# su gemma ovunque e su Sonnet in nessuna stanza).
+#
+# `agent_sdk: claude` segue lo stack primario; l'SDK del runtime lo decide
+# comunque il provider effettivo dal catalogo, quindi il ripiego su Scaleway
+# gira su opencode senza che questo campo lo dica.
+stacks:
+  - {model: claude-sonnet-5-5, provider: claude-team}
+  - {model: claude-sonnet-5-5, provider: claude-pro-max}
+  - {model: claude-sonnet-5-5, provider: anthropic-api}
+  - {model: claude-sonnet-5-5, provider: aws-region-eu}
+  # SEAL-3, EU-sovrano. Verificato in agentico: con `tool_choice=auto` gemma
+  # chiama davvero i verbi, mentre mistral-small-24b tendeva a rispondere in
+  # prosa invece di salvare lo stato.
+  - {model: gemma-4-26b-a4b-it, provider: scaleway}
 avatar_color: "#64748b"
 sandbox:
   allow_read: ["{scratch}/**"]
@@ -46,11 +76,17 @@ sandbox:
   allow_shell_cmds: []
   deny_shell_patterns: ["*"]
 capabilities: [base-pack/team-composition]
-rules:
-  - topic-state-boundary
-# Scrittura-stato del topic di cui è partecipante, più suggest_team read-only.
-# NIENTE topic.* completo (esclude inviti, archive, delete_file, remote_* git,
-# new/list/search).
+# NESSUNA rule. `topic-state-boundary` è stata tolta con #607: dichiarava fuori
+# dominio «usare strumenti diversi dai tool di stato del topic» e prescriveva
+# «un rifiuto breve e operativo». Era corretta finché il mestiere era uno solo;
+# addosso al coordinatore della stanza diventa il difetto già misurato su clodia
+# il 15 ago 2026 — un agente che rifiuta per regola ciò che gli è stato appena
+# chiesto di fare. La rule resta nel catalogo per chi le servisse: qui non si
+# eredita più.
+rules: []
+# Coordinare la stanza + tenerne lo stato scritto. NIENTE topic.* completo
+# (esclude archive, delete_file, remote_* git, new/list/search) e nessuna
+# scrittura di file arbitrari (#212).
 # ANTENATO. `archseed` dà i verbi base per ereditarietà (specification §1.3):
 # leggere nella stanza in cui lo spawn sta, parlarci, e la propria memoria. Qui
 # sotto resta SOLO il mestiere di questo seed — se un verbo base ricomparisse in
@@ -59,6 +95,38 @@ rules:
 tool_permissions:
   - topic.save_summary
   - topic.suggest_team
+  # ── I verbi del coordinamento (clodia-platform#607) ─────────────────────────
+  #
+  # Tre, e nessuno di più. `topic.add_participant` NON c'è: #607 chiede «i verbi
+  # del coordinatore (menzione/convocazione, goal, scelta di routing)» e la
+  # convocazione ce l'ha già — la menzione `@nome` apre il turno di chi serve, e
+  # per chi nella stanza non c'è resta il marker `<!-- invite=… -->` che l'owner
+  # preme. Concederlo rovescerebbe la decisione 1 di #192 (6 set 2026,
+  # «raccomanda, non esegue», invariante in `test_192_decisioni_del_coordinatore`)
+  # senza che #607 lo chieda. La «scelta di routing» non è un verbo: è
+  # l'endpoint che risolve il dialogo di disambiguazione, e lo usa un umano.
+  #
+  # Dove sta il goal di una stanza lo dichiara chi la coordina: strategia da
+  # approvare, esecuzione in corso, raggiunto da verificare. Non può né pinnare
+  # né togliere l'obiettivo — quello resta dell'owner (#457).
+  - topic.goal_progress
+  # Leggere chi c'è e cosa sa fare. È il presupposto della delega: senza, il
+  # coordinatore sceglie a chi passare il lavoro guardando un elenco di nomi.
+  # Resta dentro la decisione 3 di #192 — «metadata del topic e stato PUBBLICO
+  # dei partecipanti, mai memoria o stato privato degli altri agenti».
+  - runtime.agents
+  # Rispondere FUORI dalla stanza (clodia-platform#531). Fino al 24 ott 2026
+  # stava solo su `clodia`, con scritto accanto che allargarlo era una decisione
+  # dell'owner: presa il 24 ott 2026 su #607, e non è un di più. Diventando lui
+  # il coordinatore di ogni stanza, `channel_relay._room_can_answer` — che
+  # rifiuta il turno quando il coordinatore non ha questo verbo — avrebbe reso
+  # MUTA ogni stanza collegata a Telegram o alla posta.
+  #
+  # Conseguenza dichiarata: accende la gamba d'USCITA della trifecta in ogni
+  # stanza dove il segretario siede, cioè ovunque. PDP e gate del gateway
+  # restano invariati: la destinazione dev'essere già dichiarata fra le uscite
+  # della stanza, e il verbo non concede nessuna autorità nuova sul contenuto.
+  - channel.deliver
   # Collegare due stanze dello stesso livello SEAL (clodia-platform#477):
   # ognuna vede i file dell'altra come una cartella in SOLA LETTURA accanto a
   # `local/`. Nessuna copia — i byte, e con loro l'etichetta di provenienza,
@@ -85,14 +153,15 @@ memory:
   dir: memory/
 system_prompt: system-prompt.md
 expertise: >-
-  Salvare e aggiornare lo stato di un topic: scrivere e mantenere il summary
-  (prima riga = TLDR sintetico) e la sezione prossimi passi, verbalizzare le
-  minute delle riunioni e delle decisioni, tenere ordinati i file del topic.
-  Interviene solo quando l'utente chiede di salvare lo stato, aggiornare il
-  summary, mettere a verbale, chiudere/riepilogare la sessione del topic o
-  aggiornare i prossimi passi; nei topic nuovi introduce lo scopo e propone la
-  squadra soltanto quando Clodia non è disponibile. Non risponde a domande
-  tecniche, diagnostica piattaforma, sviluppo, routing, codice o issue tracking.
+  Condurre la conversazione di un topic e smistarne il lavoro: capire cosa
+  chiede l'utente, rispondere quando è cosa sua, passarla con una menzione
+  all'agente competente quando non lo è, raccogliere i report e chiudere verso
+  l'utente col risultato. Proporre la squadra quando nella stanza manca la
+  competenza; dichiarare a che punto è l'obiettivo del topic. Salvare e
+  aggiornare lo stato scritto: summary (prima riga = TLDR) e prossimi passi,
+  decisioni e riunioni messe a verbale. Non risponde nel merito tecnico al
+  posto degli specialisti — sviluppo, diagnostica di piattaforma, legale,
+  contabilità: quelle le assegna a chi le sa fare.
 
 # Solo il pavimento. Tiene lo stato scritto di un topic: legge e scrive coi verbi
 # del gateway, e non ha niente da eseguire.

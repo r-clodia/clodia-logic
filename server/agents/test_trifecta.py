@@ -178,7 +178,14 @@ class SeedAgentsTests(unittest.TestCase):
         # conta eventi (taint) e fatti sullo scope (file davvero presenti,
         # destinazione davvero non confinata) — non le capacità di chi vi
         # partecipa.
-        expected = {"clodia": 3, "ophelia": 3, "sysadmin": 3, "segretario": 2}
+        #
+        # `segretario` è salito da 2 a 3 il 24 ott 2026 con #607, che gli dà
+        # `channel.deliver`: è la gamba d'uscita, e si accende per lo stesso
+        # motivo per cui si era accesa a ophelia — un verbo che manda qualcosa
+        # fuori. Non è un effetto collaterale sfuggito: diventando lui il
+        # coordinatore di ogni stanza, senza quel verbo ogni stanza collegata a
+        # Telegram o alla posta sarebbe diventata muta (`_room_can_answer`).
+        expected = {"clodia": 3, "ophelia": 3, "sysadmin": 3, "segretario": 3}
         got = {n: trifecta.agent_profile(_seed(n), all_specs=_all_seeds())["score"] for n in expected}
         self.assertEqual(got, expected)
 
@@ -189,10 +196,18 @@ class SeedAgentsTests(unittest.TestCase):
         self.assertTrue(p["legs"]["egress"], "gdrive.upload/mkdir/move sono uscita")
         self.assertTrue(any("gdrive" in g for g in p["why"]["egress"]))
 
-    def test_segretario_is_two_thirds_because_it_cannot_send(self) -> None:
+    def test_segretario_gained_the_outward_leg_via_channel_deliver(self) -> None:
+        """Quale gamba si è accesa, e PER COSA (#607, 24 ott 2026).
+
+        Il verso opposto del test di ophelia, e vale la stessa cosa: se domani
+        qualcuno togliesse `channel.deliver` al segretario, il punteggio
+        scenderebbe senza che nessuno sappia che quella riga teneva in piedi la
+        risposta delle stanze collegate a un trasporto esterno.
+        """
         p = trifecta.agent_profile(_seed("segretario"), all_specs=_all_seeds())
-        self.assertFalse(p["legs"]["egress"])
-        self.assertEqual(p["why"]["egress"], [])
+        self.assertTrue(p["legs"]["egress"])
+        self.assertTrue(any("channel.deliver" in g for g in p["why"]["egress"]),
+                        f"l'uscita non viene da channel.deliver: {p['why']['egress']}")
 
     def test_seed_shell_flags(self) -> None:
         self.assertTrue(trifecta.agent_profile(_seed("sysadmin"))["shell"])

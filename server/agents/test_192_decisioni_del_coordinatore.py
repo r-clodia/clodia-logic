@@ -15,6 +15,15 @@ quella era una decisione dell'owner e non una svista.
 2. **Perimetro delle letture**: metadata del topic e stato pubblico dei
    partecipanti, mai memoria o stato privato degli altri agenti.
 
+**Aggiornamento del 24 ott 2026 (clodia-platform#607).** Il segretario non è più
+il verbalizzatore che coordina per ripiego: è il coordinatore della stanza, e
+quella è una decisione dell'owner presa sapendo di questo file. Il perimetro
+sotto si allarga di tre verbi, uno per volta e con la ragione scritta accanto —
+ma la decisione 1 NON cambia: `topic.add_participant` resta fuori, e la
+convocazione resta la menzione più il marker `<!-- invite=… -->` che l'owner
+preme. Allargare un perimetro cancellandone il motivo è il modo in cui una
+decisione sparisce; qui il motivo resta, e cresce solo la lista.
+
 La terza (il fallimento del bot raccomandato: stop dopo un handoff, nessuna
 seconda cascata) non sta qui perché non sta nei grant: è garantita da
 `_maybe_delegate`, che riparte SOLO su un `@`, e dal tetto `_MAX_DELEGATION_HOPS`
@@ -59,6 +68,29 @@ PERIMETRO = {
     # ed è gated WALLS quanto `add_participant` — l'owner approva comunque.
     "topic.egress_add", "topic.egress_remove",
     "topic.ingress_add", "topic.ingress_remove",
+    # ── #607 (24 ott 2026): il segretario coordina ogni stanza ───────────────
+    #
+    # Tre verbi, e la decisione 1 di #192 resta in piedi sotto tutti e tre —
+    # nessuno di questi ESEGUE al posto di raccomandare: non cambiano chi è
+    # nella stanza, non scrivono file, non toccano lo stato privato di nessuno.
+    #
+    # `topic.goal_progress`: dichiarare a che punto è l'obiettivo del topic. Lo
+    # fissa l'owner, questo verbo dice soltanto dove siamo arrivati (#457).
+    "topic.goal_progress",
+    # `runtime.agents`: chi c'è e cosa sa fare. È letteralmente la decisione 3
+    # di questo stesso file — «stato PUBBLICO dei partecipanti» — e senza non
+    # c'è delega possibile: si sceglie a chi passare il lavoro leggendo un
+    # elenco di nomi.
+    "runtime.agents",
+    # `channel.deliver`: rispondere fuori dalla stanza. È l'unico dei tre che
+    # allarga il perimetro per davvero (accende la gamba d'uscita della
+    # trifecta), ed è una decisione esplicita dell'owner del 24 ott 2026, non
+    # una conseguenza dedotta: senza, `channel_relay._room_can_answer` rende
+    # muta ogni stanza collegata a Telegram o alla posta, perché rifiuta il
+    # turno quando chi coordina non può far uscire la risposta. Il gate del
+    # gateway non cambia: la destinazione dev'essere già dichiarata fra le
+    # uscite della stanza.
+    "channel.deliver",
     # Collegamento fra due stanze dello stesso livello SEAL
     # (clodia-platform#477, 1 ott 2026): decisione dell'owner, più recente di
     # #192 e presa sapendo di questo perimetro — il verbo stava su `clodia` ed
