@@ -46,16 +46,50 @@ def _path() -> Path:
     return Path(base) / "agent-state" / "trifecta-reset.json"
 
 
-def composition_epoch(participants: Iterable[str]) -> str:
+def toolbox_signature(meta: Optional[dict]) -> str:
+    """Firma della toolbox della stanza (#605), `''` se la stanza non ne ha.
+
+    Da #606 l'uscita di un canale non dipende più solo da CHI c'è: un verbo di
+    uscita può arrivare dalla toolbox della stanza, che l'owner cambia senza
+    toccare la composizione. Senza questa firma si approverebbe una stanza, si
+    abiliterebbe `email.*` per tutti i partecipanti e si terrebbe lo zero.
+
+    Vuota quando la toolbox è vuota: così al deploy non decadono in blocco le
+    baseline già firmate: decade solo ciò che una toolbox ce l'ha davvero.
+    """
+    raw = (meta or {}).get("tools")
+    raw = raw if isinstance(raw, dict) else {}
+    # Normalizzazione e liste vuote come il gateway (`room_tools.toolbox`): due
+    # scritture equivalenti non devono far decadere un reset.
+    norm = lambda x: " ".join(str(x).split())  # noqa: E731
+    enabled = sorted({norm(x) for x in (raw.get("enabled") or [])
+                      if norm(x)}) if isinstance(raw.get("enabled"), list) else []
+    exc_raw = raw.get("except") if isinstance(raw.get("except"), dict) else {}
+    exc = sorted(f"{a}:{','.join(v)}" for a, v in (
+        (a, sorted({norm(x) for x in lst if norm(x)}))
+        for a, lst in exc_raw.items() if isinstance(lst, list)) if v)
+    if not enabled and not exc:
+        return ""
+    return hashlib.sha256("|".join([*enabled, "#", *exc]).encode()).hexdigest()[:8]
+
+
+def composition_epoch(participants: Iterable[str],
+                      meta: Optional[dict] = None) -> str:
     """Firma breve della composizione — stessa forma del gate di contesto.
 
     Duplicata dal gateway di proposito: qui non si importa `clodia-tools`, e una
     dipendenza fra i due processi per otto caratteri di hash costerebbe più della
     riga in doppio. Se le due divergessero, il reset decadrebbe più spesso del
     necessario — un errore nella direzione prudente.
+
+    `meta` aggiunge la toolbox della stanza (#606): la baseline è «questa
+    composizione CON questi verbi», perché da #605 i due non cambiano più
+    insieme.
     """
     nomi = sorted({str(x).strip() for x in (participants or []) if str(x).strip()})
-    return hashlib.sha256("|".join(nomi).encode()).hexdigest()[:8]
+    firma = toolbox_signature(meta)
+    chiave = "|".join(nomi) + (f"#{firma}" if firma else "")
+    return hashlib.sha256(chiave.encode()).hexdigest()[:8]
 
 
 def _load() -> dict:
@@ -94,7 +128,8 @@ def data_signature(paths: Iterable[str]) -> str:
 
 
 def set_reset(tier: str, name: str, by: str, participants: Iterable[str],
-              data_paths: Iterable[str] | None = None) -> dict:
+              data_paths: Iterable[str] | None = None,
+              meta: Optional[dict] = None) -> dict:
     """Registra la BASELINE: «questo stato lo approvo io».
 
     Non è un silenziamento — è il punto da cui l'analisi RIPARTE:
@@ -109,13 +144,14 @@ def set_reset(tier: str, name: str, by: str, participants: Iterable[str],
        (`taint.clear` + `taint.mark`), qui si usa;
     2. **dati riservati nel canale** — si firma ciò che c'è ORA: dopo, il bit si
        accende solo per ciò che non era nella firma;
-    3. **esfiltrazione su egress non censiti** — è una capacità dei presenti,
-       quindi la baseline è la composizione: cambiarla fa decadere il reset.
+    3. **esfiltrazione su egress non censiti** — è una capacità dei presenti
+       E dei verbi che la stanza abilita (#605), quindi la baseline è la
+       composizione PIÙ la toolbox: cambiare una delle due fa decadere il reset.
     """
     voce = {
         "by": by,
         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "epoch": composition_epoch(participants),
+        "epoch": composition_epoch(participants, meta),
         # I dati riservati APPROVATI: sia la firma (per il confronto veloce) sia
         # l'elenco, perché «cosa è arrivato dopo» è la domanda che si porrà chi
         # vede il bit riaccendersi, e una firma da sola non la risponde.
@@ -150,18 +186,20 @@ def new_private_data(voce: dict, paths: Iterable[str]) -> list[str]:
     return sorted(p for p in (str(x) for x in (paths or [])) if p not in approvati)
 
 
-def active(tier: str, name: str, participants: Iterable[str]) -> Optional[dict]:
+def active(tier: str, name: str, participants: Iterable[str],
+           meta: Optional[dict] = None) -> Optional[dict]:
     """La voce di reset, se c'è ED è ancora valida per questa composizione.
 
     Una composizione cambiata non produce un errore: il reset semplicemente non
-    combacia più, e il punteggio torna a parlare da sé.
+    combacia più, e il punteggio torna a parlare da sé. Da #606 vale lo stesso
+    per la toolbox della stanza, che muove le stesse capacità.
     """
     voce = _load().get(scope_key(tier, name))
     if not voce:
         return None
-    atteso = composition_epoch(participants)
+    atteso = composition_epoch(participants, meta)
     if voce.get("epoch") != atteso:
-        LOG.info("trifecta reset su %s/%s DECADUTO: la composizione è cambiata "
-                 "(%s → %s)", tier, name, voce.get("epoch"), atteso)
+        LOG.info("trifecta reset su %s/%s DECADUTO: composizione o toolbox "
+                 "cambiate (%s → %s)", tier, name, voce.get("epoch"), atteso)
         return None
     return voce

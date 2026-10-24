@@ -191,6 +191,16 @@ def _covers(pattern: str, grant: str) -> bool:
     return True
 
 
+def _reaches(grants: Iterable[str], verb: str) -> bool:
+    """True se `grants` concede GIÀ `verb`, anche attraverso `ns.*` o `*`.
+
+    Serve a sapere da dove arriva un'accensione: lo stesso verbo che la stanza
+    abilita può essere già nel seed, e le due cose si correggono in posti
+    diversi."""
+    return any(_covers(str(g), verb) for g in grants
+               if not str(g).startswith("-"))
+
+
 def _matching_grants(grants: Iterable[str], leg: dict) -> list[str]:
     """Grant che accendono `leg`, al netto delle NEGAZIONI nei grant stessi.
 
@@ -414,6 +424,138 @@ def unclassified_namespaces(grants: Iterable[str], cfg: dict) -> list[str]:
     return sorted(out)
 
 
+# ── i verbi che porta la STANZA (clodia-platform#606) ─────────────────────
+# Dall'epic #604 l'autorità sui verbi non è più solo del seed: il gateway
+# decide su `seed ∪ stanza` (`main._agent_tool_reachable` = seed risolto ∪
+# grant scoped ∪ verbi-dato #590 ∪ toolbox della stanza #605). Un punteggio
+# calcolato sui soli verbi del seed misurerebbe un sistema diverso da quello
+# che gira, e nella direzione peggiore: un canale in cui l'owner ha abilitato
+# `email.*` per tutti i partecipanti risulterebbe senza uscita.
+#
+# Qui si LEGGE la dichiarazione della stanza — il meta del topic, che il canale
+# ha già in mano — invece di richiamare il gateway: stessa scelta di
+# `channels._channel_data_hint` per i dati importati, e il punteggio si calcola
+# a ogni apertura senza una chiamata di rete in più.
+#
+# Con #610 i seed verranno ridotti ai verbi di ruolo e questa sorgente resterà
+# da sola: nessuna altra modifica qui, cambia solo cosa c'è nei due insiemi.
+
+#: Il pavimento di ogni stanza: `topic.*` per OGNI partecipante (decisione 2
+#: dell'epic #604, `clodia-tools/server/room_tools.py::TOPIC_NS`).
+ROOM_FLOOR = "topic.*"
+
+#: Verbi che un dato importato porta con sé, per tipo e per modo. È una COPIA di
+#: `clodia-tools/server/topic_data.py::_READ_VERBS/_WRITE_VERBS`: i due processi
+#: non si importano, e il test li nomina uno per uno proprio perché una
+#: divergenza qui SOTTOSTIMA il punteggio.
+_DATA_READ_VERBS = {"rag": ("rag.search", "rag.list", "rag.collections"),
+                    "datastore": ("datastore.read",)}
+_DATA_WRITE_VERBS = {"datastore": ("datastore.write",)}
+_DATA_MODES = ("read", "write")
+
+
+#: Namespace che una stanza NON dà mai: COPIA di
+#: `clodia-tools/server/room_tools.py::_NOT_ENABLABLE`. Il gateway scarta in
+#: lettura una voce di toolbox su questi namespace (review di #429, B1), quindi
+#: contarla qui SOVRASTIMEREBBE; il test li nomina uno per uno.
+_ROOM_NOT_ENABLABLE = frozenset({
+    "agents", "egress", "ingress", "integrations", "jobs", "logs", "mcp",
+    "native", "packs", "profile", "providers", "runtime", "settings",
+    "copybrain", "fs", "memory", "topic", "datastore", "eu_corpus", "rag"})
+
+
+def _room_shape(entry) -> Optional[str]:
+    """`ns.verbo` o `ns.*`, come `room_tools._shape` del gateway; altro → None."""
+    e = " ".join(str(entry or "").split())
+    ns, sep, verb = e.partition(".")
+    if not ns or not sep or not verb or "*" in ns or " " in e:
+        return None
+    if "*" in verb and verb != "*":
+        return None
+    return e
+
+
+def _room_bites(verb: str, excepted: set) -> bool:
+    """Un'eccezione colpisce per nome, per `ns.*` o per `*` (`room_tools._bites`)."""
+    ns = verb.partition(".")[0]
+    return "*" in excepted or verb in excepted or f"{ns}.*" in excepted
+
+
+def room_grants(meta: Optional[dict], agent: str) -> list[str]:
+    """I verbi che la stanza descritta da `meta` porta ad `agent`, come grant.
+
+    Tre sorgenti, le stesse che il gateway unisce per questo agente in questa
+    stanza:
+
+    · il **pavimento** `topic.*`, che ogni partecipante ha in ogni topic;
+    · la **toolbox** della stanza (`meta["tools"]["enabled"]`, #605), letta con
+      lo stesso filtro del gateway: una voce che non è `ns.verbo`/`ns.*` o che
+      cade su un namespace non abilitabile non dà nulla;
+    · i **dati importati** di cui questo agente ha un grant
+      (`meta["data"]`, #590): un indice RAG concesso porta `rag.search` anche a
+      un seed che non ha mai dichiarato `rag.*`.
+
+    Le eccezioni per-agente (`meta["tools"]["except"]`) mordono come nel
+    gateway (`room_tools._minus`): per nome, per namespace o su tutto. Una voce
+    colpita sparisce qui; un'eccezione PUNTUALE dentro un `ns.*` abilitato torna
+    come NEGAZIONE (`-email.send`), perché il gateway espande il wildcard e la
+    toglie — e da questo processo l'elenco dei verbi del gateway non si legge.
+    Le eccezioni toccano solo la toolbox e il pavimento: i verbi-dato il gateway
+    li unisce FUORI da `_minus`, quindi qui non vengono mai negati (review #567,
+    B1b). Una stanza archiviata tiene il pavimento ma non la toolbox.
+
+    Letta come `topic_data.imports`: ciò che non si capisce si scarta. Una
+    toolbox illeggibile non deve diventare permissiva, ma nemmeno far sparire il
+    pavimento — che non dipende da cosa c'è scritto nel meta.
+    """
+    name = str(agent or "").strip()
+    # NESSUNA stanza (`None`) non è una stanza vuota: un DM, o un chiamante che
+    # la stanza non ce l'ha, non prendono nemmeno il pavimento. Confondere i due
+    # casi darebbe `topic.*` a un contesto che non è un topic.
+    if not name or not isinstance(meta, dict):
+        return []
+    m = meta
+    raw = m.get("tools") if isinstance(m.get("tools"), dict) else {}
+    exc = raw.get("except") if isinstance(raw.get("except"), dict) else {}
+    mie = exc.get(name) if isinstance(exc.get(name), list) else []
+    excepted = set()
+    for x in mie:
+        e = " ".join(str(x).split())
+        e = "*" if e == "*" else _room_shape(e)
+        if e:
+            excepted.add(e)
+    entries = [ROOM_FLOOR]
+    if str(m.get("status") or "").strip().lower() != "archived":
+        lst = raw.get("enabled") if isinstance(raw.get("enabled"), list) else []
+        for x in lst:
+            e = _room_shape(x)
+            if e and e.partition(".")[0] not in _ROOM_NOT_ENABLABLE:
+                entries.append(e)
+    out: list[str] = [e for e in dict.fromkeys(entries) if not _room_bites(e, excepted)]
+    data: list[str] = []
+    for e in m.get("data") if isinstance(m.get("data"), list) else []:
+        if not isinstance(e, dict):
+            continue
+        g = e.get("grants") if isinstance(e.get("grants"), dict) else {}
+        mode = g.get(name)
+        if mode not in _DATA_MODES:
+            continue
+        kind = str(e.get("kind") or "")
+        data.extend(_DATA_READ_VERBS.get(kind, ()))
+        if mode == "write":
+            data.extend(_DATA_WRITE_VERBS.get(kind, ()))
+    # Negazioni: solo eccezioni puntuali che cadono dentro un wildcard rimasto
+    # (lì il gateway espande e sottrae), e mai su un verbo che portano i dati.
+    wild = {e.partition(".")[0] for e in out if e.endswith(".*")}
+    for x in sorted(excepted):
+        if x == "*" or x.endswith(".*"):
+            continue
+        if x.partition(".")[0] in wild and x not in data:
+            out.append(f"-{x}")
+    out.extend(data)
+    return list(dict.fromkeys(out))
+
+
 # ── profilo di un agente ──────────────────────────────────────────────────
 
 def has_shell(spec) -> bool:
@@ -476,7 +618,7 @@ def _native_allowed(spec) -> list[str] | None:
 
 def agent_profile(spec, config: Optional[dict] = None,
                   egress_conf: Optional[dict] = None,
-                  all_specs=None) -> dict:
+                  all_specs=None, room: Optional[Iterable[str]] = None) -> dict:
     """Profilo trifecta di un singolo agente, dai suoi grant effettivi.
 
     ⚠️ `score` e `residual` di QUESTO profilo non sono una metrica di prodotto e
@@ -491,6 +633,11 @@ def agent_profile(spec, config: Optional[dict] = None,
     l'agente PORTA — e `why`, che dice con quali grant. Il numero esiste solo come
     passaggio intermedio per `context_profile`.
     
+
+    `room` sono i verbi che la STANZA porta a questo agente (#606,
+    `room_grants`): si sommano ai suoi, perché è su `seed ∪ stanza` che il
+    gateway decide. `why` dice da quale delle due viene ogni accensione — le due
+    si correggono in posti diversi (il seed, o la toolbox del canale).
 
     Ritorna anche i grant che hanno acceso ciascun lato: il numero da solo non
     è azionabile, la scomposizione sì (è il requisito del dialog nell'issue)."""
@@ -529,11 +676,29 @@ def agent_profile(spec, config: Optional[dict] = None,
                     "sola dichiarazione", name, type(e).__name__)
         grants = [str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])
                   if str(g).strip()]
+    seed_grants = list(grants)
+    # #606: l'insieme che conta è quello che il gateway RAGGIUNGE, cioè
+    # `seed ∪ stanza`.
+    stanza = [str(g).strip() for g in (room or []) if str(g).strip()]
+    # Un'eccezione della stanza NON toglie un verbo che il seed già concede: in
+    # R1 la raggiungibilità è additiva (`room_tools.exception` lo dice: «un
+    # agente che quel verbo lo ha già nel proprio seed continua ad averlo»).
+    # Sottrarlo qui mostrerebbe spenta una gamba che all'agente resta accesa —
+    # la sola direzione d'errore che questa misura non può permettersi.
+    stanza = [g for g in stanza
+              if not (g.startswith("-") and _reaches(seed_grants, g[1:]))]
+    grants = list(dict.fromkeys([*seed_grants, *stanza]))
+    # Chi ha acceso cosa: «lo porta il seed» e «lo abilita la stanza» si
+    # correggono in due posti diversi, e senza la distinzione il `why` non è
+    # azionabile.
+    da_stanza = {g for g in stanza
+                 if not g.startswith("-") and not _reaches(seed_grants, g)}
     legs, why = {}, {}
     for leg in LEGS:
         matched = _matching_grants(grants, cfg[leg])
         legs[leg] = bool(matched)
-        why[leg] = matched[:_MAX_REASONS]
+        why[leg] = [f"{g} (stanza)" if g in da_stanza else g
+                    for g in matched][:_MAX_REASONS]
     # FAIL-CLOSED (#119): un namespace che il catalogo non conosce si assume
     # capace di leggere dati privati e di farli uscire. Il costo di sbagliare in
     # questa direzione è un falso positivo su un connettore innocuo, che si
@@ -559,7 +724,14 @@ def agent_profile(spec, config: Optional[dict] = None,
         "legs": legs,
         "why": why,
         "shell": has_shell(spec),
-        "expands": bool(_matching_grants(grants, cfg["expansion"])),
+        # L'espansione resta sui verbi del SEED, non su `seed ∪ stanza`: il
+        # pavimento `topic.*` contiene `topic.add_participant`, quindi contarlo
+        # renderebbe ESPANSORE ogni partecipante di ogni stanza, la chiusura
+        # sarebbe sempre l'intera registry e il punteggio direbbe la stessa cosa
+        # ovunque. Un segnale acceso su tutto non discrimina — è il difetto che
+        # #104 §4 ha già corretto una volta sul secondo bit. Chi può invitare
+        # davvero è una proprietà dell'agente, e quella sta nel seed.
+        "expands": bool(_matching_grants(seed_grants, cfg["expansion"])),
         "unclassified": unknown,
         # §7 proprietà 4: il punteggio da solo dava 3/3 sia a un'uscita
         # arbitraria sia a una circoscritta. `score` resta la CAPACITÀ (non
@@ -578,7 +750,8 @@ def context_profile(participants: Iterable[str],
                     config: Optional[dict] = None,
                     tainted: Optional[bool] = None,
                     remote_egress: Optional[bool] = None,
-                    channel_private_data: Optional[bool] = None) -> dict:
+                    channel_private_data: Optional[bool] = None,
+                    room_meta: Optional[dict] = None) -> dict:
     """Danger score 0–3 di un contesto = **numero di bit accesi del vettore**.
 
     Il vettore (clodia-platform#104 §4, formalizzato il 3 ago 2026):
@@ -606,6 +779,11 @@ def context_profile(participants: Iterable[str],
     `participants` sono i nomi dichiarati nel meta del topic; `specs` l'elenco
     completo degli agenti registrati (default: la registry). Un partecipante
     sconosciuto alla registry è ignorato — non si inventa un profilo.
+
+    `room_meta` è il meta del topic: da #606 i due lati statici si calcolano su
+    `seed ∪ stanza`, cioè contano anche i verbi che la toolbox della stanza
+    (#605) e i dati importati (#590) rendono raggiungibili. Senza, il punteggio
+    descriverebbe un sistema diverso da quello che il gateway applica.
     """
     cfg = config or load_config()
     if specs is None:
@@ -617,7 +795,9 @@ def context_profile(participants: Iterable[str],
     # includere decine di agenti, e il dato è lo stesso per tutti.
     conf = egress_confinement()
     members = [by_name[p] for p in dict.fromkeys(participants or []) if p in by_name]
-    profiles = [agent_profile(s, cfg, conf) for s in members]
+    profiles = [agent_profile(s, cfg, conf,
+                              room=room_grants(room_meta, getattr(s, "name", "")))
+                for s in members]
     unknown = [p for p in dict.fromkeys(participants or []) if p not in by_name]
 
     # Chiusura: chi può aggiungere partecipanti porta potenzialmente nel canale
@@ -627,7 +807,12 @@ def context_profile(participants: Iterable[str],
     reachable: list[dict] = []
     if expanded_by:
         member_names = {p["name"] for p in profiles}
-        reachable = [agent_profile(s, cfg, conf) for n, s in sorted(by_name.items())
+        # Anche i raggiungibili si valutano CON la stanza: entrando ne
+        # diventano partecipanti e ne ricevono la toolbox come chiunque altro.
+        # Valutarli senza sottostimerebbe proprio il caso che la chiusura
+        # esiste per misurare.
+        reachable = [agent_profile(s, cfg, conf, room=room_grants(room_meta, n))
+                     for n, s in sorted(by_name.items())
                      if n not in member_names
                      and getattr(s, "type", "bot") != "human"]
 

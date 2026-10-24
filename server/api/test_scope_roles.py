@@ -47,7 +47,9 @@ class RoleReadingTests(unittest.TestCase):
     def test_roles_are_read_from_the_map(self):
         self.assertEqual(C._scope_role(OWNER, "davide"), "owner")
         self.assertEqual(C._scope_role(OWNER, "clodia"), "contributor")
-        self.assertEqual(C._scope_role(OWNER, "matteo"), "reader")
+        # `reader` è abolito (24 ott 2026, epic #604): uno scritto prima vale
+        # contributor, come nel gateway.
+        self.assertEqual(C._scope_role(OWNER, "matteo"), "contributor")
 
     def test_a_legacy_list_reads_as_contributors(self):
         """Il comportamento di ieri resta quello di oggi: reader sarebbe più
@@ -86,21 +88,10 @@ class MutationTests(unittest.TestCase):
             with self.subTest(chi=chi), _as(chi):
                 self.assertEqual(C._require_contributor(_Req(chi), OWNER), chi)
 
-    def test_a_reader_may_not_mutate_directly(self):
+    def test_a_former_reader_may_mutate_directly(self):
+        """Il ruolo `reader` è abolito (24 ott 2026, epic #604)."""
         with _as("matteo"):
-            with self.assertRaises(HTTPException) as cm:
-                C._require_contributor(_Req("matteo"), OWNER)
-            self.assertEqual(cm.exception.status_code, 403)
-
-    def test_the_refusal_tells_the_reader_the_other_road(self):
-        """Un rifiuto che non dice come procedere insegna solo che il sistema
-        dice di no."""
-        with _as("matteo"):
-            with self.assertRaises(HTTPException) as cm:
-                C._require_contributor(_Req("matteo"), OWNER)
-            testo = str(cm.exception.detail)
-            self.assertIn("owner", testo)
-            self.assertIn("approvazione", testo)
+            self.assertEqual(C._require_contributor(_Req("matteo"), OWNER), "matteo")
 
 
 class OwnershipTests(unittest.TestCase):
