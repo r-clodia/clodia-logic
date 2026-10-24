@@ -391,6 +391,43 @@ def data_catalog(body: dict | None = None) -> dict:
     return r.json()
 
 
+def topic_tools(tier: str, name: str, body: dict | None = None) -> dict:
+    """The room's toolbox (#605/#609): GET without `body`, POST with it.
+
+    GET → `{enabled, except, enablable, gated}`; POST →
+    `{action: enable|disable|except|unexcept, verb, agent?}`. The gateway
+    decides what is enablable and re-checks the caller: this side only says
+    WHO may ask (`topic_tools.py`)."""
+    url = f"{_base()}/{tier}/{name}/tools"
+    try:
+        if body is None:
+            r = _gw_http.get(url, headers=_headers(), timeout=60)
+        else:
+            r = _gw_http.post(url, headers=_headers(), json=body, timeout=60)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway tools irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("tools", r)
+    return r.json()
+
+
+def dm_tools(body: dict | None = None) -> dict:
+    """The verbs enabled OUTSIDE a room (#605, decision 5 of epic #604):
+    GET without `body`, POST with it. An instance setting, not a topic's:
+    there is no room to read it from."""
+    url = _base().rsplit("/topics", 1)[0] + "/dm-tools"
+    try:
+        if body is None:
+            r = _gw_http.get(url, headers=_headers(), timeout=60)
+        else:
+            r = _gw_http.post(url, headers=_headers(), json=body, timeout=60)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway dm-tools irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("dm-tools", r)
+    return r.json()
+
+
 def local_folder_action(tier: str, name: str, action: str, **params) -> dict:
     """Cartella condivisa Mac↔container per un topic (add/remove) → gateway.
 
