@@ -136,10 +136,12 @@ async def _room_person(request: Request, tier: str, name: str, *, owner: bool) -
     """A person of the room: its owner (or an admin) to change, a participant
     to read. Agents never pass: the toolbox is a wall of the room."""
     from .channels import _require_member, _require_scope_owner
+    # Who asks, before the topic is opened: an anonymous caller must not learn
+    # whether a topic exists (401 vs 404).
+    who = _person(request)
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
-    who = _person(request)
     if admin.is_admin(who):
         return who
     meta = topic.get("meta", {})
