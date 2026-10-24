@@ -364,6 +364,36 @@ def topic_data_action(tier: str, name: str, body: dict) -> dict:
     return r.json()
 
 
+def topic_tools(tier: str, name: str, body: dict | None = None) -> dict:
+    """The room's toolbox (#605/#609): GET without `body`, POST with it."""
+    url = f"{_base()}/{tier}/{name}/tools"
+    try:
+        if body is None:
+            r = _gw_http.get(url, headers=_headers(), timeout=30)
+        else:
+            r = _gw_http.post(url, headers=_headers(), json=body, timeout=30)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway tools irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("tools", r)
+    return r.json()
+
+
+def dm_tools(body: dict | None = None) -> dict:
+    """The verbs enabled outside a room (#605/#609): GET or POST."""
+    url = _base().rsplit("/topics", 1)[0] + "/dm-tools"
+    try:
+        if body is None:
+            r = _gw_http.get(url, headers=_headers(), timeout=30)
+        else:
+            r = _gw_http.post(url, headers=_headers(), json=body, timeout=30)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway dm-tools irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("dm-tools", r)
+    return r.json()
+
+
 def topic_index_action(tier: str, name: str, body: dict) -> dict:
     """The topic's RAG index (#599): enable/disable → gateway."""
     url = _base().rsplit("/topics", 1)[0] + f"/topic-index/{tier}/{name}"
