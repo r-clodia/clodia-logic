@@ -454,6 +454,33 @@ _DATA_WRITE_VERBS = {"datastore": ("datastore.write",)}
 _DATA_MODES = ("read", "write")
 
 
+#: Namespace che una stanza NON dà mai: COPIA di
+#: `clodia-tools/server/room_tools.py::_NOT_ENABLABLE`. Il gateway scarta in
+#: lettura una voce di toolbox su questi namespace (review di #429, B1), quindi
+#: contarla qui SOVRASTIMEREBBE; il test li nomina uno per uno.
+_ROOM_NOT_ENABLABLE = frozenset({
+    "agents", "egress", "ingress", "integrations", "jobs", "logs", "mcp",
+    "native", "packs", "profile", "providers", "runtime", "settings",
+    "copybrain", "fs", "memory", "topic", "datastore", "eu_corpus", "rag"})
+
+
+def _room_shape(entry) -> Optional[str]:
+    """`ns.verbo` o `ns.*`, come `room_tools._shape` del gateway; altro → None."""
+    e = " ".join(str(entry or "").split())
+    ns, sep, verb = e.partition(".")
+    if not ns or not sep or not verb or "*" in ns or " " in e:
+        return None
+    if "*" in verb and verb != "*":
+        return None
+    return e
+
+
+def _room_bites(verb: str, excepted: set) -> bool:
+    """Un'eccezione colpisce per nome, per `ns.*` o per `*` (`room_tools._bites`)."""
+    ns = verb.partition(".")[0]
+    return "*" in excepted or verb in excepted or f"{ns}.*" in excepted
+
+
 def room_grants(meta: Optional[dict], agent: str) -> list[str]:
     """I verbi che la stanza descritta da `meta` porta ad `agent`, come grant.
 
@@ -461,17 +488,21 @@ def room_grants(meta: Optional[dict], agent: str) -> list[str]:
     stanza:
 
     · il **pavimento** `topic.*`, che ogni partecipante ha in ogni topic;
-    · la **toolbox** della stanza (`meta["tools"]["enabled"]`, #605);
+    · la **toolbox** della stanza (`meta["tools"]["enabled"]`, #605), letta con
+      lo stesso filtro del gateway: una voce che non è `ns.verbo`/`ns.*` o che
+      cade su un namespace non abilitabile non dà nulla;
     · i **dati importati** di cui questo agente ha un grant
       (`meta["data"]`, #590): un indice RAG concesso porta `rag.search` anche a
       un seed che non ha mai dichiarato `rag.*`.
 
-    Un'eccezione per-agente (`meta["tools"]["except"]`) torna come NEGAZIONE
-    (`-email.send`), la forma che `_matching_grants` già sottrae dai pattern
-    puntuali del catalogo. È esattamente ciò che fa il gateway, che espande
-    `email.*` nei verbi che sa servire e toglie l'eccezione: scriverla come
-    negazione evita di tenere qui un elenco dei verbi del gateway, che da questo
-    processo non è leggibile e invecchierebbe in silenzio.
+    Le eccezioni per-agente (`meta["tools"]["except"]`) mordono come nel
+    gateway (`room_tools._minus`): per nome, per namespace o su tutto. Una voce
+    colpita sparisce qui; un'eccezione PUNTUALE dentro un `ns.*` abilitato torna
+    come NEGAZIONE (`-email.send`), perché il gateway espande il wildcard e la
+    toglie — e da questo processo l'elenco dei verbi del gateway non si legge.
+    Le eccezioni toccano solo la toolbox e il pavimento: i verbi-dato il gateway
+    li unisce FUORI da `_minus`, quindi qui non vengono mai negati (review #567,
+    B1b). Una stanza archiviata tiene il pavimento ma non la toolbox.
 
     Letta come `topic_data.imports`: ciò che non si capisce si scarta. Una
     toolbox illeggibile non deve diventare permissiva, ma nemmeno far sparire il
@@ -484,18 +515,24 @@ def room_grants(meta: Optional[dict], agent: str) -> list[str]:
     if not name or not isinstance(meta, dict):
         return []
     m = meta
-    out: list[str] = [ROOM_FLOOR]
     raw = m.get("tools") if isinstance(m.get("tools"), dict) else {}
-    for x in (raw.get("enabled") or []) if isinstance(raw.get("enabled"), list) else []:
-        verbo = " ".join(str(x).split())
-        if verbo:
-            out.append(verbo)
     exc = raw.get("except") if isinstance(raw.get("except"), dict) else {}
     mie = exc.get(name) if isinstance(exc.get(name), list) else []
+    excepted = set()
     for x in mie:
-        verbo = " ".join(str(x).split())
-        if verbo:
-            out.append(f"-{verbo}")
+        e = " ".join(str(x).split())
+        e = "*" if e == "*" else _room_shape(e)
+        if e:
+            excepted.add(e)
+    entries = [ROOM_FLOOR]
+    if str(m.get("status") or "").strip().lower() != "archived":
+        lst = raw.get("enabled") if isinstance(raw.get("enabled"), list) else []
+        for x in lst:
+            e = _room_shape(x)
+            if e and e.partition(".")[0] not in _ROOM_NOT_ENABLABLE:
+                entries.append(e)
+    out: list[str] = [e for e in dict.fromkeys(entries) if not _room_bites(e, excepted)]
+    data: list[str] = []
     for e in m.get("data") if isinstance(m.get("data"), list) else []:
         if not isinstance(e, dict):
             continue
@@ -504,9 +541,18 @@ def room_grants(meta: Optional[dict], agent: str) -> list[str]:
         if mode not in _DATA_MODES:
             continue
         kind = str(e.get("kind") or "")
-        out.extend(_DATA_READ_VERBS.get(kind, ()))
+        data.extend(_DATA_READ_VERBS.get(kind, ()))
         if mode == "write":
-            out.extend(_DATA_WRITE_VERBS.get(kind, ()))
+            data.extend(_DATA_WRITE_VERBS.get(kind, ()))
+    # Negazioni: solo eccezioni puntuali che cadono dentro un wildcard rimasto
+    # (lì il gateway espande e sottrae), e mai su un verbo che portano i dati.
+    wild = {e.partition(".")[0] for e in out if e.endswith(".*")}
+    for x in sorted(excepted):
+        if x == "*" or x.endswith(".*"):
+            continue
+        if x.partition(".")[0] in wild and x not in data:
+            out.append(f"-{x}")
+    out.extend(data)
     return list(dict.fromkeys(out))
 
 

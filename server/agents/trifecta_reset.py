@@ -59,11 +59,15 @@ def toolbox_signature(meta: Optional[dict]) -> str:
     """
     raw = (meta or {}).get("tools")
     raw = raw if isinstance(raw, dict) else {}
-    enabled = sorted({str(x).strip() for x in (raw.get("enabled") or [])
-                      if str(x).strip()}) if isinstance(raw.get("enabled"), list) else []
+    # Normalizzazione e liste vuote come il gateway (`room_tools.toolbox`): due
+    # scritture equivalenti non devono far decadere un reset.
+    norm = lambda x: " ".join(str(x).split())  # noqa: E731
+    enabled = sorted({norm(x) for x in (raw.get("enabled") or [])
+                      if norm(x)}) if isinstance(raw.get("enabled"), list) else []
     exc_raw = raw.get("except") if isinstance(raw.get("except"), dict) else {}
-    exc = sorted(f"{a}:{','.join(sorted(str(v).strip() for v in lst if str(v).strip()))}"
-                 for a, lst in exc_raw.items() if isinstance(lst, list))
+    exc = sorted(f"{a}:{','.join(v)}" for a, v in (
+        (a, sorted({norm(x) for x in lst if norm(x)}))
+        for a, lst in exc_raw.items() if isinstance(lst, list)) if v)
     if not enabled and not exc:
         return ""
     return hashlib.sha256("|".join([*enabled, "#", *exc]).encode()).hexdigest()[:8]

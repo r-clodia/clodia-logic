@@ -55,15 +55,23 @@ class RoomGrantsTests(unittest.TestCase):
         self.assertIn(trifecta.ROOM_FLOOR, trifecta.room_grants({}, "dev"))
         self.assertEqual("topic.*", trifecta.ROOM_FLOOR)
 
-    def test_the_toolbox_is_added_and_an_exception_becomes_a_negation(self) -> None:
+    def test_the_toolbox_is_added_and_an_exception_removes_its_entry(self) -> None:
         meta = {"tools": {"enabled": ["email.*", "gdrive.upload"],
                           "except": {"dev": ["gdrive.upload"]}}}
         dev = trifecta.room_grants(meta, "dev")
         altro = trifecta.room_grants(meta, "altro")
         self.assertIn("email.*", dev)
-        self.assertIn("-gdrive.upload", dev)
-        self.assertNotIn("-gdrive.upload", altro)
+        self.assertNotIn("gdrive.upload", dev)
+        self.assertNotIn("-gdrive.upload", dev)
         self.assertIn("gdrive.upload", altro)
+
+    def test_a_point_exception_inside_a_wildcard_becomes_a_negation(self) -> None:
+        """Il gateway espande `email.*` e toglie `email.send`: da qui i verbi
+        del gateway non si leggono, quindi la sottrazione resta una negazione."""
+        meta = {"tools": {"enabled": ["email.*"], "except": {"dev": ["email.send"]}}}
+        dev = trifecta.room_grants(meta, "dev")
+        self.assertIn("email.*", dev)
+        self.assertIn("-email.send", dev)
 
     def test_imported_data_brings_the_verbs_the_gateway_gives(self) -> None:
         """Gli stessi verbi di `topic_data._READ_VERBS/_WRITE_VERBS`: le due
@@ -149,6 +157,65 @@ class ReachedSetTests(unittest.TestCase):
         p = _prof(_spec("messaggero", ["email.send"]), meta)
         self.assertTrue(p["legs"]["egress"])
         self.assertIn("email.send", p["why"]["egress"])
+
+
+class AlignedWithTheGatewayTests(unittest.TestCase):
+    """Review of #567 (B1/B1b) after the gateway fix of #429: the score bites
+    and filters exactly as `room_tools` does."""
+
+    def test_a_namespace_exception_removes_the_namespace(self) -> None:
+        meta = {"tools": {"enabled": ["email.*"],
+                          "except": {"x": ["email.*", "topic.*"]}}}
+        self.assertEqual(trifecta.room_grants(meta, "x"), [])
+        self.assertEqual(trifecta.room_grants(meta, "y"), ["topic.*", "email.*"])
+
+    def test_star_removes_everything_the_room_gives_but_not_the_data(self) -> None:
+        meta = {"tools": {"enabled": ["email.*"], "except": {"x": ["*"]}},
+                "data": [{"kind": "rag", "name": "c", "grants": {"x": "read"}}]}
+        self.assertEqual(trifecta.room_grants(meta, "x"),
+                         ["rag.search", "rag.list", "rag.collections"])
+
+    def test_an_exception_never_negates_a_data_verb(self) -> None:
+        """B1b: the gateway unions the data verbs outside `_minus`."""
+        meta = {"tools": {"except": {"x": ["rag.search"]}},
+                "data": [{"kind": "rag", "name": "c", "grants": {"x": "read"}}]}
+        g = trifecta.room_grants(meta, "x")
+        self.assertIn("rag.search", g)
+        self.assertNotIn("-rag.search", g)
+        p = _prof(_spec("x", ["topic.post_message"]), meta)
+        self.assertIn("rag.search (stanza)", p["why"]["private_data"])
+
+    def test_what_the_gateway_filters_out_gives_nothing_here_either(self) -> None:
+        meta = {"tools": {"enabled": ["*", "packs.*", "agents.grant_tool",
+                                      "rag.search", "web.f*", "email.send"]}}
+        self.assertEqual(trifecta.room_grants(meta, "x"), ["topic.*", "email.send"])
+
+    def test_an_archived_room_keeps_only_the_floor(self) -> None:
+        meta = {"status": "archived", "tools": {"enabled": ["email.*"]}}
+        self.assertEqual(trifecta.room_grants(meta, "x"), ["topic.*"])
+
+    def test_the_review_scenario_no_longer_reads_zero(self) -> None:
+        """Toolbox `email.*`, exceptions `email.*`+`topic.*` for x: now the
+        gateway takes both away, and the score agrees — while y keeps them."""
+        meta = {"tools": {"enabled": ["email.*"],
+                          "except": {"x": ["email.*", "topic.*"]}}}
+        y = _prof(_spec("y", ["web.search"]), meta)
+        self.assertIn("email.* (stanza)", y["why"]["egress"])
+        x = _prof(_spec("x", ["web.search"]), meta)
+        self.assertFalse([w for w in x["why"]["egress"] if "(stanza)" in w])
+
+    def test_the_not_enablable_list_matches_the_gateway(self) -> None:
+        """Copy of `room_tools._NOT_ENABLABLE`: named one by one."""
+        self.assertEqual(trifecta._ROOM_NOT_ENABLABLE, frozenset({
+            "agents", "egress", "ingress", "integrations", "jobs", "logs", "mcp",
+            "native", "packs", "profile", "providers", "runtime", "settings",
+            "copybrain", "fs", "memory", "topic", "datastore", "eu_corpus", "rag"}))
+
+    def test_an_empty_exception_list_does_not_change_the_signature(self) -> None:
+        self.assertEqual(trifecta_reset.toolbox_signature({"tools": {"except": {"x": []}}}), "")
+        a = trifecta_reset.toolbox_signature({"tools": {"enabled": ["web.fetch"]}})
+        b = trifecta_reset.toolbox_signature({"tools": {"enabled": [" web.fetch "]}})
+        self.assertEqual(a, b)
 
 
 class ExpansionStaysOnTheSeedTests(unittest.TestCase):

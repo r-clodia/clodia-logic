@@ -13,11 +13,11 @@ funzione è pura: riceve il meta della stanza, chi coordina e gli attributi dei
 seed, e restituisce righe già ordinate.
 
 **Cosa NON fa, ed è la parte da non perdere di vista.** Non autorizza niente.
-Il `role` tecnico (`owner`/`contributor`/`reader`) resta quello di prima,
-viaggia nella stessa riga, e le regole d'accesso (clearance + partecipazione)
-non guardano questo modulo. Un `reader` conserva il suo marchio di sola lettura
-qualunque badge porti — se un flag decorasse *e* autorizzasse, un seed si
-prenderebbe un permesso modificando il proprio file.
+Il `role` tecnico (`owner`/`contributor`; `reader` è abolito dal 24 ott 2026,
+epic #604) resta quello di prima, viaggia nella stessa riga, e le regole
+d'accesso (clearance + partecipazione) non guardano questo modulo — se un flag
+decorasse *e* autorizzasse, un seed si prenderebbe un permesso modificando il
+proprio file.
 
 **Chi conduce non si decide qui.** `manager` arriva da fuori, e chi lo chiama lo
 chiede a `coordinator.pick` — l'unico posto in cui la ruling dell'11 ago 2026 è
@@ -41,7 +41,9 @@ _PESO = {OWNER: 0, MANAGER: 1, STAFF: 2, CONTRIBUTOR: 3}
 
 #: Ruoli tecnici riconosciuti. Qualunque altra cosa scritta nella mappa vale
 #: `contributor`, che è ciò che «invitato» ha sempre significato.
-_RUOLI_TECNICI = ("owner", "contributor", "reader")
+#: `reader` è abolito (24 ott 2026, epic #604): uno scritto prima vale
+#: `contributor`, come nel gateway.
+_RUOLI_TECNICI = ("owner", "contributor")
 
 
 def _ruolo_tecnico(meta: dict, chi: str) -> str:
@@ -111,7 +113,7 @@ def display_roles(meta: dict, manager: str | None, seeds: dict) -> list[dict]:
             "display_role": mostrato,
             "marks": marks,
             "role": tecnico,
-            "readonly": tecnico == "reader",
+            "readonly": False,      # nessuna sola lettura dal 24 ott 2026 (#604)
             "sort": _PESO[mostrato],
         })
     righe.sort(key=lambda r: r["sort"])

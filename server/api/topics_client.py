@@ -319,7 +319,7 @@ def set_participant(tier: str, name: str, agent: str, add: bool = True,
                     role: str | None = None) -> dict:
     """Invita, rimuove, o CAMBIA il ruolo di chi è già dentro.
 
-    `role`: `contributor` (default) o `reader`. Cambiare ruolo passa da qui e non
+    `role`: `contributor` (default; `reader` è abolito dal 24 ott 2026). Cambiare ruolo passa da qui e non
     da togli-e-rimetti, che nel frattempo farebbe uscire la persona dal canale e
     le manderebbe un messaggio di uscita e uno di rientro per un cambio di grado.
     """

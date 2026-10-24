@@ -99,14 +99,15 @@ class AccettazioneTests(unittest.TestCase):
 class RuoloTecnicoTests(unittest.TestCase):
     """Il display non tocca i permessi: li AFFIANCA."""
 
-    def test_il_reader_conserva_il_marchio_di_sola_lettura(self) -> None:
+    def test_un_reader_di_prima_vale_contributor(self) -> None:
+        """Il ruolo `reader` è abolito (24 ott 2026, epic #604)."""
         meta = {"owner": "davide",
                 "participants": {"sysadmin": "reader", "avvocato": "reader"}}
         r = {x["name"]: x for x in display_roles(meta, manager=None, seeds=_SEEDS)}
-        self.assertTrue(r["sysadmin"]["readonly"])
+        self.assertFalse(r["sysadmin"]["readonly"])
         self.assertEqual(r["sysadmin"]["display_role"], STAFF)
-        self.assertTrue(r["avvocato"]["readonly"])
-        self.assertEqual(r["avvocato"]["role"], "reader")
+        self.assertFalse(r["avvocato"]["readonly"])
+        self.assertEqual(r["avvocato"]["role"], "contributor")
 
     def test_il_ruolo_tecnico_viaggia_accanto(self) -> None:
         meta = {"owner": "davide", "participants": {"avvocato": "contributor"}}

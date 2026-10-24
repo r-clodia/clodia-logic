@@ -5560,10 +5560,12 @@ async def dm_create(request: Request) -> dict:
 
 
 def _scope_role(meta: dict, chi: str | None) -> str | None:
-    """Ruolo di `chi` in questo scope: `owner` | `contributor` | `reader`.
+    """Ruolo di `chi` in questo scope: `owner` | `contributor`.
 
     Legge la stessa mappa del gateway, inclusa la forma legacy: una LISTA vale
-    tutta `contributor`, perché è ciò che «invitato» ha significato finora.
+    tutta `contributor`, perché è ciò che «invitato» ha significato finora. Il
+    ruolo `reader` è abolito (24 ott 2026, epic #604): uno scritto prima vale
+    `contributor`, come nel gateway.
     """
     if not chi:
         return None
@@ -5573,7 +5575,7 @@ def _scope_role(meta: dict, chi: str | None) -> str | None:
     if isinstance(raw, dict):
         r = str(raw.get(chi) or "").strip().lower()
         if chi in raw:
-            return r if r in ("owner", "contributor", "reader") else "contributor"
+            return r if r in ("owner", "contributor") else "contributor"
         return None
     if isinstance(raw, list) and chi in raw:
         return "contributor"
@@ -5596,22 +5598,14 @@ def _require_member(request: Request, meta: dict) -> str:
 
 
 def _require_contributor(request: Request, meta: dict) -> str:
-    """MUTARE dentro il canale: owner o contributor.
+    """MUTARE dentro il canale: ogni partecipante.
 
-    Un reader parla — la lettura e la conversazione restano — ma non scrive nello
-    stato condiviso: niente upload, niente interruzioni di turno. La sua
-    richiesta non viene ignorata: la porta un agente, e se implica una mutazione
-    diventa un gate rivolto all'owner (voce 26). Qui si ferma solo l'atto
-    DIRETTO, che non passerebbe da nessuna valutazione.
+    Fino al 24 ott 2026 un `reader` qui veniva fermato. Il ruolo è abolito
+    (decisione dell'owner, epic #604): in una stanza ogni partecipante ha gli
+    stessi verbi, quindi mutare richiede solo di esserne partecipante. La
+    funzione resta come punto unico se un grado dovesse tornare.
     """
-    principal = _require_member(request, meta)
-    if _scope_role(meta, principal) == "reader":
-        raise HTTPException(
-            403, "sei reader in questo canale: puoi leggere e parlare, non "
-                 "modificare. Chiedi all'owner del topic di cambiarti ruolo, "
-                 "oppure chiedi a un agente di farlo — quella strada passa da "
-                 "un'approvazione invece che da un rifiuto.")
-    return principal
+    return _require_member(request, meta)
 
 
 def _require_scope_owner(request: Request, meta: dict) -> str:
@@ -6418,9 +6412,14 @@ async def channel_add_participant(tier: str, name: str, request: Request) -> dic
     meta = topic.get("meta", {})
     _assert_member_eligible(spec, meta.get("tier", tier))
     ruolo = (body.get("role") or "").strip().lower() or None
-    if ruolo and ruolo not in ("contributor", "reader"):
+    if ruolo == "reader":
         raise HTTPException(
-            400, f"ruolo non valido: {ruolo}. Ammessi: contributor, reader. "
+            400, "il ruolo reader è stato abolito (24 ott 2026): in una stanza "
+                 "ogni partecipante lavora con gli stessi verbi. Invita come "
+                 "contributor.")
+    if ruolo and ruolo != "contributor":
+        raise HTTPException(
+            400, f"ruolo non valido: {ruolo}. Ammesso: contributor. "
                  "La proprietà dello scope non si assegna invitando: si cambia "
                  "l'owner del topic.")
     result = await topics_client.async_set_participant(tier, name, agent, add=True, role=ruolo)
