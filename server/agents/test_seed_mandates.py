@@ -116,11 +116,21 @@ class SecretaryConveningMandateTests(unittest.TestCase):
         marker di invito nel mandato ci sono già — nella sezione di bootstrap. Un
         `assertIn` sul file intero sarebbe verde oggi, cioè misurerebbe la
         sezione sbagliata e non vedrebbe mai il difetto che deve trovare.
+
+        La sezione si trova dalla DIRETTIVA, non dal titolo: con #607 il
+        coordinamento ha smesso di essere un'eccezione in coda al mandato ed è
+        diventato il primo mestiere, quindi gli esiti stanno PRIMA del punto in
+        cui `[COORDINAMENTO]` compare — e un taglio che guardava solo ciò che
+        segue misurerebbe il pezzo sbagliato. Qui si prende il blocco `## …`
+        che la contiene: niente titolo scritto a mano, che invecchierebbe alla
+        prima riscrittura.
         """
-        dopo = self.prompt.split("[COORDINAMENTO]", 1)
-        self.assertEqual(2, len(dopo),
-                         "il mandato non nomina la direttiva di coordinamento")
-        return dopo[1].split("\n## ", 1)[0]
+        posto = self.prompt.find("[COORDINAMENTO]")
+        self.assertNotEqual(-1, posto,
+                            "il mandato non nomina la direttiva di coordinamento")
+        inizio = self.prompt.rfind("\n## ", 0, posto)
+        fine = self.prompt.find("\n## ", posto)
+        return self.prompt[max(inizio, 0):fine if fine != -1 else len(self.prompt)]
 
     def test_the_mandate_reads_the_coordination_directive(self) -> None:
         self.assertIn("[COORDINAMENTO]", self.prompt)
@@ -137,16 +147,29 @@ class SecretaryConveningMandateTests(unittest.TestCase):
         self.assertIn("topic.suggest_team", sezione)
         self.assertIn("<!-- invite=", sezione)
 
-    def test_the_out_of_domain_refusal_is_no_longer_unconditional(self) -> None:
+    def test_the_out_of_domain_refusal_is_gone_from_the_limits(self) -> None:
         """«Fuori dominio: chiedi al capitano» detto DAL capitano è un vicolo cieco.
 
-        Il test guarda dove la riga vive: la sezione che contiene il rifiuto deve
-        nominare l'eccezione, altrimenti l'eccezione sta altrove nel file e il
-        modello che legge quella riga non ha modo di saperlo.
+        A5 l'aveva reso condizionale (valeva «tranne nel turno di
+        coordinamento»); #607 lo toglie del tutto, perché il coordinatore ora è
+        lui in ogni turno e una riga di rifiuto non ha più nessuno a cui
+        rimandare. Quello che deve restare al suo posto è il verbo opposto: ciò
+        che non è suo lo **assegna**.
+
+        Le due metà insieme: senza la seconda, il test passerebbe anche su una
+        sezione «Cosa NON fai» svuotata, che non è la stessa cosa.
         """
         sezione = self.prompt.split("## Cosa NON fai", 1)
         self.assertEqual(2, len(sezione), "sezione «Cosa NON fai» sparita")
-        self.assertIn("COORDINAMENTO", sezione[1])
+        limiti = sezione[1]
+        self.assertNotRegex(
+            limiti, r"(?i)rispondi solo con una riga|fuori dominio:",
+            "il mandato ordina di nuovo un rifiuto secco: dal coordinatore "
+            "della stanza è un vicolo cieco, non c'è nessun capitano dietro")
+        self.assertRegex(
+            limiti, r"(?i)assegn",
+            "la sezione dice cosa non fa senza dire cosa fa al suo posto: "
+            "«non rispondo nel merito» senza «lo assegno» è di nuovo un rifiuto")
 
     def test_the_invite_stays_the_owner_s(self) -> None:
         """Strada A: la proposta è dell'agente, la mutazione dell'owner.

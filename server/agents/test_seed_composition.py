@@ -178,12 +178,28 @@ class GrantHygieneTests(unittest.TestCase):
 
     def test_the_postman_is_retired(self) -> None:
         """Il messaggero non c'è più (clodia-platform#531): la posta entra col
-        corriere, che è codice, e si risponde con `channel.deliver`. Il verbo
-        d'uscita NON sta su `segretario`: gli accenderebbe la gamba d'uscita
-        della trifecta, fuori dal perimetro di sola lettura deciso in #192."""
+        corriere, che è codice, e si risponde con `channel.deliver`.
+
+        Il verbo d'uscita stava sul solo `clodia`, e il suo commento diceva che
+        allargarlo era una decisione dell'owner. Presa il 24 ott 2026 su #607,
+        e non per comodità: diventando `segretario` il coordinatore di ogni
+        stanza, `channel_relay._room_can_answer` — che rifiuta il turno quando
+        chi coordina non ha il verbo — avrebbe reso MUTA ogni stanza collegata
+        a un gruppo Telegram o a una casella. I due seed che coordinano lo
+        hanno entrambi; nessun altro, ed è quello che si misura qui.
+        """
         seeds = _seeds()
         self.assertNotIn("messaggero", seeds)
-        self.assertNotIn("channel.deliver", _grants(seeds["segretario"]))
+        for nome in ("clodia", "segretario"):
+            with self.subTest(seed=nome):
+                self.assertIn("channel.deliver", _grants(seeds[nome]))
+        altri = sorted(n for n, s in seeds.items()
+                       if n not in ("clodia", "segretario")
+                       and "channel.deliver" in _grants(s))
+        self.assertEqual(
+            [], altri,
+            "l'uscita fuori dalla stanza è dei coordinatori dichiarati "
+            f"(coordinator.DECLARED), non di chiunque: {altri}")
 
 
 if __name__ == "__main__":  # pragma: no cover

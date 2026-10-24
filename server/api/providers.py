@@ -588,8 +588,27 @@ def effective_provider_for_tier(providers: list[str] | None, provider: str | Non
                                 provider_models: dict | None = None) -> str | None:
     """Provider effettivo per uno spawn dentro un topic.
 
-    Sceglie il provider ATTIVO meno costoso fra quelli compatibili con l'agent e
-    con SEAL >= tier. Nessun fallback silenzioso a provider sotto-tier.
+    Sceglie fra i provider ATTIVI compatibili con l'agent e con SEAL >= tier.
+    Nessun fallback silenzioso a provider sotto-tier.
+
+    Due regole, e quale si applica lo dicono gli stack dell'agente:
+
+    - **stessi modelli** → il meno COSTOSO, come dal 30 giu 2026. Fra provider
+      che servono lo stesso modello il costo è l'unica differenza, e prenderlo
+      al minimo è gratis;
+    - **modelli diversi** (stack cross-SDK, clodia-platform#93) → l'ordine di
+      PREFERENZA dichiarato nel seed. Qui il costo non misura più la stessa
+      cosa: il segretario di #607 dichiara Sonnet 5.5 sui provider Anthropic
+      (`cost_rank` 10-20) e `gemma-4-26b-a4b-it` su Scaleway (`cost_rank` 5)
+      come unico ripiego SEAL-3 — col minimo sul costo girerebbe su gemma in
+      ogni stanza e su Sonnet in nessuna, cioè «più economico» diventerebbe
+      «meno capace». Chi scrive gli stack li scrive in ordine di preferenza:
+      quello è il dato, il costo è un tie-break per il caso in cui i modelli
+      non distinguono.
+
+    L'eterogeneità si misura sui provider IDONEI, non su quelli dichiarati: se
+    il provider col modello diverso non regge il tier, i rimasti servono tutti
+    lo stesso modello e la regola giusta torna a essere il costo.
     """
     cands = candidate_providers(providers, provider, agent_sdk, model, provider_models)
     paused = _load_paused()
@@ -599,6 +618,9 @@ def effective_provider_for_tier(providers: list[str] | None, provider: str | Non
     ]
     if not eligible:
         return None
+    modelli = {provider_effective_model(p, model, provider_models) for p in eligible}
+    if len(modelli) > 1:
+        return min(eligible, key=cands.index)
     return min(eligible, key=lambda p: (provider_cost_rank(p), _seal_rank(p), cands.index(p)))
 
 
