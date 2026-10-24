@@ -519,6 +519,26 @@ DEFAULT_KIND = "clodia"
 #
 # Da qui `_permission_gate`: lo stesso «approva tutto» che serviva al flag, meno
 # ciò che qualcuno ha deciso di negare.
+def _bash_rule_hits(rule: str, command: str) -> bool:
+    """Una regola `Bash(<schema>)` colpisce `command`?
+
+    Le due forme della blocklist: `prefisso:*` (il comando, in una posizione di
+    comando — inizio, o dopo `;`, `&&`, `|`, `(`, `$(` e le assegnazioni
+    `VAR=…` — è `prefisso` o `prefisso …`) e un glob (`*email_client*`), che
+    vale sull'intera riga. Nel dubbio colpisce: è una blocklist."""
+    import fnmatch
+    import re as _re
+    cmd = str(command or "")
+    if rule.endswith(":*"):
+        prefisso = rule[:-2].strip()
+        if not prefisso:
+            return True
+        return bool(_re.search(
+            r"(?:^|[;&|(`\n]|\$\()\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
+            + _re.escape(prefisso) + r"(?:\s|$)", cmd))
+    return fnmatch.fnmatchcase(cmd, rule) or fnmatch.fnmatchcase(cmd, f"*{rule}*")
+
+
 def _permission_gate(disallowed: list[str] | None, chat_id: str = "",
                      gated: set[str] | None = None, consent=None):
     """`can_use_tool` che approva tutto TRANNE ciò che è nella blocklist.
@@ -534,7 +554,15 @@ def _permission_gate(disallowed: list[str] | None, chat_id: str = "",
     run record nomini il verbo mancante.
     """
     negati = {str(x).strip() for x in (disallowed or []) if str(x).strip()}
-    basi = {n.split("(", 1)[0] for n in negati}
+    # Le regole a schema su `Bash` si valutano sul comando (`_bash_rule_hits`):
+    # negare la base per prudenza, dal 12 ago 2026, toglieva la shell intera a
+    # chi ha una blocklist di soli schemi — clodia non ha eseguito un comando
+    # per due mesi e mezzo (24 ott 2026). Per gli altri strumenti un pattern
+    # nega ancora la base.
+    schemi_bash = [n[len("Bash("):-1] for n in negati
+                   if n.startswith("Bash(") and n.endswith(")")]
+    basi = {n.split("(", 1)[0] for n in negati
+            if not (n.startswith("Bash(") and n.endswith(")"))}
     su_consenso = set(gated or ()) if consent is not None else set()
 
     async def _gate(tool_name: str, tool_input: dict,
@@ -550,7 +578,11 @@ def _permission_gate(disallowed: list[str] | None, chat_id: str = "",
             if ok:
                 return PermissionResultAllow()
             return PermissionResultDeny(message=f"'{nome}' non approvato: {why}")
-        if nome in negati or nome.split("(", 1)[0] in basi:
+        colpito = nome in negati or nome.split("(", 1)[0] in basi
+        if not colpito and nome == "Bash" and schemi_bash:
+            comando = str((tool_input or {}).get("command") or "")
+            colpito = any(_bash_rule_hits(r, comando) for r in schemi_bash)
+        if colpito:
             if chat_id:
                 # Import LOCALE, non in testa al modulo: la dipendenza fra i due
                 # package corre nel verso opposto (`scheduler` importa
