@@ -217,24 +217,40 @@ def _audit_model(chat):
 TOPIC_TRIGGER_MIN_INTERVAL_MIN = 10
 
 
-def min_cron_gap_minutes(expr: str, samples: int = 30) -> float:
-    """Minimo intervallo in minuti fra fire consecutivi di `expr`. `inf` se
-    produce meno di 2 fire nell'orizzonte campionato. Cattura `*/1`, `* * * * *`,
-    `0,5 * * * *`, ecc. — non solo il campo minuti."""
+def _fire_gaps_minutes(expr: str, samples: int = 30) -> list[float]:
+    """Intervalli in minuti fra fire consecutivi di `expr`, misurati in UTC.
+
+    In UTC e non sull'orologio di Europe/Rome (clodia-platform#611): due
+    `datetime` con lo STESSO tzinfo si sottraggono sull'ora da muro, ignorando
+    l'offset. Al ritorno all'ora solare le 02:00 CEST e le 02:00 CET distano 60
+    minuti veri e 0 «da muro»: un orario risultava con cadenza zero, e perdeva
+    il suo grace di recupero (fino a un'ora → 60s).
+    """
     trig = CronTrigger.from_crontab(expr.strip(), timezone=_SCHED_TZ)
     now = datetime.now(_SCHED_TZ)
     times: list[datetime] = []
     prev = None
     for _ in range(samples):
-        nxt = trig.get_next_fire_time(prev, now if prev is None else prev + timedelta(seconds=1))
+        # Il secondo in più si aggiunge in UTC: `prev + 1s` sull'ora da muro,
+        # dopo le 02:00 CET ripetute, è un'ora ambigua che torna in CEST — e
+        # APScheduler restituisce di nuovo le 02:00 CET, all'infinito.
+        dopo = (now if prev is None else
+                (prev.astimezone(timezone.utc) + timedelta(seconds=1)).astimezone(_SCHED_TZ))
+        nxt = trig.get_next_fire_time(prev, dopo)
         if nxt is None:
             break
-        times.append(nxt)
+        times.append(nxt.astimezone(timezone.utc))
         prev = nxt
-    if len(times) < 2:
-        return float("inf")
-    return min((times[i + 1] - times[i]).total_seconds() / 60.0
-               for i in range(len(times) - 1))
+    return [(times[i + 1] - times[i]).total_seconds() / 60.0
+            for i in range(len(times) - 1)]
+
+
+def min_cron_gap_minutes(expr: str, samples: int = 30) -> float:
+    """Minimo intervallo in minuti fra fire consecutivi di `expr`. `inf` se
+    produce meno di 2 fire nell'orizzonte campionato. Cattura `*/1`, `* * * * *`,
+    `0,5 * * * *`, ecc. — non solo il campo minuti."""
+    gaps = _fire_gaps_minutes(expr, samples)
+    return min(gaps) if gaps else float("inf")
 
 
 def validate_cron_expr(expr: str, *, min_interval_minutes: int = 0) -> Optional[str]:
@@ -298,26 +314,19 @@ def cron_to_interval_minutes(expr: str, samples: int = 30) -> Optional[int]:
     - cadenza oltre `_MAX_SUGGESTED_INTERVAL_MIN`.
     """
     try:
-        trig = CronTrigger.from_crontab(expr.strip(), timezone=_SCHED_TZ)
+        gaps = _fire_gaps_minutes(expr, samples)
     except (ValueError, TypeError, AttributeError):
         return None
-    now = datetime.now(_SCHED_TZ)
-    times: list[datetime] = []
-    prev = None
-    for _ in range(samples):
-        nxt = trig.get_next_fire_time(
-            prev, now if prev is None else prev + timedelta(seconds=1))
-        if nxt is None:
-            break
-        times.append(nxt)
-        prev = nxt
-    if len(times) < 3:
+    if len(gaps) < 2:
         return None
-    gaps = [(times[i + 1] - times[i]).total_seconds() / 60.0
-            for i in range(len(times) - 1)]
-    if max(gaps) - min(gaps) > 1:  # tolleranza: DST sposta un fire di 60 min/anno
+    # Tolleranza di un'ora: in UTC un giornaliero dura 23 o 25 ore attraverso un
+    # cambio d'ora (#611). La cadenza è l'intervallo PIÙ FREQUENTE, non il
+    # minimo: altrimenti un giornaliero campionato a cavallo del cambio
+    # risulterebbe «ogni 1380 minuti».
+    if max(gaps) - min(gaps) > 60 + 1:
         return None
-    minuti = int(round(min(gaps)))
+    rounded = [int(round(g)) for g in gaps]
+    minuti = max(set(rounded), key=rounded.count)
     if minuti <= 0 or minuti > _MAX_SUGGESTED_INTERVAL_MIN:
         return None
     return minuti
