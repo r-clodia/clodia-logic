@@ -217,24 +217,58 @@ def _audit_model(chat):
 TOPIC_TRIGGER_MIN_INTERVAL_MIN = 10
 
 
-def min_cron_gap_minutes(expr: str, samples: int = 30) -> float:
-    """Minimo intervallo in minuti fra fire consecutivi di `expr`. `inf` se
-    produce meno di 2 fire nell'orizzonte campionato. Cattura `*/1`, `* * * * *`,
-    `0,5 * * * *`, ecc. — non solo il campo minuti."""
+def _utc(t: datetime) -> datetime:
+    """In UTC prima di confrontare o sottrarre (clodia-platform#611): due
+    `datetime` con lo STESSO tzinfo si confrontano e si sottraggono sull'ora da
+    muro, ignorando l'offset — nell'ora ripetuta del ritorno all'ora solare le
+    02:30 CEST risultano «dopo» le 02:00 CET, che invece vengono un'ora più tardi."""
+    return t.astimezone(timezone.utc)
+
+
+def _fire_gaps(expr: str, samples: int = 30) -> list[tuple[float, bool]]:
+    """`(minuti, a_cavallo)` fra fire consecutivi di `expr`, misurati in UTC.
+
+    `a_cavallo` dice se i due fire hanno offset diversi, cioè se fra loro c'è un
+    cambio d'ora: quel gap misura il cambio, non la cadenza (un giornaliero dura
+    23 o 25 ore, e un `0 2 * * *` parte due volte a distanza di un'ora).
+    """
     trig = CronTrigger.from_crontab(expr.strip(), timezone=_SCHED_TZ)
     now = datetime.now(_SCHED_TZ)
     times: list[datetime] = []
     prev = None
     for _ in range(samples):
-        nxt = trig.get_next_fire_time(prev, now if prev is None else prev + timedelta(seconds=1))
+        # Il secondo in più si aggiunge in UTC: `prev + 1s` sull'ora da muro,
+        # dopo le 02:00 CET ripetute, è un'ora ambigua che torna in CEST, e il
+        # campionamento riceverebbe di nuovo le 02:00 CET a ogni giro.
+        dopo = now if prev is None else (_utc(prev) + timedelta(seconds=1)).astimezone(_SCHED_TZ)
+        nxt = trig.get_next_fire_time(prev, dopo)
         if nxt is None:
             break
         times.append(nxt)
         prev = nxt
-    if len(times) < 2:
-        return float("inf")
-    return min((times[i + 1] - times[i]).total_seconds() / 60.0
-               for i in range(len(times) - 1))
+    return [((_utc(b) - _utc(a)).total_seconds() / 60.0, a.utcoffset() != b.utcoffset())
+            for a, b in zip(times, times[1:])]
+
+
+def min_cron_gap_minutes(expr: str, samples: int = 30) -> float:
+    """Minimo intervallo REALE in minuti fra fire consecutivi di `expr`. `inf`
+    se produce meno di 2 fire nell'orizzonte campionato. Cattura `*/1`,
+    `* * * * *`, `0,5 * * * *`, ecc. — non solo il campo minuti. È la misura per
+    il pavimento dei topic trigger: due fire a un'ora l'uno dall'altro lo sono
+    davvero, anche quando li separa un cambio d'ora."""
+    gaps = [g for g, _ in _fire_gaps(expr, samples)]
+    return min(gaps) if gaps else float("inf")
+
+
+def cadence_gap_minutes(expr: str, samples: int = 30) -> float:
+    """Come `min_cron_gap_minutes`, ma senza i gap a cavallo di un cambio d'ora:
+    è la CADENZA del cron, non la distanza di due fire in una notte di ottobre.
+    Senza, per un mese prima del cambio un `0 2 * * *` valeva «ogni 60 minuti»
+    (grace e freschezza tarati sull'ora invece che sul giorno)."""
+    gaps = _fire_gaps(expr, samples)
+    regolari = [g for g, cavallo in gaps if not cavallo]
+    scelti = regolari or [g for g, _ in gaps]
+    return min(scelti) if scelti else float("inf")
 
 
 def validate_cron_expr(expr: str, *, min_interval_minutes: int = 0) -> Optional[str]:
@@ -298,24 +332,17 @@ def cron_to_interval_minutes(expr: str, samples: int = 30) -> Optional[int]:
     - cadenza oltre `_MAX_SUGGESTED_INTERVAL_MIN`.
     """
     try:
-        trig = CronTrigger.from_crontab(expr.strip(), timezone=_SCHED_TZ)
+        tutti = _fire_gaps(expr, samples)
     except (ValueError, TypeError, AttributeError):
         return None
-    now = datetime.now(_SCHED_TZ)
-    times: list[datetime] = []
-    prev = None
-    for _ in range(samples):
-        nxt = trig.get_next_fire_time(
-            prev, now if prev is None else prev + timedelta(seconds=1))
-        if nxt is None:
-            break
-        times.append(nxt)
-        prev = nxt
-    if len(times) < 3:
+    # I gap a cavallo di un cambio d'ora misurano il cambio, non la cadenza
+    # (#611): si escludono, e sui restanti la regolarità resta stretta — un
+    # minuto. Una tolleranza più larga farebbe passare `*/45` (:00 e :45, gap
+    # 15 e 45) per «ogni 45 minuti».
+    gaps = [g for g, cavallo in tutti if not cavallo]
+    if len(gaps) < 2:
         return None
-    gaps = [(times[i + 1] - times[i]).total_seconds() / 60.0
-            for i in range(len(times) - 1)]
-    if max(gaps) - min(gaps) > 1:  # tolleranza: DST sposta un fire di 60 min/anno
+    if max(gaps) - min(gaps) > 1:
         return None
     minuti = int(round(min(gaps)))
     if minuti <= 0 or minuti > _MAX_SUGGESTED_INTERVAL_MIN:
@@ -331,7 +358,7 @@ def job_cadence_minutes(job: dict) -> Optional[float]:
     """Cadenza dichiarata del job in minuti; `None` se non è deducibile.
 
     Legge la periodicità dalla stessa fonte di `_trigger_for` — `interval_minutes`
-    oppure `cron_expr` — riusando `min_cron_gap_minutes` invece di reinterpretare
+    oppure `cron_expr` — riusando `cadence_gap_minutes` invece di reinterpretare
     il cron: un secondo parser darebbe due risposte diverse alla stessa domanda.
 
     Per un cron irregolare (`0 9 * * 1-5`: 24h, 24h, 24h, 24h, 72h) il minimo è
@@ -350,7 +377,7 @@ def job_cadence_minutes(job: dict) -> Optional[float]:
     if not expr:
         return None
     try:
-        gap = min_cron_gap_minutes(expr)
+        gap = cadence_gap_minutes(expr)
     except (ValueError, TypeError):
         return None
     return None if gap == float("inf") else gap
@@ -495,7 +522,7 @@ def missed_fires_since(job: dict, since: datetime,
     Cammina il trigger VERO del job (`_trigger_for`), non una riparametrizzazione
     della cadenza: un secondo interprete della periodicità darebbe due risposte
     diverse alla stessa domanda, ed è la ragione per cui `job_cadence_minutes`
-    riusa già `min_cron_gap_minutes`.
+    riusa già `cadence_gap_minutes`.
 
     SHORTCUT: per un job a intervallo la griglia dei fire viene riancorata a
               `since`, perché la griglia vera viveva nel jobstore in-memory ed è
@@ -514,8 +541,11 @@ def missed_fires_since(job: dict, since: datetime,
         return [], False
     fuori: list[datetime] = []
     prossimo = trigger.get_next_fire_time(None, since)
-    while prossimo is not None and prossimo <= now:
-        if prossimo > since:
+    # Confronti in UTC (#611): nell'ora ripetuta del 25 ott un confronto
+    # sull'ora da muro dava per passate le 02:00 CET alle 02:30 CEST, e il
+    # cammino restituiva diecimila copie dello stesso fire futuro.
+    while prossimo is not None and _utc(prossimo) <= _utc(now):
+        if _utc(prossimo) > _utc(since):
             fuori.append(prossimo)
             if len(fuori) >= _BACKFILL_MAX_ITER:
                 return fuori, True
@@ -575,7 +605,7 @@ def catch_up_due(job: dict, *, now: Optional[datetime] = None) -> Optional[datet
     if not fires:
         return None
     ultimo = fires[-1]
-    if (adesso - ultimo).total_seconds() > misfire_grace_for(job):
+    if (_utc(adesso) - _utc(ultimo)).total_seconds() > misfire_grace_for(job):
         return None
     return ultimo
 
