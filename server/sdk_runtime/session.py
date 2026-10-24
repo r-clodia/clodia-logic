@@ -534,7 +534,14 @@ def _bash_rule_hits(rule: str, command: str) -> bool:
         if not prefisso:
             return True
         return bool(_re.search(
-            r"(?:^|[;&|(`\n]|\$\()\s*(?:[A-Za-z_][A-Za-z0-9_]*=\S*\s+)*"
+            r"(?:^|[;&|(`\n]|\$\()\s*"
+            # assegnazioni, anche con valori fra virgolette
+            r"(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S)*\s+)*"
+            # parole chiave e wrapper che lasciano eseguire il comando dopo
+            r"(?:(?:do|then|else|elif|if|while|until|time|!|\{|sudo|command|env|exec|"
+            r"eval|nohup|nice|xargs|timeout\s+\S+)\s+)*"
+            # `\rm`, `/bin/rm`
+            r"\\?(?:\S*/)?"
             + _re.escape(prefisso) + r"(?:\s|$)", cmd))
     return fnmatch.fnmatchcase(cmd, rule) or fnmatch.fnmatchcase(cmd, f"*{rule}*")
 
@@ -579,9 +586,14 @@ def _permission_gate(disallowed: list[str] | None, chat_id: str = "",
                 return PermissionResultAllow()
             return PermissionResultDeny(message=f"'{nome}' non approvato: {why}")
         colpito = nome in negati or nome.split("(", 1)[0] in basi
+        regola = ""
         if not colpito and nome == "Bash" and schemi_bash:
             comando = str((tool_input or {}).get("command") or "")
-            colpito = any(_bash_rule_hits(r, comando) for r in schemi_bash)
+            regola = next((r for r in schemi_bash if _bash_rule_hits(r, comando)), "")
+            if regola:
+                return PermissionResultDeny(
+                    message=(f"comando negato dalla regola Bash({regola}) di questo "
+                             f"agente: usa il verbo MCP corrispondente, se esiste."))
         if colpito:
             if chat_id:
                 # Import LOCALE, non in testa al modulo: la dipendenza fra i due

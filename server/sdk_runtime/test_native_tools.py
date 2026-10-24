@@ -409,9 +409,14 @@ class TheRootCallbackMustNotSayYesToEverythingTests(unittest.TestCase):
         chiedi = self._gate(["Bash(rm:*)", "Bash(*email_client*)"])
         for cmd in ("rm -rf /", "rm", "cd x && rm -rf y", "ls; rm a", "echo | rm a",
                     "FOO=1 rm a", "$(rm a)", "python3 tools/email_client.py send",
+                    "/bin/rm x", "\\rm x", "sudo rm x", "env rm x", "xargs rm",
+                    "timeout 5 rm x", "if true; then rm x; fi", "{ rm x; }",
+                    "FOO='a b' rm x",
                     "cd t && python3 /x/email_client.py"):
             with self.subTest(cmd=cmd):
-                self.assertIsInstance(chiedi("Bash", cmd), PermissionResultDeny)
+                esito = chiedi("Bash", cmd)
+                self.assertIsInstance(esito, PermissionResultDeny)
+                self.assertIn("regola Bash(", esito.message)
         for cmd in ("python3 -I scripts/estrai.py a.zip out", "cd s && python3 x.py",
                     "git status", "ls -la", "echo rmdir"):
             with self.subTest(cmd=cmd):
