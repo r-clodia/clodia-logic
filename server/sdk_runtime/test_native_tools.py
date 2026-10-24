@@ -384,8 +384,9 @@ class TheRootCallbackMustNotSayYesToEverythingTests(unittest.TestCase):
         from . import session as S
         g = S._permission_gate(negati)
 
-        def chiedi(nome):
-            return asyncio.run(g(nome, {}, None))
+        def chiedi(nome, comando=None):
+            inp = {} if comando is None else {"command": comando}
+            return asyncio.run(g(nome, inp, None))
 
         return chiedi
 
@@ -400,12 +401,30 @@ class TheRootCallbackMustNotSayYesToEverythingTests(unittest.TestCase):
         for nome in ("Read", "Bash", "mcp__clodia-tools__topic.open"):
             self.assertIsInstance(chiedi(nome), PermissionResultAllow)
 
-    def test_a_pattern_rule_denies_the_base_tool(self):
-        """`Bash(rm:*)` è una regola che applica il CLI — ma se il callback
-        approvasse `Bash`, il CLI non la vedrebbe nemmeno. Si nega la base: è la
-        direzione in cui un errore si vede subito."""
+    def test_a_bash_pattern_rule_denies_the_matching_commands_only(self):
+        """Fino al 24 ott 2026 `Bash(rm:*)` negava la base `Bash`: clodia, la cui
+        blocklist è fatta solo di schemi, è rimasta senza shell per due mesi e
+        mezzo. Lo schema si valuta sul comando, nelle posizioni di comando."""
+        from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+        chiedi = self._gate(["Bash(rm:*)", "Bash(*email_client*)"])
+        for cmd in ("rm -rf /", "rm", "cd x && rm -rf y", "ls; rm a", "echo | rm a",
+                    "FOO=1 rm a", "$(rm a)", "python3 tools/email_client.py send",
+                    "/bin/rm x", "\\rm x", "sudo rm x", "env rm x", "xargs rm",
+                    "timeout 5 rm x", "if true; then rm x; fi", "{ rm x; }",
+                    "FOO='a b' rm x",
+                    "cd t && python3 /x/email_client.py"):
+            with self.subTest(cmd=cmd):
+                esito = chiedi("Bash", cmd)
+                self.assertIsInstance(esito, PermissionResultDeny)
+                self.assertIn("regola Bash(", esito.message)
+        for cmd in ("python3 -I scripts/estrai.py a.zip out", "cd s && python3 x.py",
+                    "git status", "ls -la", "echo rmdir"):
+            with self.subTest(cmd=cmd):
+                self.assertIsInstance(chiedi("Bash", cmd), PermissionResultAllow)
+
+    def test_a_pattern_on_another_tool_still_denies_the_base(self):
         from claude_agent_sdk import PermissionResultDeny
-        self.assertIsInstance(self._gate(["Bash(rm:*)"])("Bash"),
+        self.assertIsInstance(self._gate(["Read(secrets/**)"])("Read"),
                               PermissionResultDeny)
 
     def test_an_empty_blocklist_allows_everything(self):
