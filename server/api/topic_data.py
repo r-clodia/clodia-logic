@@ -9,6 +9,10 @@ The gateway holds the catalog, the imports and the decision (clodia-tools
   migration plan/apply, the `data_access` switch).
 - `POST /clodia/channels/{tier}/{name}/data`: the topic's owner, a PERSON
   (import, remove, grant). The gateway re-checks importer, clearance, tier.
+- `GET|POST /clodia/channels/{tier}/{name}/tools` (#609): the room's toolbox —
+  read by its participants, changed by its owner (or an admin), a person.
+- `GET|POST /clodia/dm-tools` (#609): the verbs enabled outside a room — read
+  by any person, changed by an admin.
 
 The person is forwarded as `by` with role and clearance: the gateway trusts
 those fields only on the agent-server's signed door.
@@ -124,5 +128,64 @@ async def channel_index(tier: str, name: str, request: Request) -> dict:
         return await asyncio.to_thread(topics_client.topic_index_action, tier, name,
                                        {"action": "enable" if enabled else "disable",
                                         **_actor(who)})
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+
+
+async def _room_person(request: Request, tier: str, name: str, *, owner: bool) -> str:
+    """A person of the room: its owner (or an admin) to change, a participant
+    to read. Agents never pass: the toolbox is a wall of the room."""
+    from .channels import _require_member, _require_scope_owner
+    topic = await topics_client.async_open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "canale non trovato")
+    who = _person(request)
+    if admin.is_admin(who):
+        return who
+    meta = topic.get("meta", {})
+    return _require_scope_owner(request, meta) if owner else _require_member(request, meta)
+
+
+@router.get("/clodia/channels/{tier}/{name}/tools")
+async def get_channel_tools(tier: str, name: str, request: Request) -> dict:
+    await _room_person(request, tier, name, owner=False)
+    try:
+        return await asyncio.to_thread(topics_client.topic_tools, tier, name)
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+
+
+@router.post("/clodia/channels/{tier}/{name}/tools")
+async def post_channel_tools(tier: str, name: str, request: Request) -> dict:
+    who = await _room_person(request, tier, name, owner=True)
+    body = await request.json()
+    if (body or {}).get("action") not in ("enable", "disable", "except", "unexcept"):
+        raise HTTPException(400, "azione: enable | disable | except | unexcept")
+    try:
+        return await asyncio.to_thread(topics_client.topic_tools, tier, name,
+                                       {**body, **_actor(who)})
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+
+
+@router.get("/clodia/dm-tools")
+async def get_dm_tools(request: Request) -> dict:
+    _person(request)
+    try:
+        return await asyncio.to_thread(topics_client.dm_tools)
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+
+
+@router.post("/clodia/dm-tools")
+async def post_dm_tools(request: Request) -> dict:
+    who = _person(request)
+    if not admin.is_admin(who):
+        raise HTTPException(403, "i verbi fuori dai canali li decide un admin")
+    body = await request.json()
+    if (body or {}).get("action") not in ("enable", "disable"):
+        raise HTTPException(400, "azione: enable | disable")
+    try:
+        return await asyncio.to_thread(topics_client.dm_tools, {**body, **_actor(who)})
     except topics_client.TopicsClientError as e:
         raise _gw(e)
