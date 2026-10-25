@@ -642,6 +642,15 @@ def _permission_gate(disallowed: list[str] | None, chat_id: str = "",
                     # La misura non rompe la decisione misurata: negare resta il
                     # lavoro di questa funzione, registrarlo è un di più.
                     LOG.warning("rifiuto non registrato per %s (%s)", nome, chat_id)
+            from .native_tools import SUBAGENT_TOOLS as _subagents
+            if nome in _subagents:
+                return PermissionResultDeny(
+                    message=(f"'{nome}' è vietato: uno spawn non crea subagenti, è "
+                             "l'unità di esecuzione più piccola e resta impegnato "
+                             "nel proprio turno. Fai il lavoro tu stesso; se serve "
+                             "lavoro in parallelo, chiedilo nella stanza a un "
+                             "seed multi-spawn (le sue istanze sono visibili e "
+                             "menzionabili)."))
             return PermissionResultDeny(
                 message=(f"'{nome}' non è fra gli strumenti dichiarati da questo "
                          f"agente (native_tools nel suo seed)."))

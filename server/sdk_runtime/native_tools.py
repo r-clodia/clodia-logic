@@ -161,6 +161,16 @@ def unenforced_denied(sdk: str | None, denied: list[str] | None) -> list[str]:
     return sorted(t for t in (denied or []) if t.split("(", 1)[0] not in copre)
 
 
+#: Tools that create SUBAGENTS (or remote agents) inside a spawn. Never granted
+#: (owner's decision, 25 Oct 2026): the spawn is the smallest unit of
+#: execution. Work that needs parallel workers is given to a MULTISPAWN seed,
+#: whose spawns are visible in the room, mentionable and accountable — a
+#: subagent is none of these, and when its parent turn ends it dies silently
+#: (seen 25 Oct in preventivi-tomato: «sta ancora lavorando», then nothing).
+#: On opencode the `task` tool maps to `Agent` (`_OPENCODE_MAP`), so it goes too.
+SUBAGENT_TOOLS: tuple[str, ...] = ("Agent", "Workflow", "RemoteTrigger")
+
+
 def union_allowed(proprio: list[str] | None,
                   pavimento: list[str] | None) -> list[str] | None:
     """I nativi concessi: quelli del seed PIÙ il pavimento dell'arciseed.
@@ -173,7 +183,7 @@ def union_allowed(proprio: list[str] | None,
     """
     if proprio is None and pavimento is None:
         return None
-    return sorted(set(proprio or []) | set(pavimento or []))
+    return sorted((set(proprio or []) | set(pavimento or [])) - set(SUBAGENT_TOOLS))
 
 
 def tool_reachable(sdk: str | None, allowed: list[str] | set[str] | None,
@@ -409,7 +419,9 @@ def disallowed_for(allowed: list[str] | set[str] | None) -> list[str]:
     corrisponde a niente (clodia-platform#199, punto 4).
     """
     if allowed is None:
-        return []
+        # Nobody spoke: no restriction — except subagents, never granted.
+        return sorted(t for t in SUBAGENT_TOOLS if t in known_tools())
+    allowed = [a for a in allowed if a not in SUBAGENT_TOOLS]
     esatti, prefissi, _, _ = _granted(allowed)
     finti = set(NOT_A_TOOL_HERE)
     return sorted(t for t in known_tools()
@@ -520,6 +532,8 @@ def opencode_permission(allowed: list[str] | set[str] | None,
     container, quindi la tabella è a mano e `OPENCODE_UNMAPPED` tiene in vista
     quel che si è deciso di non tradurre.
     """
+    if allowed is not None:
+        allowed = [a for a in allowed if a not in SUBAGENT_TOOLS]
     esatti, prefissi, pattern, nudi = _granted(allowed or [])
 
     def concesso(nomi: tuple[str, ...]) -> bool:
@@ -530,6 +544,10 @@ def opencode_permission(allowed: list[str] | set[str] | None,
         for chiave, nomi in OPENCODE_KEYS.items():
             if not concesso(nomi):
                 perm[chiave] = "deny"
+    # Subagents are never granted, declared or not (SUBAGENT_TOOLS).
+    for chiave, nomi in OPENCODE_KEYS.items():
+        if set(nomi) & set(SUBAGENT_TOOLS):
+            perm[chiave] = "deny"
     if perm.get("bash") == "deny":
         # `Bash` non concesso: la shell non c'è, e una mappa di regole la
         # riaprirebbe. Un diniego secco è più forte di qualunque ritaglio, e il

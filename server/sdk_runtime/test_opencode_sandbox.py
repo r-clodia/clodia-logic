@@ -76,12 +76,13 @@ class TheDeniedPatternsReachOpenCode(unittest.TestCase):
         il sandbox come si stringe la shell che il seed ha già. Un seed che non
         si pronuncia sui nativi ha comunque diritto al suo divieto."""
         perm = nt.opencode_permission(None, _sandbox(deny_shell_patterns=["sudo *"]))
-        self.assertEqual(perm, {"bash": {"sudo *": "deny"}})
+        self.assertEqual(perm, {"bash": {"sudo *": "deny"}, "task": "deny"})
 
     def test_saying_nothing_emits_nothing(self):
         """Una sezione emessa a vuoto è la porta aperta al difetto opposto."""
-        self.assertEqual(nt.opencode_permission(None, _sandbox()), {})
-        self.assertEqual(nt.opencode_permission(None, None), {})
+        # Nothing but the subagent tool, never granted (clodia-platform#619).
+        self.assertEqual(nt.opencode_permission(None, _sandbox()), {"task": "deny"})
+        self.assertEqual(nt.opencode_permission(None, None), {"task": "deny"})
 
 
 class TheOrderIsTheRule(unittest.TestCase):

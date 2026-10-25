@@ -67,8 +67,10 @@ class TheKnownSetComesFromTheCliTests(unittest.TestCase):
 class TheSubtractionTests(unittest.TestCase):
     def test_nobody_declaring_restricts_nothing(self):
         """`None` = non mi pronuncio. Una lista vuota che chiudesse tutto
-        verrebbe spenta il giorno dopo, e allora non esisterebbe."""
-        self.assertEqual(nt.disallowed_for(None), [])
+        verrebbe spenta il giorno dopo, e allora non esisterebbe. Unica
+        eccezione: i subagenti, mai concessi (25 ott 2026)."""
+        self.assertEqual(set(nt.disallowed_for(None)),
+                         set(nt.SUBAGENT_TOOLS) & nt.known_tools())
 
     def test_an_empty_declaration_denies_everything(self):
         """`[]` invece è una dichiarazione, e va rispettata.
@@ -260,7 +262,7 @@ class TheSameDeclarationOnOpenCodeTests(unittest.TestCase):
     solo i dinieghi, che è la stessa direzione tenuta su claude."""
 
     def test_nobody_declaring_writes_no_permission(self):
-        self.assertEqual(nt.opencode_permission(None), {})
+        self.assertEqual(nt.opencode_permission(None), {"task": "deny"})
 
     def test_what_is_not_granted_is_denied_by_name(self):
         perm = nt.opencode_permission(["Read", "Bash", "Grep"])
@@ -494,3 +496,25 @@ class TheCodexSandboxFollowsTheSeedTests(unittest.TestCase):
         `ENFORCEABLE["codex"]` guadagnasse `Bash` per via del sandbox, la scheda
         dell'agente direbbe «applicato» di una cosa applicata a metà."""
         self.assertIn("Bash", nt.unenforced_denied("codex", ["Bash"]))
+
+
+class NoSubagentsTests(unittest.TestCase):
+    """A spawn is the smallest unit of execution: no subagents, ever. Parallel
+    work goes to a multi-spawn seed (owner's decision, 25 Oct 2026)."""
+
+    def test_a_seed_that_declares_agent_does_not_get_it(self):
+        self.assertIn("Agent", nt.disallowed_for(["Read", "Agent", "Bash"]))
+        self.assertNotIn("Agent", nt.union_allowed(["Agent"], ["Read"]))
+
+    def test_a_family_or_floor_cannot_bring_it_back(self):
+        self.assertIn("Agent", nt.disallowed_for(nt.union_allowed(None, ["Agent", "Read"])))
+
+    def test_opencode_task_is_denied_even_when_declared(self):
+        self.assertEqual(nt.opencode_permission(["Agent", "Read"]).get("task"), "deny")
+
+    def test_the_gate_explains_the_refusal(self):
+        import asyncio
+        from . import session as S
+        g = S._permission_gate(nt.disallowed_for(None))
+        r = asyncio.run(g("Agent", {}, None))
+        self.assertIn("multi-spawn", getattr(r, "message", ""))
