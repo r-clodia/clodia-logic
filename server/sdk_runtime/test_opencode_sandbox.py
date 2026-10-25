@@ -82,7 +82,7 @@ class TheDeniedPatternsReachOpenCode(unittest.TestCase):
         """Una sezione emessa a vuoto è la porta aperta al difetto opposto."""
         # Nothing but the subagent tool, never granted (clodia-platform#619).
         self.assertEqual(nt.opencode_permission(None, _sandbox()), {"task": "deny"})
-        self.assertEqual(nt.opencode_permission(None, None), {})
+        self.assertEqual(nt.opencode_permission(None, None), {"task": "deny"})
 
 
 class TheOrderIsTheRule(unittest.TestCase):
