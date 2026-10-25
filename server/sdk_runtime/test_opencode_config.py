@@ -74,7 +74,8 @@ class OpenCodeConfigTests(unittest.TestCase):
     def test_a_seed_that_says_nothing_gets_no_permission_section(self):
         """Non pronunciarsi non restringe — qui come su claude. Una sezione
         emessa a vuoto negherebbe tutto al primo seed non aggiornato."""
-        self.assertNotIn("permission", self._config_with_native(None))
+        # Only the subagent tool, never granted (clodia-platform#619).
+        self.assertEqual(self._config_with_native(None).get("permission"), {"task": "deny"})
 
     def test_glm_52_defaults_to_no_reasoning_for_stale_imported_seed(self):
         stale_spec = SimpleNamespace(reasoning_effort=None)
