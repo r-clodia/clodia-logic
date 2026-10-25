@@ -519,31 +519,66 @@ DEFAULT_KIND = "clodia"
 #
 # Da qui `_permission_gate`: lo stesso «approva tutto» che serviva al flag, meno
 # ciò che qualcuno ha deciso di negare.
-def _bash_rule_hits(rule: str, command: str) -> bool:
-    """Una regola `Bash(<schema>)` colpisce `command`?
+#: Words that run the command after them: a rule on the program looks past them.
+_BASH_WRAPPERS = frozenset({"do", "then", "else", "elif", "if", "while", "until", "time",
+                            "!", "{", "sudo", "command", "env", "exec", "eval", "nohup",
+                            "nice", "xargs", "builtin"})
+_BASH_SEGMENT = re.compile(r"\$\(|[;&|\n`()]")
+_BASH_ASSIGN = re.compile(r"[A-Za-z_][A-Za-z0-9_]*=")
 
-    Le due forme della blocklist: `prefisso:*` (il comando, in una posizione di
-    comando — inizio, o dopo `;`, `&&`, `|`, `(`, `$(` e le assegnazioni
-    `VAR=…` — è `prefisso` o `prefisso …`) e un glob (`*email_client*`), che
-    vale sull'intera riga. Nel dubbio colpisce: è una blocklist."""
+
+def _bash_programs(command: str):
+    """The program of every command position of `command`, LINEARLY.
+
+    Until 25 Oct 2026 this was one regular expression with nested quantifiers
+    (`(?:VAR=(?:'…'|"…"|\S)*\s+)*`): on a long command that did not match —
+    a heredoc with a whole script, as a subagent wrote at 18:45 — it backtracked
+    exponentially, inside `can_use_tool`, on the event loop: the agent-server
+    sat at 100% CPU for 34 minutes and served nothing. Now: split on the
+    separators, skip assignments and wrappers by token, take the basename.
+    """
+    import shlex
+    for seg in _BASH_SEGMENT.split(command or ""):
+        try:
+            toks = shlex.split(seg)     # quotes: `FOO='a b' rm` is one assignment
+        except ValueError:
+            toks = seg.split()          # unbalanced quotes: words, still linear
+        k = 0
+        while k < len(toks):
+            t = toks[k]
+            if _BASH_ASSIGN.match(t) or t in _BASH_WRAPPERS:
+                k += 1
+                continue
+            if t == "timeout":
+                k += 2          # `timeout <duration> cmd`
+                continue
+            break
+        if k < len(toks):
+            prog = toks[k].lstrip("\\").strip("'\"")
+            yield prog.rsplit("/", 1)[-1], toks[k + 1:]
+
+
+def _bash_rule_hits(rule: str, command: str) -> bool:
+    """Does a rule `Bash(<pattern>)` hit `command`?
+
+    The blocklist's two forms: `prefix:*` (the program in a command position is
+    `prefix`, or `prefix …` for a multi-word prefix) and a glob
+    (`*email_client*`), matched as a substring when it is one. Linear in the
+    length of the command; when in doubt it hits — it is a blocklist."""
     import fnmatch
-    import re as _re
     cmd = str(command or "")
     if rule.endswith(":*"):
-        prefisso = rule[:-2].strip()
-        if not prefisso:
+        words = rule[:-2].split()
+        if not words:
             return True
-        return bool(_re.search(
-            r"(?:^|[;&|(`\n]|\$\()\s*"
-            # assegnazioni, anche con valori fra virgolette
-            r"(?:[A-Za-z_][A-Za-z0-9_]*=(?:'[^']*'|\"[^\"]*\"|\S)*\s+)*"
-            # parole chiave e wrapper che lasciano eseguire il comando dopo
-            r"(?:(?:do|then|else|elif|if|while|until|time|!|\{|sudo|command|env|exec|"
-            r"eval|nohup|nice|xargs|timeout\s+\S+)\s+)*"
-            # `\rm`, `/bin/rm`
-            r"\\?(?:\S*/)?"
-            + _re.escape(prefisso) + r"(?:\s|$)", cmd))
-    return fnmatch.fnmatchcase(cmd, rule) or fnmatch.fnmatchcase(cmd, f"*{rule}*")
+        for prog, rest in _bash_programs(cmd):
+            if prog == words[0] and rest[:len(words) - 1] == words[1:]:
+                return True
+        return False
+    core = rule.strip("*")
+    if core and "*" not in core and "?" not in core and "[" not in core:
+        return core in cmd
+    return fnmatch.fnmatchcase(cmd[:20000], rule) or fnmatch.fnmatchcase(cmd[:20000], f"*{rule}*")
 
 
 def _permission_gate(disallowed: list[str] | None, chat_id: str = "",

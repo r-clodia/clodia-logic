@@ -422,6 +422,19 @@ class TheRootCallbackMustNotSayYesToEverythingTests(unittest.TestCase):
             with self.subTest(cmd=cmd):
                 self.assertIsInstance(chiedi("Bash", cmd), PermissionResultAllow)
 
+    def test_a_long_command_is_judged_in_linear_time(self):
+        """25 Oct 2026: a heredoc with a whole script made the old regex
+        backtrack for 34 minutes on the event loop. Now it must be instant."""
+        import time
+        from claude_agent_sdk import PermissionResultAllow, PermissionResultDeny
+        chiedi = self._gate(["Bash(rm:*)", "Bash(*email_client*)"])
+        script = "cd /x && cat > build.py <<'E'\n" + ("x = 'a' * 10  # " + "y" * 60 + "\n") * 4000 + "E\npython3 build.py"
+        t0 = time.monotonic()
+        self.assertIsInstance(chiedi("Bash", script), PermissionResultAllow)
+        self.assertIsInstance(chiedi("Bash", "FOO='" + "a b " * 20000 + "' ls"), PermissionResultAllow)
+        self.assertIsInstance(chiedi("Bash", script + "\nrm -rf /"), PermissionResultDeny)
+        self.assertLess(time.monotonic() - t0, 1.0)
+
     def test_a_pattern_on_another_tool_still_denies_the_base(self):
         from claude_agent_sdk import PermissionResultDeny
         self.assertIsInstance(self._gate(["Read(secrets/**)"])("Read"),
