@@ -148,6 +148,14 @@ async def _room_person(request: Request, tier: str, name: str, *, owner: bool) -
     return _require_scope_owner(request, meta) if owner else _require_member(request, meta)
 
 
+#: The actions of the room's tools (#609), and the MCP form of #620: whole
+#: MCPs, their resource rows and the per-agent levels. The gateway validates
+#: every argument; this list only keeps unknown actions off its door.
+_ROOM_TOOL_ACTIONS = ("enable", "disable", "except", "unexcept",
+                      "enable_mcp", "disable_mcp", "set_resource", "unset_resource",
+                      "except_mcp")
+
+
 @router.get("/clodia/channels/{tier}/{name}/tools")
 async def get_channel_tools(tier: str, name: str, request: Request) -> dict:
     await _room_person(request, tier, name, owner=False)
@@ -161,8 +169,8 @@ async def get_channel_tools(tier: str, name: str, request: Request) -> dict:
 async def post_channel_tools(tier: str, name: str, request: Request) -> dict:
     who = await _room_person(request, tier, name, owner=True)
     body = await request.json()
-    if (body or {}).get("action") not in ("enable", "disable", "except", "unexcept"):
-        raise HTTPException(400, "azione: enable | disable | except | unexcept")
+    if (body or {}).get("action") not in _ROOM_TOOL_ACTIONS:
+        raise HTTPException(400, "azione: " + " | ".join(_ROOM_TOOL_ACTIONS))
     try:
         return await asyncio.to_thread(topics_client.topic_tools, tier, name,
                                        {**body, **_actor(who)})
