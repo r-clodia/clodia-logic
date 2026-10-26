@@ -1255,7 +1255,18 @@ GATEABLE_NATIVE_TOOLS = frozenset({"WebSearch"})
 
 
 def _resolve_native_gated(kind: str) -> list[str]:
-    """The native tools this seed may use after a person's yes (#570)."""
+    """The native tools this seed may use after the gateway's yes (#570).
+
+    Since 26 Oct 2026 (owner, option C) the ROOM decides WebSearch: it is
+    `web.search` of «Web» in the Strumenti panel, and `native.consent` answers
+    with A·V·R·Q. So every seed reaches it through that consent — a seed no
+    longer has to declare it, and declaring it no longer bypasses the room.
+    """
+    return sorted(GATEABLE_NATIVE_TOOLS)
+
+
+def _resolve_native_gated_declared(kind: str) -> list[str]:
+    """The seed's own `gated_native_tools` (#570), kept for introspection."""
     try:
         from ..agents.loader import registry
         spec = registry.get_by_name(kind)
@@ -1966,7 +1977,9 @@ class ChatSession:
             # fa da bypass PER CIÒ CHE NON È NEGATO — non per tutto.
             # I nativi «su consenso» (#570) escono dai negati SOLO qui, dove il
             # callback li ferma e chiede: altrove restano negati.
-            gated = [t for t in _resolve_native_gated(self.kind) if t in disallowed]
+            # Gated ALWAYS — whether the seed denied it or granted it outright:
+            # a seed must not search outside what its room authorised.
+            gated = _resolve_native_gated(self.kind)
             if gated:
                 disallowed = [t for t in disallowed if t not in gated]
                 if disallowed:
