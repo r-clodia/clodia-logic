@@ -364,6 +364,18 @@ def topic_data_action(tier: str, name: str, body: dict) -> dict:
     return r.json()
 
 
+def tools_epoch(tier: str, name: str, agent: str) -> str:
+    """The fingerprint of what decides `agent`'s tools in the room (#622)."""
+    url = f"{_base()}/{tier}/{name}/tools-epoch"
+    try:
+        r = _gw_http.get(url, headers=_headers(), params={"agent": agent}, timeout=10)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway tools-epoch irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("tools-epoch", r)
+    return str(r.json().get("epoch") or "")
+
+
 def topic_tools(tier: str, name: str, body: dict | None = None) -> dict:
     """The room's toolbox (#605/#609): GET without `body`, POST with it."""
     url = f"{_base()}/{tier}/{name}/tools"

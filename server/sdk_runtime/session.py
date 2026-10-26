@@ -4979,6 +4979,16 @@ class ChatManager:
                 LOG.warning("%s: stop fallito per %s", motivo, cid, exc_info=True)
         return reaped
 
+    async def cool(self, chat_id: str, motivo: str) -> bool:
+        """Evict ONE session «to cold», as `reap_idle` does: the subprocess
+        stops, the history stays, `create()` brings it back at the next turn,
+        and no `chat_deleted` (the chat does not disappear). Never one in the
+        middle of a turn. True if it was evicted."""
+        target = self._chats.get(chat_id)
+        if target is None:
+            return False
+        return bool(await self._evict(lambda chat: chat is target, motivo))
+
     async def reap_dead(self, protect=None):
         """Evince le sessioni il cui subprocess è già morto (#397 §2).
 

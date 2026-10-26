@@ -2707,6 +2707,7 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     await _annuncia_cambio_coordinatore(tier, name, tier_real)
     if not await _provider_della_stanza_ancora_valido(tier, name, tier_real, spec, chat_id):
         return False
+    await _strumenti_della_sessione_aggiornati(tier, name, spec.name, chat_id)
     created = False
     try:
         chat = manager.get(chat_id)
@@ -4233,6 +4234,54 @@ def _motivo_decadenza(pid: str, tier_real: str, spec) -> str:
         return "non più valido"
 
 
+#: The tools fingerprint each live channel session was built with (#622).
+#: Keyed by chat_id; a session that is gone simply has a stale entry, which
+#: the next creation overwrites.
+_TOOLS_EPOCH: dict[str, str] = {}
+
+
+async def _strumenti_della_sessione_aggiornati(tier: str, name: str, agent: str,
+                                               chat_id: str) -> None:
+    """Rebuild an idle session whose tools changed since it was built (#622).
+
+    A session takes its tool list from the gateway when it starts. When the
+    room's MCPs, resources, rules or data change — or the global rules, or the
+    gateway itself — the old list stayed until someone restarted the session by
+    hand (owner, 26 Oct 2026: «dovrebbe essere automatico»). The gateway gives
+    a fingerprint of all of that; a different one means the session is stale.
+
+    The rebuilt session gets the room's history like any new one. A session in
+    the middle of a turn is left alone (the next turn retries). A gateway that
+    does not answer changes nothing: in doubt, keep working.
+    """
+    try:
+        epoch = await asyncio.to_thread(topics_client.tools_epoch, tier, name, agent)
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("tools-epoch non disponibile per %s su %s/%s: %s", agent, tier, name, e)
+        return
+    if not epoch:
+        return
+    try:
+        manager.get(chat_id)
+    except KeyError:
+        _TOOLS_EPOCH[chat_id] = epoch        # the session about to be created
+        return
+    known = _TOOLS_EPOCH.get(chat_id)
+    if known is None:
+        _TOOLS_EPOCH[chat_id] = epoch        # a session from before this check
+        return
+    if known == epoch:
+        return
+    if _chat_busy(chat_id):
+        LOG.info("strumenti di %s su %s/%s cambiati ma la sessione è occupata: "
+                 "rifaccio al prossimo turno", agent, tier, name)
+        return
+    LOG.info("strumenti di %s su %s/%s cambiati: sessione %s ricreata", agent,
+             tier, name, chat_id)
+    if await manager.cool(chat_id, "tools_epoch"):
+        _TOOLS_EPOCH[chat_id] = epoch
+
+
 async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: str,
                                                spec, chat_id: str) -> bool:
     """Il provider della sessione VIVA regge ancora il tier? Altrimenti la rifà.
@@ -5429,6 +5478,7 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     if not await _provider_della_stanza_ancora_valido(tier, name, tier_real,
                                                      responder, chat_id):
         return None, None
+    await _strumenti_della_sessione_aggiornati(tier, name, responder.name, chat_id)
     created = False
     try:
         chat = manager.get(chat_id)
