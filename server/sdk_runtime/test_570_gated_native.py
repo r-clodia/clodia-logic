@@ -54,10 +54,14 @@ class GatedPermissionTests(unittest.TestCase):
 
 
 class SeedTests(unittest.TestCase):
-    def test_only_gateable_tools_are_taken(self) -> None:
-        spec = MagicMock(gated_native_tools=["WebSearch", "Bash", "WebFetch"])
-        with patch("server.agents.loader.registry.get_by_name", return_value=spec):
-            self.assertEqual(S._resolve_native_gated("clodia"), ["WebSearch"])
+    def test_every_seed_reaches_websearch_through_the_room(self) -> None:
+        """Option C (owner, 26 Oct 2026): the room's `web.search` decides, so
+        every seed gets WebSearch behind the gateway's consent — declared or
+        not — and nothing else is taken."""
+        for decl in (["WebSearch", "Bash", "WebFetch"], None, []):
+            spec = MagicMock(gated_native_tools=decl)
+            with patch("server.agents.loader.registry.get_by_name", return_value=spec):
+                self.assertEqual(S._resolve_native_gated("chiunque"), ["WebSearch"])
 
     def test_the_spec_accepts_the_field(self) -> None:
         from ..agents.models import AgentSpec
