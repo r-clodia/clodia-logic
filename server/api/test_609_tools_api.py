@@ -63,10 +63,13 @@ class RoomToolsTests(_Base):
             c = self.client("davide")
             self.assertEqual(c.post("/clodia/channels/SEAL-1/x/tools",
                                     json={"action": "svuota"}).status_code, 400)
+            self.assertEqual(c.post("/clodia/channels/SEAL-1/x/tools",
+                                    json={"action": "except", "verb": "web.post",
+                                          "agent": "mario"}).status_code, 400)
             r = c.post("/clodia/channels/SEAL-1/x/tools",
-                       json={"action": "except", "verb": "web.post", "agent": "mario"})
+                       json={"action": "enable", "verb": "web.post"})
         self.assertEqual(r.status_code, 200)
-        self.assertEqual((self.sent[-1]["by"], self.sent[-1]["agent"]), ("davide", "mario"))
+        self.assertEqual(self.sent[-1]["by"], "davide")
 
     def test_the_mcp_actions_reach_the_gateway(self):
         """#620: whole MCPs, resource rows and levels travel with the person."""
@@ -76,8 +79,6 @@ class RoomToolsTests(_Base):
                          {"action": "set_resource", "mcp": "google",
                           "uri": "gdrive:folder/F1", "effect": "allow"},
                          {"action": "unset_resource", "mcp": "google", "uri": "gdrive:folder/F1"},
-                         {"action": "except_mcp", "mcp": "google", "agent": "mario",
-                          "level": "read"},
                          {"action": "disable_mcp", "mcp": "google"}):
                 self.assertEqual(c.post("/clodia/channels/SEAL-1/x/tools", json=body).status_code,
                                  200, body)

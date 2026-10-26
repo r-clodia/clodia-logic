@@ -149,11 +149,11 @@ async def _room_person(request: Request, tier: str, name: str, *, owner: bool) -
 
 
 #: The actions of the room's tools (#609), and the MCP form of #620: whole
-#: MCPs, their resource rows and the per-agent levels. The gateway validates
-#: every argument; this list only keeps unknown actions off its door.
-_ROOM_TOOL_ACTIONS = ("enable", "disable", "except", "unexcept",
-                      "enable_mcp", "disable_mcp", "set_resource", "unset_resource",
-                      "except_mcp")
+#: MCPs and their resource rows. No per-agent exceptions (owner, 26 Oct). The
+#: gateway validates every argument; this list only keeps unknown actions off
+#: its door.
+_ROOM_TOOL_ACTIONS = ("enable", "disable", "enable_mcp", "disable_mcp",
+                      "set_resource", "unset_resource")
 
 
 @router.get("/clodia/channels/{tier}/{name}/tools")
