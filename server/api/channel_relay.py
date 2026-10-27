@@ -270,7 +270,7 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list, adapter=None)
             # darla (#531), altrimenti la richiesta si gestisce come rifiutata
             # più sotto, in `_act_on_request`.
             trigger = m
-            if _room_can_answer(meta, participants, tier):
+            if _room_can_answer(meta, participants, tier, topic):
                 try:
                     await adapter.send(
                         chat_id,
@@ -359,20 +359,34 @@ def _coordinator_of(meta: dict, participants: list, tier: str) -> str | None:
         return None
 
 
-def _can_deliver(agent: str) -> bool:
-    """True se il seed dell'agente dichiara `channel.deliver` (#531): l'unica via
-    per rispondere fuori dalla stanza da quando il messaggero è stato ritirato."""
+def _can_deliver(agent: str, scope: str | None = None) -> bool:
+    """True if `agent` has `channel.deliver` in this room (#531): the only way
+    to answer outside the room since the messenger was retired.
+
+    Asked of the gateway's tuples (#626): the seeds no longer carry verbs.
+    Direction of error when the gateway cannot answer: the last known answer
+    (an hour), otherwise the seed's old declaration, otherwise YES. This only
+    decides whether a request is ACKed and taken on; the delivery itself is
+    `channel.deliver`, which the gateway still decides at call time and refuses
+    fail-closed. A wrong yes costs an ACK followed by a refused delivery; a
+    wrong no would drop a legitimate request on a transient error."""
+    from ..agents import authz_grants
+    ans = authz_grants.has(agent, "channel.deliver", scope)
+    if ans is not None:
+        return ans
     from ..agents.loader import registry
     spec = registry.get_by_name(agent)
     grants = {str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])}
-    return bool(grants & {"channel.deliver", "channel.*", "*"})
+    return bool(grants & {"channel.deliver", "channel.*", "*"}) if grants else True
 
 
-def _room_can_answer(meta: dict, participants: list, tier: str) -> bool:
+def _room_can_answer(meta: dict, participants: list, tier: str,
+                     topic: str | None = None) -> bool:
     """La stanza può rispondere sul trasporto? Senza coordinatore determinabile
     si assume di sì: decide il routing, come prima di #531."""
     coordinatore = _coordinator_of(meta, participants, tier)
-    return not coordinatore or _can_deliver(coordinatore)
+    return not coordinatore or _can_deliver(
+        coordinatore, f"{tier}/{topic}" if topic else None)
 
 
 async def _refuse_unanswerable(chat_id, instance: str, tier: str, topic: str,
@@ -419,7 +433,7 @@ async def _act_on_request(chat_id, instance: str, tier: str, topic: str,
     meta_turn["participants"] = [p for p in participants
                                  if not _is_messenger(p) and p != instance]
     coordinatore = _coordinator_of(meta, participants, tier)
-    if coordinatore and not _can_deliver(coordinatore):
+    if coordinatore and not _can_deliver(coordinatore, f"{tier}/{topic}"):
         await _refuse_unanswerable(chat_id, instance, tier, topic, coordinatore,
                                    trigger, adapter)
         return
@@ -497,7 +511,7 @@ async def _relay_vetted_chat(chat_id, instance: str, tier: str, topic: str, meta
     if trigger is not None:
         await _save_attachments(tier, topic, [trigger], adapter)
         disp = adapter.sender_label(trigger)
-        if _room_can_answer(meta, participants, tier):
+        if _room_can_answer(meta, participants, tier, topic):
             try:
                 await adapter.send(chat_id, f"✅ Ricevuto, {disp}. Prendo in carico nel topic.",
                                    thread_id=trigger.get("thread_id"))

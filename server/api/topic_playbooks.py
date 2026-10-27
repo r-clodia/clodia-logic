@@ -96,8 +96,16 @@ def _coordinator_can_compose(contact_agent: str | None) -> bool:
     if not contact_agent:
         return False
     spec = registry.get_by_name(contact_agent)
-    return bool(spec and "topic.suggest_team" in
-                (getattr(spec, "tool_permissions", None) or []))
+    if not spec:
+        return False
+    # `topic.*` is every agent's floor (global tuple), and the gateway decides
+    # (#626): ask it, outside a room (the welcome is posted as the room is born).
+    from ..agents import authz_grants
+    ans = authz_grants.has(contact_agent, "topic.suggest_team", None)
+    if ans is not None:
+        return ans
+    # Gateway mute: the seed's declaration while seeds still carry one.
+    return "topic.suggest_team" in (getattr(spec, "tool_permissions", None) or [])
 
 
 def welcome_message(name: str, title: str, topic_type: str,

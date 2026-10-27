@@ -100,8 +100,15 @@ def _agent_collections(spec) -> list[str]:
     #           punto avrà i due assi, l'espansione va fatta filtrando per tier.
     colls.discard("*")
     colls.discard("")
-    tp = [str(t) for t in (getattr(spec, "tool_permissions", None) or [])]
-    if any(t.startswith("eu_corpus") or t.startswith("rag.") or t == "rag" for t in tp):
+    # The platform corpus as a routing signal: the agent reaches eu_corpus or
+    # rag OUTSIDE a room (global tuples, #626 — the seeds no longer carry
+    # verbs). A room's own RAG is the room's (#621), not a trait of the agent.
+    from ..agents import authz_grants
+    tp = authz_grants.global_grants(getattr(spec, "name", "") or "")
+    if tp is None:      # gateway mute: the seed's declaration, while it exists
+        tp = [str(t) for t in (getattr(spec, "tool_permissions", None) or [])]
+    if any(t.startswith("eu_corpus") or t.startswith("rag.") or t in ("rag", "*")
+           for t in tp):
         colls.add("eu-normativa")
     return list(colls)
 

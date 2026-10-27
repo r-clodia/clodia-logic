@@ -418,6 +418,39 @@ def topic_index_action(tier: str, name: str, body: dict) -> dict:
     return r.json()
 
 
+def authz_available(agent: str, verbs, scope: str | None = None) -> dict[str, bool]:
+    """«Does `agent` have these verbs here?» from the gateway's A·V·R·Q tuples
+    (#626): the seeds no longer carry verbs. No `scope` = outside a room."""
+    url = _base().rsplit("/topics", 1)[0] + "/authz/available"
+    params = {"agent": agent, "verbs": ",".join(dict.fromkeys(str(v) for v in verbs if v))}
+    if scope:
+        params["scope"] = scope
+    try:
+        r = _gw_http.get(url, headers=_headers(), params=params, timeout=15)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway authz irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("authz/available", r)
+    return {str(k): bool(v) for k, v in ((r.json() or {}).get("available") or {}).items()}
+
+
+async def async_authz_available(agent: str, verbs, scope: str | None = None) -> dict[str, bool]:
+    return await asyncio.to_thread(authz_available, agent, list(verbs), scope)
+
+
+def authz_tuples(agent: str | None = None) -> dict:
+    """The global A·V·R·Q tuples, only `agent`'s and `*`'s when named (#626)."""
+    url = _base().rsplit("/topics", 1)[0] + "/authz"
+    try:
+        r = _gw_http.get(url, headers=_headers(),
+                         params={"agent": agent} if agent else None, timeout=15)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway authz irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("authz", r)
+    return r.json()
+
+
 def data_catalog(body: dict | None = None) -> dict:
     """The instance data catalog (#590): GET without `body`, POST with it."""
     url = _base().rsplit("/topics", 1)[0] + "/data-catalog"

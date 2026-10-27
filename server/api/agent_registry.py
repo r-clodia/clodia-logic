@@ -339,6 +339,27 @@ async def get_agent(name: str, request: Request) -> dict:
     return d
 
 
+@router.get("/{name}/authz")
+async def get_agent_authz(name: str, request: Request):
+    """The agent's GLOBAL A·V·R·Q rules (its own and `*`'s): what it may do
+    outside rooms and the governance verbs (#626). In a room the room decides
+    (Strumenti). Same door as the agent's card."""
+    spec = registry.get_by_name(name)
+    if spec is None:
+        raise HTTPException(404, f"agent '{name}' non trovato")
+    _require_self_or_admin(request, name)
+    from . import topics_client
+    try:
+        body = await asyncio.to_thread(topics_client.authz_tuples, name)
+    except topics_client.TopicsClientError as e:
+        return JSONResponse(status_code=200, headers={"Cache-Control": "no-store"},
+                            content={"agent": name, "tuples": [],
+                                     "unavailable": str(e)[:200]})
+    return JSONResponse(status_code=200, headers={"Cache-Control": "no-store"},
+                        content={"agent": name, "mode": body.get("mode"),
+                                 "tuples": body.get("tuples") or []})
+
+
 @router.get("/{name}/verbs")
 async def get_agent_verbs(name: str, request: Request):
     """Verbi effettivi del seed col lucchetto: alimenta la scheda dell'agente.
@@ -692,13 +713,22 @@ def _agent_can_admin(caller: str | None) -> bool:
     cs = registry.get_by_name(caller)
     if cs is None:
         return False
+    # The gateway's global tuples decide (#626): the seeds no longer carry
+    # verbs. Unknown (gateway mute, never answered) → the seed's declaration
+    # while seeds still carry one, else no: administering other agents is not
+    # a behaviour to guess in the permissive direction.
+    from ..agents import authz_grants
+    ans = authz_grants.has(caller, "agents.grant_tool", None)
+    if ans is not None:
+        return ans
     perms = getattr(cs, "tool_permissions", []) or []
     return "*" in perms or "agents.*" in perms or any(
         p == "agents" or p.startswith("agents.") for p in perms)
 
 
 class AgentCapsPatch(BaseModel):
-    """Set COMPLETO (non incrementale) delle liste; None = campo invariato."""
+    """Set COMPLETO (non incrementale) delle liste; None = campo invariato.
+    `tool_permissions` is refused since #626 (kept so the refusal says why)."""
     capabilities: Optional[list[str]] = None
     rules: Optional[list[str]] = None
     tool_permissions: Optional[list[str]] = None
@@ -846,7 +876,7 @@ TURN_TIMEOUT_MAX_S = 1800
 
 @router.patch("/{name}/caps", response_model=AgentSpec)
 async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -> AgentSpec:
-    """Edita capabilities / rules / tool_permissions di un agent EDITABILE.
+    """Edita capabilities / rules di un agent EDITABILE (non più i verbi, #626).
     Autorizzazione per AGENT principal (token ckt1 inoltrato dal gateway): agent
     con `agents.*`. Target immutabile → 403 (protetti si cambiano solo via
     codice/rebuild). Le liste sono set completi."""
@@ -864,22 +894,17 @@ async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -
     if patch.rules is not None:
         _validate_catalog_refs(patch.rules, "rule")
     if patch.tool_permissions is not None:
-        # Anti-escalation: il potere di amministrare gli agent (agents.*) e il
-        # wildcard totale (*) NON si conferiscono a runtime — solo via seed/codice.
-        # Altrimenti un admin potrebbe "fabbricare" nuovi admin assegnandolo.
-        for t in patch.tool_permissions:
-            if t in ("*", "agents") or t.startswith("agents."):
-                raise HTTPException(400, "non concedibile a runtime: il potere di "
-                                         "amministrazione agent ('agents.*') e il "
-                                         "wildcard totale ('*') si conferiscono solo "
-                                         "via codice/seed")
+        # #626: a seed carries no verbs any more. Refused, not ignored: a
+        # silent no-op would let the caller believe it granted (or revoked)
+        # something. Verbs are granted where they are decided now.
+        raise HTTPException(400, "i verbi non stanno più nel seed: si autorizzano "
+                                 "nella stanza (Strumenti, o runtime.room_*) oppure "
+                                 "nelle regole globali A·V·R·Q")
 
     yaml_path = Path(spec.agent_dir) / "agent.yaml"
-    prima = yaml_path.read_text()
-    text = prima
+    text = yaml_path.read_text()
     for key, items in (("capabilities", patch.capabilities),
-                       ("rules", patch.rules),
-                       ("tool_permissions", patch.tool_permissions)):
+                       ("rules", patch.rules)):
         if items is not None:
             text = _set_yaml_list(text, key, items)
     yaml_path.write_text(text)
@@ -890,41 +915,6 @@ async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -
         raise HTTPException(500, f"dopo la modifica l'agent '{name}' non valida: "
                                  f"{registry.errors().get(name)}")
 
-    # I `tool_permissions` sono una DICHIARAZIONE finché il gateway non li
-    # registra. L'autorizzazione si legge da `allowed_tools` nella config del
-    # gateway (`whitelist._agent_may`), che vive su un volume che questo processo
-    # non monta — per progetto (§3.5). Scrivere `agent.yaml` e fermarsi qui
-    # significa cambiare ciò che l'agente VEDE senza cambiare ciò che può fare:
-    # è il difetto di clodia-platform#304, dove `agents.grant_tool` rispondeva
-    # `ok` su un permesso che restava negato a ogni chiamata, e la revoca —
-    # direzione peggiore — toglieva un verbo solo sulla carta.
-    #
-    # Il canale esiste già ed è lo stesso che usa l'install di un pack
-    # (`pack_import._install_seed`): non è il soggetto che si riscrive
-    # l'autorità, è l'agent-server che la chiede al gateway, che riverifica.
-    # Si mandano SOLO gli `allowed_tools`: gli altri campi si omettono perché
-    # per il gateway l'assenza è «non mi pronuncio» e la lista vuota è
-    # «azzerali» — mandarli qui riscriverebbe gate e deny che questa PATCH non
-    # ha toccato.
-    if patch.tool_permissions is not None:
-        from . import gateway_admin
-        try:
-            await gateway_admin.register_agent_async(
-                name, list(updated.tool_permissions or []))
-        except Exception as e:  # noqa: BLE001
-            # ROLLBACK: il seed torna com'era. Lasciare la dichiarazione nuova
-            # accanto a un'autorità vecchia ricrea in piccolo esattamente lo
-            # stato che questa modifica elimina — con l'aggravante che il file
-            # mostrerebbe il verbo concesso (o tolto) e nessuno andrebbe a
-            # cercare la divergenza.
-            yaml_path.write_text(prima)
-            registry.load()
-            raise HTTPException(
-                502, f"registrazione al gateway fallita ({str(e)[:160]}): "
-                     f"nessuna modifica applicata a '{name}' — i tool_permissions "
-                     f"sono tornati a com'erano. L'autorizzazione vive nella "
-                     f"whitelist del gateway: senza quella registrazione la "
-                     f"modifica sarebbe stata solo dichiarativa") from e
     return updated
 
 
