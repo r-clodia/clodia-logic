@@ -161,33 +161,10 @@ class AgentProfileTests(unittest.TestCase):
 
 
 class SeedAgentsTests(unittest.TestCase):
-    """Il calcolo riproduce la misura riportata nell'issue per i seed del base-pack."""
-
-    def test_seed_scores_match_the_issue_table(self) -> None:
-        # `ophelia` è scesa da 3 a 2 il 13 ago 2026, quando le è stato tolto il
-        # wildcard (#202): senza `*` non dichiara più nessun verbo d'uscita, e le
-        # restano le due gambe che il pavimento dell'arciseed le dà — leggere e
-        # la propria memoria. È risalita a 3 il 18 set 2026 con `gdrive.*`
-        # (decisione di Davide, lettura/scrittura Drive): `gdrive.upload`/
-        # `mkdir`/`move` sono uscita per il catalogo trifecta.yaml.
-        #
-        # Questo NON è un allarme di prodotto (`agent_profile.score` è capacità
-        # pura, mai mostrata accanto a un agente — vedi la sua docstring): è il
-        # motore di calcolo che riflette un fatto vero sul seed. Il rischio REALE
-        # di un canale resta quello di `context_profile`/`_channel_trifecta`, che
-        # conta eventi (taint) e fatti sullo scope (file davvero presenti,
-        # destinazione davvero non confinata) — non le capacità di chi vi
-        # partecipa.
-        expected = {"clodia": 3, "ophelia": 3, "sysadmin": 3, "segretario": 2}
-        got = {n: trifecta.agent_profile(_seed(n), all_specs=_all_seeds())["score"] for n in expected}
-        self.assertEqual(got, expected)
-
-    def test_ophelia_regained_the_outward_leg_via_gdrive(self) -> None:
-        """Quale gamba si è riaccesa, non solo che il numero è risalito
-        (18 set 2026: gdrive.* enumerato, decisione di Davide)."""
-        p = trifecta.agent_profile(_seed("ophelia"), all_specs=_all_seeds())
-        self.assertTrue(p["legs"]["egress"], "gdrive.upload/mkdir/move sono uscita")
-        self.assertTrue(any("gdrive" in g for g in p["why"]["egress"]))
+    """Il calcolo sui seed del base-pack. Dal 27 ott 2026 (clodia-platform#626)
+    i seed non dichiarano verbi: i punteggi per verbi del seed non si misurano
+    più qui (le capacità vengono dalle tuple del gateway); restano i lati che
+    il seed dichiara ancora, come la shell."""
 
     def test_segretario_is_two_thirds_because_it_cannot_send(self) -> None:
         p = trifecta.agent_profile(_seed("segretario"), all_specs=_all_seeds())

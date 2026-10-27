@@ -68,90 +68,6 @@ class TradeTests(unittest.TestCase):
                 self.assertIn("archseed", y.get("parents") or [],
                               f"'{nome}' non dichiara da dove vengono i suoi verbi base")
 
-    def test_no_seed_repeats_a_floor_verb(self):
-        """Il test che impedisce alla ridondanza di tornare. Non rompe niente —
-        peggiora solo la leggibilità, ed è per questo che senza un test
-        tornerebbe."""
-        base = set(_seeds()["archseed"]["tool_permissions"])
-        for nome, y in _seeds().items():
-            if nome == "archseed":
-                continue
-            ripetuti = sorted(set(y.get("tool_permissions") or []) & base)
-            with self.subTest(seed=nome):
-                self.assertEqual(
-                    ripetuti, [],
-                    f"'{nome}' ridichiara verbi del pavimento: arrivano già "
-                    f"dall'arciseed, e ripeterli seppellisce il suo mestiere")
-
-    def test_a_seed_still_declares_something_of_its_own(self):
-        """Un seed che dopo la pulizia non dichiara niente non è un seed: è
-        l'arciseed con un nome diverso."""
-        for nome, y in _seeds().items():
-            if nome == "archseed":
-                continue
-            with self.subTest(seed=nome):
-                self.assertTrue(y.get("tool_permissions"),
-                                f"'{nome}' non dichiara alcun mestiere proprio")
-
-    def test_ophelia_inherits_the_floor_on_top_of_its_own_trade(self):
-        """18 set 2026: ophelia ha guadagnato un mestiere proprio (gdrive.*,
-        letto/scrivo, decisione di Davide) — non è più «solo il pavimento»,
-        ma il pavimento resta comunque ereditato sotto."""
-        seeds = _seeds()
-        self.assertIn("gdrive.list", seeds["ophelia"].get("tool_permissions") or [])
-        from .inheritance import effective_tool_permissions
-        effective = effective_tool_permissions("ophelia", seeds)
-        self.assertIn("topic.post_message", effective)
-        self.assertIn("memory.*", effective)
-        self.assertNotIn("*", effective)
-
-
-class EgressIngressGrantTests(unittest.TestCase):
-    """clodia-platform#374: due assi distinti, due platee distinte.
-
-    Davide, 17 set 2026: «in/egress globali devono essere gestiti solo da
-    clodia e sysadmin, e in/egress locali al canale devono poter essere
-    aggiunti da qualunque bot, fermo restando che in entrambi i casi deve
-    avvenire tramite gate». Il gate (GATE_WALLS per i locali, GATE_OUTWARD per
-    i globali) è già impianto lato clodia-tools — mancava solo la platea:
-    nessun seed dichiarava `topic.egress_add`/`ingress_add`, quindi nessun bot
-    poteva proporre un ingress/egress locale, e `clodia` non aveva i globali
-    nonostante il mandato le competa quanto a sysadmin.
-    """
-
-    def test_every_bot_inherits_the_local_scoped_verbs_from_the_floor(self) -> None:
-        base = set(_seeds()["archseed"]["tool_permissions"])
-        for verbo in ("topic.egress_add", "topic.egress_remove",
-                      "topic.ingress_add", "topic.ingress_remove"):
-            with self.subTest(verbo=verbo):
-                self.assertIn(verbo, base,
-                              f"'{verbo}' deve stare nel pavimento: è locale alla "
-                              f"stanza e gated WALLS, non un privilegio da seed")
-
-    def test_clodia_has_the_global_verbs_alongside_sysadmin(self) -> None:
-        seeds = _seeds()
-        for verbo in ("egress.allow", "ingress.allow"):
-            with self.subTest(verbo=verbo):
-                self.assertIn(verbo, seeds["clodia"].get("tool_permissions") or [],
-                              f"clodia manca '{verbo}': il mandato globale è suo "
-                              f"quanto di sysadmin, non solo di sysadmin")
-                self.assertIn(verbo, seeds["sysadmin"].get("tool_permissions") or [])
-
-    def test_no_other_seed_declares_the_global_verbs(self) -> None:
-        """I globali restano a due identità sole: un terzo seed che li
-        dichiarasse vanificherebbe la restrizione appena scritta sopra."""
-        seeds = _seeds()
-        for nome, y in seeds.items():
-            if nome in ("clodia", "sysadmin", "archseed"):
-                continue
-            verbi = set(y.get("tool_permissions") or [])
-            with self.subTest(seed=nome):
-                self.assertEqual(
-                    verbi & {"egress.allow", "ingress.allow"}, set(),
-                    f"'{nome}' dichiara un verbo egress/ingress globale: "
-                    f"resta riservato a clodia e sysadmin")
-
-
 if __name__ == "__main__":
     unittest.main()
 
@@ -194,36 +110,16 @@ class AncestryTests(unittest.TestCase):
 
 
 class ClodiaMandateTests(unittest.TestCase):
-    """Il mandato di clodia: sei namespace di verbi, tre pack, e nulla d'altro.
+    """Il mandato di clodia: tre pack, e nulla d'altro.
+
+    I verbi non sono più nel seed (#626, 27 ott 2026): li decidono la stanza e
+    le tuple globali del gateway, e lì vivono anche le loro garanzie.
 
     agents-notebook A6 e A7. Erano rimaste senza test automatico fino al 16 ago
     2026, e sono esattamente il tipo di requisito che si sfalda in silenzio: un
     verbo aggiunto «già che ci siamo» non rompe niente, e nessuno se ne accorge
     finché non si rilegge il seed riga per riga.
     """
-
-    #: A6: «mantiene tutti i verbi topic, artifact, agents, memory, fs e github.
-    #: Perde tutti gli altri». `web.fetch` ed `email.send` sono l'eccezione
-    #: decisa il 15 ago (A12 non li tocca, li aggiunge il pack 7.9.0): stanno
-    #: qui perché l'elenco dica la verità, non perché A6 sia stata allargata.
-    #: `gdrive` è l'eccezione successiva, decisa il 18 set 2026. `copybrain`
-    #: (26 set 2026, clodia-platform#393) è il prestito, previo gate, dei verbi
-    #: di un altro seed per uno spawn: non è un mestiere nuovo, è la porta con
-    #: cui clodia chiede quello di un altro.
-    NAMESPACE_AMMESSI = {"topic", "artifact", "agents", "memory", "fs", "github",
-                         "runtime", "integrations", "providers", "mcp", "packs",
-                         "jobs", "egress", "ingress", "rag", "web", "email", "gdrive",
-                         "copybrain",
-                         # #570 (18 ott 2026): il consenso per WebSearch, chiesto
-                         # dall'agent-server quando clodia tenta lo strumento.
-                         "native",
-                         # #531 (19 ott 2026): `channel.deliver`, la risposta
-                         # fuori dalla stanza che prima faceva il messaggero.
-                         "channel"}
-
-    #: clodia-platform#393: i mestieri di altri seed. Clodia li ottiene solo in
-    #: prestito con `copybrain`, mai nel proprio set.
-    NAMESPACE_ALTRUI = {"contabilita", "leads", "normattiva", "sedia"}
 
     #: A7: «confermiamo base, editorial, e anthropic. Perde comms». `editorial-pack`
     #: è confluito in `business-pack` (fusione con `media-agency-pack`, fuori da
@@ -232,31 +128,6 @@ class ClodiaMandateTests(unittest.TestCase):
 
     def setUp(self) -> None:
         self.clodia = _seeds()["clodia"]
-
-    def test_no_verb_outside_the_declared_namespaces(self) -> None:
-        fuori = sorted(
-            v for v in (self.clodia.get("tool_permissions") or [])
-            if v.split(".", 1)[0] not in self.NAMESPACE_AMMESSI
-        )
-        self.assertEqual([], fuori, f"verbi fuori dai namespace di A6: {fuori}")
-
-    def test_the_trades_of_other_seeds_are_not_hers(self) -> None:
-        suoi = sorted(v for v in (self.clodia.get("tool_permissions") or [])
-                      if v.split(".", 1)[0] in self.NAMESPACE_ALTRUI)
-        self.assertEqual([], suoi)
-
-    def test_copybrain_is_declared_verb_by_verb(self) -> None:
-        tp = set(self.clodia.get("tool_permissions") or [])
-        self.assertTrue({"copybrain.assume", "copybrain.call", "copybrain.release"} <= tp)
-        self.assertNotIn("copybrain.*", tp)
-
-    def test_the_verbs_are_enumerated_not_a_wildcard(self) -> None:
-        """«clodia non può più avere [*]» (6 ago). Il wildcard non era pericoloso
-        per ciò che concedeva allora: lo era perché avrebbe concesso in automatico
-        ogni verbo aggiunto dopo, senza che nessuno lo valutasse."""
-        verbi = self.clodia.get("tool_permissions") or []
-        self.assertNotIn("*", verbi)
-        self.assertTrue(verbi, "clodia senza verbi: il seed non dichiara più il mestiere")
 
     def test_comms_pack_is_gone_and_the_other_three_stay(self) -> None:
         """A7 consegnata (clodia-platform#198, 17 ago 2026): `comms-pack` non è
@@ -335,6 +206,28 @@ class NativeToolsFormTests(unittest.TestCase):
                 self.assertEqual(
                     nt.redundant_declarations(y.get("native_tools")), [],
                     f"'{nome}': native_tools ridondante")
+
+
+class NoVerbsInSeedsTests(unittest.TestCase):
+    """Seeds carry no verbs (owner's decision, clodia-platform#626, 27 Oct 2026).
+
+    Under A·V·R·Q the room authorises verbs (Strumenti) and the gateway's
+    global tuples cover governance and work outside rooms; the agent-server
+    asks the gateway (`topics_client.authz_available`). A verb list coming back
+    into a seed would be read by nothing that decides — and believed by
+    whoever reads the file.
+    """
+
+    def test_no_seed_declares_tool_permissions(self) -> None:
+        for nome, y in _seeds().items():
+            with self.subTest(seed=nome):
+                self.assertNotIn("tool_permissions", y,
+                                 f"'{nome}' dichiara ancora tool_permissions (#626)")
+
+    def test_gated_tools_stay_where_declared(self) -> None:
+        """A per-agent consent is a rule, not a list of granted verbs: it stays."""
+        self.assertTrue(_seeds()["sysadmin"].get("gated_tools"),
+                        "sysadmin ha perso i suoi gated_tools")
 
 
 class EngineDeclarationTests(unittest.TestCase):

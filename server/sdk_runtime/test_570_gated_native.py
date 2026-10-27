@@ -75,7 +75,8 @@ class SeedTests(unittest.TestCase):
             "catalogs/packs/base-pack/agents/clodia/agent.yaml").read_text(encoding="utf-8"))
         self.assertIn("WebSearch", doc.get("gated_native_tools") or [])
         self.assertNotIn("WebSearch", doc.get("native_tools") or [])
-        self.assertIn("native.consent", doc.get("tool_permissions") or [])
+        # `native.consent` is no longer a seed verb (#626): a global tuple
+        # (`* · native.consent`) gives the channel, the room's web.search decides.
 
 
 if __name__ == "__main__":

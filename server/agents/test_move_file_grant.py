@@ -6,6 +6,9 @@ provenienza nuova, quindi riordinare una cartella di allegati email cancella il
 flag `untrusted` dei documenti di terzi. Qui si difendono le due metà che stanno
 in questo repo: **chi** ha il verbo, e **cosa** gli viene insegnato.
 
+(27 ott 2026, clodia-platform#626: i seed non dichiarano più verbi, quindi la
+metà del «chi» — sotto — ora vive nelle tuple del gateway e non si verifica qui.)
+
 Sul «chi» l'invariante non è un elenco di nomi ma una regola: il move va solo
 dove c'è già `delete_file`. Un seed che può mettere file ma non cestinarli, col
 move otterrebbe un delete di fatto — rinomina in `local/nascosto/x` e il file non
@@ -24,10 +27,7 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-import yaml
-
 from ..config import workspace_path
-from .inheritance import effective_tool_permissions
 
 PACK = Path(workspace_path("catalogs/packs/base-pack"))
 AGENTS = PACK / "agents"
@@ -35,51 +35,6 @@ SKILL = PACK / "plugins" / "base-pack" / "skills" / "topic-files" / "SKILL.md"
 COSTITUZIONE = PACK / "constitutions" / "platform-core.md"
 
 VERBO = "topic.move_file"
-
-
-def _seeds() -> dict:
-    out = {}
-    for d in sorted(AGENTS.iterdir()):
-        f = d / "agent.yaml"
-        if f.is_file():
-            out[d.name] = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
-    return out
-
-
-class GrantTests(unittest.TestCase):
-    def setUp(self) -> None:
-        self.seeds = _seeds()
-        self.grants = {n: set(effective_tool_permissions(n, self.seeds))
-                       for n in self.seeds}
-
-    def test_move_goes_only_where_delete_already_is(self) -> None:
-        """Il move è anche un modo di togliere un file da dove sta: concederlo a
-        chi non può cestinare sarebbe concedere un delete di fatto."""
-        for nome, g in self.grants.items():
-            if VERBO in g:
-                with self.subTest(seed=nome):
-                    self.assertIn(
-                        "topic.delete_file", g,
-                        f"{nome} ha {VERBO} senza topic.delete_file: rinominando "
-                        "otterrebbe la sparizione di un file da dove stava, che è "
-                        "esattamente ciò che delete_file concede")
-
-    def test_the_seeds_that_already_tidy_files_have_it(self) -> None:
-        """Il contrario della regola sopra: dove il delete c'è e il put pure, il
-        move non deve mancare — se no resta in piedi il surrogato pericoloso."""
-        for nome, g in self.grants.items():
-            if {"topic.delete_file", "topic.put"} <= g:
-                with self.subTest(seed=nome):
-                    self.assertIn(
-                        VERBO, g,
-                        f"{nome} può mettere e cestinare file ma non spostarli: "
-                        "per riordinare userebbe fetch+put+delete, che lava la "
-                        "provenienza (clodia-platform#419)")
-
-    def test_at_least_one_seed_actually_has_it(self) -> None:
-        """Le due regole sopra sono entrambe vere anche se nessuno ha il verbo:
-        senza questa riga il modulo passerebbe a vuoto."""
-        self.assertTrue([n for n, g in self.grants.items() if VERBO in g])
 
 
 class TextTests(unittest.TestCase):
