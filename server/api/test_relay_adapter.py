@@ -100,7 +100,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
             patch.object(channel_relay.topics_client, "async_put_file", _put),
             patch.object(channel_relay, "run_topic_turn", _turn),
             # The seed registry is empty under test: clodia answers (#531).
-            patch.object(channel_relay, "_can_deliver", lambda a: True),
+            patch.object(channel_relay, "_can_deliver", lambda a, s=None: True),
             patch("server.api.channels._pick_responder",
                   lambda *a, **k: type("S", (), {"name": "clodia"})()),
         ]

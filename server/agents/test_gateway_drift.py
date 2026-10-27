@@ -57,7 +57,8 @@ class ConfrontoTests(unittest.TestCase):
         """Il caso `ophelia`: un `*` che il seed non dichiara più e che nella
         config viva è rimasto. Si segnala e NON si toglie — potrebbe essere una
         modifica intenzionale, ed è il verso in cui l'overwrite fa danno."""
-        riga = GD.confronta(_seed(tool_permissions=[]), _reg(allowed_tools=["*"]))
+        # #626: verbs are no longer compared — the case is told on gates.
+        riga = GD.confronta(_seed(gated_tools=[]), _reg(gated_tools=["*"]))
         campo = riga["fields"][0]
         self.assertEqual(campo["status"], "extra")
         self.assertEqual(campo["registered_only"], ["*"])
@@ -65,8 +66,8 @@ class ConfrontoTests(unittest.TestCase):
     def test_a_changed_list_says_what_entered_and_what_left(self):
         """Su liste di venti verbi l'elenco intero è rumore: le due righe utili
         sono cosa è entrato e cosa è uscito."""
-        riga = GD.confronta(_seed(tool_permissions=["topic.open", "email.send"]),
-                            _reg(allowed_tools=["topic.open", "fs.read"]))
+        riga = GD.confronta(_seed(gated_tools=["topic.open", "email.send"]),
+                            _reg(gated_tools=["topic.open", "fs.read"]))
         campo = riga["fields"][0]
         self.assertEqual(campo["status"], "changed")
         self.assertEqual(campo["declared_only"], ["email.send"])
@@ -155,8 +156,8 @@ class CheckAllTests(unittest.TestCase):
         al riavvio è l'evento muto che questa issue esiste per rendere
         visibile."""
         rep, registrati = self._run(
-            [_seed(tool_permissions=["topic.open", "email.send"])],
-            {"avvocato": _reg(allowed_tools=["*"])})
+            [_seed(gated_tools=["topic.open", "email.send"])],
+            {"avvocato": _reg(gated_tools=["*"])})
         self.assertEqual(rep["agents"][0]["status"], "diverged")
         self.assertEqual(registrati, [], "una divergenza è stata sovrascritta")
 
@@ -244,3 +245,10 @@ class BootWiringTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class VerbsAreNotComparedTests(unittest.TestCase):
+    def test_a_seed_without_verbs_is_not_drift(self):
+        """#626: the seeds carry no verbs; the gateway's tuples decide."""
+        riga = GD.confronta(_seed(tool_permissions=[]), _reg(allowed_tools=["*"]))
+        self.assertEqual(riga["status"], "clean")

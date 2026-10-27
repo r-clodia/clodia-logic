@@ -123,7 +123,7 @@ class RelayGateTests(unittest.TestCase):
                 patch.object(channel_relay.topics_client, "async_open_topic", _open), \
                 patch.object(channel_relay.topics_client, "async_post_message", _post), \
                 patch.object(channel_relay, "run_topic_turn", _turn), \
-                patch.object(channel_relay, "_can_deliver", lambda a: can_deliver), \
+                patch.object(channel_relay, "_can_deliver", lambda a, s=None: can_deliver), \
                 patch("server.api.channels._pick_responder",
                       lambda *a, **k: type("S", (), {"name": coordinatore})()):
             asyncio.run(channel_relay._relay_chat("-5279916551", self.BINDING, msgs or [msg]))

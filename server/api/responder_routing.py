@@ -104,7 +104,8 @@ def _agent_collections(spec) -> list[str]:
     # rag OUTSIDE a room (global tuples, #626 — the seeds no longer carry
     # verbs). A room's own RAG is the room's (#621), not a trait of the agent.
     from ..agents import authz_grants
-    tp = authz_grants.global_grants(getattr(spec, "name", "") or "")
+    _name = getattr(spec, "name", "") or ""
+    tp = authz_grants.global_grants(_name) if _name else None
     if tp is None:      # gateway mute: the seed's declaration, while it exists
         tp = [str(t) for t in (getattr(spec, "tool_permissions", None) or [])]
     if any(t.startswith("eu_corpus") or t.startswith("rag.") or t in ("rag", "*")
