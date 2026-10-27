@@ -29,12 +29,36 @@ class DataHintTests(unittest.TestCase):
         self.assertIn('rag.search(collection="topic-da98f920"', h)
         self.assertIn('datastore.read(datastore="tomato/leads"', h)
         self.assertIn("datastore.write", h)
-        self.assertNotIn("eu-normativa", h)            # not granted to sales
+        self.assertIn("eu-normativa", h)               # every participant reads the RAG (#621)
 
     def test_nothing_granted_nothing_said(self):
-        self.assertEqual(self.hint("nessuno"), "")
+        self.assertNotIn("datastore", self.hint("nessuno"))   # a datastore needs its grant
         self.assertEqual(self.hint(None), "")
         self.assertEqual(self.hint("sales", meta={}), "")
+
+
+class ToolsHintTests(unittest.TestCase):
+    """#620/#622: the room's MCPs are named, and deferred tools are explained
+    (27 Oct: clodia-744 had email_read and said it did not)."""
+
+    def hint(self, box):
+        with patch.object(channels.topics_client, "topic_tools", lambda t, n: box):
+            return channels._channel_tools_hint("SEAL-1", "earnext")
+
+    def test_the_rooms_mcps_and_toolsearch(self):
+        h = self.hint({"mcp": {"email": {}, "github": {}},
+                       "mcp_catalogue": {"email": {"label": "Email", "namespaces": ["email"]},
+                                         "github": {"label": "GitHub", "namespaces": ["github"]}}})
+        self.assertIn("Email (email.*)", h)
+        self.assertIn("GitHub (github.*)", h)
+        self.assertIn("ToolSearch", h)
+
+    def test_no_mcp_no_hint_and_a_failure_costs_nothing(self):
+        self.assertEqual(self.hint({"mcp": {}}), "")
+        def boom(t, n):
+            raise channels.topics_client.TopicsClientError("giù")
+        with patch.object(channels.topics_client, "topic_tools", boom):
+            self.assertEqual(channels._channel_tools_hint("SEAL-1", "x"), "")
 
 
 if __name__ == "__main__":
