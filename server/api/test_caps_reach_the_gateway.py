@@ -107,36 +107,20 @@ class CapsPatchTests(unittest.TestCase):
             return esito, errore, yaml.safe_load(
                 (adir / "agent.yaml").read_text()) if adir.exists() else None
 
-    # ── il grant arriva dove si decide ───────────────────────────────────────
-    def test_a_grant_is_registered_in_the_gateway_whitelist(self):
+    # ── #626: i verbi non stanno più nel seed ─────────────────────────────────
+    def test_verbs_are_refused_and_the_seed_untouched(self):
+        """A seed carries no verbs (#626): granting one here would be a no-op
+        the caller reads as done. Refused, with where to grant it, and the seed
+        on disk is not touched."""
         chiamate = []
-        _, err, _ = self._patch(lambda *a, **k: chiamate.append((a, k)) or {"ok": True},
-                                tool_permissions=["topic.open", "topic.write_file",
-                                                  "topic.write_document"])
-        self.assertIsNone(err)
-        self.assertEqual(len(chiamate), 1,
-                         "il PATCH ha scritto la datadir senza registrare il "
-                         "permesso dove viene deciso")
-        self.assertEqual(chiamate[0][0][0], "avvocato")
-        self.assertIn("topic.write_document", chiamate[0][0][1])
-
-    def test_a_revocation_is_registered_too(self):
-        """La direzione peggiore: un verbo tolto solo sulla carta resta attivo."""
-        chiamate = []
-        self._patch(lambda *a, **k: chiamate.append((a, k)) or {"ok": True},
-                    tool_permissions=["topic.open"])
-        self.assertEqual(len(chiamate), 1)
-        self.assertNotIn("topic.write_file", chiamate[0][0][1])
-
-    def test_only_allowed_tools_travel(self):
-        """Gate e deny NON viaggiano: per il gateway l'assenza è «non mi
-        pronuncio» e la lista vuota è «azzerali». Mandarli qui riscriverebbe
-        controlli che questa PATCH non ha toccato — è così che sono spariti i
-        gate di clodia al primo update del base-pack."""
-        chiamate = []
-        self._patch(lambda *a, **k: chiamate.append((a, k)) or {"ok": True},
-                    tool_permissions=["topic.open"])
-        self.assertEqual(chiamate[0][1], {})
+        esito, err, su_disco = self._patch(
+            lambda *a, **k: chiamate.append((a, k)) or {"ok": True},
+            tool_permissions=["topic.open", "topic.write_document"])
+        self.assertIsNone(esito)
+        self.assertEqual(err.status_code, 400)
+        self.assertIn("stanza", err.detail)
+        self.assertEqual(chiamate, [])
+        self.assertEqual(su_disco["tool_permissions"], ["topic.open", "topic.write_file"])
 
     def test_a_caps_patch_without_tools_does_not_touch_the_whitelist(self):
         """Skill e rule non sono autorizzazioni del gateway: nessuna
@@ -148,49 +132,6 @@ class CapsPatchTests(unittest.TestCase):
                 capabilities=["dataviz"])
         self.assertIsNone(err)
         self.assertEqual(chiamate, [])
-
-    # ── e quando il gateway non risponde ─────────────────────────────────────
-    def test_a_failed_registration_is_not_an_ok(self):
-        def boom(*a, **k):
-            raise RuntimeError("500 Server Error for url: .../whitelist")
-
-        esito, err, _ = self._patch(boom, tool_permissions=["topic.open", "x.y"])
-        self.assertIsNone(esito)
-        self.assertIsNotNone(err, "il PATCH ha risposto ok senza aver concesso")
-        self.assertEqual(err.status_code, 502)
-        self.assertIn("gateway", err.detail)
-
-    def test_a_failed_registration_rolls_the_seed_back(self):
-        """Dichiarazione e autorità restano d'accordo: se il gateway non ha
-        registrato, il seed non deve mostrare il permesso. Un file che dichiara
-        un verbo che il gateway nega è il difetto di #304 in piccolo, e nessuno
-        va a cercarlo."""
-        def boom(*a, **k):
-            raise RuntimeError("timeout")
-
-        _, _, su_disco = self._patch(boom, tool_permissions=["topic.open",
-                                                             "topic.write_document"])
-        self.assertEqual(su_disco["tool_permissions"],
-                         ["topic.open", "topic.write_file"])
-
-
-class TheReasonIsWrittenDownTests(unittest.TestCase):
-    """Perché la ragione sta accanto al codice: senza, il prossimo che legge
-    vede una POST HTTP dentro un PATCH e la classifica come best-effort — che è
-    esattamente come il difetto è nato."""
-
-    def test_the_consequence_is_next_to_the_code(self):
-        import inspect
-        src = inspect.getsource(AR.patch_agent_caps)
-        self.assertIn("DICHIARAZIONE", src)
-        self.assertIn("#304", src)
-
-    def test_the_call_is_the_async_wrapper(self):
-        """HTTP sincrono dentro un handler `async def` ferma l'event loop
-        dell'intero agent-server (#106): si passa dal wrapper."""
-        import inspect
-        src = inspect.getsource(AR.patch_agent_caps)
-        self.assertIn("register_agent_async", src)
 
 
 class SetYamlListIndentTests(unittest.TestCase):

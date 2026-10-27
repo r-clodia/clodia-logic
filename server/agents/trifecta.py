@@ -676,6 +676,17 @@ def agent_profile(spec, config: Optional[dict] = None,
                     "sola dichiarazione", name, type(e).__name__)
         grants = [str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])
                   if str(g).strip()]
+    # #626: the seeds no longer carry verbs — the gateway's GLOBAL tuples do
+    # (governance everywhere, MCPs outside rooms). Added to the seed's, never
+    # instead: a measure that drops because a file got emptied is the error
+    # this function must not make. Gateway mute → the seed's alone (logged).
+    try:
+        from . import authz_grants
+        glob = authz_grants.global_grants(name)
+    except Exception:  # noqa: BLE001
+        glob = None
+    if glob:
+        grants = list(dict.fromkeys([*grants, *glob]))
     seed_grants = list(grants)
     # #606: l'insieme che conta è quello che il gateway RAGGIUNGE, cioè
     # `seed ∪ stanza`.

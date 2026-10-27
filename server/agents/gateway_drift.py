@@ -58,7 +58,8 @@ LOG = logging.getLogger("agent-server.agents.gateway_drift")
 #: (Che `carries` sia una dichiarazione che nessuno trasporta è un difetto suo,
 #: della stessa famiglia di questa issue. Non si tratta qui.)
 CAMPI: tuple[tuple[str, str], ...] = (
-    ("tool_permissions", "allowed_tools"),
+    # `tool_permissions`/`allowed_tools` no longer compared (#626): the seeds
+    # carry no verbs, the gateway's tuples decide.
     ("gated_tools", "gated_tools"),
     ("denied_tools", "denied_tools"),
     ("profile_tools", "profile_tools"),
