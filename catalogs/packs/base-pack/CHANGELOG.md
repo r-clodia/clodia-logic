@@ -10,6 +10,9 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.41.0] — 2026-10-27
+- **Seeds carry no verbs** (clodia-platform#626, owner's decision): `tool_permissions` removed from clodia, sysadmin, archseed, ophelia, segretario. Under A·V·R·Q the room authorises verbs (Strumenti) and global tuples cover governance and work outside rooms; the agent-server asks the gateway (clodia-logic ≥ 6.329.0, clodia-tools ≥ 2.147.0). `gated_tools` stays.
+
 ## [7.40.2] — 2026-10-23
 - sysadmin: `web.fetch` and `web.download` (clodia-platform#587); native `WebFetch` removed — it exits through the default-deny egress proxy and can only fail. `web.post` stays.
 
