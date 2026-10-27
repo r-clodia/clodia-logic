@@ -1,4 +1,11 @@
-"""Le due decisioni di clodia-platform#192 che vivono nei grant del segretario.
+"""Le decisioni di clodia-platform#192 sul segretario.
+
+Dal 27 ott 2026 (clodia-platform#626) i seed non dichiarano verbi: «raccomanda,
+non esegue» e il perimetro delle letture vivono nelle tuple globali del
+gateway e nei gate WALLS, e lì si verificano. Qui resta la parte di testo del
+mandato, che è nel seed.
+
+Testo originale:
 
 La issue ne lasciava aperte tre. Misurate sul codice, tutte e tre hanno già una
 risposta — ma due sono vere **per costruzione**, cioè per come i grant sono stati
@@ -26,96 +33,13 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-import yaml
-
 from ..config import workspace_path
-from .inheritance import effective_tool_permissions
 
 AGENTS = Path(workspace_path("catalogs/packs/base-pack/agents"))
 
-#: Il perimetro deciso: letture confinate allo scope corrente, la propria
-#: memoria, e le sole scritture del mestiere. Non è un elenco di ciò che il seed
-#: ha oggi — è ciò che gli è stato CONCESSO di avere. Aggiungere una riga qui è
-#: il gesto che richiede la decisione, ed è per questo che il test guarda un
-#: elenco scritto a mano invece di rileggere lo stesso file che sta misurando.
-PERIMETRO = {
-    # letture dello scope in cui lo spawn sta
-    "topic.open", "topic.files", "topic.read_file", "topic.read_document",
-    "topic.search", "topic.list", "topic.fetch",
-    # parlare nella propria stanza
-    "topic.post_message",
-    # il mestiere: lo stato scritto del topic
-    "topic.save_summary",
-    # la proposta di squadra, read-only, che NON invita
-    "topic.suggest_team",
-    # la propria memoria, confinata alla propria cartella
-    "memory.*",
-    # Whitelist egress/ingress LOCALE alla stanza (clodia-platform#374, 17 set
-    # 2026): decisione più recente e più larga di #192 — «qualunque bot», non
-    # «tutti tranne il segretario». Non è la stessa porta laterale di
-    # `ESECUZIONE` qui sotto: quella evita che segretario possa CAMBIARE chi è
-    # nella stanza scavalcando il marker `<!-- invite= -->`; questa non tocca i
-    # partecipanti, tocca solo quali destinazioni/fonti di rete sono vagliate,
-    # ed è gated WALLS quanto `add_participant` — l'owner approva comunque.
-    "topic.egress_add", "topic.egress_remove",
-    "topic.ingress_add", "topic.ingress_remove",
-    # Collegamento fra due stanze dello stesso livello SEAL
-    # (clodia-platform#477, 1 ott 2026): decisione dell'owner, più recente di
-    # #192 e presa sapendo di questo perimetro — il verbo stava su `clodia` ed
-    # è stato spostato qui apposta. Non è una porta laterale a `ESECUZIONE`:
-    # non cambia chi è nella stanza, e sotto resta tutto in sola lettura (il
-    # mount del collegamento lo è, e questo seed non ha comunque nessun verbo
-    # di scrittura file). È invece la stessa porta della riga sopra: `link_add`
-    # fa letteralmente `scope_allow("ingress", …)` sulla fonte
-    # `topic:<tier>/<nome>`, cioè ciò che `topic.ingress_add` già gli concede —
-    # con due restrizioni in più, che l'altra non ha: solo pari livello SEAL, e
-    # solo stanze di cui è partecipante. Gated WALLS: l'owner approva comunque.
-    "topic.link_add", "topic.link_remove",
-}
-
-#: Verbi che eseguirebbero al posto di raccomandare. `add_participant` è quello
-#: che la issue nomina; gli altri sono la stessa decisione presa da una porta
-#: laterale — invitare, rimuovere, o costruire la stanza.
-ESECUZIONE = {
-    "topic.add_participant", "topic.remove_participant", "topic.invite",
-    "topic.new", "topic.archive", "topic.delete_file",
-}
-
-
-def _seeds() -> dict:
-    out = {}
-    for d in sorted(AGENTS.iterdir()):
-        f = d / "agent.yaml"
-        if f.is_file():
-            out[d.name] = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
-    return out
-
-
-def _grants(name: str) -> set[str]:
-    return {str(g) for g in effective_tool_permissions(name, _seeds())}
-
 
 class IlSegretarioRaccomandaNonEsegueTests(unittest.TestCase):
-    """Decisione 1 di #192, e la porta laterale che la aggirerebbe."""
-
-    def test_non_ha_nessun_verbo_che_esegue_al_posto_di_raccomandare(self) -> None:
-        concessi = _grants("segretario")
-        esegue = sorted(v for v in ESECUZIONE
-                        if v in concessi or f"{v.split('.')[0]}.*" in concessi
-                        or "*" in concessi)
-        self.assertEqual(
-            [], esegue,
-            "il segretario può eseguire invece di raccomandare: R16 dice "
-            "«riferire», e l'owner il 6 set 2026 ha scelto il marker di invito "
-            f"col bottone. Verbi di troppo: {esegue}")
-
-    def test_la_proposta_di_squadra_resta_la_strada(self) -> None:
-        """Il rovescio: tolto il verbo, deve restare il modo di raccomandare.
-
-        Senza questa metà il test sopra si accontenterebbe di un seed a cui
-        hanno tolto tutto — che passa, e non sa più fare il terzo esito.
-        """
-        self.assertIn("topic.suggest_team", _grants("segretario"))
+    """Decisione 1 di #192: il mandato propone, non invita."""
 
     def test_il_mandato_di_coordinamento_propone_e_non_invita(self) -> None:
         testo = (AGENTS / "segretario" / "system-prompt.md").read_text(
@@ -125,26 +49,6 @@ class IlSegretarioRaccomandaNonEsegueTests(unittest.TestCase):
         self.assertIn("<!-- invite=", testo,
                       "senza il marker il terzo esito non ha una forma: "
                       "l'owner non riceve nessun bottone da premere")
-
-
-class IlPerimetroDelleLettureTests(unittest.TestCase):
-    """Decisione 3 di #192: coordinare non allarga ciò che si può leggere."""
-
-    def test_nessun_verbo_fuori_dal_perimetro_deciso(self) -> None:
-        fuori = sorted(_grants("segretario") - PERIMETRO)
-        self.assertEqual(
-            [], fuori,
-            "il segretario legge fuori dal perimetro deciso in #192 (metadata "
-            "del topic e stato pubblico dei partecipanti, mai memoria o stato "
-            f"privato altrui): {fuori}")
-
-    def test_la_memoria_resta_la_propria(self) -> None:
-        """`memory.*` è ampio sul namespace e stretto sui dati: il gateway lo
-        confina alla cartella del seed. Se un giorno comparisse un verbo di
-        memoria con un bersaglio, il perimetro sopra lo vedrebbe — questo test
-        dice perché la wildcard, da sola, non è una violazione."""
-        memoria = {g for g in _grants("segretario") if g.startswith("memory")}
-        self.assertEqual({"memory.*"}, memoria)
 
 
 if __name__ == "__main__":

@@ -187,19 +187,5 @@ class SkillTests(unittest.TestCase):
         self.assertLessEqual(citate, presenti, f"skill citate ma assenti: {citate - presenti}")
 
 
-class GrantTests(unittest.TestCase):
-    """Chi orchestra deve poter dichiarare a che punto è l'obiettivo, e NON
-    poterselo fissare da sé: `topic.goal_progress` sì, nessun verbo di pin."""
-
-    def test_the_orchestrator_can_advance_but_not_pin(self) -> None:
-        import yaml
-        from pathlib import Path
-        base = Path(__file__).resolve().parents[2] / "catalogs/packs/base-pack/agents"
-        grant = yaml.safe_load((base / "clodia/agent.yaml").read_text(encoding="utf-8"))
-        verbi = set(grant.get("tool_permissions") or [])
-        self.assertIn("topic.goal_progress", verbi)
-        self.assertNotIn("topic.set_goal", verbi)
-
-
 if __name__ == "__main__":  # pragma: no cover
     unittest.main()

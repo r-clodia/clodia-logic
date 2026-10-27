@@ -43,7 +43,6 @@ import yaml
 
 from ..config import workspace_path
 from .coordinator import DECLARED
-from .inheritance import effective_tool_permissions
 
 PACK = Path(workspace_path("catalogs/packs/base-pack"))
 AGENTS = PACK / "agents"
@@ -64,38 +63,17 @@ def _seeds() -> dict:
 
 
 class _Base(unittest.TestCase):
+    """Who links: the declared coordinators. Since 27 Oct 2026 (#626) seeds
+    carry no verbs — whether `topic.link_add` is available is the gateway's
+    tuples' answer (`topic.*` floor, gated WALLS) — so the mandate checks below
+    run on the coordinators, not on a seed's verb list."""
+
     def setUp(self) -> None:
         self.seeds = _seeds()
-        self.grants = {n: set(effective_tool_permissions(n, self.seeds))
-                       for n in self.seeds}
-        self.holders = [n for n, g in self.grants.items() if VERBO in g]
+        self.holders = [n for n in DECLARED if n in self.seeds]
 
-
-class GrantTests(_Base):
-    def test_link_goes_only_to_declared_coordinators(self) -> None:
-        for nome in self.holders:
-            with self.subTest(seed=nome):
-                self.assertIn(
-                    nome, DECLARED,
-                    f"{nome} ha {VERBO} senza essere un coordinatore dichiarato "
-                    f"({', '.join(DECLARED)}): collegare due stanze decide dove "
-                    "un canale va a prendere i documenti su cui lavora, ed è "
-                    "una scelta di coordinamento, non di mestiere")
-
-    def test_whoever_can_link_can_unlink(self) -> None:
-        """Un seed che propone collegamenti e non può ritirarli produce
-        perimetri che crescono soltanto, e lascia all'owner una sola direzione."""
-        for nome in self.holders:
-            with self.subTest(seed=nome):
-                self.assertIn("topic.link_remove", self.grants[nome])
-
-    def test_at_least_one_seed_actually_has_it(self) -> None:
-        """La regola sopra è vera anche se nessuno ha il verbo: senza questo
-        controllo, una capacità dichiarata e concessa a nessuno passerebbe per
-        un invariante rispettato."""
-        self.assertTrue(self.holders,
-                        "nessun seed ha topic.link_add: il verbo esiste nel "
-                        "gateway e non lo può chiedere nessuno")
+    def test_there_is_a_coordinator_to_check(self) -> None:
+        self.assertTrue(self.holders, "nessun coordinatore dichiarato nel base-pack")
 
 
 class MandatoTests(_Base):
