@@ -3724,6 +3724,35 @@ def _catalog_labels() -> dict:
     return _CATALOG_CACHE["rows"]
 
 
+def _channel_tools_hint(tier: str, name: str) -> str:
+    """The MCPs this room authorises (#620), named for the agent.
+
+    The claude runtime DEFERS MCP tools when they are many: the model sees
+    names only and must load them with ToolSearch. On 27 Oct clodia-744 had
+    `email_read` in its session and told the owner it did not have it. The
+    session is rebuilt when the room's tools change (#622), so this list stays
+    current."""
+    try:
+        box = topics_client.topic_tools(tier, name) or {}
+    except Exception as e:  # noqa: BLE001 — no hint rather than no turn
+        LOG.info("preambolo: strumenti di %s/%s non disponibili (%s)", tier, name,
+                 type(e).__name__)
+        return ""
+    cat = box.get("mcp_catalogue") or {}
+    voci = []
+    for mid in sorted(box.get("mcp") or {}):
+        e = cat.get(mid) or {}
+        ns = ", ".join(f"{n}.*" for n in (e.get("namespaces") or [mid]))
+        voci.append(f"{e.get('label') or mid} ({ns})")
+    if not voci:
+        return ""
+    return ("\n\nSTRUMENTI AUTORIZZATI in questa stanza (MCP): " + "; ".join(voci) + ". "
+            "I loro verbi ti sono disponibili come strumenti mcp__clodia-tools__<ns>_<verbo> "
+            "(es. email.read → mcp__clodia-tools__email_read). Se non li vedi caricati "
+            "sono DIFFERITI: cercali con ToolSearch prima di dire che non li hai, e non "
+            "aggirarli con Bash o leggendo file grezzi.")
+
+
 def _channel_data_hint(tier: str, name: str, agent: str | None) -> str:
     """The data this room imports and THIS agent may use (clodia-platform#590),
     with how to query it. Without it an agent granted a RAG collection looks
@@ -3744,9 +3773,11 @@ def _channel_data_hint(tier: str, name: str, agent: str | None) -> str:
         if not isinstance(e, dict):
             continue
         mode = ((e.get("grants") or {}) if isinstance(e.get("grants"), dict) else {}).get(agent)
+        kind, name = str(e.get("kind") or ""), str(e.get("name") or "")
+        if kind == "rag" and mode not in ("read", "write"):
+            mode = "read"       # every participant reads the room's RAG (#621)
         if mode not in ("read", "write"):
             continue
-        kind, name = str(e.get("kind") or ""), str(e.get("name") or "")
         if kind == "rag":
             if name == own:
                 cosa = "indice RAG di QUESTO topic (messaggi e file)"
@@ -3986,6 +4017,7 @@ def _history_prompt(name: str, tier: str, messages: list[dict],
         )
     return (f"[Canale #{name} · {tier}] Sei un partecipante. "
             + _channel_files_hint(tier, name) + _channel_data_hint(tier, name, agent)
+            + _channel_tools_hint(tier, name)
             + "\n\n" + _CHANNEL_CAPS
             + topic_boot
             + "\n\nStorico recente:\n"
