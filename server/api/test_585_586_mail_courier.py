@@ -93,11 +93,11 @@ class CycleTests(_Base):
     def cycle(self, rows, index):
         seen = []
 
-        async def box_room(room, keys):
+        async def box_room(room, keys, delivered=None):
             seen.append(("box", room["name"], keys))
             return 0
 
-        async def room_run(room, only=None):
+        async def room_run(room, only=None, delivered=None):
             seen.append(("room", room["name"], only))
             return 0
         with patch.object(MC, "rooms", lambda: rows), \
@@ -118,6 +118,14 @@ class CycleTests(_Base):
     def test_without_the_index_box_rows_are_not_searched_one_by_one(self):
         seen = self.cycle([BOX], None)
         self.assertEqual(seen, [])
+
+    def test_a_room_address_needs_no_declared_sender(self):
+        """#627: the room's own address delivers whoever writes — an indexed
+        box row with no sender is served; a linked mailbox with none is not."""
+        rows = [{**BOX, "senders": 0},
+                {**BOX, "name": "preventivi", "tag": None, "indexed": None, "senders": 0}]
+        seen = self.cycle(rows, {"UD54G": ["k1"]})
+        self.assertEqual(seen, [("box", "tomato-blogging", ["k1"])])
 
 
 def _mail(forwarded=False, attachment=False):

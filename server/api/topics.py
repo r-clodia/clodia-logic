@@ -1319,6 +1319,13 @@ async def topic_set_tier(tier: str, name: str, request: Request):
     except Exception as e:  # noqa: BLE001
         LOG.warning("riclassificazione %s/%s: job non riallineati: %s", tier, name, e)
         esito["jobs_error"] = str(e)[:200]
+    try:
+        from ..scheduler import mail_triggers
+        esito["mail_trigger"] = await asyncio.to_thread(
+            mail_triggers.retier, vecchio, esito.get("to") or nuovo, name)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("riclassificazione %s/%s: trigger posta non riallineato: %s",
+                    tier, name, e)
     prefisso = f"chan:{vecchio}:{name}:"
     chiuse = []
     for chat in list(manager.list()):
