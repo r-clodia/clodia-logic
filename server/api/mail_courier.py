@@ -513,37 +513,11 @@ async def run_cycle() -> int:
     for (tier, name), items in consegnate.items():
         if items:
             try:
-                await fire_mail_trigger(tier, name, items)
+                # The courier never starts a turn itself (no model on its path):
+                # the trigger's owner side does, like the scheduler's topic
+                # trigger (#628).
+                from ..scheduler import mail_triggers
+                await mail_triggers.fire(tier, name, items)
             except Exception as e:  # noqa: BLE001 — a trigger never stops the courier
                 LOG.warning("mail trigger %s/%s: %s", tier, name, type(e).__name__)
     return total
-
-
-async def fire_mail_trigger(tier: str, name: str, items: list[dict]) -> str:
-    """Start the room's «incoming mail» turn, if it has one (#628). Returns
-    the outcome: "" when a turn was started, else the reason it was not."""
-    from ..scheduler import mail_triggers
-    trig, motivo = await asyncio.to_thread(mail_triggers.claim_fire, tier, name)
-    if motivo:
-        return motivo
-    agent = str((trig or {}).get("agent") or "")
-    meta = ((await topics_client.async_open_topic(tier, name)) or {}).get("meta") or {}
-    if agent not in (meta.get("participants") or []):
-        await asyncio.to_thread(mail_triggers.set_status, tier, name,
-                                "agent_not_participant")
-        LOG.warning("mail trigger %s/%s: '%s' non partecipa più alla stanza",
-                    tier, name, agent)
-        return "agent_not_participant"
-    from . import channels
-    testo = mail_triggers.prompt_text(channels.indirizzo(agent),
-                                      str(trig.get("prompt") or ""), items)
-    # The scheduler's door (a topic trigger): a system message with a
-    # synthetic principal, through the normal routing; NOT skipped when the
-    # agent is busy — the turn queues behind the current one.
-    result = await channels.post_channel_message(
-        tier, name, testo, "mail-trigger", kind="system", trusted_internal=True,
-        skip_if_busy=False)
-    started = result.get("responders") or ([result["responder"]] if result.get("responder") else [])
-    stato = "ok" if started else "not_started"
-    await asyncio.to_thread(mail_triggers.set_status, tier, name, stato)
-    return "" if started else stato

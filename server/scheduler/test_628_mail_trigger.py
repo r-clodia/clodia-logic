@@ -109,7 +109,7 @@ class FireTests(_Tmp):
                 mock.patch("server.api.channels.indirizzo", lambda a: a), \
                 mock.patch.object(MC.topics_client, "async_open_topic", open_topic):
             if rows is None:
-                out = asyncio.run(MC.fire_mail_trigger("SEAL-1", "ops", items))
+                out = asyncio.run(MT.fire("SEAL-1", "ops", items))
             else:
                 async def room_run(room, only=None, delivered=None):
                     delivered.extend(items)

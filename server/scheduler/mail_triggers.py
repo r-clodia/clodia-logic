@@ -189,3 +189,32 @@ def prompt_text(agent: str, prompt: str, items: list[dict]) -> str:
         righe.append(f"- … e altre {extra}")
     return (f"@{agent} {prompt}\n\nPosta appena consegnata in questo canale "
             f"({len(items)}):\n" + "\n".join(righe))
+
+
+async def fire(tier: str, name: str, items: list[dict]) -> str:
+    """Start the room's «incoming mail» turn, if it has one. Returns "" when a
+    turn was started, else the reason it was not. Called by the mail courier
+    with what it just delivered; the turn goes through the scheduler's door
+    (a topic trigger): a system message with a synthetic principal, normal
+    routing, QUEUED when the agent is busy (not skipped)."""
+    import asyncio
+    from ..api import channels, topics_client
+    trig, motivo = await asyncio.to_thread(claim_fire, tier, name)
+    if motivo:
+        return motivo
+    agent = str((trig or {}).get("agent") or "")
+    meta = ((await topics_client.async_open_topic(tier, name)) or {}).get("meta") or {}
+    if agent not in (meta.get("participants") or []):
+        await asyncio.to_thread(set_status, tier, name, "agent_not_participant")
+        LOG.warning("mail trigger %s/%s: '%s' non partecipa più alla stanza",
+                    tier, name, agent)
+        return "agent_not_participant"
+    testo = prompt_text(channels.indirizzo(agent), str(trig.get("prompt") or ""), items)
+    result = await channels.post_channel_message(
+        tier, name, testo, "mail-trigger", kind="system", trusted_internal=True,
+        skip_if_busy=False)
+    started = result.get("responders") or (
+        [result["responder"]] if result.get("responder") else [])
+    stato = "ok" if started else "not_started"
+    await asyncio.to_thread(set_status, tier, name, stato)
+    return "" if started else stato
