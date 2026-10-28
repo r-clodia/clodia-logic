@@ -4,6 +4,9 @@ Changelog of the `google-pack` pack ([Keep a Changelog](https://keepachangelog.c
 format, SemVer). The newest version is at the top; `pack.yaml` holds the current
 one.
 
+## [2.3.1] — 2026-10-28
+- Mail client: a header with an unknown or malformed charset no longer fails the whole listing/search of its mailbox (LookupError); one unreadable message is skipped and logged. On 28 Oct one such mail took down the colony mailbox's index for every room.
+
 ## [2.3.0] — 2026-10-21
 - The bundled Gmail client returns the recipient headers as sent (`rcpt_raw`)
   in list/read/search, get-eml and get-attachment, as comms-pack's copy does:
