@@ -98,16 +98,40 @@ def get_account(config, account_name):
 
 
 def decode_mime_header(header):
+    """A header as text, never an exception: an unknown or malformed charset
+    (`=?utf-8'?…`, `=?x-unknown?…`) raised LookupError and one such mail made
+    every listing and search of its mailbox fail (28 Oct 2026, the colony
+    mailbox's index down for every room)."""
     if header is None:
         return ""
-    decoded_parts = decode_header(header)
+    try:
+        decoded_parts = decode_header(header)
+    except Exception:  # noqa: BLE001 — undecodable: the header as received
+        return str(header)
     result = []
     for part, charset in decoded_parts:
         if isinstance(part, bytes):
-            result.append(part.decode(charset or "utf-8", errors="replace"))
+            try:
+                result.append(part.decode(charset or "utf-8", errors="replace"))
+            except (LookupError, TypeError):
+                result.append(part.decode("utf-8", errors="replace"))
         else:
             result.append(part)
     return "".join(result)
+
+
+def _header_row(eid, msg):
+    """One listed message's envelope (list/search)."""
+    return {
+        "id": eid.decode(),
+        "from": decode_mime_header(msg["From"]),
+        "from_raw": str(msg["From"] or ""),
+        "rcpt_raw": _rcpt_raw(msg),
+        "to": decode_mime_header(msg["To"]),
+        "subject": decode_mime_header(msg["Subject"]),
+        "date": msg["Date"],
+        "message_id": msg["Message-ID"],
+    }
 
 
 # ── OAuth2 (XOAUTH2) per Gmail — stdlib only (urllib) ─────────────────────
@@ -283,17 +307,11 @@ def list_emails(account, folder="INBOX", limit=10):
         status, msg_data = imap.fetch(eid, "(RFC822.HEADER)")
         for response_part in msg_data:
             if isinstance(response_part, tuple):
-                msg = email.message_from_bytes(response_part[1])
-                result.append({
-                    "id": eid.decode(),
-                    "from": decode_mime_header(msg["From"]),
-                    "from_raw": str(msg["From"] or ""),
-                    "rcpt_raw": _rcpt_raw(msg),
-                    "to": decode_mime_header(msg["To"]),
-                    "subject": decode_mime_header(msg["Subject"]),
-                    "date": msg["Date"],
-                    "message_id": msg["Message-ID"],
-                })
+                try:
+                    result.append(_header_row(eid, email.message_from_bytes(response_part[1])))
+                except Exception as e:  # noqa: BLE001 — one mail never fails the listing
+                    print(f"email_client: message {eid!r} skipped ({type(e).__name__})",
+                          file=sys.stderr)
     imap.logout()
     return result
 
@@ -362,17 +380,11 @@ def search_emails(account, query, folder="INBOX", limit=20):
         status, msg_data = imap.fetch(eid, "(RFC822.HEADER)")
         for response_part in msg_data:
             if isinstance(response_part, tuple):
-                msg = email.message_from_bytes(response_part[1])
-                result.append({
-                    "id": eid.decode(),
-                    "from": decode_mime_header(msg["From"]),
-                    "from_raw": str(msg["From"] or ""),
-                    "rcpt_raw": _rcpt_raw(msg),
-                    "to": decode_mime_header(msg["To"]),
-                    "subject": decode_mime_header(msg["Subject"]),
-                    "date": msg["Date"],
-                    "message_id": msg["Message-ID"],
-                })
+                try:
+                    result.append(_header_row(eid, email.message_from_bytes(response_part[1])))
+                except Exception as e:  # noqa: BLE001 — one mail never fails the listing
+                    print(f"email_client: message {eid!r} skipped ({type(e).__name__})",
+                          file=sys.stderr)
     imap.logout()
     return result
 

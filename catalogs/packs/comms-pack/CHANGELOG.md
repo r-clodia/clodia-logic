@@ -8,6 +8,9 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.6.1] — 2026-10-28
+- Mail client: a header with an unknown or malformed charset no longer fails the whole listing/search of its mailbox (LookupError); one unreadable message is skipped and logged. On 28 Oct one such mail took down the colony mailbox's index for every room.
+
 ## [2.6.0] — 2026-10-21
 - **Message-box index** (clodia-platform#585): `courier_box_index` lists, with
   ONE search of the colony mailbox (`SINCE` two days), which message-box codes
