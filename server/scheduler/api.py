@@ -282,6 +282,68 @@ async def api_delete_topic_cron_trigger(tier: str, name: str, request: Request):
     return {"deleted": True}
 
 
+# ---------------------------------------------------------------------------
+# Trigger «posta in arrivo» (clodia-platform#628)
+# ---------------------------------------------------------------------------
+
+class TopicMailTriggerUpsert(BaseModel):
+    agent: str = Field(..., min_length=1, max_length=100)
+    prompt: str = Field(..., min_length=1, max_length=4000)
+    enabled: bool = True
+
+
+def _require_topic_reader(request: Request, tier: str, name: str) -> dict:
+    """Owner, admin or participant: who may SEE the room's triggers."""
+    from ..api.admin import is_admin
+
+    principal = _caller(request)
+    topic = topics_client.open_topic(tier, name)
+    if not topic:
+        raise HTTPException(404, "topic non trovato")
+    meta = topic.get("meta", {})
+    if (principal != meta.get("owner") and not is_admin(principal)
+            and principal not in (meta.get("participants") or [])):
+        raise HTTPException(403, "non partecipi a questo topic")
+    return meta
+
+
+@router.get("/clodia/channels/{tier}/{name}/mail-trigger")
+async def api_get_topic_mail_trigger(tier: str, name: str, request: Request):
+    from . import mail_triggers
+    await asyncio.to_thread(_require_topic_reader, request, tier, name)
+    return {"trigger": mail_triggers.get(tier, name)}
+
+
+@router.put("/clodia/channels/{tier}/{name}/mail-trigger")
+async def api_put_topic_mail_trigger(
+    tier: str, name: str, req: TopicMailTriggerUpsert, request: Request,
+):
+    from . import mail_triggers
+    owner, meta = await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    prompt = req.prompt.strip()
+    if not prompt:
+        raise HTTPException(422, "prompt richiesto")
+    agent = req.agent.strip()
+    _require_valid_agent(agent)
+    if agent not in (meta.get("participants") or []):
+        raise HTTPException(422, f"agent '{agent}' non partecipa al topic")
+    try:
+        trigger = mail_triggers.upsert(tier, name, agent=agent, prompt=prompt,
+                                       enabled=req.enabled, owner=owner)
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+    return {"trigger": trigger}
+
+
+@router.delete("/clodia/channels/{tier}/{name}/mail-trigger")
+async def api_delete_topic_mail_trigger(tier: str, name: str, request: Request):
+    from . import mail_triggers
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    if not mail_triggers.delete(tier, name):
+        raise HTTPException(404, "trigger posta in arrivo non configurato")
+    return {"deleted": True}
+
+
 def _with_freshness(job: dict) -> dict:
     """Allega al payload il giudizio di freschezza (#273).
 

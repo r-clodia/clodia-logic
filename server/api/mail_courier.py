@@ -325,7 +325,8 @@ def envelope_text(env: dict, saved: list[str], failed: list[str],
     return "\n".join(righe)
 
 
-async def _deliver(room: dict, env: dict) -> None:
+async def _deliver(room: dict, env: dict) -> dict:
+    """Deliver one envelope; returns what a mail trigger lists (#628)."""
     saved, failed = [], []
     for name in env.get("attachments") or []:
         try:
@@ -376,11 +377,15 @@ async def _deliver(room: dict, env: dict) -> None:
     await topics_client.async_post_message(
         room["tier"], room["name"], AUTHOR,
         envelope_text(env, saved, failed, eml_path, auth, body_path), kind="proxy")
+    return {"from": _plain(env.get("from")), "subject": _plain(env.get("subject")),
+            "eml": eml_path}
 
 
-async def run_room(room: dict, only: list[str] | None = None) -> int:
+async def run_room(room: dict, only: list[str] | None = None,
+                   delivered: list | None = None) -> int:
     """One pass over one room's mailbox. Returns how many envelopes were
-    delivered. `only`: the keys the message-box index named (#585)."""
+    delivered. `only`: the keys the message-box index named (#585).
+    `delivered`: collects what was delivered, for the room's mail trigger (#628)."""
     state = _load(room)
     # The senders changed (one added, one removed): what is in the mailbox now
     # is recorded, not delivered — a sender added today brings its mail from
@@ -419,8 +424,10 @@ async def run_room(room: dict, only: list[str] | None = None) -> int:
     for env in reversed(nuove):           # oldest first
         key = env.get("key")
         try:
-            await _deliver(room, env)
+            item = await _deliver(room, env)
             consegnate += 1
+            if delivered is not None:
+                delivered.append(item)
         except Exception as e:  # noqa: BLE001 — retried at the next pass
             LOG.warning("mail courier: envelope for %s/%s not posted (%s)",
                         room["tier"], room["name"], type(e).__name__)
@@ -437,6 +444,9 @@ async def run_room(room: dict, only: list[str] | None = None) -> int:
                     envelope_text(env, [], list(env.get("attachments") or [])),
                     kind="proxy")
                 consegnate += 1
+                if delivered is not None:
+                    delivered.append({"from": _plain(env.get("from")),
+                                      "subject": _plain(env.get("subject")), "eml": ""})
             except Exception:  # noqa: BLE001
                 LOG.warning("mail courier: envelope for %s/%s given up after %d attempts",
                             room["tier"], room["name"], fails[key])
@@ -446,7 +456,7 @@ async def run_room(room: dict, only: list[str] | None = None) -> int:
     return consegnate
 
 
-async def run_box_room(room: dict, keys: list[str]) -> int:
+async def run_box_room(room: dict, keys: list[str], delivered: list | None = None) -> int:
     """A message-box row read through the index (#585): no IMAP unless the
     index names keys this room has not seen. Priming records the index's keys
     for the code — nothing is read."""
@@ -463,7 +473,7 @@ async def run_box_room(room: dict, keys: list[str]) -> int:
     nuove = [k for k in keys if k not in state["keys"]]
     if not nuove:
         return 0
-    return await run_room(room, only=nuove)
+    return await run_room(room, only=nuove, delivered=delivered)
 
 
 async def run_cycle() -> int:
@@ -474,22 +484,66 @@ async def run_cycle() -> int:
         LOG.warning("mail courier: rooms unavailable (%s)", type(e).__name__)
         return 0
     indice = None
-    if any(r.get("tag") and r.get("indexed") and r.get("senders") for r in stanze):
+    # The room's own address delivers whoever writes (clodia-tools ≥ 2.148.0,
+    # #627): an indexed message-box row needs no declared sender.
+    if any(r.get("tag") and r.get("indexed") for r in stanze):
         indice = await asyncio.to_thread(box)
+    consegnate: dict[tuple[str, str], list] = {}
     for room in stanze:
-        # No sender declared by the room → nothing would be delivered: no
-        # IMAP at all (#576). A gateway that does not say counts as none.
-        if not room.get("senders"):
+        box_row = bool(room.get("tag") and room.get("indexed"))
+        # A linked mailbox with no sender declared by the room → nothing would
+        # be delivered: no IMAP at all (#576). A gateway that does not say
+        # counts as none.
+        if not box_row and not room.get("senders"):
             continue
+        dove = consegnate.setdefault((str(room.get("tier")), str(room.get("name"))), [])
         try:
-            if room.get("tag") and room.get("indexed"):
+            if box_row:
                 # Without the index this row is skipped, never searched on its
                 # own: one search per topic is what #585 removed.
                 if indice is not None:
-                    total += await run_box_room(room, indice.get(str(room["tag"]).upper(), []))
+                    total += await run_box_room(
+                        room, indice.get(str(room["tag"]).upper(), []), delivered=dove)
                 continue
-            total += await run_room(room)
+            total += await run_room(room, delivered=dove)
         except Exception as e:  # noqa: BLE001 — one room never stops the others
             LOG.warning("mail courier: %s/%s failed (%s)", room.get("tier"),
                         room.get("name"), type(e).__name__)
+    # ONE turn per room per cycle, whatever the number of its mailboxes (#628).
+    for (tier, name), items in consegnate.items():
+        if items:
+            try:
+                await fire_mail_trigger(tier, name, items)
+            except Exception as e:  # noqa: BLE001 — a trigger never stops the courier
+                LOG.warning("mail trigger %s/%s: %s", tier, name, type(e).__name__)
     return total
+
+
+async def fire_mail_trigger(tier: str, name: str, items: list[dict]) -> str:
+    """Start the room's «incoming mail» turn, if it has one (#628). Returns
+    the outcome: "" when a turn was started, else the reason it was not."""
+    from ..scheduler import mail_triggers
+    trig, motivo = await asyncio.to_thread(mail_triggers.claim_fire, tier, name)
+    if motivo:
+        return motivo
+    agent = str((trig or {}).get("agent") or "")
+    meta = ((await topics_client.async_open_topic(tier, name)) or {}).get("meta") or {}
+    if agent not in (meta.get("participants") or []):
+        await asyncio.to_thread(mail_triggers.set_status, tier, name,
+                                "agent_not_participant")
+        LOG.warning("mail trigger %s/%s: '%s' non partecipa più alla stanza",
+                    tier, name, agent)
+        return "agent_not_participant"
+    from . import channels
+    testo = mail_triggers.prompt_text(channels.indirizzo(agent),
+                                      str(trig.get("prompt") or ""), items)
+    # The scheduler's door (a topic trigger): a system message with a
+    # synthetic principal, through the normal routing; NOT skipped when the
+    # agent is busy — the turn queues behind the current one.
+    result = await channels.post_channel_message(
+        tier, name, testo, "mail-trigger", kind="system", trusted_internal=True,
+        skip_if_busy=False)
+    started = result.get("responders") or ([result["responder"]] if result.get("responder") else [])
+    stato = "ok" if started else "not_started"
+    await asyncio.to_thread(mail_triggers.set_status, tier, name, stato)
+    return "" if started else stato
