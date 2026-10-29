@@ -28,7 +28,7 @@ extra_env:
   # OGNI sonnet invece che per il solo seed che dichiara 5.5.
   # Va portato a 5.5 in un follow-up di una riga, appena il profilo è
   # confermato in console su eu-west-1.
-  ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-5-5"
+  ANTHROPIC_DEFAULT_OPUS_MODEL: "eu.anthropic.claude-opus-5"   # TEMPORARY, see model_ids
   ANTHROPIC_DEFAULT_SONNET_MODEL: "eu.anthropic.claude-sonnet-5"
   ANTHROPIC_DEFAULT_HAIKU_MODEL: "eu.anthropic.claude-haiku-4-5-20251001-v1:0"
 
@@ -58,7 +58,12 @@ extra_env:
 # famiglia: tocca solo chi dichiara `claude-sonnet-5-5` (oggi il solo
 # `sysadmin`), e `aws-region-eu` è l'ultimo provider della sua catena.
 model_ids:
-  claude-opus-5-5: "eu.anthropic.claude-opus-5-5"
+  # TEMPORARY (29 Oct 2026, owner's choice): the EU profile of Opus 5.5 answers
+  # 503 «Bedrock is unable to process your request» on every attempt since the
+  # morning of 28-29 Oct (AWS side: network and other providers fine, requests
+  # of normal size). Opus 5.5 → Opus 5 until it recovers; to revert set it back
+  # to "eu.anthropic.claude-opus-5-5" (and the opus default above).
+  claude-opus-5-5: "eu.anthropic.claude-opus-5"
   claude-opus-5: "eu.anthropic.claude-opus-5"
   claude-opus-4-8: "eu.anthropic.claude-opus-4-8"
   claude-opus-4-7: "eu.anthropic.claude-opus-4-7"
