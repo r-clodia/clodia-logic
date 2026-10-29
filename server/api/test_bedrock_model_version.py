@@ -138,9 +138,10 @@ class RealProviderFileTests(unittest.TestCase):
 
     def test_default_di_famiglia_non_sono_fermi_a_una_versione_vecchia(self):
         env = P.provider_extra_env("aws-region-eu")
-        # clodia-platform#392: il default opus è Opus 5.5.
+        # clodia-platform#392: il default opus è Opus 5.5 — TEMPORANEAMENTE
+        # Opus 5 (29 ott 2026: il profilo EU di 5.5 risponde 503, #631).
         self.assertEqual(env.get("ANTHROPIC_DEFAULT_OPUS_MODEL"),
-                         "eu.anthropic.claude-opus-5-5")
+                         "eu.anthropic.claude-opus-5")
         # clodia-platform#483: il default sonnet resta DELIBERATAMENTE a
         # Sonnet 5, l'ultimo profilo verificato con ListInferenceProfiles,
         # anche se `sysadmin` dichiara 5.5. Questo valore è la rete di
@@ -180,7 +181,8 @@ class OpusFiveFiveOnTheRealProviderTests(unittest.TestCase):
     """
 
     def test_opus_5_5_resolves_to_its_eu_profile(self):
-        self.assertEqual("eu.anthropic.claude-opus-5-5",
+        # TEMPORARY (#631): the EU profile of 5.5 answers 503; Opus 5 meanwhile.
+        self.assertEqual("eu.anthropic.claude-opus-5",
                          P.bedrock_model_id("aws-region-eu", "claude-opus-5-5"))
 
     def test_opus_5_5_has_the_one_million_window(self):
