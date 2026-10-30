@@ -341,6 +341,86 @@ def _install_seed(sdir: Path, *, force: bool = False,
 _PACK_DOC_FILES = ("SETUP.md", "CHANGELOG.md")
 
 
+#: Bounds of a service's code tree copied at import (clodia-platform#640).
+_SERVICE_MAX_BYTES = 50 * 1024 * 1024
+_SERVICE_MAX_FILES = 5000
+
+
+def _service_dirs(pack_root: Path, connectors: list) -> list[tuple[str, Path]]:
+    """`(workdir, source dir)` of every declared service that has a `workdir`,
+    checked BEFORE anything is installed (clodia-platform#640).
+
+    The gateway starts a service in `<datadir>/packs/<pack>/<workdir>`
+    (`services/launch.resolve_workdir`): its code has to be there. The rules
+    are the gateway's (`workdir_problem`): relative, no `..`; the tree holds
+    regular files and directories only (no link, device or FIFO), within
+    `_SERVICE_MAX_*`. Anything else fails the import with nothing installed.
+    """
+    import os
+    import stat
+    root = pack_root.resolve()
+    out: list[tuple[str, Path]] = []
+    seen: set[str] = set()
+    for c in connectors or []:
+        for svc in (c.get("services") or []) if isinstance(c, dict) else []:
+            wd = str((svc or {}).get("workdir") or "").strip() if isinstance(svc, dict) else ""
+            if not wd or wd in seen:
+                continue
+            if wd.startswith(("/", "~")) or "\\" in wd or "\x00" in wd \
+                    or ".." in wd.split("/"):
+                raise PackImportError(f"servizio: workdir '{wd}' non ammesso")
+            src = pack_root / wd
+            if src.is_symlink() or not src.is_dir() or not src.resolve().is_relative_to(root):
+                raise PackImportError(f"servizio: workdir '{wd}' assente nel pack "
+                                      "o fuori dalla sua radice")
+            size = files = 0
+            for dirpath, dirnames, filenames in os.walk(src, followlinks=False):
+                for n in dirnames + filenames:
+                    st = os.lstat(os.path.join(dirpath, n))
+                    if not (stat.S_ISDIR(st.st_mode) or stat.S_ISREG(st.st_mode)):
+                        raise PackImportError(
+                            f"servizio: '{wd}' contiene un link o un file speciale "
+                            f"({os.path.relpath(os.path.join(dirpath, n), src)})")
+                    if stat.S_ISREG(st.st_mode):
+                        size += st.st_size
+                        files += 1
+            if size > _SERVICE_MAX_BYTES or files > _SERVICE_MAX_FILES:
+                raise PackImportError(f"servizio: '{wd}' supera i limiti "
+                                      f"({files} file, {size} byte)")
+            seen.add(wd)
+            out.append((wd, src))
+    return out
+
+
+def _install_service_code(meta_dir: Path, dirs: list[tuple[str, Path]]) -> None:
+    """Copy each service's tree to `<meta_dir>/<workdir>`, swapped in whole:
+    a re-import (Update) replaces the old code, never mixes the two. Modes
+    0755/0644: the service runs under a dedicated uid that must read its code
+    and must not write it (it writes only its state dir)."""
+    import os
+    for wd, src in dirs:
+        dest = meta_dir / wd
+        dest.parent.mkdir(parents=True, exist_ok=True)
+        tmp = dest.parent / f".{dest.name}.importing"
+        old = dest.parent / f".{dest.name}.old"
+        shutil.rmtree(tmp, ignore_errors=True)
+        shutil.copytree(src, tmp, symlinks=True)
+        for dirpath, dirnames, filenames in os.walk(tmp):
+            os.chmod(dirpath, 0o755)
+            for n in filenames:
+                os.chmod(os.path.join(dirpath, n), 0o644)
+        shutil.rmtree(old, ignore_errors=True)
+        if dest.exists():
+            os.rename(dest, old)
+        os.rename(tmp, dest)
+        shutil.rmtree(old, ignore_errors=True)
+        # Every directory up to the pack dir must be traversable by that uid.
+        p = dest.parent
+        while p != meta_dir.parent and p.is_relative_to(meta_dir):
+            os.chmod(p, 0o755)
+            p = p.parent
+
+
 def _copy_pack_docs(pack_root: Path, meta_dir: Path) -> None:
     """Copia i doc noti dalla radice del pack sorgente al suo `meta_dir`
     installato. Assenti = skip silenzioso: non ogni pack ha un runbook di
@@ -416,6 +496,8 @@ def install_pack_from_root(root: Path, *, source: str,
     # installato. È anche l'unico momento in cui il rifiuto costa zero.
     connectors = declared_connectors(manifest)
     connectors_check = validate_connectors(connectors, pack=pack)
+    # The code of the declared services (#640), checked now, copied below.
+    service_dirs = _service_dirs(pack_root, connectors)
 
     if marketplace is not None:
         plugin_dirs = _marketplace_plugin_dirs(pack_root, manifest)
@@ -484,6 +566,9 @@ def install_pack_from_root(root: Path, *, source: str,
             _meta["connectors_inactive"] = list(connectors_check["ignored"])
     if keep_disabled:
         _meta["disabled"] = True
+    # The code first, then the manifest the gateway polls: a service is never
+    # declared before its workdir exists.
+    _install_service_code(meta_dir, service_dirs)
     _pack_state._atomic_write(meta_dir / "pack.yaml",
                               yaml.safe_dump(_meta, allow_unicode=True, sort_keys=False))
     _copy_pack_docs(pack_root, meta_dir)
