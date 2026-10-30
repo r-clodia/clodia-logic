@@ -216,8 +216,11 @@ async def refresh_async(force: bool = False) -> None:
 
 
 def lookup(connector: str):
-    """The adapter of a connector declaring `relay:`, or None."""
-    refresh()
+    """The adapter of a connector declaring `relay:`, or None.
+
+    Cache only, never a fetch: callers sit on the event loop (`_relay_chat`).
+    The projection is refreshed by `run_poll_cycle`, in a thread
+    (`refresh_async`), before it looks adapters up."""
     return _ADAPTERS.get(str(connector or ""))
 
 

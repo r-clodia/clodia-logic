@@ -297,6 +297,16 @@ async def _relay_chat(chat_id: str, binding: dict, messages: list, adapter=None)
     _save_state(key, state)
 
 
+def _relayed_text(adapter, text) -> str:
+    """The relayed text as it is written in the room. Backticks go first, for
+    every transport: the room masks code spans before looking for mentions, so
+    a backtick of the sender's (``` ``@clodia``, ```a`@clodia``) would both
+    dodge the adapter's neutralisation and hide its own `@word` from it
+    (#638 review). Then the transport neutralises its mentions."""
+    t = str(text or "").strip().replace("`", "'")
+    return adapter.neutralise_mentions(t)
+
+
 def _request_message(coordinatore: str | None, trigger: dict, chat_id, adapter) -> str:
     """Il messaggio con cui il relay porta la richiesta nel canale.
 
@@ -310,7 +320,7 @@ def _request_message(coordinatore: str | None, trigger: dict, chat_id, adapter) 
     # room they must not summon anyone or break the line (#638).
     gruppo = relay_adapters.safe_label(adapter.chat_label(trigger, chat_id))
     chi = relay_adapters.safe_label(adapter.sender_label(trigger))
-    testo = adapter.neutralise_mentions((trigger.get("text") or "").strip())
+    testo = _relayed_text(adapter, trigger.get("text"))
     apertura = f"@{coordinatore}, riporto" if coordinatore else "Riporto"
     # L'id accanto al nome: chi risponde lo passa a `channel.deliver`. Col solo
     # titolo l'agente usava «Clodia Sviluppo» come chat_id, e il gateway apriva
@@ -406,7 +416,7 @@ async def _refuse_unanswerable(chat_id, instance: str, tier: str, topic: str,
             thread_id=trigger.get("thread_id"))
     except Exception as e:  # noqa: BLE001
         LOG.warning("refuse send chat %s: %s", chat_id, e)
-    testo = adapter.neutralise_mentions((trigger.get("text") or "").strip())
+    testo = _relayed_text(adapter, trigger.get("text"))
     gruppo = relay_adapters.safe_label(adapter.chat_label(trigger, chat_id))
     chi = relay_adapters.safe_label(adapter.sender_label(trigger))
     avviso = (f"Richiesta dal gruppo {trasporto} «{gruppo}» "

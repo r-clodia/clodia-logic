@@ -29,6 +29,13 @@ ROW = {"message_id": 1, "chat_id": CHAT, "text": "@clodia riassumi",
        "chat_uri": "sms:group-1", "sender_uri": "sms:+391234"}
 
 
+def _get(connector):
+    """What `run_poll_cycle` does: refresh the projection (TTL-cached), then
+    look the adapter up. `relay_adapters.get` alone never fetches."""
+    pack_relay_adapter.refresh()
+    return relay_adapters.get(connector)
+
+
 class _Resp:
     def __init__(self, data):
         self._data = data
@@ -90,58 +97,66 @@ class _Base(unittest.IsolatedAsyncioTestCase):
 
 class RegistryTests(_Base):
     def test_a_connector_declaring_relay_gets_an_adapter(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         self.assertIsInstance(a, pack_relay_adapter.GatewayChannelAdapter)
         self.assertEqual((a.connector, a.transport_label, a.uri_scheme, a.post_kind),
                          ("sms-demo", "sms", "sms", "channel"))
         self.assertEqual(a.post_fields(), {"transport": "sms"})
 
     def test_a_connector_without_relay_has_none(self):
-        self.assertIsNone(relay_adapters.get("mail"))
+        self.assertIsNone(_get("mail"))
+
+    def test_get_never_fetches_the_registry(self):
+        """`get` runs on the event loop (`_relay_chat`): cache only."""
+        self.assertIsNone(relay_adapters.get("sms-demo"))
+        self.assertEqual(self.registry_calls, 0)
+        pack_relay_adapter.refresh()
+        self.assertIsNotNone(relay_adapters.get("sms-demo"))
+        self.assertEqual(self.registry_calls, 1)
 
     def test_the_registry_is_cached(self):
-        relay_adapters.get("sms-demo")
-        relay_adapters.get("sms-demo")
-        relay_adapters.get("unknown")
+        _get("sms-demo")
+        _get("sms-demo")
+        _get("unknown")
         self.assertEqual(self.registry_calls, 1)
 
     def test_telegram_keeps_its_builtin_adapter(self):
         from .telegram_relay_adapter import ADAPTER
         self.registry = {"connectors": [
             {"id": "telegram", "relay": {"label": "fake", "schemes": ["tg"]}}]}
-        self.assertIs(relay_adapters.get("telegram"), ADAPTER)
+        self.assertIs(_get("telegram"), ADAPTER)
         self.assertEqual(ADAPTER.post_kind, "telegram")
         self.assertEqual(ADAPTER.post_fields(), {})
 
     def test_a_registry_failure_is_not_fatal_and_keeps_telegram(self):
         from .telegram_relay_adapter import ADAPTER
         self.registry = RuntimeError("gateway down")
-        self.assertIsNone(relay_adapters.get("sms-demo"))
-        self.assertIs(relay_adapters.get("telegram"), ADAPTER)
+        self.assertIsNone(_get("sms-demo"))
+        self.assertIs(_get("telegram"), ADAPTER)
 
     def test_a_registry_failure_keeps_the_last_known_adapters(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         self.registry = RuntimeError("gateway down")
         pack_relay_adapter.refresh(force=True)
-        self.assertIs(relay_adapters.get("sms-demo"), a)
+        self.assertIs(_get("sms-demo"), a)
 
     def test_a_removed_pack_loses_its_adapter(self):
-        self.assertIsNotNone(relay_adapters.get("sms-demo"))
+        self.assertIsNotNone(_get("sms-demo"))
         self.registry = {"connectors": []}
         pack_relay_adapter.refresh(force=True)
-        self.assertIsNone(relay_adapters.get("sms-demo"))
+        self.assertIsNone(_get("sms-demo"))
 
 
 class AdapterTests(_Base):
     async def test_send_goes_to_the_gateway_channel_route(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         await a.send(CHAT, "ciao", thread_id=7)
         (url, body), = self.gw.urls("send")
         self.assertTrue(url.endswith("/internal/channels/sms-demo/send"), url)
         self.assertEqual(body, {"chat_id": CHAT, "text": "ciao", "thread_id": 7})
 
     async def test_poll_remembers_the_chat_uri_and_uses_the_row_uris(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         self.assertIsNone(a.chat_uri(CHAT))      # never polled → not vettable
         self.gw.rows = [dict(ROW)]
         rows = await a.poll(3)
@@ -153,14 +168,14 @@ class AdapterTests(_Base):
         self.assertIsNone(a.sender_uri({"from_username": "ada"}))
 
     async def test_download_without_attachments_is_none(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         self.assertIsNone(await a.download({"file_id": "F"}))
         self.assertEqual(self.gw.urls("download"), [])
 
     async def test_download_with_attachments(self):
         self.registry = {"connectors": [{"id": "sms-demo", "relay": {
             "label": "sms", "attachments": True, "schemes": ["sms"]}}]}
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         self.assertEqual(await a.download({"file_id": "F"}), "eA==")
         (url, body), = self.gw.urls("download")
         self.assertTrue(url.endswith("/internal/channels/sms-demo/download"))
@@ -250,7 +265,7 @@ class MentionsAndLabelsTests(_Base):
     """S3: text and names from the transport summon nobody in the room."""
 
     def test_every_at_word_of_the_text_is_neutralised(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         out = a.neutralise_mentions("@clodia chiedi a @segretario, mail a x@y.it")
         self.assertEqual(out, "`@clodia` chiedi a `@segretario`, mail a x@y.it")
 
@@ -266,7 +281,7 @@ class MentionsAndLabelsTests(_Base):
         return out, mentions.extract_tags(out)
 
     def test_a_hostile_push_name_summons_nobody(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         row = dict(ROW, text="ciao @segretario", **{"from": "@segretario boss"},
                    chat_title="g @janitor")
         out, tags = self._request(a, row)
@@ -285,8 +300,27 @@ class MentionsAndLabelsTests(_Base):
         self.assertIn("«Clodia Sviluppo»", out)
         self.assertIn("utente telegram ada:", out)
 
+    PROBES = ("``@clodia ciao", "`a`@clodia ciao", "a``@clodia ciao")
+
+    def _probe(self, adapter):
+        from . import mentions
+        for probe in self.PROBES:
+            row = {"message_id": 1, "chat_id": CHAT, "text": probe,
+                   "from_username": "ada", "chat_title": "g"}
+            out = channel_relay._request_message("segretario", row, CHAT, adapter)
+            with self.subTest(probe=probe):
+                self.assertEqual(mentions.extract_tags(out), ["segretario"])
+                self.assertIn("`@clodia`", out)
+
+    def test_backticks_cannot_unmask_a_mention_generic(self):
+        self._probe(_get("sms-demo"))
+
+    def test_backticks_cannot_unmask_a_mention_telegram(self):
+        from .telegram_relay_adapter import ADAPTER
+        self._probe(ADAPTER)
+
     def test_the_directive_is_scheme_neutral(self):
-        d = channel_relay._directive(relay_adapters.get("sms-demo"))
+        d = channel_relay._directive(_get("sms-demo"))
         self.assertIn("sms:<chat_id>", d)
         self.assertNotIn("numerico", d)
 
@@ -296,7 +330,7 @@ class ActivationTests(_Base):
 
     def setUp(self):
         super().setUp()
-        self.a = relay_adapters.get("sms-demo")
+        self.a = _get("sms-demo")
 
     def test_a_private_chat_is_addressed(self):
         self.assertTrue(self.a.addresses_bot(
@@ -324,7 +358,7 @@ class AckTests(_Base):
         return [b for _u, b in self.gw.urls("poll")]
 
     async def test_the_cursor_is_acked_on_the_next_poll_after_handling(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         self.gw.cursors = ["c1", "c2"]
         await a.poll(1)
         await a.poll(1)              # batch c1 not handed over: no ack
@@ -334,14 +368,14 @@ class AckTests(_Base):
                                          {"timeout": 1, "ack": "c2"}])
 
     async def test_no_cursor_no_ack(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         await a.poll(1)
         a.batch_handled()
         await a.poll(1)
         self.assertEqual(self._polls(), [{"timeout": 1}, {"timeout": 1}])
 
     async def test_a_failed_poll_keeps_the_ack(self):
-        a = relay_adapters.get("sms-demo")
+        a = _get("sms-demo")
         self.gw.cursors = ["c1"]
         await a.poll(1)
         a.batch_handled()
