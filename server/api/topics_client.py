@@ -303,9 +303,15 @@ def list_messages(tier: str, name: str, limit: int = 200) -> list[dict]:
 
 
 def post_message(tier: str, name: str, author: str, text: str,
-                 kind: str = "human", attachments: list[str] | None = None) -> dict:
+                 kind: str = "human", attachments: list[str] | None = None,
+                 transport: str | None = None) -> dict:
+    """`transport`: the label of the chat transport a `channel` post was
+    relayed from (#638). Sent only when given, so every other post keeps the
+    exact body it had."""
     url = f"{_base()}/{tier}/{name}/messages"
     body = {"author": author, "text": text, "kind": kind, "attachments": attachments or []}
+    if transport:
+        body["transport"] = transport
     try:
         r = _gw_http.post(url, headers=_headers(), json=body, timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:

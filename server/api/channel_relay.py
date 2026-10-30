@@ -411,7 +411,8 @@ async def _refuse_unanswerable(chat_id, instance: str, tier: str, topic: str,
               f"gruppo. L'owner può aggiungere clodia alla stanza o concedere il verbo.")
     try:
         await topics_client.async_post_message(tier, topic, instance, avviso,
-                                               kind=adapter.post_kind)
+                                               kind=adapter.post_kind,
+                                               **adapter.post_fields())
     except Exception as e:  # noqa: BLE001
         LOG.warning("post avviso %s/%s: %s", tier, topic, e)
 
@@ -440,7 +441,8 @@ async def _act_on_request(chat_id, instance: str, tier: str, topic: str,
     richiesta = _request_message(coordinatore, trigger, chat_id, adapter)
     try:
         posted = await topics_client.async_post_message(tier, topic, instance, richiesta,
-                                                        kind=adapter.post_kind)
+                                                        kind=adapter.post_kind,
+                                               **adapter.post_fields())
     except Exception as e:  # noqa: BLE001
         LOG.warning("post richiesta %s/%s: %s", tier, topic, e)
         return
@@ -542,6 +544,12 @@ async def run_poll_cycle(timeout: int = 25) -> int:
     # a chat unbound during the poll would still get one cycle of messages and a
     # chat bound during it would lose its first ones.
     bindings = cb.load()
+    if any(per_chat and not relay_adapters.is_local(c) for c, per_chat in bindings.items()):
+        # Pack transports (#638) come from the gateway's registry: refresh the
+        # cached projection off the event loop, so `get` below never blocks it.
+        # It never raises; built-ins do not depend on it.
+        from . import pack_relay_adapter
+        await pack_relay_adapter.refresh_async()
     n = 0
     interrogato = False          # almeno un trasporto ha davvero atteso
     attese: list[float] = []     # quanto manca ai trasporti in pausa
