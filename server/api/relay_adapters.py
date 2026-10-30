@@ -30,6 +30,16 @@ Un adapter fa quattro cose, quelle della issue:
 dichiara), `from` (come mostrarla), `chat_title`, `reply_to_bot` (bool),
 `file` (`{file_id, file_name}`, facoltativo).
 
+Optional keys (#638), set by the transport, never derived from the text:
+`thread_id` (where to answer inside the chat, if the transport has threads);
+`chat_type` — `"private"` for a 1:1 chat, anything else (or absent) for a
+group; `mentions_bot` (bool) — the transport's NATIVE mention of the bot's own
+identity (e.g. a WhatsApp mention of the bot's number), which the text alone
+cannot show. The generic pack adapter treats `chat_type == "private"` and
+`mentions_bot` as addressing the bot. Rows of a pack transport also carry
+`chat_uri` and `sender_uri`, already validated by the gateway against the
+connector's schemes.
+
 Il registro è una tabella id→modulo invece di un import diretto: così il
 processo non importa il client di un trasporto che l'istanza non usa, e non ci
 sono cicli (l'adapter importa il suo client, il nucleo importa il registro).
@@ -40,6 +50,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 
 LOG = logging.getLogger("agent-server.relay_adapters")
 
@@ -47,6 +58,30 @@ LOG = logging.getLogger("agent-server.relay_adapters")
 _BUILTIN = {"telegram": "server.api.telegram_relay_adapter"}
 
 _CACHE: dict = {}
+#: connectors already reported as having no adapter: one log line, not one per cycle.
+_WARNED: set = set()
+
+
+#: Any `@word` in text that comes from outside. The left boundary is the one of
+#: the mention parser: an e-mail address is not a mention.
+_AT_WORD_RE = re.compile(r"(?<![\w@`.])@(\w[\w.-]*\w|\w)")
+_LABEL_MAX = 80
+
+
+def neutralise_at_words(text: str) -> str:
+    """Every `@word` becomes inline code: it reads the same in the room and
+    summons nobody (the mention parser skips inline code)."""
+    return _AT_WORD_RE.sub(lambda m: f"`@{m.group(1)}`", text or "")
+
+
+def safe_label(label) -> str:
+    """A transport-supplied NAME (chat title, display name such as a WhatsApp
+    pushName) is chosen by whoever owns that account: on one line, without
+    backticks that could close the inline code, bounded, and with no `@word`
+    that would summon an agent once written in the room."""
+    t = re.sub(r"[\x00-\x1f\x7f]+", " ", str(label or "")).replace("`", "'")
+    t = re.sub(r"\s+", " ", t).strip()[:_LABEL_MAX]
+    return neutralise_at_words(t) or "?"
 
 
 def _addresses_bot(text: str, participants: list) -> bool:
@@ -76,6 +111,17 @@ class RelayAdapter:
     #: taint the room the way a `proxy` post does (gateway `post_message`).
     #: A transport the gateway has no kind for stays `proxy`: tainting.
     post_kind = "proxy"
+
+    def batch_handled(self) -> None:
+        """The relay has handed the last polled batch to its model. A transport
+        that acknowledges deliveries acks it on the next poll (#638)."""
+        return None
+
+    def post_fields(self) -> dict:
+        """Extra fields of the relay's posts in the room, besides `kind`. The
+        generic `channel` kind carries the transport's label (#638); the
+        built-in transports add nothing, so their posts stay as they were."""
+        return {}
 
     # ── inbound / outbound ───────────────────────────────────────────────────
     async def poll(self, timeout: int) -> list:
@@ -124,21 +170,40 @@ def get(connector: str):
     Un binding che nomina un trasporto sconosciuto non è un errore fatale: è un
     pack disinstallato o non ancora installato, e il relay deve continuare a
     servire gli altri canali invece di morire sul primo nome che non conosce.
+
+    Order (#638): an adapter registered in-process, then the built-ins
+    (Telegram keeps precedence over any pack declaring the same id), then the
+    connectors of installed packs that declare `relay:` — read from the
+    gateway's registry through a short TTL cache (`pack_relay_adapter`), so a
+    pack installed or removed is seen without a restart and a registry outage
+    is never fatal.
     """
     cid = str(connector or "")
-    if cid in _CACHE:
+    if _CACHE.get(cid) is not None:
         return _CACHE[cid]
     modulo = _BUILTIN.get(cid)
-    adapter = None
     if modulo:
+        adapter = None
         try:
             adapter = getattr(importlib.import_module(modulo), "ADAPTER", None)
         except Exception as e:  # noqa: BLE001
             LOG.warning("adapter '%s' non caricabile (%s)", cid, e)
-    if adapter is None:
+        if adapter is not None:
+            _CACHE[cid] = adapter
+            return adapter
+    adapter = None
+    try:
+        from . import pack_relay_adapter
+        adapter = pack_relay_adapter.lookup(cid)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("pack relay lookup for '%s' failed (%s)", cid, e)
+    if adapter is not None:
+        _WARNED.discard(cid)
+        return adapter
+    if cid not in _WARNED:
+        _WARNED.add(cid)
         LOG.warning("binding sul connettore '%s': nessun adapter di relay, chat ignorate", cid)
-    _CACHE[cid] = adapter
-    return adapter
+    return None
 
 
 def register(adapter) -> None:
@@ -148,3 +213,10 @@ def register(adapter) -> None:
 
 def forget(connector: str) -> None:
     _CACHE.pop(str(connector or ""), None)
+
+
+def is_local(connector: str) -> bool:
+    """True for a connector served without the gateway's registry: a built-in
+    or an adapter registered in-process."""
+    cid = str(connector or "")
+    return cid in _BUILTIN or _CACHE.get(cid) is not None
