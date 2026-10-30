@@ -30,6 +30,16 @@ Un adapter fa quattro cose, quelle della issue:
 dichiara), `from` (come mostrarla), `chat_title`, `reply_to_bot` (bool),
 `file` (`{file_id, file_name}`, facoltativo).
 
+Optional keys (#638), set by the transport, never derived from the text:
+`thread_id` (where to answer inside the chat, if the transport has threads);
+`chat_type` — `"private"` for a 1:1 chat, anything else (or absent) for a
+group; `mentions_bot` (bool) — the transport's NATIVE mention of the bot's own
+identity (e.g. a WhatsApp mention of the bot's number), which the text alone
+cannot show. The generic pack adapter treats `chat_type == "private"` and
+`mentions_bot` as addressing the bot. Rows of a pack transport also carry
+`chat_uri` and `sender_uri`, already validated by the gateway against the
+connector's schemes.
+
 Il registro è una tabella id→modulo invece di un import diretto: così il
 processo non importa il client di un trasporto che l'istanza non usa, e non ci
 sono cicli (l'adapter importa il suo client, il nucleo importa il registro).
@@ -40,6 +50,7 @@ from __future__ import annotations
 
 import importlib
 import logging
+import re
 
 LOG = logging.getLogger("agent-server.relay_adapters")
 
@@ -49,6 +60,28 @@ _BUILTIN = {"telegram": "server.api.telegram_relay_adapter"}
 _CACHE: dict = {}
 #: connectors already reported as having no adapter: one log line, not one per cycle.
 _WARNED: set = set()
+
+
+#: Any `@word` in text that comes from outside. The left boundary is the one of
+#: the mention parser: an e-mail address is not a mention.
+_AT_WORD_RE = re.compile(r"(?<![\w@`.])@(\w[\w.-]*\w|\w)")
+_LABEL_MAX = 80
+
+
+def neutralise_at_words(text: str) -> str:
+    """Every `@word` becomes inline code: it reads the same in the room and
+    summons nobody (the mention parser skips inline code)."""
+    return _AT_WORD_RE.sub(lambda m: f"`@{m.group(1)}`", text or "")
+
+
+def safe_label(label) -> str:
+    """A transport-supplied NAME (chat title, display name such as a WhatsApp
+    pushName) is chosen by whoever owns that account: on one line, without
+    backticks that could close the inline code, bounded, and with no `@word`
+    that would summon an agent once written in the room."""
+    t = re.sub(r"[\x00-\x1f\x7f]+", " ", str(label or "")).replace("`", "'")
+    t = re.sub(r"\s+", " ", t).strip()[:_LABEL_MAX]
+    return neutralise_at_words(t) or "?"
 
 
 def _addresses_bot(text: str, participants: list) -> bool:
@@ -78,6 +111,11 @@ class RelayAdapter:
     #: taint the room the way a `proxy` post does (gateway `post_message`).
     #: A transport the gateway has no kind for stays `proxy`: tainting.
     post_kind = "proxy"
+
+    def batch_handled(self) -> None:
+        """The relay has handed the last polled batch to its model. A transport
+        that acknowledges deliveries acks it on the next poll (#638)."""
+        return None
 
     def post_fields(self) -> dict:
         """Extra fields of the relay's posts in the room, besides `kind`. The

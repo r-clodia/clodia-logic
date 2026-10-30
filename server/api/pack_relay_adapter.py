@@ -6,9 +6,13 @@ never talks to that service. It talks to the gateway's generic channel routes,
 which forward to the declared service for a connector the registry accepted and
 validate the URIs of every row:
 
-- `POST /internal/channels/{connector}/poll {timeout}` → `{messages: [row…]}`;
-  each row has the relay's inbound shape (see `relay_adapters`) plus
-  `chat_uri` and `sender_uri`, already checked against the connector's schemes;
+- `POST /internal/channels/{connector}/poll {timeout, ack?}` →
+  `{messages: [row…], cursor?}`; each row has the relay's inbound shape (see
+  `relay_adapters`) plus `chat_uri` and `sender_uri`, already checked against
+  the connector's schemes. The gateway forwards the body as-is: `ack` is the
+  `cursor` of the previous batch, sent only once the relay has handed that
+  batch to its model, so a crash in between makes the service deliver it
+  again (the relay dedups by `message_id`). No `cursor` → no `ack`;
 - `POST /internal/channels/{connector}/send {chat_id, text, thread_id?}` →
   `{ok, message_id}`;
 - `POST /internal/channels/{connector}/download {file_id}` →
@@ -34,7 +38,7 @@ from urllib.parse import quote
 import requests
 
 from . import topics_client
-from .relay_adapters import RelayAdapter
+from .relay_adapters import RelayAdapter, neutralise_at_words
 
 LOG = logging.getLogger("agent-server.pack_relay_adapter")
 
@@ -69,6 +73,10 @@ class GatewayChannelAdapter(RelayAdapter):
                  attachments: bool = False):
         self.connector = str(connector)
         self._chat_uris: dict[str, str] = {}
+        #: cursor of the batch returned by the last poll, not yet handled
+        self._pending_cursor = None
+        #: cursor of a handled batch, to ack on the next poll
+        self._ack_cursor = None
         self.configure(label=label, schemes=schemes, attachments=attachments)
 
     def configure(self, label: str = "", schemes=(), attachments: bool = False) -> None:
@@ -86,7 +94,14 @@ class GatewayChannelAdapter(RelayAdapter):
 
     # ── inbound / outbound ───────────────────────────────────────────────────
     def _poll_sync(self, timeout: int) -> list:
-        data = _post(self.connector, "poll", {"timeout": timeout}, timeout + 15)
+        body = {"timeout": timeout}
+        if self._ack_cursor is not None:
+            body["ack"] = self._ack_cursor
+        data = _post(self.connector, "poll", body, timeout + 15)
+        # The ack went through with a successful poll: a failed one keeps it
+        # for the next attempt.
+        self._ack_cursor = None
+        self._pending_cursor = (data or {}).get("cursor")
         rows = [m for m in (data or {}).get("messages") or [] if isinstance(m, dict)]
         for m in rows:
             cid, uri = m.get("chat_id"), str(m.get("chat_uri") or "").strip()
@@ -96,6 +111,11 @@ class GatewayChannelAdapter(RelayAdapter):
 
     async def poll(self, timeout: int) -> list:
         return await asyncio.to_thread(self._poll_sync, timeout)
+
+    def batch_handled(self) -> None:
+        if self._pending_cursor is not None:
+            self._ack_cursor = self._pending_cursor
+            self._pending_cursor = None
 
     async def send(self, chat_id, text: str, thread_id=None) -> None:
         body = {"chat_id": str(chat_id), "text": text}
@@ -110,6 +130,22 @@ class GatewayChannelAdapter(RelayAdapter):
             _post, self.connector, "download",
             {"file_id": (file_ref or {}).get("file_id")}, _DOWNLOAD_TIMEOUT)
         return (data or {}).get("content_b64")
+
+    # ── activation and presentation ──────────────────────────────────────────
+    def addresses_bot(self, msg: dict, participants: list) -> bool:
+        """The platform rule (a literal mention or a reply to the bot), plus
+        what only the transport can tell: a 1:1 chat is always addressed to
+        the bot, and a NATIVE mention of the bot's own identity (`mentions_bot`)
+        counts even when the text does not spell `@clodia`."""
+        m = msg or {}
+        return (super().addresses_bot(m, participants)
+                or m.get("chat_type") == "private"
+                or m.get("mentions_bot") is True)
+
+    def neutralise_mentions(self, text: str) -> str:
+        """Every `@word` of the relayed text becomes inline code, as for
+        Telegram: in the room it reads the same and summons nobody."""
+        return neutralise_at_words(text)
 
     # ── identity ─────────────────────────────────────────────────────────────
     def sender_uri(self, msg: dict) -> str | None:

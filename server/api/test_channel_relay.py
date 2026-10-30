@@ -227,7 +227,7 @@ class RelayGateTests(unittest.TestCase):
         self.assertEqual(kw["directive"], channel_relay._directive(_TG))
         self.assertIn("channel.deliver", kw["directive"])
         self.assertIn("tg:<chat_id>", kw["directive"])
-        self.assertIn("chat_id numerico", kw["directive"])
+        self.assertIn("chat_id esattamente come è scritto", kw["directive"])
         self.assertEqual(kw["trigger_kind"], "external")
 
     def test_the_request_summons_only_the_coordinator(self):

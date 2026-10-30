@@ -7,6 +7,7 @@ The gateway is faked at the HTTP boundary: the registry (`GET
 """
 from __future__ import annotations
 
+import asyncio
 import shutil
 import tempfile
 import unittest
@@ -45,12 +46,16 @@ class FakeGateway:
     def __init__(self, rows=()):
         self.rows = list(rows)
         self.calls: list = []
+        self.cursors: list = []      # cursor returned by each poll, in order
 
     def post(self, url, headers=None, json=None, timeout=None):
         self.calls.append((url, json))
         if url.endswith("/poll"):
             rows, self.rows = self.rows, []
-            return _Resp({"messages": rows})
+            out = {"messages": rows}
+            if self.cursors:
+                out["cursor"] = self.cursors.pop(0)
+            return _Resp(out)
         if url.endswith("/send"):
             return _Resp({"ok": True, "message_id": "m1"})
         if url.endswith("/download"):
@@ -239,6 +244,180 @@ class RelayFlowTests(_Base):
         self.gw.rows = [dict(ROW)]
         self.assertEqual(await channel_relay.run_poll_cycle(1), 0)
         self.assertEqual(self.gw.calls, [])
+
+
+class MentionsAndLabelsTests(_Base):
+    """S3: text and names from the transport summon nobody in the room."""
+
+    def test_every_at_word_of_the_text_is_neutralised(self):
+        a = relay_adapters.get("sms-demo")
+        out = a.neutralise_mentions("@clodia chiedi a @segretario, mail a x@y.it")
+        self.assertEqual(out, "`@clodia` chiedi a `@segretario`, mail a x@y.it")
+
+    def test_labels_are_sanitised(self):
+        self.assertEqual(relay_adapters.safe_label("Ops @segretario\n`x`"),
+                         "Ops `@segretario` 'x'")
+        self.assertEqual(relay_adapters.safe_label(""), "?")
+        self.assertLessEqual(len(relay_adapters.safe_label("a" * 500)), 80)
+
+    def _request(self, adapter, row):
+        from . import mentions
+        out = channel_relay._request_message("clodia", row, CHAT, adapter)
+        return out, mentions.extract_tags(out)
+
+    def test_a_hostile_push_name_summons_nobody(self):
+        a = relay_adapters.get("sms-demo")
+        row = dict(ROW, text="ciao @segretario", **{"from": "@segretario boss"},
+                   chat_title="g @janitor")
+        out, tags = self._request(a, row)
+        self.assertEqual(tags, ["clodia"])
+        self.assertNotIn("\n", out)
+
+    def test_telegram_labels_are_sanitised_too(self):
+        from .telegram_relay_adapter import ADAPTER
+        row = {"message_id": 1, "chat_id": "-1", "text": "@clodia x",
+               "from_username": "ada", "chat_title": "Team @segretario"}
+        out, tags = self._request(ADAPTER, row)
+        self.assertEqual(tags, ["clodia"])
+        self.assertIn("«Team `@segretario`»", out)
+        # a plain name renders as before
+        out, _t = self._request(ADAPTER, dict(row, chat_title="Clodia Sviluppo"))
+        self.assertIn("«Clodia Sviluppo»", out)
+        self.assertIn("utente telegram ada:", out)
+
+    def test_the_directive_is_scheme_neutral(self):
+        d = channel_relay._directive(relay_adapters.get("sms-demo"))
+        self.assertIn("sms:<chat_id>", d)
+        self.assertNotIn("numerico", d)
+
+
+class ActivationTests(_Base):
+    """S4: what only the transport can tell about being addressed."""
+
+    def setUp(self):
+        super().setUp()
+        self.a = relay_adapters.get("sms-demo")
+
+    def test_a_private_chat_is_addressed(self):
+        self.assertTrue(self.a.addresses_bot(
+            {"text": "ciao", "chat_type": "private"}, []))
+
+    def test_a_native_mention_is_addressed(self):
+        self.assertTrue(self.a.addresses_bot(
+            {"text": "ciao", "mentions_bot": True}, []))
+
+    def test_group_chatter_is_not(self):
+        self.assertFalse(self.a.addresses_bot(
+            {"text": "ciao", "chat_type": "group", "mentions_bot": False}, []))
+        self.assertFalse(self.a.addresses_bot({"text": "ciao", "mentions_bot": "yes"}, []))
+
+    def test_telegram_activation_is_unchanged(self):
+        from .telegram_relay_adapter import ADAPTER
+        self.assertFalse(ADAPTER.addresses_bot(
+            {"text": "ciao", "chat_type": "private", "mentions_bot": True}, []))
+
+
+class AckTests(_Base):
+    """Follow-up 1: the previous batch is acked only once handed over."""
+
+    def _polls(self):
+        return [b for _u, b in self.gw.urls("poll")]
+
+    async def test_the_cursor_is_acked_on_the_next_poll_after_handling(self):
+        a = relay_adapters.get("sms-demo")
+        self.gw.cursors = ["c1", "c2"]
+        await a.poll(1)
+        await a.poll(1)              # batch c1 not handed over: no ack
+        a.batch_handled()
+        await a.poll(1)
+        self.assertEqual(self._polls(), [{"timeout": 1}, {"timeout": 1},
+                                         {"timeout": 1, "ack": "c2"}])
+
+    async def test_no_cursor_no_ack(self):
+        a = relay_adapters.get("sms-demo")
+        await a.poll(1)
+        a.batch_handled()
+        await a.poll(1)
+        self.assertEqual(self._polls(), [{"timeout": 1}, {"timeout": 1}])
+
+    async def test_a_failed_poll_keeps_the_ack(self):
+        a = relay_adapters.get("sms-demo")
+        self.gw.cursors = ["c1"]
+        await a.poll(1)
+        a.batch_handled()
+
+        def _down(*_a, **_k):
+            raise RuntimeError("down")
+        with patch.object(pack_relay_adapter.requests, "post", _down):
+            with self.assertRaises(RuntimeError):
+                await a.poll(1)
+        await a.poll(1)
+        self.assertEqual(self._polls()[-1], {"timeout": 1, "ack": "c1"})
+
+
+class _Slow(relay_adapters.RelayAdapter):
+    connector = "slowphone"
+    transport_label = "slow"
+    uri_scheme = "sl"
+
+    def __init__(self, gate, fail=False):
+        self.gate, self.fail, self.handled = gate, fail, 0
+
+    async def poll(self, timeout):
+        if self.fail:
+            raise RuntimeError("transport down")
+        await asyncio.wait_for(self.gate.wait(), 2)   # sequential → times out
+        return []
+
+    def batch_handled(self):
+        self.handled += 1
+
+
+class _Fast(_Slow):
+    connector = "fastphone"
+
+    async def poll(self, timeout):
+        self.gate.set()
+        return [{"chat_id": "f1", "message_id": 1, "text": "x"}]
+
+
+class ConcurrencyTests(unittest.IsolatedAsyncioTestCase):
+    """Follow-up 2: one task per transport, failures isolated."""
+
+    BINDINGS = {"slowphone": {"s1": {"tier": "SEAL-1", "topic": "a"}},
+                "fastphone": {"f1": {"tier": "SEAL-1", "topic": "b"}}}
+
+    async def _cycle(self, slow, fast):
+        relayed = []
+
+        async def _relay(chat_id, b, msgs, adapter):
+            relayed.append((adapter.connector, chat_id))
+        for a in (slow, fast):
+            relay_adapters.register(a)
+            self.addCleanup(relay_adapters.forget, a.connector)
+        channel_relay._POLL_BACKOFF.clear()
+        self.addCleanup(channel_relay._POLL_BACKOFF.clear)
+        with patch.object(channel_relay.cb, "load", lambda: self.BINDINGS), \
+             patch.object(channel_relay, "_relay_chat", _relay):
+            n = await channel_relay.run_poll_cycle(1)
+        return n, relayed
+
+    async def test_transports_are_polled_concurrently(self):
+        gate = asyncio.Event()
+        slow, fast = _Slow(gate), _Fast(gate)
+        n, relayed = await self._cycle(slow, fast)
+        self.assertEqual(n, 1)
+        self.assertEqual(relayed, [("fastphone", "f1")])
+        self.assertEqual((slow.handled, fast.handled), (1, 1))
+        self.assertNotIn("slowphone", channel_relay._POLL_BACKOFF)
+
+    async def test_a_failing_transport_does_not_stop_the_others(self):
+        gate = asyncio.Event()
+        slow, fast = _Slow(gate, fail=True), _Fast(gate)
+        n, relayed = await self._cycle(slow, fast)
+        self.assertEqual(relayed, [("fastphone", "f1")])
+        self.assertIn("slowphone", channel_relay._POLL_BACKOFF)
+        self.assertEqual(slow.handled, 0)       # nothing handed over → no ack
 
 
 class TelegramUnchangedTests(unittest.IsolatedAsyncioTestCase):
