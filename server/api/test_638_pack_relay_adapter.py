@@ -345,10 +345,14 @@ class ActivationTests(_Base):
             {"text": "ciao", "chat_type": "group", "mentions_bot": False}, []))
         self.assertFalse(self.a.addresses_bot({"text": "ciao", "mentions_bot": "yes"}, []))
 
-    def test_telegram_activation_is_unchanged(self):
+    def test_telegram_activation_ignores_the_generic_fields(self):
+        """Telegram does not read `mentions_bot` (a generic transport's flag);
+        since #642 a private chat is addressed, a group still is not."""
         from .telegram_relay_adapter import ADAPTER
         self.assertFalse(ADAPTER.addresses_bot(
-            {"text": "ciao", "chat_type": "private", "mentions_bot": True}, []))
+            {"text": "ciao", "chat_type": "group", "mentions_bot": True}, []))
+        self.assertTrue(ADAPTER.addresses_bot(
+            {"text": "ciao", "chat_type": "private"}, []))
 
 
 class AckTests(_Base):

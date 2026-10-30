@@ -56,6 +56,15 @@ class TelegramRelayAdapter(RelayAdapter):
         cid = str(chat_id or "").strip()
         return f"tg:{cid}" if cid else None
 
+    def addresses_bot(self, msg: dict, participants: list) -> bool:
+        """The platform rule (a mention or a reply to the bot), plus: a 1:1
+        chat with the bot (`chat_type == "private"`) is always addressed to it
+        — there is no one else it could be for (owner, 30 Oct 2026,
+        clodia-platform#642). Groups keep needing the mention. Who may write
+        is decided later, by the sender vetting, as for every message."""
+        m = msg or {}
+        return super().addresses_bot(m, participants) or m.get("chat_type") == "private"
+
     def neutralise_mentions(self, text: str) -> str:
         """Gli `@handle` di Telegram diventano codice inline: si leggono, non
         convocano nessuno nel canale (il parser delle menzioni salta l'inline
