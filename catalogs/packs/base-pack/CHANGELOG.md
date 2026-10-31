@@ -10,6 +10,15 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.42.0] — 2026-10-31
+- **clodia's prompt describes the room model** (clodia-platform#643). The section
+  on "profile verbs, owner approval, copybrain" predated #617/#626 and made
+  clodia refuse a mailbox the room authorises ("my profile has only sending") and
+  ask for officer. Now: the verbs come from the room and hold for every
+  participant; try the verb before saying you cannot, and report a refusal with
+  its text; delegate for expertise or parallel work, never for permission; a
+  gate is not a refusal. `copybrain` removed (refused since 25 Oct).
+
 ## [7.41.0] — 2026-10-27
 - **Seeds carry no verbs** (clodia-platform#626, owner's decision): `tool_permissions` removed from clodia, sysadmin, archseed, ophelia, segretario. Under A·V·R·Q the room authorises verbs (Strumenti) and global tuples cover governance and work outside rooms; the agent-server asks the gateway (clodia-logic ≥ 6.329.0, clodia-tools ≥ 2.147.0). `gated_tools` stays.
 
