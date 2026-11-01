@@ -382,18 +382,24 @@ async def _deliver(room: dict, env: dict) -> dict:
 
 
 async def run_room(room: dict, only: list[str] | None = None,
-                   delivered: list | None = None) -> int:
+                   delivered: list | None = None, box: bool = False) -> int:
     """One pass over one room's mailbox. Returns how many envelopes were
     delivered. `only`: the keys the message-box index named (#585).
     `delivered`: collects what was delivered, for the room's mail trigger (#628)."""
     state = _load(room)
-    # The senders changed (one added, one removed): what is in the mailbox now
-    # is recorded, not delivered — a sender added today brings its mail from
-    # today, like a mailbox linked today (#576).
-    sig = str(room.get("senders_sig") or "")
-    if sig != state.get("senders_sig"):
-        state["primed"] = False
-        state["senders_sig"] = sig
+    if box:
+        # The room's OWN address (#645): every message there is addressed to
+        # this room, whoever sends (#627). Nothing is "old mail" to be skipped:
+        # no priming, and a change of the room's senders resets nothing.
+        state["primed"] = True
+    else:
+        # The senders changed (one added, one removed): what is in the mailbox
+        # now is recorded, not delivered — a sender added today brings its mail
+        # from today, like a mailbox linked today (#576).
+        sig = str(room.get("senders_sig") or "")
+        if sig != state.get("senders_sig"):
+            state["primed"] = False
+            state["senders_sig"] = sig
     try:
         out = await asyncio.to_thread(envelopes, room, state["keys"], not state["primed"],
                                       only)
@@ -458,22 +464,17 @@ async def run_room(room: dict, only: list[str] | None = None,
 
 async def run_box_room(room: dict, keys: list[str], delivered: list | None = None) -> int:
     """A message-box row read through the index (#585): no IMAP unless the
-    index names keys this room has not seen. Priming records the index's keys
-    for the code — nothing is read."""
-    state = _load(room)
-    sig = str(room.get("senders_sig") or "")
-    if sig != state.get("senders_sig") or not state["primed"]:
-        state["keys"].extend(k for k in keys if k not in state["keys"])
-        state.update(primed=True, senders_sig=sig)
-        _save(room, state)
-        if keys:
-            LOG.info("mail courier: %s/%s primed with %d existing messages",
-                     room["tier"], room["name"], len(keys))
-        return 0
-    nuove = [k for k in keys if k not in state["keys"]]
+    index names keys this room has not seen.
+
+    No priming (#645): the code is the room's own address, so every message
+    the index names for it is addressed to this room — including the ones
+    that arrived before the courier first saw the room. Priming used to record
+    them as seen and swallow them (and again at every change of the room's
+    senders). Dedup stays on the keys already delivered."""
+    nuove = [k for k in keys if k not in _load(room)["keys"]]
     if not nuove:
         return 0
-    return await run_room(room, only=nuove, delivered=delivered)
+    return await run_room(room, only=nuove, delivered=delivered, box=True)
 
 
 async def run_cycle() -> int:

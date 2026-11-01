@@ -61,32 +61,37 @@ class BoxRoomTests(_Base):
             for p in ps:
                 p.stop()
 
-    def test_priming_reads_nothing(self):
+    def test_mail_already_there_is_delivered(self):
+        """#645: the room's own address never primes — a message that arrived
+        before the courier first saw the room is delivered, not swallowed."""
         fake = _BoxFake([_env(1)])
-        self.assertEqual(self.run_box(fake, ["k1"]), 0)
-        self.assertEqual(fake.calls, [])
-        self.assertEqual(fake.posts, [])
+        self.assertEqual(self.run_box(fake, ["k1"]), 1)
+        self.assertEqual(fake.calls, [["k1"]])
+        self.assertEqual(len(fake.posts), 1)
 
     def test_nothing_new_no_call(self):
         fake = _BoxFake([_env(1)])
         self.run_box(fake, ["k1"])
+        calls = list(fake.calls)
         self.run_box(fake, ["k1"])
-        self.assertEqual(fake.calls, [])
+        self.assertEqual(fake.calls, calls)
+        self.assertEqual(len(fake.posts), 1)          # never twice
 
     def test_new_keys_are_read_and_only_they(self):
         fake = _BoxFake([_env(1)])
         self.run_box(fake, ["k1"])
         fake.new.append(_env(2))
         self.assertEqual(self.run_box(fake, ["k1", "k2"]), 1)
-        self.assertEqual(fake.calls, [["k2"]])
-        self.assertIn("ordine 2", fake.posts[0][3])
+        self.assertEqual(fake.calls[-1], ["k2"])
+        self.assertIn("ordine 2", fake.posts[-1][3])
 
-    def test_a_senders_change_reprimes_from_the_index(self):
+    def test_a_senders_change_swallows_nothing(self):
+        """#645: adding a sender to the room used to re-prime the box and
+        record the mail in transit as seen."""
         fake = _BoxFake([_env(1)])
         self.run_box(fake, [])
-        self.run_box(fake, ["k1"], room={**BOX, "senders_sig": "sig2"})
-        self.assertEqual(fake.calls, [])
-        self.assertEqual(fake.posts, [])
+        self.assertEqual(self.run_box(fake, ["k1"], room={**BOX, "senders_sig": "sig2"}), 1)
+        self.assertEqual(len(fake.posts), 1)
 
 
 class CycleTests(_Base):
