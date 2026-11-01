@@ -96,9 +96,9 @@ class TopicCronTriggerUpsert(BaseModel):
     repeat_count: int = Field(0, ge=0)
     prompt: str = Field(..., min_length=1)
     agent: Optional[str] = Field(None, max_length=100)
-    # #586: fire only when new mail reached the topic's message box. None =
-    # unchanged on an edit (a client that does not know the field must not
-    # switch it off), off on creation.
+    # #586's «only if new mail» was removed (#646). Declared only to refuse it
+    # with a reason: an old client asking for it must not get a trigger that
+    # fires on every tick without being told.
     only_if_new_mail: Optional[bool] = None
     # Un vecchio client che manda ancora il cron non deve vederselo IGNORARE in
     # silenzio (creerebbe un trigger con una cadenza che nessuno ha chiesto):
@@ -222,6 +222,10 @@ async def api_put_topic_cron_trigger(
     tier: str, name: str, req: TopicCronTriggerUpsert, request: Request,
 ):
     owner, meta = await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    if req.only_if_new_mail:
+        raise HTTPException(
+            422, "«solo se è arrivata posta nuova» non esiste più: per reagire "
+                 "alla posta usa il trigger onMessageReceived (clodia-platform#646)")
     if req.cron_expr and req.cron_expr.strip():
         raise HTTPException(
             422, "il trigger di un topic non accetta più un'espressione cron: "
@@ -254,14 +258,12 @@ async def api_put_topic_cron_trigger(
             existing["id"], prompt=prompt, agent=agent, enabled=True,
             interval_minutes=req.interval_minutes, repeat_count=req.repeat_count,
             fired_count=0 if riarmo else None,
-            only_if_new_mail=req.only_if_new_mail,
         )
     else:
         try:
             trigger = db.create_topic_trigger(
                 tier, name, prompt, interval_minutes=req.interval_minutes,
                 repeat_count=req.repeat_count, agent=agent, owner=owner,
-                only_if_new_mail=bool(req.only_if_new_mail),
             )
         except sqlite3.IntegrityError:
             raise HTTPException(409, "questo topic ha già un trigger cron")
