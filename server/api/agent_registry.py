@@ -886,9 +886,13 @@ async def patch_agent_caps(name: str, patch: AgentCapsPatch, request: Request) -
     spec = registry.get_by_name(name)
     if spec is None:
         raise HTTPException(404, f"agent '{name}' non trovato")
-    if _is_immutable(spec):
-        raise HTTPException(403, f"agent '{name}' è immutabile/protetto: "
-                                 "modificabile solo via codice/rebuild del seed")
+    # An immutable agent (clodia) may still ACQUIRE SKILLS (owner, 3 Nov 2026,
+    # #651): its capabilities change like any agent's; its rules — and every
+    # other field, through the other routes — stay code/rebuild only.
+    if _is_immutable(spec) and patch.rules is not None:
+        raise HTTPException(403, f"agent '{name}' è immutabile/protetto: le regole "
+                                 "si cambiano solo via codice/rebuild del seed "
+                                 "(le skill invece si possono aggiungere)")
     if patch.capabilities is not None:
         _validate_catalog_refs(patch.capabilities, "skill")
     if patch.rules is not None:
