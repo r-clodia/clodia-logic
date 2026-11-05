@@ -1,4 +1,9 @@
-"""`topic.link_add`: a chi va, e cosa deve leggere chi ce l'ha.
+"""Linking two rooms: what the coordinators must know about it.
+
+Since #654 (5 Nov 2026) `topic.link_add`/`link_remove` are no longer agent
+verbs: the owner links two rooms from the webui. The coordinators' mandates
+must say so — and must no longer tell them to call a verb that is gone.
+What follows is the history of the rule while it was a verb.
 
 clodia-platform#477. Collegare due topic fa vedere a OGNI partecipante di
 ciascuno i file dell'altro, in sola lettura.
@@ -79,17 +84,18 @@ class _Base(unittest.TestCase):
 class MandatoTests(_Base):
     """Il testo deve arrivare a chi ha il verbo, non solo esistere nel pack."""
 
-    def test_the_holder_mandate_names_the_verb(self) -> None:
+    def test_the_holder_mandate_says_the_owner_links_not_a_verb(self) -> None:
+        """#654: no coordinator is told to call a verb that no longer exists;
+        each says the owner links the rooms."""
         for nome in self.holders:
             with self.subTest(seed=nome):
                 prompt = (AGENTS / nome / "system-prompt.md")
                 self.assertTrue(prompt.is_file(), f"{nome} non ha un mandato")
                 testo = prompt.read_text(encoding="utf-8").lower()
-                self.assertIn(
-                    VERBO, testo,
-                    f"{nome} ha {VERBO} ma il suo mandato non lo nomina: un "
-                    "grant che il mandato ignora produce un agente che rifiuta "
-                    "una richiesta che avrebbe potuto servire")
+                self.assertNotIn(VERBO, testo)
+                self.assertNotIn("topic.link_remove", testo)
+                self.assertIn("owner", testo)
+                self.assertIn("colleg", testo)
 
     def test_the_holder_mandate_says_the_mount_is_read_only(self) -> None:
         """La metà che un agente sbaglierebbe da solo: il mount è in sola

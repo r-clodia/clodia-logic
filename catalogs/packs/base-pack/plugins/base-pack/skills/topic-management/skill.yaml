@@ -20,10 +20,8 @@ output_schema:
     tldr: {type: string}
 required_tools:
   - topic.open
-  - topic.new
   - topic.save_summary
-  - topic.add_minute
-  - topic.archive
+  - topic.put
   - topic.list
   - topic.search
 side_effects: [topic_write]
