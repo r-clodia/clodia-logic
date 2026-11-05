@@ -34,7 +34,7 @@ from . import _host
 #: The services the gateway calls (`components.service("google-pack", name)`).
 SERVICES = ("accounts", "describe_folder", "perimeter_changed", "credential_changed",
             "folder_labels", "pdp_arguments", "test_connection", "mail_run",
-            "mail_accounts", "mail_exec")
+            "mail_accounts", "mail_exec", "index_walk", "index_read")
 
 
 def _accounts() -> list[str]:
@@ -76,6 +76,10 @@ def register(host: Any) -> None:
         host.register_route(path, methods, handler, auth=auth)
     host.register_service("accounts", _accounts)
     host.register_service("describe_folder", routes.describe_folder)
+    # The room RAG index (#648): the gateway walks and reads a linked folder.
+    from . import gdrive as _gdrive
+    host.register_service("index_walk", _gdrive.index_walk)
+    host.register_service("index_read", _gdrive.index_read)
     host.register_service("perimeter_changed", _perimeter_changed)
     host.register_service("credential_changed", _credential_changed)
     host.register_service("folder_labels", _folder_labels)

@@ -4,6 +4,9 @@ Changelog of the `google-pack` pack ([Keep a Changelog](https://keepachangelog.c
 format, SemVer). The newest version is at the top; `pack.yaml` holds the current
 one.
 
+## [2.4.0] — 2026-11-05
+- Two gateway services for the room RAG index (clodia-platform#648): `index_walk(folder_id, account)` lists every file under a room's linked Drive folder (subfolders, shortcuts skipped, at most 500 files / depth 8, `complete: false` when a listing failed or a cap was hit) and `index_read(file_id, account)` returns its bytes — Google Docs and Slides exported as plain text, Sheets as CSV. Read-only; called by the gateway, never by an agent. Needs clodia-tools ≥ 2.157.0.
+
 ## [2.3.1] — 2026-10-28
 - Mail client: a header with an unknown or malformed charset no longer fails the whole listing/search of its mailbox (LookupError); one unreadable message is skipped and logged. On 28 Oct one such mail took down the colony mailbox's index for every room.
 

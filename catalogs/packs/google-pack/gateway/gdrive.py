@@ -301,3 +301,90 @@ def move(file_id: str, folder_id: str, account: Optional[str] = None) -> dict:
         "fields": _FIELDS, "supportsAllDrives": True})
     return {"account": acct, "moved": True, "from": prev or None,
             "to": folder_id.strip(), **_clean(f)}
+
+
+# ── Room RAG index (clodia-platform#648) ─────────────────────────────────────
+# Called by the GATEWAY (component services `index_walk` / `index_read`), never
+# by an agent: the gateway indexes the content of a room's linked folder into
+# the room's own RAG collection. Read-only, and only under the folder it names.
+
+_INDEX_EXPORT = {
+    "application/vnd.google-apps.document": ("text/plain", ".txt"),
+    "application/vnd.google-apps.spreadsheet": ("text/csv", ".csv"),
+    "application/vnd.google-apps.presentation": ("text/plain", ".txt"),
+}
+INDEX_MAX_FILES = 500
+INDEX_MAX_DEPTH = 8
+
+
+def index_walk(folder_id: str, account: Optional[str] = None) -> dict:
+    """Every file under `folder_id` (subfolders included, shortcuts skipped):
+    `{account, files: [{id, path, mimeType, modifiedTime, size}], complete}`.
+    `complete` is False when a listing failed or a cap was hit: the caller then
+    removes nothing it did not see."""
+    import re as _re
+    root = str(folder_id or "").strip()
+    # The id goes into a Drive query: only an id's own characters, never a
+    # quote that would add clauses (review of #648).
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{1,200}", root):
+        raise ValueError(f"id di cartella Drive non valido: {root[:40]!r}")
+    acct = _resolve_account(account)
+    out: list[dict] = []
+    complete = True
+    stack = [(root, "", 0)]
+    while stack:
+        fid, prefix, depth = stack.pop()
+        if not fid:
+            continue
+        token = None
+        while True:
+            params = {"q": f"'{fid}' in parents and trashed = false", "pageSize": 1000,
+                      "fields": "nextPageToken, files(id, name, mimeType, modifiedTime, size)",
+                      "corpora": "allDrives", **_ALL_DRIVES}
+            if token:
+                params["pageToken"] = token
+            try:
+                res = _drive(acct, "GET files", params=params)
+            except Exception:  # noqa: BLE001 — a folder not listed is not a folder emptied
+                complete = False
+                break
+            for f in res.get("files", []):
+                mime = f.get("mimeType", "")
+                path = f"{prefix}{f.get('name') or f.get('id')}"
+                if mime == "application/vnd.google-apps.folder":
+                    if depth + 1 > INDEX_MAX_DEPTH:
+                        complete = False
+                    else:
+                        stack.append((f["id"], path + "/", depth + 1))
+                elif mime == "application/vnd.google-apps.shortcut":
+                    continue
+                elif len(out) >= INDEX_MAX_FILES:
+                    complete = False
+                else:
+                    out.append({"id": f["id"], "path": path, "mimeType": mime,
+                                "modifiedTime": f.get("modifiedTime"),
+                                "size": int(f["size"]) if f.get("size") else None})
+            token = res.get("nextPageToken")
+            if not token:
+                break
+    return {"account": acct, "files": out, "complete": complete}
+
+
+def index_read(file_id: str, account: Optional[str] = None) -> tuple[str, bytes]:
+    """`(name, bytes)` of one file for the index: Google Docs/Slides as plain
+    text, Sheets as CSV (the name gets the matching extension), anything else as
+    stored. A Google type with no text export raises ValueError."""
+    acct = _resolve_account(account)
+    meta = _drive(acct, "GET files/{fileId}", params={
+        "fileId": file_id, "fields": "id, name, mimeType", "supportsAllDrives": True})
+    mime = meta.get("mimeType", "")
+    name = str(meta.get("name") or file_id)
+    if mime in _INDEX_EXPORT:
+        export_mime, ext = _INDEX_EXPORT[mime]
+        data = _drive(acct, "GET files/{fileId}/export", download=True,
+                      params={"fileId": file_id, "mimeType": export_mime})
+        return name + ext, data
+    if mime.startswith("application/vnd.google-apps"):
+        raise ValueError(f"tipo Google non esportabile come testo: {mime}")
+    return name, _drive(acct, "GET files/{fileId}", download=True,
+                        params={"fileId": file_id, "supportsAllDrives": True})
