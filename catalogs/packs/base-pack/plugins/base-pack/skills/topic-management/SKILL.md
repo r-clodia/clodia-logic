@@ -6,9 +6,9 @@ description: |
   tramite i verbi `topic.*` del gateway (mai toccando lo storage direttamente):
   il gateway è il reference monitor che fa rispettare identità, classe e privacy.
   Ciclo: `topic.open` (prendi il summary_version) → lavora → `topic.save_summary`
-  in optimistic-lock e/o `topic.add_minute` (append). Usare ogni volta che si sta
-  per creare, leggere, aggiornare o archiviare un topic — e SEMPRE quando un
-  comando termina con `.note` o `.save` (vedi sezione Comandi).
+  in optimistic-lock, e le decisioni come file datato in `files/` (`topic.put`).
+  Usare ogni volta che si sta per leggere o aggiornare un topic — e SEMPRE
+  quando un comando termina con `.note` o `.save` (vedi sezione Comandi).
 ---
 
 # Skill: topic-management (Topic System v2)
@@ -17,9 +17,10 @@ description: |
 - Un **topic** è una stanza di lavoro condivisa (un bando, un cliente, un
   progetto). Vive dietro il **gateway**, su uno **storage astratto** (filesystem
   locale, Google Drive, …): a te non interessa quale — usi i verbi.
-- Ogni topic ha: `meta` (title, type, status, **`tier` P0–P3**, tags, people,
-  deadline, contact_agent, storage), un **`summary`** (stato corrente) e le
-  **`minutes`** (registro append-only di decisioni/riunioni).
+- Ogni topic ha: `meta` (title, type, status, **`tier`**, tags, people,
+  deadline, contact_agent, storage), un **`summary`** (stato corrente) e i suoi
+  **file** (`files/`). Le minute non esistono più: una decisione si registra
+  come file datato in `files/` (`AAAA-MM-GG-<oggetto>.md`) richiamato dal summary.
 - Il **`tier`** è la sola classe del topic e insieme il suo livello di privacy:
   **P0 Public · P1 Internal · P2 Confidential · P3 Restricted**. Sostituisce
   personal/confidential.
@@ -31,18 +32,18 @@ description: |
 - `topic.list({tier?, include_archived?})` — colpo d'occhio sui topic.
 - `topic.search({query, mode})` — ritrova un topic per contenuto.
 - `topic.open({tier, name})` — **read-only**: ritorna `meta`, `summary`,
-  **`summary_version`**, `tldr`, lista `minutes`. **Apri sempre prima di scrivere.**
-- `topic.new({tier, name, meta})` — crea (idempotente) un nuovo topic.
+  **`summary_version`**, `tldr`. **Apri sempre prima di scrivere.**
 - `topic.save_summary({tier, name, text, base_version})` — riscrive il summary.
-- `topic.add_minute({tier, name, text})` — aggiunge una minuta (append-only).
-- `topic.archive({tier, name})` — imposta `status: archived`.
+- `topic.put` — scrive un file in `files/` (per le decisioni: file datato).
+- Creare e archiviare un topic **non sono verbi degli agenti**: li fa l'owner
+  dalla webui. Se serve un topic nuovo, proponilo all'owner.
 
 ## Ciclo di lavoro (sempre in quest'ordine)
 1. **`topic.open`** → leggi lo stato e **conserva `summary_version`**.
 2. **Lavora**: decidi cosa è cambiato.
 3. Scrivi:
-   - **`topic.add_minute`** per ogni decisione/riunione (è append-only → non
-     entra mai in conflitto: usala liberamente).
+   - una **decisione/riunione** → file datato in `files/` con `topic.put`
+     (`AAAA-MM-GG-<oggetto>.md`), richiamato dal summary.
    - **`topic.save_summary`** passando **`base_version` = il `summary_version`
      letto al punto 1** (optimistic lock).
 4. Se `save_summary` torna **`CONFLICT`** (qualcun altro ha scritto nel
@@ -59,23 +60,21 @@ description: |
   un log — è lo *stato corrente*.
 
 ## Nuovo topic
-`topic.new` con `tier` (`P0`–`P3`, **default P0 Public** se omesso) + `name`
-(slug) + `meta` (almeno `title`, `type`; dichiara `contact_agent` se non sei tu).
-Scegli il tier in base alla sensibilità: dati interni → P1, dati cliente/
-riservati → P2, NDA/bilanci → P3. Un tier alto può rendere il topic inaccessibile
-sul motore/storage corrente (il gateway applica `min(provider, storage) ≥ tier`).
+Non lo crei tu: lo crea l'owner dalla webui. Se il lavoro richiede una stanza
+nuova, proponila all'owner con titolo, tipo e tier suggerito (dati interni →
+SEAL-1, dati cliente/riservati → SEAL-2, NDA/bilanci → SEAL-3).
 
 ## Comandi (suffissi del prompt di owner)
 Convenzioni d'interazione ereditate da Clodia Primal, qui mappate sui verbi v2.
 
 - **`.note`** (e il suo alias **`.save`**) — quando un comando termina con `.note`
   o `.save`: registra il lavoro nel topic pertinente.
-  1. `topic.open` del topic (prendi `summary_version`); se non esiste, `topic.new`.
+  1. `topic.open` del topic (prendi `summary_version`); se non esiste, dillo all'owner.
   2. Esegui quanto richiesto nel prompt.
   3. **Aggiorna lo stato**: `topic.save_summary` (prima riga = TLDR; sezione
-     `## Prossimi passi` = action point) passando `base_version`; **e/o**
-     `topic.add_minute` per registrare la decisione presa.
-  - Niente commit/push manuali: `save_summary`/`add_minute` **persistono già**
+     `## Prossimi passi` = action point) passando `base_version`; **e** la
+     decisione presa come file datato in `files/` (`topic.put`).
+  - Niente commit/push manuali: `save_summary`/`put` **persistono già**
     nello store via gateway. Su `CONFLICT` → rileggi e riapplica, non sovrascrivere.
 
 (`.copy` non è qui: è un alias del *plan mode* — conferma prima di agire — non una
