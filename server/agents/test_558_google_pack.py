@@ -199,7 +199,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 
     def test_pack_metadata(self) -> None:
         self.assertEqual(self.pack["name"], "google-pack")
-        self.assertEqual(self.pack["version"], "2.3.1")
+        self.assertEqual(self.pack["version"], "2.4.0")
         self.assertTrue(self.pack["first_party"])
         self.assertEqual(self.pack["upstream"], {"repo": "r-clodia/clodia-logic",
                                                  "path": "catalogs/packs/google-pack",
@@ -609,7 +609,7 @@ class RegisterTests(_OnFakeHost):
         self.assertEqual(sorted(self.host.services), sorted([
             "accounts", "describe_folder", "perimeter_changed", "credential_changed",
             "folder_labels", "pdp_arguments", "test_connection", "mail_run",
-            "mail_accounts", "mail_exec"]))
+            "mail_accounts", "mail_exec", "index_walk", "index_read"]))
         self.assertIs(self.host.services["mail_run"], _mod("gmail_core").run)
 
     def test_no_import_of_the_gateway(self) -> None:
@@ -1353,3 +1353,56 @@ class GmailRealClientTests(_IsolatedTmp):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class RoomIndexServicesTests(_OnFakeHost):
+    """#648: the gateway walks and reads a room's linked folder for its RAG."""
+
+    TREE = {
+        "ROOT": [{"id": "a", "name": "nota.txt", "mimeType": "text/plain", "size": "4"},
+                 {"id": "SUB", "name": "sub", "mimeType": "application/vnd.google-apps.folder"},
+                 {"id": "sc", "name": "link", "mimeType": "application/vnd.google-apps.shortcut"}],
+        "SUB": [{"id": "d", "name": "Piano", "mimeType": "application/vnd.google-apps.document"}],
+    }
+
+    def _fake_drive(self, acct, method_path, **kw):
+        params = kw.get("params") or {}
+        if method_path == "GET files":
+            parent = params["q"].split("'")[1]
+            return {"files": [dict(f) for f in self.TREE.get(parent, [])]}
+        if method_path == "GET files/{fileId}" and not kw.get("download"):
+            mime = "application/vnd.google-apps.document" if params["fileId"] == "d" else "text/plain"
+            return {"id": params["fileId"], "name": "Piano" if params["fileId"] == "d" else "nota.txt",
+                    "mimeType": mime}
+        if method_path == "GET files/{fileId}/export":
+            self.exported = params["mimeType"]
+            return b"testo del piano"
+        return b"nota"
+
+    def test_walk_lists_the_subtree_without_shortcuts(self) -> None:
+        gd = _mod("gdrive")
+        with patch.object(gd, "_drive", self._fake_drive), \
+                patch.object(gd, "_resolve_account", lambda a: "conto"):
+            out = self.host.services["index_walk"]("ROOT")
+        self.assertTrue(out["complete"])
+        self.assertEqual(sorted(f["path"] for f in out["files"]), ["nota.txt", "sub/Piano"])
+
+    def test_read_exports_a_google_doc_as_text(self) -> None:
+        gd = _mod("gdrive")
+        with patch.object(gd, "_drive", self._fake_drive), \
+                patch.object(gd, "_resolve_account", lambda a: "conto"):
+            name, data = self.host.services["index_read"]("d")
+            self.assertEqual((name, data), ("Piano.txt", b"testo del piano"))
+            self.assertEqual(self.exported, "text/plain")
+            self.assertEqual(self.host.services["index_read"]("a"), ("nota.txt", b"nota"))
+
+    def test_a_failed_listing_is_incomplete(self) -> None:
+        gd = _mod("gdrive")
+
+        def boom(*a, **k):
+            raise RuntimeError("drive down")
+        with patch.object(gd, "_drive", boom), \
+                patch.object(gd, "_resolve_account", lambda a: "conto"):
+            out = self.host.services["index_walk"]("ROOT")
+        self.assertFalse(out["complete"])
+        self.assertEqual(out["files"], [])

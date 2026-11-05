@@ -424,6 +424,18 @@ def topic_index_action(tier: str, name: str, body: dict) -> dict:
     return r.json()
 
 
+def topic_index_status(tier: str, name: str) -> dict:
+    """The topic's RAG index: on/off and the running job, if any (#648)."""
+    url = _base().rsplit("/topics", 1)[0] + f"/topic-index/{tier}/{name}"
+    try:
+        r = _gw_http.get(url, headers=_headers(), timeout=30)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway topic-index irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("topic-index", r)
+    return r.json()
+
+
 def authz_available(agent: str, verbs, scope: str | None = None) -> dict[str, bool]:
     """«Does `agent` have these verbs here?» from the gateway's A·V·R·Q tuples
     (#626): the seeds no longer carry verbs. No `scope` = outside a room."""

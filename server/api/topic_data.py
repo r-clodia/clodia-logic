@@ -107,10 +107,24 @@ async def channel_data(tier: str, name: str, request: Request) -> dict:
         raise _gw(e)
 
 
+@router.get("/clodia/channels/{tier}/{name}/index")
+async def channel_index_status(tier: str, name: str, request: Request) -> dict:
+    """The room's RAG toggle and its job (#648): `{on, job: {state, done,
+    total, …}}`. Any person of the room reads it; the webui polls it while a
+    job runs."""
+    await _room_person(request, tier, name, owner=False)
+    try:
+        return await asyncio.to_thread(topics_client.topic_index_status, tier, name)
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+
+
 @router.post("/clodia/channels/{tier}/{name}/index")
 async def channel_index(tier: str, name: str, request: Request) -> dict:
-    """The topic's own RAG index on/off (#599): the owner (or an admin), a person.
-    Off drops the collection's documents."""
+    """The room's RAG toggle (#648; #599 before): the owner (or an admin), a
+    person. On: every file of the room (Drive included) is indexed now, and the
+    chat from now on. Off: everything of the room leaves the RAG. Answers at
+    once; the job runs in the gateway (see the GET)."""
     from .channels import _require_scope_owner
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
