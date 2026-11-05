@@ -1396,6 +1396,10 @@ class RoomIndexServicesTests(_OnFakeHost):
             self.assertEqual(self.exported, "text/plain")
             self.assertEqual(self.host.services["index_read"]("a"), ("nota.txt", b"nota"))
 
+    def test_a_folder_id_with_a_quote_is_refused(self) -> None:
+        with self.assertRaises(ValueError):
+            self.host.services["index_walk"]("x' in parents or trashed = false or 'x")
+
     def test_a_failed_listing_is_incomplete(self) -> None:
         gd = _mod("gdrive")
 

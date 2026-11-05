@@ -322,10 +322,16 @@ def index_walk(folder_id: str, account: Optional[str] = None) -> dict:
     `{account, files: [{id, path, mimeType, modifiedTime, size}], complete}`.
     `complete` is False when a listing failed or a cap was hit: the caller then
     removes nothing it did not see."""
+    import re as _re
+    root = str(folder_id or "").strip()
+    # The id goes into a Drive query: only an id's own characters, never a
+    # quote that would add clauses (review of #648).
+    if not _re.fullmatch(r"[A-Za-z0-9_-]{1,200}", root):
+        raise ValueError(f"id di cartella Drive non valido: {root[:40]!r}")
     acct = _resolve_account(account)
     out: list[dict] = []
     complete = True
-    stack = [(str(folder_id or "").strip(), "", 0)]
+    stack = [(root, "", 0)]
     while stack:
         fid, prefix, depth = stack.pop()
         if not fid:
