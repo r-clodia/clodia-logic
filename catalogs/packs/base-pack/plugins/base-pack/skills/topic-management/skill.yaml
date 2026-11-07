@@ -2,7 +2,7 @@
 # (local-fs, Drive, …). L'agente NON tocca lo storage: usa i verbi topic.* del
 # gateway, che fa da reference monitor (identità ckt1, classe, privacy).
 # La applica QUALSIASI agent che legge/scrive un topic.
-version: "2.2.0"
+version: "2.3.0"
 owner: owner
 status: APPROVED
 input_schema:
@@ -22,6 +22,8 @@ required_tools:
   - topic.open
   - topic.save_summary
   - topic.put
+  - topic.todo_add
+  - topic.todo_update
   - topic.list
   - topic.search
 side_effects: [topic_write]

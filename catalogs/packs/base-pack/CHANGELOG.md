@@ -10,6 +10,9 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.44.0] — 2026-11-08
+- **The room's to-do list** (clodia-platform#658, clodia-tools ≥ 2.160.0): segretario reconciles `meta.todos` after every recap — new action points with `topic.todo_add`, done ones closed with `topic.todo_update status=done`, dates set or moved — passing the `todos_version` from `topic.open` as the mandatory `base_version` and re-reading on a version conflict. A role convention, not a permission: any participant may write. The topic deadline is derived from the open items and is no longer set by hand. Stale `add_minute` mention removed from segretario's `agent.yaml`. `topic-management` 2.3.0 documents the list, the derived deadline and the new verbs.
+
 ## [7.43.0] — 2026-11-05
 - **Unused topic verbs are gone** (clodia-platform#654, owner's decision): `topic.new`, `topic.archive`, `topic.remove_participant`, `topic.egress_remove`, `topic.drive_folder_remove`, `topic.local_folder_remove`, `topic.link_add`, `topic.link_remove`, `topic.save_agents_md` (none used in three months) and `topic.add_minute` (Topic v2 has no minutes) are no longer agent verbs (clodia-tools ≥ 2.159.0). clodia's and segretario's prompts: linking two rooms is the owner's, from the webui. `topic-management`: decisions are dated files in `files/` (`topic.put`); creating or archiving a topic is proposed to the owner.
 

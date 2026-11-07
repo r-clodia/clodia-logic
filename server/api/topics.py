@@ -772,17 +772,107 @@ async def set_topic_status(tier: str, name: str, request: Request):
 
 @router.post("/api/topics/{tier}/{name}/deadline")
 async def set_topic_deadline(tier: str, name: str, request: Request):
-    """Imposta la deadline del topic (YYYY-MM-DD|null) via il gateway.
-    Solo l'owner (o admin)."""
-    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    """Refused since clodia-platform#658: the deadline is derived from the
+    to-do list (earliest due among open items). Kept so an old client gets
+    the reason instead of a 404."""
+    raise HTTPException(400, "deadline is derived from todo items: edit the to-do list")
+
+
+def _topic_for_reader(request: Request, tier: str, name: str) -> tuple[dict, str]:
+    """The topic and who asks: a participant, or a platform admin (operator)."""
+    principal = _principal_from_request(request)
+    if not principal:
+        raise HTTPException(401, "autenticazione richiesta")
+    t = topics_client.open_topic(tier, name)
+    if not t:
+        raise HTTPException(404, "topic non trovato")
+    from . import channels
+    if channels._scope_role(t.get("meta") or {}, principal) is None \
+            and not admin.is_admin(principal):
+        raise HTTPException(403, "non partecipi a questo topic")
+    return t, principal
+
+
+def _topic_for_contributor(request: Request, tier: str, name: str) -> str:
+    """Writing the to-do list: any participant (`_require_contributor`)."""
+    t = topics_client.open_topic(tier, name)
+    if not t:
+        raise HTTPException(404, "topic non trovato")
+    from . import channels
+    return channels._require_contributor(request, t.get("meta") or {})
+
+
+@router.get("/api/topics/{tier}/{name}")
+async def get_topic_meta(tier: str, name: str, request: Request):
+    """The topic's metadata for the «Meta» popup (clodia-platform#658).
+
+    A PLAIN READ: no agent, no model, nothing sent to an inference provider —
+    and, unlike `GET /clodia/channels/{tier}/{name}`, no side effect either
+    (no access-log touch, no membership reconciliation, no live instances).
+    `todos_version` is the lock token for the to-do routes below."""
+    t, principal = await asyncio.to_thread(_topic_for_reader, request, tier, name)
+    meta = t.get("meta") or {}
+    return {
+        "tier": t.get("tier") or tier,
+        "tier_name": t.get("tier_name"),
+        "name": t.get("name") or name,
+        "meta": meta,
+        "todos": meta.get("todos") or [],
+        "deadline": meta.get("deadline"),
+        "todos_version": t.get("todos_version"),
+        "links": t.get("links") or [],
+        "tldr": t.get("tldr") or "",
+        "updated_at": t.get("updated_at"),
+        "is_admin": await asyncio.to_thread(admin.is_admin, principal),
+    }
+
+
+async def _todo_call(request: Request, tier: str, name: str, method: str,
+                     todo_id: str | None, payload: dict):
+    principal = await asyncio.to_thread(_topic_for_contributor, request, tier, name)
+    # `by` is the principal verified HERE, never a field of the request body.
+    payload = {**payload, "by": principal}
+    try:
+        return await topics_client.async_todo_action(tier, name, method, todo_id, payload)
+    except topics_client.TopicsConflictError as e:
+        raise HTTPException(409, f"the to-do list changed meanwhile: reload ({str(e)[:160]})")
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(e.status if e.is_client_error else 502, e.detail[:300])
+
+
+async def _json_body(request: Request) -> dict:
     try:
         body = await request.json()
     except Exception:  # noqa: BLE001
         body = {}
-    try:
-        return await topics_client.async_set_deadline(tier, name, (body or {}).get("deadline"))
-    except topics_client.TopicsClientError as e:
-        raise HTTPException(502, str(e))
+    return body if isinstance(body, dict) else {}
+
+
+@router.post("/api/topics/{tier}/{name}/todos")
+async def add_topic_todo(tier: str, name: str, request: Request):
+    """Add a to-do item. Body: {text, due?, assignee?, base_version}. Any
+    participant. 409 when `base_version` is stale."""
+    body = await _json_body(request)
+    payload = {k: body.get(k) for k in ("text", "due", "assignee", "base_version")}
+    return await _todo_call(request, tier, name, "POST", None, payload)
+
+
+@router.patch("/api/topics/{tier}/{name}/todos/{todo_id}")
+async def update_topic_todo(tier: str, name: str, todo_id: str, request: Request):
+    """Change one item. Body: {base_version, text?, due?, assignee?, status?};
+    only the keys present change. Any participant."""
+    body = await _json_body(request)
+    payload = {k: body[k] for k in ("text", "due", "assignee", "status") if k in body}
+    payload["base_version"] = body.get("base_version")
+    return await _todo_call(request, tier, name, "POST", todo_id, payload)
+
+
+@router.delete("/api/topics/{tier}/{name}/todos/{todo_id}")
+async def remove_topic_todo(tier: str, name: str, todo_id: str, request: Request,
+                            base_version: str = Query("")):
+    """Remove one item (`?base_version=`). Any participant."""
+    return await _todo_call(request, tier, name, "DELETE", todo_id,
+                            {"base_version": base_version})
 
 
 @router.post("/api/topics/{tier}/{name}/goal")
@@ -1419,9 +1509,11 @@ async def list_topics(request: Request) -> list[dict]:
         "owner": r.get("owner"),
         "participants": r.get("participants", []),
         "status": r.get("status", "active"),
+        # Derived from the to-do list (#658); `next_deadline` is its alias for
+        # one release, then it goes.
         "deadline": r.get("deadline"),
-        # scadenza più vicina fra i todo (action_points) con data → badge in card
-        "next_deadline": r.get("next_deadline"),
+        "next_deadline": r.get("deadline"),
+        "todos_open": r.get("todos_open"),
         "storage": r.get("storage"),
         "summary_url": f"/topics/{r.get('tier')}/{r.get('name')}/summary",
         "recent_artifacts": r.get("recent_files", []),
