@@ -51,8 +51,8 @@ class Features(BaseModel):
     providers_ui: bool = True
     databases_ui: bool = True
     activity: bool = True
-    # Sezione/pairing PWA (Settings): spenta nelle edizioni senza PWA (§4b.6).
-    pwa: bool = True
+    # `pwa` is gone with the PWA (clodia-platform#657). A profile that still
+    # sets it keeps loading: `extra="ignore"` drops the key, nothing falls back.
     # Popup helpdesk della webui (coda Sprint 3): non sempre necessario.
     helpdesk: bool = True
     colony: bool = False
