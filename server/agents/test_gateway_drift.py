@@ -1,7 +1,7 @@
 """La dichiarazione di un seed che non è arrivata al gateway si deve VEDERE.
 
 `register_agent` aveva un chiamante solo — l'import di un pack — quindi
-`tool_permissions`, `gated_tools`, `profile_tools` e `denied_tools`
+`gated_tools`, `profile_tools` e `denied_tools` (allora anche i verbi del seed)
 raggiungevano l'autorità una volta sola. Da lì in poi la config del gateway è la
 fotografia di quel giorno, e il seed una dichiarazione che nessuno rilegge
 (clodia-platform#203).
@@ -25,7 +25,7 @@ from . import gateway_drift as GD
 
 
 def _seed(**kw):
-    base = dict(name="avvocato", type="normal", tool_permissions=["topic.open"],
+    base = dict(name="avvocato", type="normal",
                 gated_tools=None, denied_tools=None, profile_tools=None,
                 gated_in_channel=None, carries=None)
     base.update(kw)
@@ -74,8 +74,8 @@ class ConfrontoTests(unittest.TestCase):
         self.assertEqual(campo["registered_only"], ["fs.read"])
 
     def test_reordering_is_not_drift(self):
-        riga = GD.confronta(_seed(tool_permissions=["b", "a"]),
-                            _reg(allowed_tools=["a", "b"]))
+        riga = GD.confronta(_seed(gated_tools=["b", "a"]),
+                            _reg(gated_tools=["a", "b"]))
         self.assertEqual(riga["status"], "clean")
 
     def test_none_and_empty_are_the_same_thing(self):
@@ -207,14 +207,14 @@ class BootReportTests(unittest.TestCase):
     def test_a_divergence_names_the_field_and_both_directions(self):
         rep = {"checked": 1, "agents": [{
             "agent": "ophelia", "status": "diverged",
-            "fields": [{"field": "tool_permissions", "status": "extra",
+            "fields": [{"field": "gated_tools", "status": "extra",
                         "declared_only": [], "registered_only": ["*"]}]}]}
         with mock.patch.object(GD, "check_all", return_value=rep), \
                 self.assertLogs(GD.LOG, level="WARNING") as log:
             GD.report_at_boot()
         testo = "\n".join(log.output)
         self.assertIn("ophelia", testo)
-        self.assertIn("tool_permissions", testo)
+        self.assertIn("gated_tools", testo)
         self.assertIn("*", testo)
 
     def test_the_report_never_raises(self):
@@ -250,5 +250,5 @@ if __name__ == "__main__":
 class VerbsAreNotComparedTests(unittest.TestCase):
     def test_a_seed_without_verbs_is_not_drift(self):
         """#626: the seeds carry no verbs; the gateway's tuples decide."""
-        riga = GD.confronta(_seed(tool_permissions=[]), _reg(allowed_tools=["*"]))
+        riga = GD.confronta(_seed(), _reg(allowed_tools=["*"]))
         self.assertEqual(riga["status"], "clean")

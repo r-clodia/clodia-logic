@@ -236,9 +236,14 @@ class DatastoresInventoryTests(unittest.TestCase):
         nominare nessuna collection: sta in `seeds_bypass`, non nella member
         list — altrimenti risulterebbe membro di ogni riga."""
         self._install_pack()
-        self._seed("sysadmin", tool_permissions=["rag.*"])
+        self._seed("sysadmin")
+        # Who covers `rag.*` is the gateway's global tuples (#626/#656).
+        from unittest.mock import patch
 
-        rc = self._rag_row("prassi-fiscale")
+        from ..agents import authz_grants
+        with patch.object(authz_grants, "global_grants",
+                          lambda n: ["rag.*"] if n == "sysadmin" else []):
+            rc = self._rag_row("prassi-fiscale")
         self.assertEqual([], rc["seeds_read"])
         self.assertEqual(["sysadmin"], rc["seeds_bypass"])
 

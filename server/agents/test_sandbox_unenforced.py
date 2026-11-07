@@ -1,12 +1,13 @@
 """Chi porta quali campi `sandbox`, e il seed non lo diceva.
 
-`workspace._build_settings_json` traduce `allow_read`/`deny_read`/`allow_write`/
-`allow_shell_cmds`/`deny_shell_patterns` in `.claude/settings.local.json`, ed è
-chiamato solo dal layout claude. Su codex nessuno li porta; su opencode, dal
-punto 2 della #296, ne arriva **uno** — `deny_shell_patterns`, in
-`permission.bash` via `native_tools.opencode_permission`. Gli altri quattro
-restano dichiarazioni inerti su quel runtime, e le ragioni per campo stanno
-accanto a `SANDBOX_ENFORCED` (clodia-platform#296).
+`workspace._build_settings_json` traduce `allow_shell_cmds`/`deny_shell_patterns`
+in `.claude/settings.local.json`, ed è chiamato solo dal layout claude. Su codex
+nessuno li porta; su opencode, dal punto 2 della #296, ne arriva **uno** —
+`deny_shell_patterns`, in `permission.bash` via `native_tools.opencode_permission`.
+L'altro resta una dichiarazione inerte su quel runtime, e le ragioni stanno
+accanto a `SANDBOX_ENFORCED` (clodia-platform#296). The path keys
+(`allow_read`/`deny_read`/`allow_write`) left the schema in #656: a legacy seed
+that declares them loads, and they are never named in a warning.
 
 La lettura di quei campi però c'è, ed è lettura per RACCONTARE: la scheda
 dell'agente li mostra e il punteggio trifecta li interroga. Un campo dichiarato e
@@ -43,7 +44,6 @@ agent_sdk: codex
 system_prompt: system-prompt.md
 native_tools: ["Bash", "Read"]
 sandbox:
-  allow_write: ["{scratch}/**"]
   allow_shell_cmds: ["git", "pytest", "ls", "cat", "grep"]
   deny_shell_patterns: ["rm -rf *", "curl *", "sudo *"]
 """
@@ -58,7 +58,6 @@ agent_sdk: claude
 system_prompt: system-prompt.md
 native_tools: ["Bash", "Read"]
 sandbox:
-  allow_write: ["{scratch}/**"]
   allow_shell_cmds: ["git", "pytest", "ls", "cat", "grep"]
   deny_shell_patterns: ["rm -rf *", "curl *", "sudo *"]
 """
@@ -76,9 +75,10 @@ sandbox:
   deny_shell_patterns: ["sudo *"]
 """
 
-#: Come `messaggero` se dichiarasse anche i path: su opencode il pattern negato
-#: arriva, `allow_write` no. Serve a misurare che l'avviso resti PARZIALE invece
-#: di spegnersi tutto insieme.
+#: Come `messaggero` se dichiarasse anche i comandi ammessi: su opencode il
+#: pattern negato arriva, `allow_shell_cmds` no. Serve a misurare che l'avviso
+#: resti PARZIALE invece di spegnersi tutto insieme. It also still carries a
+#: legacy `allow_write` (#656): it must load and never be named.
 OPENCODE_PATH_LIKE = """\
 name: opencodepath
 display_name: Opencodepath
@@ -89,6 +89,7 @@ system_prompt: system-prompt.md
 native_tools: ["Bash", "Read"]
 sandbox:
   allow_write: ["{scratch}/**"]
+  allow_shell_cmds: ["git"]
   deny_shell_patterns: ["sudo *"]
 """
 
@@ -125,17 +126,14 @@ class TheTableSaysWhatEachRuntimeApplies(unittest.TestCase):
         self.assertEqual(residuo, [])
 
     def test_opencode_carries_only_that_one(self):
-        """Gli altri quattro restano inerti là, e vanno detti: un enforcement
-        parziale raccontato come totale è la bugia opposta dell'issue."""
+        """L'altro resta inerte là, e va detto: un enforcement parziale
+        raccontato come totale è la bugia opposta dell'issue."""
         residuo = nt.sandbox_unenforced("opencode", _sandbox(
-            allow_read=["/x/**"], deny_read=["/y/**"], allow_write=["{scratch}/**"],
             allow_shell_cmds=["git"], deny_shell_patterns=["sudo *"]))
-        self.assertEqual(residuo,
-                         ["allow_read", "deny_read", "allow_write", "allow_shell_cmds"])
+        self.assertEqual(residuo, ["allow_shell_cmds"])
 
     def test_claude_carries_them_all(self):
         residuo = nt.sandbox_unenforced("claude", _sandbox(
-            allow_read=["/x/**"], deny_read=["/y/**"], allow_write=["{scratch}/**"],
             allow_shell_cmds=["git"], deny_shell_patterns=["sudo *"]))
         self.assertEqual(residuo, [])
 
@@ -144,11 +142,14 @@ class TheTableSaysWhatEachRuntimeApplies(unittest.TestCase):
         l'avviso dall'incoerenza al rumore, su ogni seed non-claude."""
         self.assertEqual(nt.sandbox_unenforced("codex", _sandbox()), [])
 
-    def test_deny_read_is_in_the_same_boat(self):
-        """Quinto campo, stessa sorte: la guardia sta nel punto condiviso, non
-        sui due nomi che l'issue cita."""
-        self.assertEqual(nt.sandbox_unenforced("codex", _sandbox(deny_read=["/etc/**"])),
-                         ["deny_read"])
+    def test_the_retired_path_keys_are_never_named(self):
+        """#656: a legacy seed's `deny_read` is dropped on load, so no runtime
+        reports it as unenforced — it is not a field any more."""
+        legacy = Sandbox.model_validate({"deny_read": ["/etc/**"],
+                                         "allow_read": ["/x/**"],
+                                         "allow_write": ["{scratch}/**"]})
+        for sdk in ("codex", "opencode", "claude"):
+            self.assertEqual(nt.sandbox_unenforced(sdk, legacy), [], sdk)
 
     def test_an_unknown_runtime_applies_nothing(self):
         """Direzione prudente, come `unenforced_denied`: di un runtime che non
@@ -212,7 +213,7 @@ class TheSeedSaysItWhereItIsRead(unittest.TestCase):
         legge deve sapere quali elenchi sono finti e quanto grandi."""
         avvisi = " · ".join(self._avvisi("codexseed"))
         self.assertIn("deny_shell_patterns", avvisi)
-        self.assertIn("allow_write", avvisi)
+        self.assertIn("allow_shell_cmds", avvisi)
 
     def test_an_opencode_seed_is_no_longer_told_its_deny_is_inert(self):
         """`messaggero` dichiara un solo pattern negato, e da opencode quel
@@ -222,11 +223,14 @@ class TheSeedSaysItWhereItIsRead(unittest.TestCase):
 
     def test_an_opencode_seed_is_still_told_about_the_fields_that_stay_out(self):
         """L'enforcement è parziale, e la parte che manca deve continuare a
-        vedersi: `allow_write` su opencode non lo porta nessuno."""
+        vedersi: `allow_shell_cmds` su opencode non lo porta nessuno. The
+        legacy `allow_write` loads and is not named (#656)."""
+        self.assertNotIn("opencodepath", self.reg.errors())
         avvisi = " · ".join(self._avvisi("opencodepath"))
-        self.assertIn("allow_write", avvisi)
+        self.assertIn("allow_shell_cmds", avvisi)
         self.assertIn("opencode", avvisi)
         self.assertNotIn("deny_shell_patterns", avvisi)
+        self.assertNotIn("allow_write", avvisi)
 
     def test_the_same_seed_on_claude_says_nothing(self):
         """Il controllo deve dipendere dal RUNTIME, non dai campi: su claude gli
@@ -265,7 +269,13 @@ class TheAgentCardCarriesIt(unittest.TestCase):
     def test_the_card_names_the_unenforced_fields(self):
         info = self._info(OPHELIA_LIKE)
         self.assertEqual(info["unenforced"],
-                         ["allow_write", "allow_shell_cmds", "deny_shell_patterns"])
+                         ["allow_shell_cmds", "deny_shell_patterns"])
+
+    def test_the_card_declares_only_the_shell_keys(self):
+        """#656: the agent API's `sandbox` carries only the shell keys."""
+        info = self._info(OPENCODE_PATH_LIKE)
+        self.assertEqual(sorted(info["declared"]),
+                         ["allow_shell_cmds", "deny_shell_patterns"])
 
     def test_the_card_still_reports_the_declaration(self):
         """`declared` resta: il campo va mostrato, con accanto il fatto che non

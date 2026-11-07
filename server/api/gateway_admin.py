@@ -55,7 +55,7 @@ def _headers() -> dict[str, str]:
     return {"Authorization": f"Bearer {token}"}
 
 
-def register_agent(agent: str, allowed_tools: list | None = None,
+def register_agent(agent: str,
                    gated_tools: list | None = None,
                    gated_in_channel: list | None = None,
                    carries: list | None = None,
@@ -66,13 +66,16 @@ def register_agent(agent: str, allowed_tools: list | None = None,
     `gated_tools` viaggia con la registrazione perché è dichiarato nel seed e
     custodito dal gateway: la dichiarazione sta dove si sa quali verbi sono
     pericolosi, l'autorità dove l'agente non può riscriverla.
+
+    No `allowed_tools` is sent (clodia-platform#656): the seed grants no verb,
+    the gateway ignores the key and reachability reads the A·V·R·Q tuples.
     """
     # `gated_tools` si OMETTE quando non c'è, non si manda `[]`: il gateway tratta
     # l'assenza come «non mi pronuncio» e la lista vuota come «azzerale». Mandare
     # sempre `[]` sconfiggeva quella guardia dal lato client — e ha azzerato i gate
     # di clodia al primo update del base-pack, cioè ha ALLARGATO l'autorità di un
     # agente immutabile con un aggiornamento che doveva solo cambiargli il prompt.
-    payload: dict = {"agent": agent, "allowed_tools": allowed_tools or []}
+    payload: dict = {"agent": agent}
     if gated_tools is not None:
         payload["gated_tools"] = list(gated_tools)
     # Stessa regola dell'omissione: mandare `[]` sempre toglierebbe il gate del
@@ -157,7 +160,7 @@ def agent_verbs(agent: str) -> dict:
     return r.json()
 
 
-async def register_agent_async(agent: str, allowed_tools: list | None = None,
+async def register_agent_async(agent: str,
                                gated_tools: list | None = None,
                                gated_in_channel: list | None = None,
                                carries: list | None = None,
@@ -166,7 +169,6 @@ async def register_agent_async(agent: str, allowed_tools: list | None = None,
     return await asyncio.to_thread(
         register_agent,
         agent,
-        allowed_tools,
         gated_tools,
         gated_in_channel,
         carries,

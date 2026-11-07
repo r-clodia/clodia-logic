@@ -138,7 +138,7 @@ def backfill_new_fields() -> dict:
 
 # ── Drift: il seed installato è ancora quello del pack? ──────────────────────
 
-#: Quanto di un valore si mostra prima di troncarlo. Un `tool_permissions` di 40
+#: Quanto di un valore si mostra prima di troncarlo. Un `gated_tools` di 40
 #: voci stampato per intero non è un'informazione, è una pagina da saltare.
 _MAX_VALORE = 120
 

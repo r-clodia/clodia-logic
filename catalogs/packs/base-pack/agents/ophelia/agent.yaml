@@ -39,9 +39,6 @@ providers: [codex]
 avatar_color: "#14b8a6"
 
 sandbox:
-  allow_read: ["{scratch}/**", "skills-catalog/**", "agents/**"]
-  deny_read: ["topics/confidential/**", "secrets/**"]
-  allow_write: ["{scratch}/**"]
   allow_shell_cmds: ["git", "gh", "python3", "node", "npm"]
   deny_shell_patterns: ["rm -rf *", "sudo *", "git push * main *--force*"]
 

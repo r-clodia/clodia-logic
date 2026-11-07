@@ -15,21 +15,10 @@ _GATEWAY_VERB = __import__("re").compile(r"[a-z][a-z0-9_-]{0,63}\.[A-Za-z0-9_.]{
 
 
 AgentType = Literal["bot", "human", "proxy"]
-#: Ciò che un proxy può dichiarare: parla e legge LA SUA stanza, e basta.
-#:
-#: Fino al 14 ago 2026 qui c'era il solo `topic.post_message`, e il token che il
-#: gateway coniava per un proxy ne portava dieci — quelli di una persona. Il
-#: seed prometteva una cosa e la credenziale ne consegnava un'altra, che è il
-#: modo in cui una restrizione smette di essere una restrizione.
-#:
-#: Deve restare allineato a `PROXY_VERBS` in `human_mcp.py` (clodia-tools):
-#: questo è ciò che si dichiara, quello è ciò che si conia.
-_PROXY_ALLOWED_TOOLS = {
-    "topic.post_message",   # scrive nel canale (e menziona: la menzione è testo)
-    "topic.messages",       # legge il canale — senza, non dialoga: è un webhook
-    "topic.my_mentions",    # sa di essere stato chiamato
-    "topic.mark_seen",
-}
+#: What a proxy may do (speak and read ITS room) is no longer declared here: the
+#: seed carries no verbs (clodia-platform#626/#656), and the gateway mints the
+#: proxy's token from `PROXY_VERBS` in `human_mcp.py` (clodia-tools), which is
+#: the only list that ever reached a credential.
 
 
 def normalize_agent_type(value: object) -> str:
@@ -95,29 +84,56 @@ def telegram_delivers(value: object) -> bool:
     return bool(value) and bool(_TELEGRAM_ID.match(str(value).strip()))
 
 
+#: Sandbox keys a seed may still carry from before clodia-platform#656. They
+#: are dropped on load instead of refused: `extra="forbid"` would otherwise stop
+#: every older seed (and every external pack not yet updated) from loading over
+#: a field that no longer does anything.
+_RETIRED_SANDBOX_KEYS = ("allow_read", "deny_read", "allow_write")
+
+
+def _drop_retired(raw: object, keys: tuple[str, ...], where: str) -> object:
+    """Remove `keys` from a raw mapping, logging at debug level what went."""
+    if not isinstance(raw, dict):
+        return raw
+    gone = [k for k in keys if k in raw]
+    if not gone:
+        return raw
+    import logging
+    logging.getLogger("agent-server.agents.models").debug(
+        "%s: ignoring retired field(s) %s (clodia-platform#656)",
+        where, ", ".join(gone))
+    return {k: v for k, v in raw.items() if k not in keys}
+
+
 class Sandbox(BaseModel):
-    """Permessi applicati al workspace effimero via .claude/settings.json.
+    """Shell guards applied to the agent's process.
 
-    Tutti i path sono relativi alla data root (`/clodia` nel container,
-    `WORKSPACE_ROOT` localmente). Il placeholder `{scratch}` è risolto
-    runtime al path dello scratch dell'istanza, in ogni campo — a farlo, per
-    tutti i runtime, è `sdk_runtime.native_tools.normalize_sandbox`, che è anche
-    dove sta il default del campo non dichiarato (elenco vuoto = il seed non si
-    pronuncia, quindi non restringe).
+    Only the two shell keys remain (clodia-platform#656). `allow_shell_cmds`
+    goes to `.claude/settings.local.json` on the claude runtime;
+    `deny_shell_patterns` goes there too and, on opencode, to
+    `permission.bash` — the only shell guard both runtimes enforce. The
+    placeholder `{scratch}` is resolved at spawn time by
+    `sdk_runtime.native_tools.normalize_sandbox`. Which runtime enforces which
+    key is `native_tools.SANDBOX_ENFORCED`; what a runtime does not enforce is
+    reported by the loader and in the card's `sandbox_info.unenforced`
+    (clodia-platform#296).
 
-    ⚠️ **Solo il runtime claude li applica.** Su codex e opencode nessuno li
-    traduce: chi li dichiara lì scrive una restrizione che non esiste a runtime.
-    Quali campi ciascun runtime porta sta in `sdk_runtime.native_tools`
-    (`SANDBOX_ENFORCED`), e ciò che non porta esce come avviso del loader e nel
-    `sandbox_info.unenforced` della scheda (clodia-platform#296).
+    The read/write path keys (`allow_read`, `deny_read`, `allow_write`) were
+    removed: only the claude runtime applied them, relative paths matched
+    nothing in the spawn cwd, and a shell bypassed a Read deny. The file
+    boundary is the spawn's uid and the root-only directories; least privilege
+    inside a room is A·V·R·Q. Seeds that still declare them load, and the keys
+    are ignored.
     """
     model_config = ConfigDict(extra="forbid")
 
-    allow_read: list[str] = Field(default_factory=list)
-    deny_read: list[str] = Field(default_factory=list)
-    allow_write: list[str] = Field(default_factory=list)
     allow_shell_cmds: list[str] = Field(default_factory=list)
     deny_shell_patterns: list[str] = Field(default_factory=list)
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_retired_keys(cls, raw):
+        return _drop_retired(raw, _RETIRED_SANDBOX_KEYS, "sandbox")
 
 
 class MemoryConfig(BaseModel):
@@ -180,6 +196,16 @@ class AgentSpec(BaseModel):
     workspace effimero di copiare i file senza ulteriori indirezioni.
     """
     model_config = ConfigDict(extra="forbid")
+
+    @model_validator(mode="before")
+    @classmethod
+    def _ignore_retired_fields(cls, raw):
+        """`tool_permissions` is retired (clodia-platform#626/#656): seeds carry
+        no verbs, the gateway's A·V·R·Q tuples decide. A seed that still
+        declares it loads, and the field is dropped — refusing it would stop
+        older seeds and external packs from loading over a field that does
+        nothing."""
+        return _drop_retired(raw, ("tool_permissions",), "agent")
 
     name: str
     description: str
@@ -333,21 +359,12 @@ class AgentSpec(BaseModel):
             raise ValueError("proxy: nessuna memory ammessa")
         sandbox = self.sandbox
         if any((
-            sandbox.allow_read,
-            sandbox.deny_read,
-            sandbox.allow_write,
             sandbox.allow_shell_cmds,
             sandbox.deny_shell_patterns,
         )):
             raise ValueError("proxy: nessun sandbox/file access ammesso")
         if self.native_tools:
             raise ValueError("proxy: nessun native_tool ammesso")
-        extra_tools = set(self.tool_permissions or []) - _PROXY_ALLOWED_TOOLS
-        if extra_tools:
-            raise ValueError(
-                "proxy: ammessi solo " + ", ".join(sorted(_PROXY_ALLOWED_TOOLS))
-                + " — non " + ", ".join(sorted(extra_tools))
-            )
         if any((self.rag_read, self.rag_write, self.volumes, self.credentials, self.carries or [])):
             raise ValueError("proxy: nessun file/RAG/volume/credential ammesso")
         return self
@@ -538,9 +555,6 @@ class AgentSpec(BaseModel):
     # Profilo di costo dichiarato: "economy" (haiku), "standard" (sonnet),
     # "premium" (opus). Usato dalla selection engine come tie-break.
     cost_profile: str = "standard"
-    # Permessi tool MCP granulari (es. ["topic.*", "email.send"]).
-    # Enforcement nel gateway MCP; qui dichiarativo per validator/selection.
-    tool_permissions: list[str] = Field(default_factory=list)
     #: Sottrazioni dai permessi effettivi, inclusi quelli ereditati. `None`
     #: significa «non modificare la copia custodita dal gateway»; `[]` la azzera.
     denied_tools: Optional[list[str]] = None
@@ -549,8 +563,8 @@ class AgentSpec(BaseModel):
     #: quindi niente restrizione; `[]` = «nessuno strumento nativo», che è una
     #: dichiarazione e va rispettata.
     #:
-    #: Terza cosa che un seed dichiara, accanto ai verbi del gateway
-    #: (`tool_permissions`) e alle skill (`capabilities`), così «cosa può fare
+    #: Terza cosa che un seed dichiara, accanto ai verbi del gateway (che dal
+    #: #626 non stanno più nel seed) e alle skill (`capabilities`), così «cosa può fare
     #: questo agente» torna ad avere UNA risposta, in un file. Prima nessuno li
     #: dichiarava e li avevano tutti — compreso `WebSearch`, che nessuna policy
     #: di rete può arbitrare perché lo esegue il provider (vedi
@@ -673,7 +687,7 @@ class AgentSpec(BaseModel):
     #: arrivava mai a destinazione — verificato il 7 ago 2026 su messaggero.
     profile_tools: Optional[list[str]] = None
     # Grant dichiarativi sulle collection RAG della capacità di piattaforma
-    # (es. ["eu-normativa"]). Enforcement nel gateway, come tool_permissions.
+    # (es. ["eu-normativa"]). Enforcement nel gateway.
     # Usati dai seed dei pack (es. aitiero in clodia-packs).
     #
     # `"*"` vale TUTTE le collection, come in `allowed_tools` — non è il nome di

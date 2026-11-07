@@ -9,15 +9,20 @@ from unittest.mock import patch
 import yaml
 
 from ..config import workspace_path
+from . import fake_global_grants as FG
 from . import trifecta
 from .models import AgentSpec
+
+# The agent's own verbs are the gateway's global tuples (#626/#656): faked here.
+setUpModule, tearDownModule = FG.module_fixture()
 
 SEEDS_DIR = workspace_path("catalogs/packs/base-pack/agents")
 
 
 def _spec(name, tools=(), kind="normal", shell=(), deny_shell=()):
+    FG.give(name, tools)
     return SimpleNamespace(
-        name=name, type=kind, tool_permissions=list(tools),
+        name=name, type=kind,
         sandbox=SimpleNamespace(allow_shell_cmds=list(shell),
                                 deny_shell_patterns=list(deny_shell)),
     )
@@ -280,7 +285,7 @@ if __name__ == "__main__":  # pragma: no cover
 class FailClosedTests(unittest.TestCase):
     """#119 — un namespace che il catalogo non conosce non è «innocuo».
 
-    Il difetto misurato in produzione: `tool_permissions` con soli
+    Il difetto misurato in produzione: verbi dichiarati con soli
     `slack.post_message` / `dropbox.upload` dava **0/3**. Non era il difetto di
     §9 (voci note mancanti, aggiunte a mano): era la REGOLA DI DEFAULT.
     """

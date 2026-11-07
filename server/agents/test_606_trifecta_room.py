@@ -20,24 +20,30 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from . import fake_global_grants as FG
 from . import trifecta, trifecta_reset
 from .models import AgentSpec
+
+# The agent's own verbs are the gateway's global tuples (#626/#656): faked here.
+setUpModule, tearDownModule = FG.module_fixture()
 
 #: Nessun confinamento letto dal gateway: i test non fanno rete.
 CONF: dict = {}
 
 
 def _spec(name, tools=()):
+    FG.give(name, tools)
     return SimpleNamespace(
-        name=name, type="bot", tool_permissions=list(tools),
+        name=name, type="bot",
         sandbox=SimpleNamespace(allow_shell_cmds=[], deny_shell_patterns=[]),
     )
 
 
 def _ag(nome: str, verbi: list[str]) -> AgentSpec:
+    FG.give(nome, verbi)
     return AgentSpec.model_validate({
         "name": nome, "description": "d", "display_name": nome, "model": "m",
-        "system_prompt": "s.md", "tool_permissions": verbi, "native_tools": [],
+        "system_prompt": "s.md", "native_tools": [],
     })
 
 

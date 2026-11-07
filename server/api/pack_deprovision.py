@@ -111,12 +111,19 @@ def _revoke_grants(agents: Iterable[str]) -> tuple[list[str], list[dict[str, Any
     nome nella config del gateway. La cancellazione vera richiede un DELETE su
     `/internal/agents/whitelist/<agent>` che in clodia-tools non esiste: quando
     ci sarà, questa funzione lo chiama e smette di scrivere liste vuote.
+
+    ⚠️ Since clodia-platform#656 `allowed_tools` is no longer sent: the gateway
+    ignores it, and reachability reads the A·V·R·Q tuples only. This call is
+    therefore an upsert that leaves the gateway entry as it is — it does NOT
+    revoke the agent's tuples. Removing the agents' tuples on pack removal is a
+    follow-up (it needs a gateway route); until then the agent's files and seed
+    are gone, so nothing spawns under that name.
     """
     revoked: list[str] = []
     failed: list[dict[str, Any]] = []
     for agent in agents:
         try:
-            gateway_admin.register_agent(agent, [])
+            gateway_admin.register_agent(agent)
             revoked.append(agent)
         except Exception as e:  # noqa: BLE001 — best-effort per disegno
             LOG.warning("revoca grant di '%s' fallita: %s", agent, str(e)[:120])

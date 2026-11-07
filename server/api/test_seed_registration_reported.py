@@ -20,7 +20,6 @@ import inspect
 import tempfile
 import unittest
 from pathlib import Path
-from types import SimpleNamespace
 from unittest.mock import patch
 
 import yaml
@@ -35,7 +34,6 @@ SEED = {
     "clearance": "SEAL-1",
     "agent_sdk": "claude",
     "model": "claude-sonnet-5",
-    "tool_permissions": ["topic.open", "topic.files"],
 }
 
 
@@ -50,8 +48,7 @@ class _Registry:
 
     def get_by_name(self, name):
         from types import SimpleNamespace
-        return SimpleNamespace(tool_permissions=SEED["tool_permissions"],
-                               gated_tools=None, gated_in_channel=None,
+        return SimpleNamespace(gated_tools=None, gated_in_channel=None,
                                profile_tools=None, carries=None,
                                denied_tools=["topic.read_file"])
 
@@ -96,15 +93,15 @@ class InstallSeedTests(unittest.TestCase):
         self._install(lambda *a, **k: calls.append((a, k)) or {"ok": True})
         self.assertEqual(calls[0][1]["denied_tools"], ["topic.read_file"])
 
-    def test_registration_transports_declared_empty_tool_permissions(self):
+    def test_registration_sends_no_verbs(self):
+        """#656: the seed grants no verb, and the gateway ignores
+        `allowed_tools` — the registration carries the name and the
+        second-line lists only."""
         calls = []
-        with patch.object(_Registry, "get_by_name",
-                          lambda _self, _name: SimpleNamespace(
-                              tool_permissions=[], gated_tools=None,
-                              gated_in_channel=None, profile_tools=None,
-                              carries=None, denied_tools=None)):
-            self._install(lambda *a, **k: calls.append((a, k)) or {"ok": True})
-        self.assertEqual(calls[0][0][1], [])
+        self._install(lambda *a, **k: calls.append((a, k)) or {"ok": True})
+        args, kwargs = calls[0]
+        self.assertEqual(args, ("content-creator",))
+        self.assertNotIn("allowed_tools", kwargs)
 
     def test_the_seed_lands_on_disk_either_way(self):
         """L'avviso non annulla l'installazione: il seed c'è, gli manca la

@@ -1,22 +1,13 @@
-"""Verbi EFFETTIVI di un seed: i propri più quelli ereditati.
+"""Inherited seed fields: a seed's own plus its ancestors' (`parents`).
 
-Un posto solo, in questo servizio, e la ragione è la stessa che l'ha imposto nel
-gateway: la matrice era letta in **tre** punti — la trifecta, il routing dei
-responder, il registry — e nessuno risolveva `parents`.
+Verbs used to be resolved here too (`effective_tool_permissions`). They are not
+any more: since clodia-platform#626 the seeds carry no verbs and #656 removed the
+`tool_permissions` field — what an agent may do is the gateway's A·V·R·Q tuples,
+asked through `authz_grants`. What remains inherited is the skills
+(`capabilities`).
 
-Finché nessun seed ereditava davvero, leggere la dichiarazione equivaleva a
-leggere l'effettivo. Dall'8 ago 2026 non più, e la prima conseguenza si è vista
-subito: ripulendo i seed dai verbi ridondanti, il punteggio trifecta di
-`segretario` è **sceso da 2 a 0**. Un segnale di sicurezza che si abbassa perché
-un file è diventato più pulito è la forma peggiore di errore silenzioso — dice
-«meno rischioso» dove non è cambiato nulla.
-
-**Questa è una seconda implementazione della stessa regola**, e va detto invece
-di scoprirlo fra sei mesi. Il gateway la applica alla propria config per
-autorizzare a runtime; qui si applica ai seed per analizzarli. Le fonti sono
-diverse, la regola è la stessa, e due copie della stessa regola divergono. Il
-giorno in cui una delle due cambia, l'altra va cambiata con lei — e un test del
-base-pack confronta i due esiti proprio per accorgersene.
+Un posto solo per la camminata lungo `parents`, e la ragione è la stessa che
+l'ha imposto nel gateway: due copie della stessa regola divergono.
 """
 from __future__ import annotations
 
@@ -45,7 +36,8 @@ def _ereditato(name: str, specs: dict, campo: str) -> list[str]:
     """Union di `campo` lungo la catena `parents`, dal seed ai suoi antenati.
 
     UNA camminata per tutti i campi ereditabili, e non per risparmiare righe:
-    verbi e skill avevano due risoluzioni diverse — questa, e un'union a un
+    verbi e skill (verbi ritirati dal #656) avevano due risoluzioni diverse —
+    questa, e un'union a un
     livello solo scritta a mano in `EphemeralWorkspace` — e la seconda perdeva i
     nonni senza dirlo (clodia-platform#496). Due copie della stessa regola
     divergono, ed era già la tesi del docstring in testa a questo modulo: la
@@ -81,11 +73,6 @@ def _ereditato(name: str, specs: dict, campo: str) -> list[str]:
     return fuori
 
 
-def effective_tool_permissions(name: str, specs: dict) -> list[str]:
-    """Verbi di `name` risolvendo la catena `parents`. `specs` = {nome: spec}."""
-    return _ereditato(name, specs, "tool_permissions")
-
-
 def effective_capabilities(name: str, specs: dict) -> list[str]:
     """Skill di `name` risolvendo la catena `parents`. `specs` = {nome: spec}.
 
@@ -117,13 +104,8 @@ def _per_nome(specs: Iterable) -> dict:
     return m
 
 
-def resolve_for(name: str, specs: Iterable) -> list[str]:
-    """Comodità: accetta un iterabile di spec con `.name`."""
-    return effective_tool_permissions(name, _per_nome(specs))
-
-
 def capabilities_for(name: str, specs: Iterable) -> list[str]:
-    """Come `resolve_for`, per le skill."""
+    """Skill di `name` da un iterabile di spec con `.name`."""
     return effective_capabilities(name, _per_nome(specs))
 
 

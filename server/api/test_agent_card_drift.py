@@ -42,7 +42,7 @@ def _card(spec, registrazione, verbi=None):
 
 
 def _seed(**kw):
-    base = dict(name="avvocato", type="normal", tool_permissions=["topic.open"],
+    base = dict(name="avvocato", type="normal",
                 gated_tools=None, denied_tools=None, profile_tools=None)
     base.update(kw)
     return SimpleNamespace(**base)

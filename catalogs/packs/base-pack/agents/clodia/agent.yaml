@@ -24,9 +24,6 @@ providers: [claude-team, claude-pro-max, anthropic-api, aws-region-eu]
 avatar_color: "#ff6b3d"
 
 sandbox:
-  allow_read: ["{scratch}/**", "skills-catalog/**", "agents/**"]
-  deny_read: ["topics/confidential/**", "secrets/**"]
-  allow_write: ["{scratch}/**"]
   allow_shell_cmds: ["git", "gh", "python3", "node", "npm"]
   deny_shell_patterns: ["rm -rf *", "sudo *", "git push * main *--force*"]
 
@@ -36,8 +33,8 @@ sandbox:
 # `helpdesk` — restano dichiarate una per una
 # su `sysadmin`, che le hanno per ruolo; qui arrivavano solo dal
 # wildcard, e nessuna riga del system-prompt di clodia le nomina. Non è una
-# perdita di capacità: `email.send` è un VERBO (vedi `tool_permissions`), non
-# viene dal pack, quindi la relazione quotidiana continua a partire.
+# perdita di capacità: `email.send` è un VERBO (autorizzato dalle tuple A·V·R·Q
+# del gateway), non viene dal pack, quindi la relazione quotidiana continua a partire.
 capabilities: ["base-pack/*", "business-pack/article-spec", "business-pack/editorial-review", "business-pack/fact-check", "anthropic-pack/*"]
 # NON `["*"]`. Il catalogo contiene UNA rule, `topic-state-boundary`, ed è del
 # segretario: circoscrive chi mantiene lo stato scritto di un topic e dichiara

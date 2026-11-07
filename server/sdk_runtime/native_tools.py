@@ -205,8 +205,12 @@ def tool_reachable(sdk: str | None, allowed: list[str] | set[str] | None,
 #: I campi di `sandbox` che un seed può dichiarare. Uno per uno perché il
 #: residuo si dice per CAMPO: «il sandbox non è applicato» non dice a chi legge
 #: quale dei suoi elenchi è finto.
+#:
+#: Only the shell keys since clodia-platform#656: `allow_read`, `deny_read` and
+#: `allow_write` were removed from the seed schema (only claude applied them,
+#: relative paths matched nothing, a shell bypassed a Read deny). The file
+#: boundary is the spawn's uid and the root-only directories.
 SANDBOX_FIELDS: tuple[str, ...] = (
-    "allow_read", "deny_read", "allow_write",
     "allow_shell_cmds", "deny_shell_patterns",
 )
 
@@ -229,18 +233,13 @@ SANDBOX_FIELDS: tuple[str, ...] = (
 #:   non è questa granularità.
 #: - **opencode**: `deny_shell_patterns`, e solo quello (clodia-platform#296
 #:   punto 2). Esce in `permission.bash` via `opencode_permission`, ed è l'unico
-#:   dei cinque campi che là dentro cambia cosa l'agente può fare. Perché non gli
-#:   altri quattro, misurato su opencode 1.15.13:
+#:   dei due campi che là dentro cambia cosa l'agente può fare. Perché non
+#:   l'altro, misurato su opencode 1.15.13:
 #:   - `allow_shell_cmds`: la lista di regole di un agente comincia con
 #:     `{permission: "*", pattern: "*", action: "allow"}`, quindi ciò che nessuna
 #:     regola nomina è già concesso — un elenco di permessi non restringe. Farne
 #:     una porta richiederebbe un `{"*": "deny"}` che il seed non chiede e che
-#:     toglierebbe la shell ai tre seed non-claude che oggi la usano;
-#:   - `allow_read`/`deny_read`/`allow_write`: i permessi `read`/`edit` ricevono
-#:     il path **relativo al worktree** (`patterns: [relative(worktree, file)]`),
-#:     mentre questi campi sono assoluti col `{scratch}` risolto: un
-#:     `/datadir/spawns/x/**` non combacerebbe mai. Tradurli vuol dire decidere
-#:     cosa fare dei path fuori dal worktree — un'altra decisione, non questa.
+#:     toglierebbe la shell ai tre seed non-claude che oggi la usano.
 SANDBOX_ENFORCED: dict[str, frozenset[str] | None] = {
     "claude": None,
     "opencode": frozenset({"deny_shell_patterns"}),
@@ -276,7 +275,7 @@ def sandbox_unenforced(sdk: str | None, sandbox) -> list[str]:
 
 
 #: Il segnaposto dello scratch dello spawn, l'unico che i campi `sandbox`
-#: conoscono. Vale in TUTTI i campi, non solo nei due di path: un
+#: conoscono. Vale in TUTTI i campi: un
 #: `deny_shell_patterns: ["rm -rf {scratch}/*"]` lasciato letterale sarebbe una
 #: regola che non combacia mai — cioè un divieto scritto e mai applicato, che è
 #: il difetto per cui esiste questo file.
@@ -305,15 +304,11 @@ class NormalizedSandbox:
     simulata qui.
 
     ⚠️ Quel default dice cosa CONTIENE il campo, non cosa il runtime debba farne:
-    se un `allow_read` dichiarato valga come allowlist con diniego implicito su
-    tutto il resto, oppure resti non applicato, è una decisione di prodotto che
-    non appartiene alla normalizzazione. Chi la prenderà la scrive nel
-    traduttore, un piano sopra questo.
+    se un `allow_shell_cmds` dichiarato valga come allowlist con diniego
+    implicito su tutto il resto, oppure resti non applicato, è una decisione del
+    traduttore, un piano sopra questo — non della normalizzazione.
     """
 
-    allow_read: tuple[str, ...] = ()
-    deny_read: tuple[str, ...] = ()
-    allow_write: tuple[str, ...] = ()
     allow_shell_cmds: tuple[str, ...] = ()
     deny_shell_patterns: tuple[str, ...] = ()
 
@@ -628,8 +623,7 @@ def codex_sandbox_mode(allowed: list[str] | set[str] | None) -> str:
     - **`Bash` concesso**, nudo o ritagliato → `workspace-write`. Il ritaglio per
       comando codex non lo sa fare (`tools.shell` non esiste, e i pattern non
       hanno dove andare), quindi quel pezzo resta residuo dichiarato; la radice
-      scrivibile è la cwd, che per una sessione è lo scratch dello spawn — cioè
-      l'`allow_write: ["{scratch}/**"]` che i seed codex già dichiarano.
+      scrivibile è la cwd, che per una sessione è lo scratch dello spawn.
     - **niente `Bash` ma `Write`/`Edit`** → `workspace-write` comunque:
       l'`apply_patch` di codex passa dal medesimo sandbox, e `read-only` gli
       toglierebbe la scrittura che il seed CONCEDE.

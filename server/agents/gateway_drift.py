@@ -3,8 +3,8 @@
 La quinta gamba, e mancava. `skill_sync`, `rule_sync`, `constitution_sync` e
 `seed_sync` riconciliano il pack con la datadir a ogni avvio; la gamba
 **dichiarazione → gateway** non ne ha mai avuta una. `register_agent` si chiamava
-da un posto solo — l'import di un pack — quindi `tool_permissions`,
-`gated_tools`, `profile_tools` e `denied_tools` raggiungevano l'autorità **una
+da un posto solo — l'import di un pack — quindi `gated_tools`, `profile_tools`
+e `denied_tools` (e allora anche i verbi del seed) raggiungevano l'autorità **una
 volta sola**, e da lì in poi `config.yaml` del gateway restava la fotografia di
 quel giorno mentre il file del seed diventava una dichiarazione che nessuno
 rilegge (clodia-platform#203).
@@ -58,8 +58,8 @@ LOG = logging.getLogger("agent-server.agents.gateway_drift")
 #: (Che `carries` sia una dichiarazione che nessuno trasporta è un difetto suo,
 #: della stessa famiglia di questa issue. Non si tratta qui.)
 CAMPI: tuple[tuple[str, str], ...] = (
-    # `tool_permissions`/`allowed_tools` no longer compared (#626): the seeds
-    # carry no verbs, the gateway's tuples decide.
+    # Verbs are not compared (#626/#656): the seeds carry no verbs, the
+    # gateway's tuples decide.
     ("gated_tools", "gated_tools"),
     ("denied_tools", "denied_tools"),
     ("profile_tools", "profile_tools"),
@@ -134,7 +134,7 @@ def _ripara(spec) -> bool:
     chiamata dell'install di un pack — una policy sola, non due."""
     from ..api import gateway_admin
     gateway_admin.register_agent(
-        spec.name, list(getattr(spec, "tool_permissions", None) or []),
+        spec.name,
         gated_tools=getattr(spec, "gated_tools", None),
         gated_in_channel=getattr(spec, "gated_in_channel", None),
         profile_tools=getattr(spec, "profile_tools", None),

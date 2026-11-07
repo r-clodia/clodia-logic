@@ -11,11 +11,18 @@ from __future__ import annotations
 
 import unittest
 
+from unittest.mock import patch
+
 from .models import AgentSpec
+from . import fake_global_grants as FG
 from . import rag_members
+
+# Who covers `rag.*` outside rooms is the gateway's global tuples (#626/#656).
+setUpModule, tearDownModule = FG.module_fixture()
 
 
 def _spec(name: str, **campi) -> AgentSpec:
+    FG.give(name, campi.pop("verbs", []))
     return AgentSpec.model_validate({
         "name": name, "display_name": name.capitalize(), "description": "test",
         "type": campi.pop("type", "bot"), "system_prompt": "system-prompt.md",
@@ -55,7 +62,7 @@ class RagMemberIndexTests(unittest.TestCase):
         falsità: che è membro di quella collection, e che la member list lo
         governa."""
         idx = rag_members.build([
-            _spec("sysadmin", tool_permissions=["rag.*"]),
+            _spec("sysadmin", verbs=["rag.*"]),
             _spec("aitiero", rag_read=["eu-normativa"]),
         ])
         riga = idx.of("eu-normativa")
@@ -69,7 +76,7 @@ class RagMemberIndexTests(unittest.TestCase):
         verbo puntuale non copre il namespace e non finisce fra i bypass —
         altrimenti la lista diventerebbe «quasi tutti» e smetterebbe di dire
         qualcosa."""
-        idx = rag_members.build([_spec("clodia", tool_permissions=["rag.collections"])])
+        idx = rag_members.build([_spec("clodia", verbs=["rag.collections"])])
         self.assertEqual([], idx.of("eu-normativa")["seeds_bypass"])
 
     def test_a_star_in_rag_read_is_a_bypass_not_a_collection_named_star(self) -> None:
@@ -77,17 +84,16 @@ class RagMemberIndexTests(unittest.TestCase):
         self.assertEqual(["tuttologo"], idx.of("qualunque")["seeds_bypass"])
         self.assertEqual({}, idx.by_collection)
 
-    def test_an_inherited_namespace_grant_counts(self) -> None:
-        """I verbi effettivi, non quelli scritti nel file: un seed che eredita
-        `rag.*` lo ha davvero (`inheritance.effective_tool_permissions`)."""
-        idx = rag_members.build([
-            _spec("sysadmin", tool_permissions=["rag.*"]),
-            _spec("vice", parents=["sysadmin"], tool_permissions=[]),
-        ])
-        self.assertEqual(["sysadmin", "vice"], idx.of("eu-normativa")["seeds_bypass"])
+    def test_a_mute_gateway_is_no_bypass(self) -> None:
+        """#656: gateway silent ⇒ no grant. There is no seed declaration left
+        to fall back on, so nobody is listed as covering `rag.*`."""
+        from . import authz_grants
+        with patch.object(authz_grants, "global_grants", lambda name: None):
+            idx = rag_members.build([_spec("sysadmin", verbs=["rag.*"])])
+        self.assertEqual([], idx.of("eu-normativa")["seeds_bypass"])
 
     def test_a_negated_grant_does_not_open_the_namespace(self) -> None:
-        idx = rag_members.build([_spec("tagliato", tool_permissions=["-rag.*"])])
+        idx = rag_members.build([_spec("tagliato", verbs=["-rag.*"])])
         self.assertEqual([], idx.of("eu-normativa")["seeds_bypass"])
 
     def test_a_human_principal_is_not_a_member(self) -> None:

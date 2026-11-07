@@ -17,12 +17,17 @@ from __future__ import annotations
 import unittest
 from types import SimpleNamespace
 
+from . import fake_global_grants as FG
 from . import trifecta
+
+# The agent's own verbs are the gateway's global tuples (#626/#656): faked here.
+setUpModule, tearDownModule = FG.module_fixture()
 
 
 def _spec(name, tools=()):
+    FG.give(name, tools)
     return SimpleNamespace(
-        name=name, type="normal", tool_permissions=list(tools),
+        name=name, type="normal",
         sandbox=SimpleNamespace(allow_shell_cmds=[], deny_shell_patterns=[]),
     )
 

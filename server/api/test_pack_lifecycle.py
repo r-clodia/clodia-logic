@@ -98,8 +98,8 @@ class PackLifecycleTest(unittest.TestCase):
             self.gw_calls.append((tool, args, principal)) or (200, {"result": {}}))
         self.registered: list[tuple] = []
         self._old_register = gateway_admin.register_agent
-        gateway_admin.register_agent = lambda agent, allowed_tools=None, **k: (
-            self.registered.append((agent, allowed_tools)) or {"ok": True})
+        gateway_admin.register_agent = lambda agent, *a, **k: (
+            self.registered.append((agent, a, k)) or {"ok": True})
         self._old_authz = gateway_pdp.require_authz
         gateway_pdp.require_authz = lambda *a, **k: "davide"
 
@@ -198,13 +198,17 @@ class PackLifecycleTest(unittest.TestCase):
         self.assertIn("gateway down", failed[0]["error"])
 
     def test_pack_removal_revokes_agent_grants(self) -> None:
-        """L'agente del pack non c'è più: i suoi grant nel gateway nemmeno."""
+        """L'agente del pack non c'è più: la rimozione lo ri-registra al gateway.
+
+        #656: without `allowed_tools` (the gateway ignores it) and without any
+        positional list — a bare `[]` would now land in `gated_tools` and clear
+        the agent's gates. Revoking the agent's A·V·R·Q tuples is a follow-up."""
         self._install_pack()
         self.registered.clear()  # l'installazione registra: qui conta la rimozione
 
         res = asyncio.run(packs.delete_pack("studio", self._admin_request()))
 
-        self.assertEqual(self.registered, [("commercialista", [])])
+        self.assertEqual(self.registered, [("commercialista", (), {})])
         self.assertEqual(res["deprovision"]["grants_revoked"], ["commercialista"])
 
     # --- dati: mai cancellati in silenzio ---------------------------------

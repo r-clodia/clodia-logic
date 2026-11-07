@@ -888,10 +888,11 @@ class ChannelTrifectaTests(unittest.TestCase):
 
     def test_profile_is_computed_from_participants(self) -> None:
         specs = [
-            SimpleNamespace(name="lettore", type="normal",
-                            tool_permissions=["topic.read_file"], sandbox=None),
-            SimpleNamespace(name="postino", type="normal",
-                            tool_permissions=["email.send"], sandbox=None),
+            # No verbs on the specs (#626/#656): the agents' own verbs are the
+            # gateway's global tuples, which this test does not reach — the
+            # legs below come from what the ROOM gives every participant.
+            SimpleNamespace(name="lettore", type="normal", sandbox=None),
+            SimpleNamespace(name="postino", type="normal", sandbox=None),
         ]
         real = channels.trifecta.context_profile
 

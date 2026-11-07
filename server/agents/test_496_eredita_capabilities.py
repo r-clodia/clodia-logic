@@ -1,7 +1,7 @@
 """Un seed figlio eredita le SKILL del padre, non solo i verbi (#496).
 
 Il difetto non era «l'eredità non c'è»: era che c'erano due eredità diverse.
-I verbi passavano da `effective_tool_permissions` — transitiva, con limite di
+I verbi passavano da `effective_tool_permissions` (ritirata dal #656) — transitiva, con limite di
 profondità e taglio dei cicli — mentre le capabilities le risolveva a mano
 `EphemeralWorkspace`, **a un livello solo** e in un punto solo. Risultato:
 `tomato.officer` con `parents: [officer]` materializzava zero skill ovunque
@@ -22,7 +22,8 @@ from pathlib import Path
 import yaml
 
 from ..config import workspace_path
-from .inheritance import effective_capabilities, effective_tool_permissions
+from . import inheritance
+from .inheritance import effective_capabilities
 
 
 def _seeds_del_pack() -> dict:
@@ -36,12 +37,12 @@ def _seeds_del_pack() -> dict:
     return out
 
 
-def _spec(name, caps=None, parents=None, verbs=None):
+def _spec(name, caps=None, parents=None):
     """Spec finta: il risolutore legge per attributo o per chiave, e qui si usa
     la forma dict proprio per tenere il test lontano da `AgentSpec` — la regola
     è sulla catena, non sul modello pydantic."""
     return {"name": name, "capabilities": list(caps or []),
-            "parents": list(parents or []), "tool_permissions": list(verbs or [])}
+            "parents": list(parents or [])}
 
 
 def _registry(*specs):
@@ -144,16 +145,11 @@ class EreditaCapabilitiesTests(unittest.TestCase):
         self.assertEqual(effective_capabilities("senza-parents", specs),
                          ["mia", "pavimento"])
 
-    def test_i_verbi_restano_quelli_di_prima(self) -> None:
-        """Le due risoluzioni condividono la camminata: questo test è qui perché
-        rifattorizzarla non deve cambiare l'esito dei verbi, che è la parte con
-        conseguenze di sicurezza."""
-        specs = _registry(
-            _spec("padre", caps=["x"], verbs=["topic.put"]),
-            _spec("figlio", caps=[], parents=["padre"], verbs=["topic.delete_file"]),
-        )
-        self.assertEqual(effective_tool_permissions("figlio", specs),
-                         ["topic.delete_file", "topic.put"])
+    def test_verbs_are_no_longer_resolved_here(self) -> None:
+        """#656: the seed carries no verbs, so there is nothing to inherit — the
+        verb resolver is gone, and only the skill walk remains."""
+        self.assertFalse(hasattr(inheritance, "effective_tool_permissions"))
+        self.assertFalse(hasattr(inheritance, "resolve_for"))
 
 
 class SeedVeriTests(unittest.TestCase):

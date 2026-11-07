@@ -9,8 +9,8 @@ indiretta:
 3. **egress** — capacità di far uscire dati verso l'esterno.
 
 Qui si implementa il **primo step** dell'issue: il punteggio si **calcola** dai
-grant effettivi (`tool_permissions`) e dai partecipanti del canale — non si
-dichiara. Nessun enforcement: questo modulo misura e spiega, non blocca.
+grant effettivi (le tuple globali del gateway, più quelli della stanza) e dai
+partecipanti del canale — non si dichiara. Nessun enforcement: questo modulo misura e spiega, non blocca.
 
 Tre scelte di modello, tutte prese dall'issue:
 
@@ -651,42 +651,22 @@ def agent_profile(spec, config: Optional[dict] = None,
                 "why": {leg: [] for leg in LEGS},
                 "shell": False, "expands": False, "unclassified": [],
                 "egress_scope": "none", "residual": 0}
-    # I verbi EFFETTIVI, non quelli dichiarati: dall'8 ago 2026 un seed eredita
-    # dall'arciseed, e leggere la sola dichiarazione SOTTOSTIMA il rischio.
-    # Misurato: ripulendo i seed dai verbi ridondanti, il punteggio di
-    # `segretario` è sceso da 2 a 0 — un file più pulito non rende un agente meno
-    # pericoloso, e un segnale di sicurezza che si abbassa da solo è la forma
-    # peggiore di errore silenzioso.
-    from .inheritance import effective_tool_permissions
-    try:
-        _tutti = all_specs
-        if _tutti is None:
-            # Nessun chiamante deve poter ottenere un profilo che sottostima solo
-            # perché non ha passato l'elenco: si legge dal registry.
-            from . import registry as _reg
-            _tutti = _reg.list()
-        _specs = {getattr(s, "name", None): s for s in (_tutti or [])}
-        _specs.pop(None, None)
-        _specs.setdefault(name, spec)
-        grants = [g for g in effective_tool_permissions(name, _specs) if g]
-    except Exception as e:  # noqa: BLE001 — un profilo non calcolabile non deve
-        # rompere il canale; si ricade sulla dichiarazione, che sottostima ma non
-        # esplode, e si logga perché quel numero va guardato con sospetto.
-        LOG.warning("verbi ereditati non risolti per '%s' (%s): profilo sulla "
-                    "sola dichiarazione", name, type(e).__name__)
-        grants = [str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])
-                  if str(g).strip()]
-    # #626: the seeds no longer carry verbs — the gateway's GLOBAL tuples do
-    # (governance everywhere, MCPs outside rooms). Added to the seed's, never
-    # instead: a measure that drops because a file got emptied is the error
-    # this function must not make. Gateway mute → the seed's alone (logged).
+    # The agent's own verbs are the gateway's GLOBAL tuples (#626: governance
+    # everywhere, MCPs outside rooms); the seed carries none, and #656 removed
+    # the field. Gateway mute → no grant: there is no seed declaration left to
+    # fall back on. `all_specs` is still accepted for the callers' signature.
     try:
         from . import authz_grants
         glob = authz_grants.global_grants(name)
     except Exception:  # noqa: BLE001
         glob = None
-    if glob:
-        grants = list(dict.fromkeys([*grants, *glob]))
+    if glob is None:
+        LOG.info("trifecta: global grants of '%s' unavailable — profile "
+                 "without the agent's own verbs", name)
+    grants = [str(g).strip() for g in (glob or []) if str(g).strip()]
+    grants = list(dict.fromkeys(grants))
+    # "seed" below means the agent's OWN verbs (now: its global tuples), as
+    # opposed to what the room adds; the name predates #626/#656.
     seed_grants = list(grants)
     # #606: l'insieme che conta è quello che il gateway RAGGIUNGE, cioè
     # `seed ∪ stanza`.
