@@ -4308,10 +4308,17 @@ async def _strumenti_della_sessione_aggiornati(tier: str, name: str, agent: str,
         LOG.info("strumenti di %s su %s/%s cambiati ma la sessione è occupata: "
                  "rifaccio al prossimo turno", agent, tier, name)
         return
-    LOG.info("strumenti di %s su %s/%s cambiati: sessione %s ricreata", agent,
-             tier, name, chat_id)
-    if await manager.cool(chat_id, "tools_epoch"):
+    # The dispatchers call this right after `manager.reserve(chat_id)`: the
+    # reservation is ours, and must not shield the session from its own
+    # rebuild (#661). Logged after the fact: «ricreata» only when it was.
+    if await manager.cool(chat_id, "tools_epoch", mine=True):
         _TOOLS_EPOCH[chat_id] = epoch
+        LOG.info("strumenti di %s su %s/%s cambiati: sessione %s ricreata", agent,
+                 tier, name, chat_id)
+    else:
+        LOG.warning("strumenti di %s su %s/%s cambiati ma la sessione %s NON è "
+                    "stata ricreata: riprovo al prossimo turno", agent, tier, name,
+                    chat_id)
 
 
 async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: str,

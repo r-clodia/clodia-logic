@@ -4951,7 +4951,8 @@ class ChatManager:
 
     # `list` qui dentro è il metodo della classe, non il builtin: l'annotazione
     # di ritorno va in stringa o Python prova a indicizzare quella.
-    async def _evict(self, da_evincere, motivo: str, protect=None) -> "list[str]":
+    async def _evict(self, da_evincere, motivo: str, protect=None,
+                     own_reservation: "set[str] | None" = None) -> "list[str]":
         """Evince le sessioni scelte da ``da_evincere``, mai una in mezzo a un
         turno. Punto unico: `reap_idle` e `reap_dead` differiscono per il
         criterio, non per come si smonta una sessione — e una seconda copia di
@@ -4963,7 +4964,11 @@ class ChatManager:
             # Un turno PRENOTATO non ha ancora il suo task: `_current_turn_task`
             # da solo non sa distinguere «ferma da un'ora» da «sta partendo
             # adesso» (clodia-platform#456).
-            protect |= self._prenotazioni_vive()
+            # A dispatcher that holds a chat's reservation and asks to evict it
+            # (`cool(…, mine=True)`) is not protected from itself by it: the
+            # reservation exists to keep the REAPER away from a turn about to
+            # start, not the turn's own dispatcher (clodia-platform#661).
+            protect |= self._prenotazioni_vive() - set(own_reservation or ())
             for cid, chat in list(self._chats.items()):
                 if cid in protect:
                     continue
@@ -4992,15 +4997,21 @@ class ChatManager:
                 LOG.warning("%s: stop fallito per %s", motivo, cid, exc_info=True)
         return reaped
 
-    async def cool(self, chat_id: str, motivo: str) -> bool:
+    async def cool(self, chat_id: str, motivo: str, *, mine: bool = False) -> bool:
         """Evict ONE session «to cold», as `reap_idle` does: the subprocess
         stops, the history stays, `create()` brings it back at the next turn,
         and no `chat_deleted` (the chat does not disappear). Never one in the
-        middle of a turn. True if it was evicted."""
+        middle of a turn. True if it was evicted.
+
+        `mine`: the caller is the dispatcher holding this chat's reservation
+        (`reserve`). Without it the reservation protected the session from the
+        very dispatcher rebuilding it for new tools, so nothing was evicted
+        and the next turn ran on the old subprocess (clodia-platform#661)."""
         target = self._chats.get(chat_id)
         if target is None:
             return False
-        return bool(await self._evict(lambda chat: chat is target, motivo))
+        return bool(await self._evict(lambda chat: chat is target, motivo,
+                                      own_reservation={chat_id} if mine else None))
 
     async def reap_dead(self, protect=None):
         """Evince le sessioni il cui subprocess è già morto (#397 §2).
