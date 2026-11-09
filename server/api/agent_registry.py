@@ -38,7 +38,7 @@ LOG = logging.getLogger("agent-server.agent-registry")
 from pydantic import BaseModel, Field
 
 from ..agents import activity_log, pause as pause_mod, rank as rank_mod, registry
-from ..agents.models import AgentSpec, normalize_telegram, _PROXY_ALLOWED_TOOLS
+from ..agents.models import AgentSpec, normalize_telegram
 from ..colony import pki
 from .. import scoped_overrides
 from .providers import (connected_provider_ids, candidate_providers, effective_provider,
@@ -658,7 +658,7 @@ def _set_yaml_list(text: str, key: str, items: list[str]) -> str:
             if rest == "":  # block style: consuma le righe figlie "- ..." / "  - ..."
                 # `\s*` (zero o più), non `\s+`: la convenzione dominante in
                 # questo repo per una lista sotto una chiave è indentazione
-                # ZERO (`tool_permissions:` seguita da `- x` allo stesso
+                # ZERO (`capabilities:` seguita da `- x` allo stesso
                 # livello della chiave, non `  - x`) — es. ogni `agent.yaml`
                 # generato da `_yaml_list_block` stesso. Con `\s+` la riga
                 # esistente non veniva consumata: restava in coda al file,
@@ -705,8 +705,8 @@ def _validate_catalog_refs(items: list[str], kind: str) -> None:
 
 
 def _agent_can_admin(caller: str | None) -> bool:
-    """True se il principal (agent) può amministrare le capability di altri agent:
-    agent con permesso `agents.*` (o `*`) in tool_permissions. È l'authz lato
+    """True se il principal (agent) può amministrare le capability di altri agent
+    (`agents.grant_tool` nelle tuple globali del gateway). È l'authz lato
     backend, ridondante con la whitelist del gateway (difesa in profondità)."""
     if not caller:
         return False
@@ -714,16 +714,10 @@ def _agent_can_admin(caller: str | None) -> bool:
     if cs is None:
         return False
     # The gateway's global tuples decide (#626): the seeds no longer carry
-    # verbs. Unknown (gateway mute, never answered) → the seed's declaration
-    # while seeds still carry one, else no: administering other agents is not
-    # a behaviour to guess in the permissive direction.
+    # verbs. Unknown (gateway mute, never answered) → no (#656): administering
+    # other agents is not a behaviour to guess in the permissive direction.
     from ..agents import authz_grants
-    ans = authz_grants.has(caller, "agents.grant_tool", None)
-    if ans is not None:
-        return ans
-    perms = getattr(cs, "tool_permissions", []) or []
-    return "*" in perms or "agents.*" in perms or any(
-        p == "agents" or p.startswith("agents.") for p in perms)
+    return bool(authz_grants.has(caller, "agents.grant_tool", None))
 
 
 class AgentCapsPatch(BaseModel):
@@ -1173,10 +1167,9 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
             "type": "proxy",
             "avatar_color": body.avatar_color,
             "created_at": created_at,
-            # Ciò che un proxy fa: parla e legge la stanza in cui è invitato.
-            # Stessa lista che il gateway conia nel suo token — dichiarare meno
-            # di quel che si riceve è come non dichiarare.
-            "tool_permissions": sorted(_PROXY_ALLOWED_TOOLS),
+            # What a proxy may do (speak and read the room it is invited to)
+            # is minted by the gateway (`PROXY_VERBS`), not declared in the
+            # seed (clodia-platform#656).
             "system_prompt": None,
             "memory": None,
         }

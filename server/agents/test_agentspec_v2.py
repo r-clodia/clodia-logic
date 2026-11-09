@@ -58,7 +58,6 @@ class AgentSpecV2Tests(unittest.TestCase):
             "description": "Sistema terzo ammesso nel topic",
             "display_name": "Webhook",
             "type": "proxy",
-            "tool_permissions": ["topic.post_message"],
         })
         self.assertEqual(spec.type, "proxy")
         self.assertIsNone(spec.model)
@@ -80,12 +79,13 @@ class AgentSpecV2Tests(unittest.TestCase):
                 "description": "Sistema terzo",
                 "display_name": "Webhook",
                 "type": "proxy",
-                "tool_permissions": ["topic.read_file"],
+                "sandbox": {"deny_shell_patterns": ["*"]},
             })
-    def test_a_proxy_may_declare_the_four_verbs_it_will_be_given(self):
-        """Ciò che il seed dichiara dev'essere ciò che il token conia. Finché
-        qui c'era il solo `topic.post_message`, il gateway ne consegnava dieci:
-        una restrizione che nessuno applicava, scritta come se lo fosse."""
+
+    def test_a_legacy_proxy_seed_with_verbs_still_loads(self):
+        """#656: proxies created before it carry `tool_permissions` (the four
+        chat verbs). The field is gone — the gateway mints the proxy's token
+        from its own `PROXY_VERBS` — and the old seed must still load."""
         spec = AgentSpec.model_validate({
             "name": "crm-esterno",
             "description": "Sistema terzo ammesso nel topic",
@@ -94,16 +94,71 @@ class AgentSpecV2Tests(unittest.TestCase):
             "tool_permissions": ["topic.post_message", "topic.messages",
                                  "topic.my_mentions", "topic.mark_seen"],
         })
-        self.assertEqual(len(spec.tool_permissions), 4)
+        self.assertEqual(spec.type, "proxy")
+        self.assertFalse(hasattr(spec, "tool_permissions"))
 
-    def test_the_proxy_surface_stops_at_the_chat(self):
-        """Legge il canale, non la stanza: file, ricerca e scrittura restano
-        fuori — è la linea che separa un partecipante da una persona."""
-        from .models import _PROXY_ALLOWED_TOOLS
-        for v in ("topic.read_file", "topic.files", "topic.search", "topic.put",
-                  "topic.open", "topic.save_summary", "topic.add_participant"):
-            self.assertNotIn(v, _PROXY_ALLOWED_TOOLS)
 
+class RetiredSeedFieldsTests(unittest.TestCase):
+    """clodia-platform#656: `tool_permissions` and the sandbox path keys are
+    gone from the schema, but seeds written before (and external packs not yet
+    updated) still declare them. They must load, with the fields dropped —
+    `extra="forbid"` would otherwise refuse the whole seed."""
+
+    LEGACY = {
+        "name": "legacy",
+        "description": "d",
+        "display_name": "Legacy",
+        "model": "claude-sonnet-4-5",
+        "system_prompt": "system-prompt.md",
+        "tool_permissions": ["topic.*", "email.send"],
+        "sandbox": {
+            "allow_read": ["{scratch}/**", "agents/**"],
+            "deny_read": ["secrets/**", "/datadir/secrets/**"],
+            "allow_write": ["{scratch}/**"],
+            "allow_shell_cmds": ["git"],
+            "deny_shell_patterns": ["sudo *"],
+        },
+    }
+
+    def test_the_legacy_seed_loads_and_the_fields_are_dropped(self):
+        spec = AgentSpec.model_validate(self.LEGACY)
+        self.assertNotIn("tool_permissions", spec.model_dump())
+        self.assertEqual(spec.sandbox.model_dump(),
+                         {"allow_shell_cmds": ["git"],
+                          "deny_shell_patterns": ["sudo *"]})
+
+    def test_the_shell_keys_survive(self):
+        spec = AgentSpec.model_validate(self.LEGACY)
+        self.assertEqual(spec.sandbox.allow_shell_cmds, ["git"])
+        self.assertEqual(spec.sandbox.deny_shell_patterns, ["sudo *"])
+
+    def test_an_unknown_sandbox_key_is_still_refused(self):
+        """Only the retired keys are tolerated: a typo still fails closed."""
+        raw = dict(self.LEGACY, sandbox={"deny_shell_pattern": ["*"]})
+        with self.assertRaises(ValidationError):
+            AgentSpec.model_validate(raw)
+
+    def test_an_unknown_top_level_field_is_still_refused(self):
+        with self.assertRaises(ValidationError):
+            AgentSpec.model_validate(dict(self.LEGACY, tool_permission=["x"]))
+
+    def test_the_loader_registers_a_legacy_seed(self):
+        """End to end through the registry: no entry in `errors()`."""
+        import tempfile
+        from pathlib import Path
+
+        import yaml
+
+        from .loader import AgentRegistry
+        with tempfile.TemporaryDirectory() as td:
+            d = Path(td) / "legacy"
+            d.mkdir()
+            (d / "agent.yaml").write_text(yaml.safe_dump(self.LEGACY))
+            (d / "system-prompt.md").write_text("x")
+            reg = AgentRegistry(base_dir=Path(td))
+            reg.load()
+            self.assertEqual(reg.errors(), {})
+            self.assertEqual(reg.get("legacy").sandbox.allow_shell_cmds, ["git"])
 
 if __name__ == "__main__":
     unittest.main()

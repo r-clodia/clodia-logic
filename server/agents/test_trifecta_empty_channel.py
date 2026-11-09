@@ -20,14 +20,19 @@ from __future__ import annotations
 
 import unittest
 
+from . import fake_global_grants as FG
 from . import trifecta
 from .models import AgentSpec
 
+# The agent's own verbs are the gateway's global tuples (#626/#656): faked here.
+setUpModule, tearDownModule = FG.module_fixture()
+
 
 def _ag(nome: str, verbi: list[str]) -> AgentSpec:
+    FG.give(nome, verbi)
     return AgentSpec.model_validate({
         "name": nome, "description": "d", "display_name": nome, "model": "m",
-        "system_prompt": "s.md", "tool_permissions": verbi, "native_tools": [],
+        "system_prompt": "s.md", "native_tools": [],
     })
 
 

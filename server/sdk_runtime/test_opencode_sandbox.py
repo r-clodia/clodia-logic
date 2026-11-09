@@ -63,8 +63,7 @@ class TheDeniedPatternsReachOpenCode(unittest.TestCase):
         """`{scratch}` lasciato letterale sarebbe un divieto che non combacia
         mai — cioè il difetto per cui questo file esiste."""
         sb = nt.normalize_sandbox(
-            SimpleNamespace(allow_read=[], deny_read=[], allow_write=[],
-                            allow_shell_cmds=[],
+            SimpleNamespace(allow_shell_cmds=[],
                             deny_shell_patterns=["rm -rf {scratch}/*"]),
             "/data/spawns/ophelia-3/scratch")
         perm = nt.opencode_permission(["Bash"], sb)
@@ -158,18 +157,16 @@ class TheAllowListStaysOut(unittest.TestCase):
             nt.sandbox_unenforced("opencode", Sandbox(deny_shell_patterns=["sudo *"])),
             [])
 
-    def test_the_paths_stay_out_too(self):
-        """`read`/`edit` di opencode ricevono il path **relativo al worktree**
-        (misurato: `patterns: [relative(worktree, file)]`), mentre i campi del
-        seed sono assoluti col `{scratch}` risolto: un `/data/spawns/x/**` non
-        combacerebbe mai. Tradurli è un'altra decisione, e finché non è presa
-        la tabella deve continuare a dirli inerti."""
+    def test_the_paths_are_not_fields_any_more(self):
+        """#656: `allow_read`/`deny_read`/`allow_write` left the schema, so there
+        is nothing path-shaped left for opencode to report as inert. A legacy
+        seed that still declares them reports nothing for them."""
         from ..agents.models import Sandbox
         self.assertEqual(
-            nt.sandbox_unenforced("opencode", Sandbox(allow_write=["{scratch}/**"],
-                                                      allow_read=["/x/**"],
-                                                      deny_read=["/y/**"])),
-            ["allow_read", "deny_read", "allow_write"])
+            nt.sandbox_unenforced("opencode", Sandbox.model_validate(
+                {"allow_write": ["{scratch}/**"], "allow_read": ["/x/**"],
+                 "deny_read": ["/y/**"]})),
+            [])
 
 
 class ItArrivesInTheConfigFile(unittest.TestCase):

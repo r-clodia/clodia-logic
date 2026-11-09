@@ -340,9 +340,9 @@ class AgentCollectionsTest(unittest.TestCase):
     cercare in pgvector."""
 
     class _Spec:
-        def __init__(self, rag_read, tool_permissions=()):
+        def __init__(self, rag_read, name=""):
+            self.name = name
             self.rag_read = list(rag_read)
-            self.tool_permissions = list(tool_permissions)
 
     def test_wildcard_is_not_queried_as_a_collection_name(self):
         colls = responder_routing._agent_collections(self._Spec(["*"]))
@@ -355,11 +355,22 @@ class AgentCollectionsTest(unittest.TestCase):
 
         self.assertEqual(colls, ["studio-legale-kb"])
 
+    def _collections(self, spec, grants):
+        """The agent's verbs are the gateway's global tuples (#626/#656)."""
+        from unittest.mock import patch
+
+        from ..agents import authz_grants
+        with patch.object(authz_grants, "global_grants", lambda n: grants):
+            return responder_routing._agent_collections(spec)
+
     def test_wildcard_does_not_erase_the_corpus_derived_from_the_tools(self):
-        colls = responder_routing._agent_collections(
-            self._Spec(["*"], tool_permissions=["rag.search"]))
+        colls = self._collections(self._Spec(["*"], "esperto"), ["rag.search"])
 
         self.assertEqual(colls, ["eu-normativa"])
+
+    def test_a_mute_gateway_derives_no_corpus(self):
+        """#656: gateway silent ⇒ no grant, no corpus derived from verbs."""
+        self.assertEqual(self._collections(self._Spec([], "esperto"), None), [])
 
 
 if __name__ == "__main__":

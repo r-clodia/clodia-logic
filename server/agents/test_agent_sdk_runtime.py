@@ -40,10 +40,6 @@ class AgentSdkRuntimeTests(unittest.TestCase):
                     "agent_sdk": "codex",
                     "model": "gpt-5.5",
                     "display_name": "Saim",
-                    "sandbox": {
-                        "allow_read": ["{scratch}/**"],
-                        "allow_write": ["{scratch}/**"],
-                    },
                     "capabilities": ["topic-management"],
                     "memory": {"dir": "memory/"},
                     "system_prompt": "system-prompt.md",

@@ -376,21 +376,18 @@ def _can_deliver(agent: str, scope: str | None = None) -> bool:
     """True if `agent` has `channel.deliver` in this room (#531): the only way
     to answer outside the room since the messenger was retired.
 
-    Asked of the gateway's tuples (#626): the seeds no longer carry verbs.
-    Direction of error when the gateway cannot answer: the last known answer
-    (an hour), otherwise the seed's old declaration, otherwise YES. This only
-    decides whether a request is ACKed and taken on; the delivery itself is
-    `channel.deliver`, which the gateway still decides at call time and refuses
-    fail-closed. A wrong yes costs an ACK followed by a refused delivery; a
-    wrong no would drop a legitimate request on a transient error."""
+    Asked of the gateway's tuples (#626): the seeds no longer carry verbs, and
+    #656 removed the seed fallback. Direction of error when the gateway cannot
+    answer: the last known answer (an hour, inside `authz_grants`), otherwise
+    YES. This is NOT an authorisation: it only decides whether a request is
+    ACKed and taken on; the delivery itself is `channel.deliver`, which the
+    gateway still decides at call time and refuses fail-closed. A wrong yes
+    costs an ACK followed by a refused delivery; a wrong no would drop a
+    legitimate request on a transient error. (With every seed already empty,
+    the old seed fallback answered YES too: no behaviour changes.)"""
     from ..agents import authz_grants
     ans = authz_grants.has(agent, "channel.deliver", scope)
-    if ans is not None:
-        return ans
-    from ..agents.loader import registry
-    spec = registry.get_by_name(agent)
-    grants = {str(g).strip() for g in (getattr(spec, "tool_permissions", None) or [])}
-    return bool(grants & {"channel.deliver", "channel.*", "*"}) if grants else True
+    return True if ans is None else ans
 
 
 def _room_can_answer(meta: dict, participants: list, tier: str,

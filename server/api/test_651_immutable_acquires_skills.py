@@ -37,7 +37,7 @@ class _Registry:
         self._spec = SimpleNamespace(name=d["name"], agent_dir=str(self.adir),
                                      immutable=bool(d.get("immutable")),
                                      capabilities=list(d.get("capabilities") or []),
-                                     rules=list(d.get("rules") or []), tool_permissions=[])
+                                     rules=list(d.get("rules") or []))
 
     def get_by_name(self, name):
         return self._spec if name == self._spec.name else None

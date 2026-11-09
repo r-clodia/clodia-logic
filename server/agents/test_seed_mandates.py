@@ -22,80 +22,22 @@ sola dichiarazione corretta il seed sembra a posto e l'agente sbaglia lo stesso.
 """
 from __future__ import annotations
 
-import re
 import unittest
 from pathlib import Path
 
-import yaml
-
 from ..config import workspace_path
-from .inheritance import effective_tool_permissions
 
 AGENTS = Path(workspace_path("catalogs/packs/base-pack/agents"))
 
-#: `ns.verbo` scritto nel mandato. Il filtro sul namespace lo fa il chiamante,
-#: che conosce i namespace realmente esistenti: senza, `summary.md` sarebbe un
-#: verbo e ogni nome di file una violazione.
-_VERB_RE = re.compile(r"\b([a-z][a-z_]*)\.([a-z_][a-z0-9_]*)\b")
-
-
-def _seeds() -> dict:
-    out = {}
-    for d in sorted(AGENTS.iterdir()):
-        f = d / "agent.yaml"
-        if f.is_file():
-            out[d.name] = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
-    return out
+# `MandateNamesOnlyGrantedVerbsTests` checked each prompt against the seed's
+# `tool_permissions`. Since #626 the seeds carry no verbs (the check had become
+# vacuous: no namespace, no verb named), and #656 removed the field: what an
+# agent may call is the gateway's A·V·R·Q tuples, which a repository test
+# cannot read. The checks on the secretary's mandate below stay.
 
 
 def _prompt(name: str) -> str:
     return (AGENTS / name / "system-prompt.md").read_text(encoding="utf-8")
-
-
-def _namespaces(seeds: dict) -> set[str]:
-    """I namespace che ESISTONO davvero, letti dai verbi concessi ai seed.
-
-    Scritti a mano invecchierebbero al primo namespace nuovo: il test smetterebbe
-    di guardare proprio la parte di piattaforma appena aggiunta, in silenzio.
-    """
-    out = set()
-    for name in seeds:
-        for grant in effective_tool_permissions(name, seeds):
-            ns = str(grant).split(".", 1)[0]
-            if ns and ns != "*":
-                out.add(ns)
-    return out
-
-
-def _verbs_named_in(text: str, namespaces: set[str]) -> set[str]:
-    return {m.group(0) for m in _VERB_RE.finditer(text)
-            if m.group(1) in namespaces}
-
-
-def _granted(verb: str, grants: list[str]) -> bool:
-    ns = verb.split(".", 1)[0]
-    return verb in grants or f"{ns}.*" in grants or "*" in grants
-
-
-class MandateNamesOnlyGrantedVerbsTests(unittest.TestCase):
-
-    def test_no_seed_orders_a_verb_its_own_gate_denies(self) -> None:
-        seeds = _seeds()
-        ns = _namespaces(seeds)
-        for name in seeds:
-            if not (AGENTS / name / "system-prompt.md").is_file():
-                continue
-            grants = effective_tool_permissions(name, seeds)
-            promessi = sorted(v for v in _verbs_named_in(_prompt(name), ns)
-                              if not _granted(v, grants))
-            with self.subTest(seed=name):
-                self.assertEqual(
-                    [], promessi,
-                    f"il mandato di '{name}' ordina verbi che il gate nega: "
-                    f"{promessi}. Se il verbo serve, va aggiunto ai "
-                    f"`tool_permissions`; se non serve, il mandato non deve "
-                    f"nominarlo — un tool inesistente non è un refuso, è un "
-                    f"turno speso in una chiamata che verrà rifiutata.")
 
 
 class SecretaryConveningMandateTests(unittest.TestCase):

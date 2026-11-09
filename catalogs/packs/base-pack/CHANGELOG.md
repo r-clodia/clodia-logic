@@ -10,6 +10,10 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.45.0] — 2026-11-09
+- **The sandbox carries only the shell guards** (clodia-platform#656, owner's decision): `allow_read`, `deny_read` and `allow_write` removed from clodia, ophelia, segretario and sysadmin. They were applied only by the claude runtime, relative paths matched nothing in the spawn cwd, and a shell walked around a Read deny. The file boundary is the spawn's uid against root-only directories; least privilege inside a room is A·V·R·Q. `allow_shell_cmds` and `deny_shell_patterns` stay (the latter is also enforced by opencode). sysadmin's absolute deny paths were checked against that boundary — see the clodia-logic PR for #656. Requires clodia-logic ≥ 6.342.0, which ignores the removed keys in older seeds instead of refusing them.
+- No base-pack seed declares `tool_permissions` (already removed in 7.41.0); the field is now gone from the seed schema too. The archseed declares no verbs either: the gateway uses its built-in floor.
+
 ## [7.44.0] — 2026-11-08
 - **The room's to-do list** (clodia-platform#658, clodia-tools ≥ 2.160.0): segretario reconciles `meta.todos` after every recap — new action points with `topic.todo_add`, done ones closed with `topic.todo_update status=done`, dates set or moved — passing the `todos_version` from `topic.open` as the mandatory `base_version` and re-reading on a version conflict. A role convention, not a permission: any participant may write. The topic deadline is derived from the open items and is no longer set by hand. Stale `add_minute` mention removed from segretario's `agent.yaml`. `topic-management` 2.3.0 documents the list, the derived deadline and the new verbs.
 

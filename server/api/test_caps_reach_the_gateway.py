@@ -70,7 +70,6 @@ class _Registry:
         d = yaml.safe_load((self.agent_dir / "agent.yaml").read_text()) or {}
         self._spec = _Spec(name=d.get("name"), agent_dir=str(self.agent_dir),
                            type=d.get("type"), immutable=False,
-                           tool_permissions=list(d.get("tool_permissions") or []),
                            capabilities=[], rules=[])
         return None
 

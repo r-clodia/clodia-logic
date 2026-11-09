@@ -162,29 +162,25 @@ def _build_settings_json(spec: AgentSpec, scratch_dir: Path) -> dict:
     """Costruisce il `.claude/settings.json` per il workspace effimero.
 
     permissions.deny ha precedenza su permissions.allow (default Claude Code).
-    `Read(...)` e `Write(...)` accettano glob.
+
+    Only the shell guards of the seed's `sandbox` are translated here
+    (`Bash(...)` rules). No `Read(...)`/`Write(...)`/`Edit(...)` rule is emitted
+    any more (clodia-platform#656): the path keys were removed from the seed
+    schema, and the file boundary is the spawn's uid and the root-only
+    directories, not a rule a shell can walk around.
 
     La lettura del seed (segnaposto `{scratch}` risolto, voci vuote e doppioni
-    via) sta in `native_tools.normalize_sandbox`, non qui: opencode sta per
-    tradurre gli stessi campi in un'altra forma (clodia-platform#296 punto 2), e
-    due pulizie separate divergono. Qui resta solo la traduzione nella sintassi
-    di claude, che è l'unica cosa che di claude è.
+    via) sta in `native_tools.normalize_sandbox`, non qui: opencode traduce gli
+    stessi campi in un'altra forma (clodia-platform#296 punto 2), e due pulizie
+    separate divergono. Qui resta solo la traduzione nella sintassi di claude.
     """
     sb = _nt.normalize_sandbox(spec.sandbox, scratch_dir)
     allow: list[str] = []
     deny: list[str] = []
 
-    for p in sb.allow_read:
-        allow.append(f"Read({p})")
-    for p in sb.allow_write:
-        allow.append(f"Write({p})")
-        allow.append(f"Edit({p})")
     for c in sb.allow_shell_cmds:
         # Sintassi Bash documentata: 'Bash(<cmd> *)' con spazio, non ':' .
         allow.append(f"Bash({c} *)")
-
-    for p in sb.deny_read:
-        deny.append(f"Read({p})")
     for pattern in sb.deny_shell_patterns:
         deny.append(f"Bash({pattern})")
 

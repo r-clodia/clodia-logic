@@ -36,8 +36,8 @@ mailbox_parent: clodia
 #       put_file/delete_file/…) come qualunque worker. L'accesso è enforced dal
 #       gateway: dev'essere PARTICIPANT del topic e avere clearance ≥ tier; su un
 #       topic di cui NON è participant scatta il gate cross-topic (approvazione
-#       owner). Nessun accesso RAW-FS ai topic (deny_read topics/**): come per
-#       agenti di canale, il canale ai file sono i TOOL, non il filesystem.
+#       owner). Nessun accesso RAW-FS ai topic: come per gli agenti di canale,
+#       il canale ai file sono i TOOL, non il filesystem.
 #     - Ispezione dal widget: `runtime.inspect_topic` (metadati + agenti + ultimi
 #       messaggi) anche da NON-participant, ma solo entro la clearance (SEAL < tier
 #       → 403). I confidenziali sopra la sua SEAL restano invisibili.
@@ -48,34 +48,19 @@ mailbox_parent: clodia
 #     provider NON espone la chiave).
 # LETTURA CODICE PLATFORM (per capire dove intervenire): `/clodia` è il repo
 # clodia-logic (core, già nel container), `/platform-src/**` i sorgenti degli
-# altri repo montati read-only (clodia-tools/web/pwa). Sola lettura; i segreti
-# (secrets/, .env, vault) restano esclusi con precedenza sul deny.
+# altri repo montati read-only (clodia-tools/web/pwa). Sola lettura.
+#
+# File boundary (clodia-platform#656): the sandbox no longer carries
+# `allow_read`/`deny_read`/`allow_write`. Those became `Read(...)` rules on the
+# claude runtime only, and with `allow_shell_cmds: ["*"]` a `cat` walked around
+# them by construction. The boundary is the spawn's sandbox uid (non-root only
+# when CLODIA_AGENT_SANDBOX_UID/KINDS are set) against root-only directories:
+# `/datadir/clodia-vault` is masked by an empty tmpfs, `/datadir/secrets` and
+# `/datadir/topics` are root 700 on a Linux host. NOT covered by that boundary:
+# `.env*`/`*.key` files under `/clodia` or `/platform-src` (world-readable code
+# trees) and the 700 bits on a macOS/virtiofs bind mount. Keep secrets out of
+# those trees. Topic files go through `topic.*`.
 sandbox:
-  allow_read: ["{scratch}/**", "plugins/**", "packs/**", "runtime/**", "agents/**",
-               "/clodia/**", "/platform-src/**"]
-  # I path RELATIVI qui sotto sono risolti contro la cwd dell'agente (la radice
-  # dello spawn), dove `topics/`, `secrets/` e `clodia-vault/` NON esistono: quelle
-  # tre righe non corrispondono a nulla. Si tengono perché documentano l'intenzione
-  # e perché un pack installato su un'istanza con layout diverso potrebbe averle
-  # relative-raggiungibili — ma da sole non proteggono niente, e leggerle come una
-  # protezione è il modo in cui nasce un buco vero (qualcuno allenta l'uid
-  # convinto che il deny copra).
-  #
-  # Le versioni ASSOLUTE mordono davvero sul tool Read. Aggiunte dopo aver
-  # verificato che `/datadir/secrets` e `/datadir/clodia-vault` erano coperti SOLO
-  # dai permessi OS (root:root 700 contro l'uid dello spawn, 60000: negato dal
-  # kernel — provato). Difesa in profondità: il kernel resta il confine, questo
-  # rende il documento onesto.
-  #
-  # ⚠️ Con `allow_shell_cmds: ["*"]` queste regole sono AGGIRABILI per costruzione:
-  # `Bash(* *)` significa che `cat` legge tutto ciò che l'uid può leggere. Per
-  # sysadmin il confine è l'uid, non questo blocco. Vale anche per il punteggio
-  # trifecta: chi ha la shell scavalca il gateway.
-  deny_read: ["topics/**", "secrets/**", "clodia-vault/**",
-              "/datadir/secrets/**", "/datadir/clodia-vault/**", "/datadir/topics/**",
-              "/clodia/secrets/**", "/clodia/**/.env*", "/clodia/**/*.key",
-              "/platform-src/**/secrets/**", "/platform-src/**/.env*", "/platform-src/**/*.key"]
-  allow_write: ["{scratch}/**", "plugins/**", "runtime/**"]
   allow_shell_cmds: ["*"]
   deny_shell_patterns: []
 

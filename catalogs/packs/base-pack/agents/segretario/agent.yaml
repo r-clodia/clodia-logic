@@ -40,9 +40,6 @@ providers: [scaleway]
 provider_models: {}
 avatar_color: "#64748b"
 sandbox:
-  allow_read: ["{scratch}/**"]
-  deny_read: ["secrets/**"]
-  allow_write: ["{scratch}/**"]
   allow_shell_cmds: []
   deny_shell_patterns: ["*"]
 capabilities: [base-pack/team-composition]

@@ -119,12 +119,9 @@ def _copre_i_verbi_rag(nome: str, per_nome: dict) -> bool:
     """
     # #626: the seeds no longer carry verbs — the gateway's global tuples say
     # who covers `rag.*` outside rooms (inside, RAG is the room's: #590/#621).
-    # Gateway mute: the seed's effective verbs, while seeds still carry them.
+    # Gateway mute → no grant (#656): there is no seed declaration to fall back on.
     from . import authz_grants
-    grants = authz_grants.global_grants(nome)
-    if grants is None:
-        from .inheritance import effective_tool_permissions
-        grants = effective_tool_permissions(nome, per_nome)
+    grants = authz_grants.global_grants(nome) or []
     for grant in grants:
         g = str(grant).strip()
         if not g or g.startswith("-"):  # negazione: toglie, non concede
