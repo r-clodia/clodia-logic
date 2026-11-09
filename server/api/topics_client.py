@@ -224,14 +224,32 @@ def set_status(tier: str, name: str, status: str) -> dict:
     return r.json()
 
 
-def set_deadline(tier: str, name: str, deadline: str | None) -> dict:
-    url = f"{_base()}/{tier}/{name}/deadline"
+def todo_action(tier: str, name: str, method: str, todo_id: str | None,
+                payload: dict) -> dict:
+    """The topic's to-do list (clodia-platform#658): add (POST, no id), update
+    (POST with id) or remove (DELETE with id). `payload` carries
+    `base_version` and `by` — the principal whose membership THIS service has
+    verified. 409 → TopicsConflictError: re-read, never overwrite."""
+    url = f"{_base()}/{tier}/{name}/todos"
+    if todo_id:
+        url += f"/{quote(str(todo_id), safe='')}"
     try:
-        r = _gw_http.post(url, headers=_headers(), json={"deadline": deadline}, timeout=_HTTP_TIMEOUT)
+        if method == "DELETE":
+            r = _gw_http.delete(url, headers=_headers(), params=payload,
+                                timeout=_HTTP_TIMEOUT)
+        else:
+            r = _gw_http.post(url, headers=_headers(), json=payload,
+                              timeout=_HTTP_TIMEOUT)
     except requests.RequestException as e:
-        raise TopicsClientError(f"gateway set-deadline irraggiungibile: {e}") from e
+        raise TopicsClientError(f"gateway todos irraggiungibile: {e}") from e
+    if r.status_code == 409:
+        try:
+            det = (r.json() or {}).get("error")
+        except Exception:  # noqa: BLE001
+            det = None
+        raise TopicsConflictError(det or "version conflict")
     if r.status_code >= 400:
-        raise TopicsClientError(f"gateway set-deadline → HTTP {r.status_code}: {r.text[:160]}")
+        raise _http_error("todos", r)
     return r.json()
 
 
@@ -805,7 +823,7 @@ async_clear_taint = _async_of("clear_taint")
 async_topic_logo = _async_of("topic_logo")
 async_read_topic_logo = _async_of("read_topic_logo")
 async_set_status = _async_of("set_status")
-async_set_deadline = _async_of("set_deadline")
+async_todo_action = _async_of("todo_action")
 async_set_goal = _async_of("set_goal")
 async_export_bundle = _async_of("export_bundle")
 async_import_bundle = _async_of("import_bundle")

@@ -4387,7 +4387,7 @@ async def _provider_della_stanza_ancora_valido(tier: str, name: str, tier_real: 
 #:           agent-server; al riavvio la prima transizione dopo il restart non ha
 #:           un «prima» osservato e resta muta. Sale a metadato del topic quando
 #:           il gateway esporrà una scrittura di meta generica: oggi
-#:           `topics_client` ha solo `create_topic`/`set_status`/`set_deadline`.
+#:           `topics_client` ha solo `create_topic`/`set_status`/`todo_action`.
 _TIER_VISTO: dict[tuple[str, str], str] = {}
 
 

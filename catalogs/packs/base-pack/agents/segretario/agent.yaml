@@ -1,6 +1,6 @@
 # Seed "Segretario" — verbalizzatore del topic. Compito unico e ristretto:
-# mantenere summary.md (prima riga = TLDR + sezione "Prossimi passi") e le minute
-# del topic. NON è un responder di conversazione: il routing lo sceglie SOLO
+# mantenere summary.md (prima riga = TLDR + sezione "Prossimi passi") e la lista
+# to-do del topic (meta.todos, clodia-platform#658). NON è un responder di conversazione: il routing lo sceglie SOLO
 # quando si tratta di salvare/aggiornare lo stato del topic. Niente git, niente
 # email/web/fs generale: solo i verbi di scrittura-stato del topic di cui è
 # partecipante, più la sola proposta read-only della squadra quando sostituisce
@@ -32,7 +32,7 @@ routing_mode: state_writer_only
 all_tier: true
 # Modello piccolo ottimizzato per task AGENTICI: gemma-4-26b-a4b-it su Scaleway
 # (EU-hosted, SEAL-2). Scelto perché il segretario DEVE invocare i verbi
-# (topic.save_summary/add_minute) da solo: verificato che con tool_choice=auto
+# (topic.save_summary, topic.todo_*) da solo: verificato che con tool_choice=auto
 # chiama i tool, mentre mistral-small-24b in auto tendeva a rispondere in prosa
 # (chiacchierava invece di salvare lo stato). Costo basso, tool-use affidabile.
 model: gemma-4-26b-a4b-it

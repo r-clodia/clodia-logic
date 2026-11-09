@@ -18,8 +18,10 @@ description: |
   progetto). Vive dietro il **gateway**, su uno **storage astratto** (filesystem
   locale, Google Drive, …): a te non interessa quale — usi i verbi.
 - Ogni topic ha: `meta` (title, type, status, **`tier`**, tags, people,
-  deadline, contact_agent, storage), un **`summary`** (stato corrente) e i suoi
-  **file** (`files/`). Le minute non esistono più: una decisione si registra
+  `todos`, deadline, contact_agent, storage), un **`summary`** (stato corrente) e i suoi
+  **file** (`files/`). `meta.todos` è la **lista to-do** strutturata (voci con
+  `id`, `text`, `due`, `assignee`, `status` open|done); la **`deadline` è
+  derivata**: la `due` più vicina fra le voci aperte, non si imposta a mano. Le minute non esistono più: una decisione si registra
   come file datato in `files/` (`AAAA-MM-GG-<oggetto>.md`) richiamato dal summary.
 - Il **`tier`** è la sola classe del topic e insieme il suo livello di privacy:
   **P0 Public · P1 Internal · P2 Confidential · P3 Restricted**. Sostituisce
@@ -32,9 +34,15 @@ description: |
 - `topic.list({tier?, include_archived?})` — colpo d'occhio sui topic.
 - `topic.search({query, mode})` — ritrova un topic per contenuto.
 - `topic.open({tier, name})` — **read-only**: ritorna `meta`, `summary`,
-  **`summary_version`**, `tldr`. **Apri sempre prima di scrivere.**
+  **`summary_version`**, **`todos_version`**, `tldr`. **Apri sempre prima di scrivere.**
 - `topic.save_summary({tier, name, text, base_version})` — riscrive il summary.
 - `topic.put` — scrive un file in `files/` (per le decisioni: file datato).
+- `topic.todo_add({tier, name, text, due?, assignee?, base_version})`,
+  `topic.todo_update({tier, name, id, text?, due?, assignee?, status?, base_version})`,
+  `topic.todo_remove({tier, name, id, base_version})` — la lista to-do.
+  `base_version` è **obbligatorio**: il `todos_version` di `topic.open` (ogni
+  risposta restituisce quello nuovo). Una voce fatta si chiude con
+  `status: "done"`; `todo_remove` è per una voce che non doveva esserci.
 - Creare e archiviare un topic **non sono verbi degli agenti**: li fa l'owner
   dalla webui. Se serve un topic nuovo, proponilo all'owner.
 
@@ -46,7 +54,9 @@ description: |
      (`AAAA-MM-GG-<oggetto>.md`), richiamato dal summary.
    - **`topic.save_summary`** passando **`base_version` = il `summary_version`
      letto al punto 1** (optimistic lock).
-4. Se `save_summary` torna **`CONFLICT`** (qualcun altro ha scritto nel
+   - action point nuovi, fatti o con una data → **lista to-do** (`topic.todo_*`
+     con `base_version` = il `todos_version` letto al punto 1).
+4. Se `save_summary` o un `todo_*` torna **`CONFLICT`** (qualcun altro ha scritto nel
    frattempo): **NON ritentare sovrascrivendo**. Rifai `topic.open`, **riapplica
    le tue modifiche** sul testo aggiornato e risalva. Se non riesci a riconciliare
    → **escala a owner**.
@@ -54,8 +64,10 @@ description: |
 ## Disciplina editoriale del `summary` (da cui dipende la card webui)
 - **Prima riga = TLDR**: una frase sintetica con titolo + stato corrente (è ciò
   che appare in grande sulla card). Tienila sempre significativa e aggiornata.
-- Sezione **`## Prossimi passi`**: gli action point aperti (le cose fatte stanno
-  nelle minute, non qui).
+- Sezione **`## Prossimi passi`**: il racconto degli action point aperti. La
+  versione strutturata — con date e assegnatari, da cui deriva la deadline del
+  topic — è la lista to-do (`meta.todos`): tienile allineate. Una data scritta
+  solo nel summary **non** diventa la deadline del topic.
 - Il summary si **riscrive** quando la sessione produce informazione nuova; non è
   un log — è lo *stato corrente*.
 
@@ -73,7 +85,8 @@ Convenzioni d'interazione ereditate da Clodia Primal, qui mappate sui verbi v2.
   2. Esegui quanto richiesto nel prompt.
   3. **Aggiorna lo stato**: `topic.save_summary` (prima riga = TLDR; sezione
      `## Prossimi passi` = action point) passando `base_version`; **e** la
-     decisione presa come file datato in `files/` (`topic.put`).
+     decisione presa come file datato in `files/` (`topic.put`); **e** la lista
+     to-do riconciliata (`topic.todo_*`).
   - Niente commit/push manuali: `save_summary`/`put` **persistono già**
     nello store via gateway. Su `CONFLICT` → rileggi e riapplica, non sovrascrivere.
 
@@ -81,7 +94,8 @@ Convenzioni d'interazione ereditate da Clodia Primal, qui mappate sui verbi v2.
 operazione sui topic.)
 
 ## Regole non negoziabili
-- **Mai** scrivere senza aver fatto `topic.open` prima (ti serve `summary_version`).
+- **Mai** scrivere senza aver fatto `topic.open` prima (ti serve `summary_version`,
+  e `todos_version` per la lista to-do).
 - **Mai** sovrascrivere su `CONFLICT`: rileggi, riapplica, o escala.
 - **Il tier** non è decorativo: un topic ad alto tier (P2/P3)
   può essere inaccessibile a seconda del motore su cui giri — è il gateway a
