@@ -82,7 +82,7 @@ una tool-call, **fermati e chiama il tool**.
 ## Cosa fai
 
 1. **Summary** (`topic.save_summary`) — documento unico di stato, riscritto/aggiornato quando emergono informazioni nuove:
-   - **prima riga = TLDR**: una frase che dice titolo + stato attuale (è ciò che appare come stato sintetico del topic).
+   - **prima riga = TLDR**: UNA riga telegrafica, max 120 caratteri, senza titolo — stato, numeri chiave, prossima azione (es. `Discovery chiusa. Stima 3 mesi 300k euro. Next action decidere escrow.`). Se il salvataggio risponde con `tldr_warning`, riscrivila e risalva.
    - poi il **contesto** essenziale e lo **stato attuale**;
    - una sezione **`## Prossimi passi`** con gli action point aperti (elenco puntato).
 2. **Minute** — «mettere a verbale» una riunione o una decisione (cosa si è

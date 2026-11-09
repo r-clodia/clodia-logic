@@ -202,42 +202,16 @@ def _trim_chars(text: str, limit: int) -> str:
     return f"{clipped}…"
 
 
-def _extract_tldr(summary: str, limit: int = 400) -> str:
-    """Sintesi fino a `limit` caratteri dall'inizio del summary.
-
-    Non si limita alla prima riga: usa il titolo come lead e poi accumula la
-    prosa/gli elenchi iniziali, saltando la nota di lettura (blockquote) e le
-    etichette di sezione, fino a riempire il budget. Si ferma alla sezione
-    degli action point così i todo non vengono duplicati nel TLDR (vanno in
-    action_points). Se il summary è corto, il TLDR resta corto."""
-    parts: list[str] = []
-    total = 0
+def _extract_tldr(summary: str, limit: int = 160) -> str:
+    """The TLDR is the summary's first line, and only that (#664: one
+    telegraphic line — owner, 9 Nov 2026). It used to accumulate up to 400
+    characters of prose, which is how cards grew paragraphs. Capped at
+    `limit` as a safety net, not as the rule (the rule is ~120, in prompts)."""
     for line in summary.splitlines():
-        raw = line.strip()
-        if not raw:
-            continue
-        heading = _heading_key(line)
-        if heading is not None:
-            # match per prefisso: cattura anche "prossimi passi (todo aperti)"
-            if any(heading.startswith(a) for a in _ACTION_SECTION_TITLES):
-                break
-            if not parts:  # la prima riga di contenuto (il titolo) è il lead
-                cleaned = _clean_summary_line(line)
-                if cleaned:
-                    parts.append(cleaned)
-                    total += len(cleaned) + 1
-            continue  # altre etichette di sezione: saltate (teniamo la prosa)
-        if raw.startswith(">"):
-            continue  # nota di lettura / blockquote
-        if re.match(r"^\s*(?:[-*+]|\d+[.)])\s+", line):
-            continue  # elenco/bullet: i punti operativi vanno in action_points
         cleaned = _clean_summary_line(line)
-        if cleaned:
-            parts.append(cleaned)
-            total += len(cleaned) + 1
-        if total >= limit:
-            break
-    return _trim_chars(" ".join(parts), limit)
+        if cleaned and not line.strip().startswith(">"):
+            return _trim_chars(cleaned, limit)
+    return ""
 
 
 def _heading_key(line: str) -> str | None:

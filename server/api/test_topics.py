@@ -47,7 +47,8 @@ class TopicsIndexTest(unittest.TestCase):
         self.assertEqual(payload["classification"], "personal")
         self.assertEqual(payload["name"], "alpha")
         self.assertEqual(payload["title"], "Project Alpha")
-        self.assertLessEqual(len(payload["tldr"]), 400)
+        self.assertLessEqual(len(payload["tldr"]), 160)
+        self.assertNotIn("\n", payload["tldr"])
         self.assertEqual(
             payload["action_points"],
             [
