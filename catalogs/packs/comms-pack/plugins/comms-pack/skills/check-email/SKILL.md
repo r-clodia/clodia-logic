@@ -17,9 +17,9 @@ L'utente chiede di "avvisarlo quando arriva la mail di X", di "tenere d'occhio l
 casella" o di rispondere a una mail arrivata nel topic.
 
 ## Come arriva la posta
-Servono **due voci fra gli ingressi della stanza** (le aggiunge l'owner):
-- `inbox:<casella>` — da quale casella il corriere legge («Autorizza una casella»);
-- `mailfrom:<mittente>` — di chi è la posta che riguarda questa stanza. Una
+Servono **due voci nella card Email della stanza** (Strumenti → Email; le aggiunge l'owner):
+- `inbox:<casella>` — da quale casella il corriere legge («Caselle collegate»);
+- `mailfrom:<mittente>` — fra i «Mittenti»: di chi è la posta che riguarda questa stanza. Una
   casella serve molte stanze: ognuna riceve **solo** i mittenti che dichiara lei
   (anche nella forma `mailfrom:*@dominio.it`). Le voci globali e i partecipanti
   non bastano (clodia-platform#576).
@@ -31,7 +31,7 @@ oggi: quella già in casella non viene riconsegnata.
 
 - Casella senza mittenti dichiarati → **non arriva niente**: dillo all'utente e
   chiedi all'owner il `mailfrom:` giusto. Non creare job di polling.
-- Casella NON fra gli ingressi della stanza → la posta non arriva.
+- Casella NON fra le «Caselle collegate» della stanza → la posta non arriva.
 - Fuori dal corriere, `mailfrom:` decide anche se il contenuto di quel mittente è
   fidato (taint) quando un agente legge la casella con `email.read`/`email.search`
   (clodia-platform#503).
