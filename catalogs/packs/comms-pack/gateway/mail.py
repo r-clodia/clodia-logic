@@ -306,7 +306,7 @@ def _deny_sender(verb: str, sender: str) -> None:
         f"{MITTENTE_NON_VAGLIATO}: questo canale è a INGRESSO STRETTO e ammette "
         "solo i messaggi di chi è nella stanza (owner e partecipanti) o di un "
         f"mittente dichiarato. Per leggere questo messaggio serve mailfrom:{addr} "
-        "negli ingress del canale, e lo aggiunge l'owner."
+        "fra i Mittenti del canale (Strumenti → Email), e lo aggiunge l'owner."
     )
 
 
@@ -610,8 +610,8 @@ def folders(account: str = "demo") -> dict:
         out["note"] = (
             f"esistono e funzionano anche: {', '.join(negati)} — ma la loro "
             "casella non è nella whitelist di questo canale. Chiedi all'owner "
-            "di aggiungere inbox:<email> agli ingress del topic (o "
-            "globalmente)."
+            "di collegarla al canale: inbox:<email> fra le Caselle collegate "
+            "(Strumenti → Email), o globalmente."
         )
     return out
 
@@ -635,7 +635,7 @@ def list_messages(account: str = "demo", folder: str = "INBOX", limit: int = 10)
             out["withheld"] = tolti
             out["note"] = (
                 f"{tolti} messaggi non mostrati: canale a ingresso stretto, il "
-                "mittente non è nella stanza né dichiarato fra gli ingress. "
+                "mittente non è nella stanza né fra i Mittenti (Strumenti → Email). "
                 "Di questi messaggi non si vede nulla, nemmeno l'oggetto."
             )
     return out
@@ -1258,7 +1258,7 @@ def search(query: str, account: str = "demo", folder: str = "INBOX", limit: int 
             out["withheld"] = tolti
             out["note"] = (
                 f"{tolti} risultati non mostrati: canale a ingresso stretto, il "
-                "mittente non è nella stanza né dichiarato fra gli ingress."
+                "mittente non è nella stanza né fra i Mittenti (Strumenti → Email)."
             )
     return out
 

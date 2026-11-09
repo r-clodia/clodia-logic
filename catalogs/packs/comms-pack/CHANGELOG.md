@@ -8,6 +8,9 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.6.2] — 2026-11-09
+- Owner-facing wording (clodia-platform#662): the mail notes and the check-email skill name the room's lists as the webui now shows them — «Mittenti» and «Caselle collegate» in Strumenti → Email — instead of "ingress".
+
 ## [2.6.1] — 2026-10-28
 - Mail client: a header with an unknown or malformed charset no longer fails the whole listing/search of its mailbox (LookupError); one unreadable message is skipped and logged. On 28 Oct one such mail took down the colony mailbox's index for every room.
 
