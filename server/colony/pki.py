@@ -873,6 +873,41 @@ def verify_capability(token: str) -> dict:
     return payload
 
 
+#: The claims of a session token a BROWSER signs with the principal's own key
+#: (clodia-web `signToken`): nothing else. Every token minted server-side for a
+#: human carries more (`principal`, `on_behalf`, `chat`, a non-empty
+#: `execution_id`), and a delegation carries `typ`.
+_BROWSER_SESSION_CLAIMS = frozenset({"agent", "execution_id", "iat", "exp", "aud"})
+#: The longest lifetime a browser-signed session token may claim. The WebUI
+#: signs 12 h (clodia-web `DEFAULT_TTL`); twice that is the margin. The only
+#: client that signed longer was the retired PWA pairing (`mintPairingToken`,
+#: 30 days) — see `_reject_retired_pairing_token`.
+MAX_BROWSER_SESSION_LIFETIME = 24 * 3600
+
+
+def _reject_retired_pairing_token(payload: dict) -> None:
+    """Refuse a PWA pairing token (clodia-platform#657).
+
+    The PWA is retired, but the tokens it was paired with are 30-day bearers
+    sitting in phones' `localStorage`, and removing the `pwa` container does not
+    make them stop working against this API. They are told apart from a WebUI
+    session by their shape alone: the same browser claims and nothing else, an
+    empty `execution_id`, and a lifetime (`exp - iat`) no WebUI session has.
+    A token without `iat` is not judged here: the browser always writes it.
+    """
+    if set(payload) - _BROWSER_SESSION_CLAIMS:
+        return
+    if str(payload.get("execution_id") or ""):
+        return
+    try:
+        lifetime = int(payload["exp"]) - int(payload["iat"])
+    except (KeyError, TypeError, ValueError):
+        return
+    if lifetime > MAX_BROWSER_SESSION_LIFETIME:
+        raise PermissionError(
+            "PWA pairing token retired (clodia-platform#657): sign in from the WebUI")
+
+
 def verify_session_token(token: str) -> dict:
     """Valida il token e ritorna il payload. Solleva PermissionError."""
     try:
@@ -896,6 +931,7 @@ def verify_session_token(token: str) -> dict:
         raise PermissionError("audience token errata")
     if int(payload.get("exp", 0)) < time.time():
         raise PermissionError("token scaduto")
+    _reject_retired_pairing_token(payload)
     return payload
 
 
@@ -922,6 +958,7 @@ def verify_token_against(token: str, agent: str) -> dict:
         raise PermissionError("audience token errata")
     if int(payload.get("exp", 0)) < time.time():
         raise PermissionError("token scaduto")
+    _reject_retired_pairing_token(payload)
     return payload
 
 
