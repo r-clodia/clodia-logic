@@ -620,10 +620,23 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(meta["participants"], ["owner", "helpdesk"])
         self.assertEqual(meta["type"], "infra")
 
-    def test_topic_intro_keeps_eligible_clodia(self) -> None:
-
-        """agents-notebook A4: clodia coordina la stanza quando il tier glielo consente."""
+    def test_topic_intro_is_the_secretary_by_default_and_keeps_clodia(self) -> None:
+        """#667: the secretary leads by default; an eligible Clodia stays."""
         meta = {"contact_agent": "clodia", "participants": ["owner", "clodia"]}
+        with patch.object(channels, "_provider_seal_ok", return_value=True), \
+                patch.object(channels, "_declares_all_tier", return_value=True):
+            intro = channels._select_topic_intro_agent(meta, "SEAL-2")
+
+        self.assertEqual(intro, "segretario")
+        self.assertEqual(meta["participants"], ["owner", "clodia", "segretario"])
+        self.assertEqual(meta["contact_agent"], "clodia")
+        self.assertEqual(meta["team_bootstrap_agent"], "segretario")
+
+    def test_topic_intro_follows_the_room_choice(self) -> None:
+        """agents-notebook A4 with #667: Clodia leads when the room chose her
+        and the tier allows it."""
+        meta = {"contact_agent": "clodia", "participants": ["owner", "clodia"],
+                "orchestrator": "clodia"}
         with patch.object(channels, "_provider_seal_ok", return_value=True):
             intro = channels._select_topic_intro_agent(meta, "SEAL-2")
 
@@ -733,7 +746,7 @@ class ResponderTests(unittest.TestCase):
         # deve accettarla, o il test fallisce sulla firma invece che sulla cosa
         # che verifica.
         def routing_plan(_participants, _tier, _message, trace=None,
-                         routing_messages=None):
+                         routing_messages=None, orchestrator=None):
             trace.update({
                 "mode": "ambiguous",
                 "reason": "routing ambiguity within margin",
@@ -1348,7 +1361,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         start = AsyncMock(return_value=True)
 
         def routing_plan(_participants, _tier, _message, trace=None,
-                         routing_messages=None):
+                         routing_messages=None, orchestrator=None):
             if trace is not None:
                 trace.update({"mode": "multi-intent", "chosen": "worker, accountant"})
             return [(worker, "Aggiorna il summary"), (accountant, "Invia il preventivo")]
@@ -1374,7 +1387,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         start = AsyncMock(return_value=True)
 
         def routing_plan(_participants, _tier, _message, trace=None,
-                         routing_messages=None):
+                         routing_messages=None, orchestrator=None):
             if trace is not None:
                 trace.update({"mode": "multi-intent", "chosen": "worker, accountant"})
             return [(worker, "Aggiorna il summary"), (accountant, "Invia il preventivo")]
@@ -1406,7 +1419,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         start = AsyncMock(return_value=True)
 
         def routing_plan(_participants, _tier, message, trace=None,
-                         routing_messages=None):
+                         routing_messages=None, orchestrator=None):
             if trace is not None:
                 trace.update({"mode": "coordinator",
                               "reason": "fallback-coordinatore dichiarato (clodia)",
@@ -1429,7 +1442,7 @@ class ChannelQueueTests(unittest.IsolatedAsyncioTestCase):
         start = AsyncMock(return_value=True)
 
         def routing_plan(_participants, _tier, message, trace=None,
-                         routing_messages=None):
+                         routing_messages=None, orchestrator=None):
             if trace is not None:
                 trace.update({"mode": "relevance", "chosen": "worker"})
             return [(worker, message)]

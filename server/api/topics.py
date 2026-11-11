@@ -877,6 +877,46 @@ async def set_topic_goal(tier: str, name: str, request: Request):
     return res
 
 
+@router.post("/api/topics/{tier}/{name}/orchestrator")
+async def set_topic_orchestrator(tier: str, name: str, request: Request):
+    """Who orchestrates this room (clodia-platform#667): one click in the
+    participants list. Owner (or admin) only — choosing who leads the room is
+    the owner's act, like pinning the goal. `orchestrator: null` goes back to
+    the default (the secretary). The change leaves a system line in the room,
+    and the effective orchestrator comes back (it may be a fallback)."""
+    principal = await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    who = (body or {}).get("orchestrator")
+    who = str(who).strip().lower() if who else None
+    try:
+        res = await topics_client.async_set_orchestrator(tier, name, who, by=principal)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+    from . import channels
+    try:
+        meta = ((await topics_client.async_open_topic(tier, name)) or {}).get("meta") or {}
+        effettivo = channels.orchestratore_da_meta(meta, tier)
+    except Exception:  # noqa: BLE001
+        effettivo = None
+    res["effective"] = effettivo
+    if res.get("changed"):
+        scelto = res.get("orchestrator") or "segretario (default)"
+        testo = f"🧭 **{principal}** ha affidato l'orchestrazione della stanza a **{scelto}**."
+        if effettivo and effettivo != (res.get("orchestrator") or "segretario"):
+            testo += (f" Non può servire ora (tier o provider): orchestra **{effettivo}** "
+                      "finché non torna disponibile.")
+        try:
+            await topics_client.async_post_message(tier, name, "system", testo, kind="system")
+        except Exception as e:  # noqa: BLE001 — the choice is written; the line is not
+            LOG.warning("orchestratore %s/%s: annuncio non pubblicato (%s)", tier, name, e)
+    return res
+
+
 def _goal_indirizzato(goal):
     """L'obiettivo come va SALVATO: niente `@spawn-N` vivo di un seed a istanza
     unica nel testo (issue clodia-platform#501).
@@ -974,8 +1014,11 @@ async def _annuncia_goal(tier: str, name: str, chi: str, goal: dict | None,
             meta = topic.get("meta") or {}
             from . import channels
             # Indirizzo della piattaforma, non etichetta di spawn (#501).
-            orchestratore = channels.indirizzo(
-                str(meta.get("contact_agent") or "clodia").strip())
+            # The room's orchestrator (#667), not its contact agent: the one
+            # who leads the room is the one who carries the goal.
+            orchestratore = (channels.orchestratore_da_meta(meta, tier)
+                             or channels.indirizzo(
+                                 str(meta.get("contact_agent") or "clodia").strip()))
             if _e_partecipante(meta, orchestratore):
                 # Stessa porta del topic trigger dello scheduler: il messaggio
                 # entra come `system` con un principal sintetico e passa dal

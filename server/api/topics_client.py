@@ -271,6 +271,27 @@ def set_goal(tier: str, name: str, goal: dict | None, by: str = "") -> dict:
     return r.json()
 
 
+def set_orchestrator(tier: str, name: str, who: str | None, by: str = "") -> dict:
+    """The room's orchestrator (clodia-platform#667). `by` is the principal
+    whose ownership THIS service verified — never from the HTTP body. A 400
+    carries the gateway's reason (not a participant, not a seed that leads)."""
+    url = f"{_base()}/{tier}/{name}/orchestrator"
+    try:
+        r = _gw_http.post(url, headers=_headers(), json={"orchestrator": who, "by": by},
+                          timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway set-orchestrator irraggiungibile: {e}") from e
+    if r.status_code == 400:
+        try:
+            det = (r.json() or {}).get("error") or r.text[:160]
+        except ValueError:
+            det = r.text[:160]
+        raise ValueError(det)
+    if r.status_code >= 400:
+        raise TopicsClientError(f"gateway set-orchestrator → HTTP {r.status_code}: {r.text[:160]}")
+    return r.json()
+
+
 def get_agents_md(tier: str, name: str) -> tuple[str | None, str | None, bool]:
     """`(testo, versione, autorevole)` delle istruzioni di scope.
 
@@ -825,5 +846,6 @@ async_read_topic_logo = _async_of("read_topic_logo")
 async_set_status = _async_of("set_status")
 async_todo_action = _async_of("todo_action")
 async_set_goal = _async_of("set_goal")
+async_set_orchestrator = _async_of("set_orchestrator")
 async_export_bundle = _async_of("export_bundle")
 async_import_bundle = _async_of("import_bundle")

@@ -42,7 +42,7 @@ avatar_color: "#64748b"
 sandbox:
   allow_shell_cmds: []
   deny_shell_patterns: ["*"]
-capabilities: [base-pack/team-composition]
+capabilities: [base-pack/team-composition, base-pack/orchestrazione]
 rules:
   - topic-state-boundary
 # Verbs are not declared here (#626, 27 Oct 2026): the room authorises them
@@ -56,8 +56,8 @@ expertise: >-
   minute delle riunioni e delle decisioni, tenere ordinati i file del topic.
   Interviene solo quando l'utente chiede di salvare lo stato, aggiornare il
   summary, mettere a verbale, chiudere/riepilogare la sessione del topic o
-  aggiornare i prossimi passi; nei topic nuovi introduce lo scopo e propone la
-  squadra soltanto quando Clodia non è disponibile. Non risponde a domande
+  aggiornare i prossimi passi; è l'orchestratore di default della stanza
+  (#667) e nei topic nuovi introduce lo scopo e propone la squadra. Non risponde a domande
   tecniche, diagnostica piattaforma, sviluppo, routing, codice o issue tracking.
 
 # Solo il pavimento. Tiene lo stato scritto di un topic: legge e scrive coi verbi
