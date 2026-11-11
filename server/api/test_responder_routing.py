@@ -335,25 +335,14 @@ class RoutingContextTest(unittest.TestCase):
 
 
 class AgentCollectionsTest(unittest.TestCase):
-    """`*` in `rag_read` è la wildcard dell'asse RAG, non il nome di una
-    collection (clodia-platform#354): il profilo di routing non deve andarla a
-    cercare in pgvector."""
+    """The routing profile's collections come from the global tuples only: no
+    seed declares collections any more (clodia-platform#669)."""
 
     class _Spec:
-        def __init__(self, rag_read, name=""):
+        def __init__(self, name="", rag_read=None):
             self.name = name
-            self.rag_read = list(rag_read)
-
-    def test_wildcard_is_not_queried_as_a_collection_name(self):
-        colls = responder_routing._agent_collections(self._Spec(["*"]))
-
-        self.assertNotIn("*", colls)
-
-    def test_declared_collections_survive_next_to_the_wildcard(self):
-        colls = responder_routing._agent_collections(
-            self._Spec(["*", " studio-legale-kb "]))
-
-        self.assertEqual(colls, ["studio-legale-kb"])
+            if rag_read is not None:      # a stale attribute must not count
+                self.rag_read = list(rag_read)
 
     def _collections(self, spec, grants):
         """The agent's verbs are the gateway's global tuples (#626/#656)."""
@@ -363,14 +352,19 @@ class AgentCollectionsTest(unittest.TestCase):
         with patch.object(authz_grants, "global_grants", lambda n: grants):
             return responder_routing._agent_collections(spec)
 
-    def test_wildcard_does_not_erase_the_corpus_derived_from_the_tools(self):
-        colls = self._collections(self._Spec(["*"], "esperto"), ["rag.search"])
+    def test_a_seed_list_is_not_read(self):
+        colls = self._collections(self._Spec("esperto", ["studio-legale-kb", "*"]), [])
+
+        self.assertEqual(colls, [])
+
+    def test_the_corpus_is_derived_from_the_tools(self):
+        colls = self._collections(self._Spec("esperto"), ["rag.search"])
 
         self.assertEqual(colls, ["eu-normativa"])
 
     def test_a_mute_gateway_derives_no_corpus(self):
         """#656: gateway silent ⇒ no grant, no corpus derived from verbs."""
-        self.assertEqual(self._collections(self._Spec([], "esperto"), None), [])
+        self.assertEqual(self._collections(self._Spec("esperto"), None), [])
 
 
 if __name__ == "__main__":

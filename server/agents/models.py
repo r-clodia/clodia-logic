@@ -90,6 +90,10 @@ def telegram_delivers(value: object) -> bool:
 #: a field that no longer does anything.
 _RETIRED_SANDBOX_KEYS = ("allow_read", "deny_read", "allow_write")
 
+#: Seed keys that no longer do anything, dropped on load for the same reason:
+#: `tool_permissions` (#626/#656) and the RAG grants (#669).
+_RETIRED_AGENT_KEYS = ("tool_permissions", "rag_read", "rag_write")
+
 
 def _drop_retired(raw: object, keys: tuple[str, ...], where: str) -> object:
     """Remove `keys` from a raw mapping, logging at debug level what went."""
@@ -100,7 +104,7 @@ def _drop_retired(raw: object, keys: tuple[str, ...], where: str) -> object:
         return raw
     import logging
     logging.getLogger("agent-server.agents.models").debug(
-        "%s: ignoring retired field(s) %s (clodia-platform#656)",
+        "%s: ignoring retired field(s) %s (clodia-platform#656, #669)",
         where, ", ".join(gone))
     return {k: v for k, v in raw.items() if k not in keys}
 
@@ -201,11 +205,13 @@ class AgentSpec(BaseModel):
     @classmethod
     def _ignore_retired_fields(cls, raw):
         """`tool_permissions` is retired (clodia-platform#626/#656): seeds carry
-        no verbs, the gateway's A·V·R·Q tuples decide. A seed that still
-        declares it loads, and the field is dropped — refusing it would stop
-        older seeds and external packs from loading over a field that does
-        nothing."""
-        return _drop_retired(raw, ("tool_permissions",), "agent")
+        no verbs, the gateway's A·V·R·Q tuples decide. `rag_read`/`rag_write`
+        are retired too (clodia-platform#669): no seed is mapped to a
+        collection, access comes only from an import in the scope the agent
+        works in. A seed that still declares them loads, and the fields are
+        dropped — refusing it would stop older seeds and external packs from
+        loading over a field that does nothing."""
+        return _drop_retired(raw, _RETIRED_AGENT_KEYS, "agent")
 
     name: str
     description: str
@@ -365,8 +371,8 @@ class AgentSpec(BaseModel):
             raise ValueError("proxy: nessun sandbox/file access ammesso")
         if self.native_tools:
             raise ValueError("proxy: nessun native_tool ammesso")
-        if any((self.rag_read, self.rag_write, self.volumes, self.credentials, self.carries or [])):
-            raise ValueError("proxy: nessun file/RAG/volume/credential ammesso")
+        if any((self.volumes, self.credentials, self.carries or [])):
+            raise ValueError("proxy: nessun file/volume/credential ammesso")
         return self
 
     @model_validator(mode="after")
@@ -686,21 +692,6 @@ class AgentSpec(BaseModel):
     #: «assente» e «vuoto» collassavano e togliere una voce da un seed non
     #: arrivava mai a destinazione — verificato il 7 ago 2026 su messaggero.
     profile_tools: Optional[list[str]] = None
-    # Grant dichiarativi sulle collection RAG della capacità di piattaforma
-    # (es. ["eu-normativa"]). Enforcement nel gateway.
-    # Usati dai seed dei pack (es. aitiero in clodia-packs).
-    #
-    # `"*"` vale TUTTE le collection, come in `allowed_tools` — non è il nome di
-    # una collection. La semantica è UNA e si decide nel gate (clodia-tools
-    # `main._rag_covers`, clodia-platform#354); qui si dichiara e basta. Fino
-    # ad allora era letterale su un asse e wildcard sull'altro, quindi
-    # `rag_read: ["*"]` prometteva tutto e concedeva zero.
-    #
-    # Allarga UN asse solo, l'appartenenza: la clearance resta quella dello
-    # spawn e le collection di tier superiore restano chiuse anche a chi
-    # dichiara `*`.
-    rag_read: list[str] = Field(default_factory=list)
-    rag_write: list[str] = Field(default_factory=list)
     # Volume montabili dichiarati (id da CLODIA_DATA/volumes.yaml, spec §3.4).
     # Tradotti in regole sandbox alla creazione del workspace effimero.
     volumes: list[str] = Field(default_factory=list)

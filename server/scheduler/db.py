@@ -8,8 +8,13 @@ Gerarchia seed → job → spawn: il job è la definizione durevole di lavoro
 schedulato; quando parte materializza uno spawn dell'executor.
 
 Schema job (jobs/<id>.yaml):
-    id, name, cron_expr, prompt, agent, enabled, tier, last_run_at, last_status,
-    last_chat_id, topic_tier, topic_name, created_at, updated_at
+    id, name, cron_expr, prompt, agent, enabled, tier, data, last_run_at,
+    last_status, last_chat_id, topic_tier, topic_name, created_at, updated_at
+
+`data` (clodia-platform#670): the datastores/collections an agentic job
+imports, `[{kind, name}]`. A job is a data scope like a topic: whoever executes
+it uses them, within the job's tier. Written only through `set_job_data`, after
+the gateway has checked the import rules (`/clodia/jobs/{id}/data`).
 
 Periodicità — due forme, mai entrambe attive:
     - `cron_expr`: espressione a 5 campi (job globali, e trigger di topic creati
@@ -51,7 +56,7 @@ JOBS_DIR = data_path("jobs")
 
 _FIELDS = (
     "id", "name", "cron_expr", "prompt", "agent", "enabled", "owner",
-    "mode", "plan", "tier", "topic_tier", "topic_name", "runs", "run_seq",
+    "mode", "plan", "tier", "data", "topic_tier", "topic_name", "runs", "run_seq",
     "interval_minutes", "repeat_count", "fired_count",
     "last_run_at", "last_status", "last_chat_id", "created_at", "updated_at",
     # Filigrana della riconciliazione al boot (#289): fin dove si è già guardato
@@ -143,12 +148,33 @@ def _read(p: Path) -> Optional[dict]:
         d["agent"] = d.get("agent") or _LEGACY_DEFAULT_AGENT
     # Job legacy (pre-owner) → owner vuoto = di sistema: solo un admin può agirvi.
     d["owner"] = d.get("owner") or ""
+    # Imported data (#670): a malformed entry is dropped, never invented.
+    d["data"] = clean_data(d.get("data"))
     # Periodicità a intervallo (#239). Assente = job a cron: `None`, non 0, così
     # `register_job` distingue «non usa l'intervallo» da «intervallo nullo».
     d["interval_minutes"] = _pos_int_or_none(d.get("interval_minutes"))
     d["repeat_count"] = _non_neg_int(d.get("repeat_count"))
     d["fired_count"] = _non_neg_int(d.get("fired_count"))
     return d
+
+
+#: What a job may import: the gateway's catalog kinds (`data_catalog.KINDS`).
+DATA_KINDS = ("datastore", "rag")
+
+
+def clean_data(raw) -> list[dict]:
+    """`[{kind, name}]`, deduplicated, unknown kinds and empty names dropped."""
+    out: list[dict] = []
+    seen: set[tuple[str, str]] = set()
+    for e in raw if isinstance(raw, list) else []:
+        if not isinstance(e, dict):
+            continue
+        kind, name = str(e.get("kind") or ""), str(e.get("name") or "").strip()
+        if kind not in DATA_KINDS or not name or (kind, name) in seen:
+            continue
+        seen.add((kind, name))
+        out.append({"kind": kind, "name": name})
+    return out
 
 
 def _pos_int_or_none(v) -> Optional[int]:
@@ -264,6 +290,8 @@ def create_job(name: str, cron_expr: str, prompt: str,
         # esistente. Un default diverso da "" farebbe fallire al primo fire job
         # che oggi girano.
         "tier": tier or "",
+        # Data the job imports (#670): none at creation, added by its owner.
+        "data": [],
         "topic_tier": topic_tier or "", "topic_name": topic_name or "",
         # Periodicità a intervallo (#239): alternativa a `cron_expr`, non aggiunta.
         "interval_minutes": _pos_int_or_none(interval_minutes),
@@ -406,6 +434,18 @@ def update_job(
         # distinzione un tier dichiarato per errore non si potrebbe più
         # rimuovere se non riscrivendo il file a mano.
         d["tier"] = tier
+    d["updated_at"] = _now_iso()
+    _write(d)
+    return d
+
+
+def set_job_data(job_id: int, data: list) -> Optional[dict]:
+    """Replace the job's imported data (#670). The caller has had the gateway
+    check every import; here only the shape is enforced."""
+    d = get_job(job_id)
+    if d is None:
+        return None
+    d["data"] = clean_data(data)
     d["updated_at"] = _now_iso()
     _write(d)
     return d

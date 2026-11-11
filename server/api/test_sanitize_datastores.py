@@ -6,14 +6,15 @@ from .plugin_import import _sanitize_datastores
 
 
 class SanitizeDatastoresTests(unittest.TestCase):
-    def test_name_clearance_and_seeds_round_trip(self) -> None:
+    def test_clearance_round_trips_and_seeds_are_dropped(self) -> None:
+        """#669: a seed list in the manifest is dropped, never persisted."""
         out = _sanitize_datastores([
             {"path": "data/contacts.db", "purpose": "CRM contatti", "pii": True,
              "clearance": "seal-1", "seeds": ["messaggero", "clodia"]},
         ])
         self.assertEqual(out, [{
             "path": "data/contacts.db", "purpose": "CRM contatti", "pii": True,
-            "backup": True, "clearance": "SEAL-1", "seeds": ["messaggero", "clodia"],
+            "backup": True, "clearance": "SEAL-1",
         }])
 
     def test_name_defaults_absent_when_not_declared(self) -> None:

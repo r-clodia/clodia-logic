@@ -10,8 +10,7 @@
       "purpose": "CRM contatti — anagrafiche persone/aziende (arricchimento OSINT), indipendente da azienda",
       "pii": true,
       "backup": true,
-      "clearance": "SEAL-1",
-      "seeds": ["clodia"]
+      "clearance": "SEAL-1"
     }
   ]
 }

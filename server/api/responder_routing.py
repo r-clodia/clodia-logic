@@ -81,25 +81,14 @@ def _rag_title_list(collection: str) -> list[str]:
 
 
 def _agent_collections(spec) -> list[str]:
-    """Collection RAG a cui l'agente accede: quelle dichiarate in `rag_read` più
-    quelle derivate dai suoi tool (eu_corpus.*/rag.* → il corpus di piattaforma
-    'eu-normativa'). Aitiero, p.es., ha rag_read vuoto ma i tool eu_corpus/rag."""
-    colls = {str(c).strip() for c in (getattr(spec, "rag_read", None) or [])}
-    # `*` in `rag_read` è la WILDCARD dell'asse RAG — «tutte le collection» —
-    # non il nome di una collection (semantica decisa nel gate: clodia-tools
-    # `main._rag_covers`, clodia-platform#354). Passarla di qui interrogava
-    # `/documents?collection=*`, cioè una collection che non esiste: il profilo
-    # di routing ci perdeva un giro di rete e non ci guadagnava un titolo.
-    #
-    # SHORTCUT: la si TOGLIE e basta, non la si espande all'inventario. Regge
-    #           finché il profilo di routing è costruito qui, dove il tier di
-    #           ogni collection e la clearance dello spawn non sono noti:
-    #           espandere significherebbe nutrire il profilo di un agente coi
-    #           titoli di collection che il gate gli rifiuta comunque, e farlo
-    #           scegliere per domande a cui non può rispondere. Quando questo
-    #           punto avrà i due assi, l'espansione va fatta filtrando per tier.
-    colls.discard("*")
-    colls.discard("")
+    """RAG collections that describe the agent for routing: the platform corpus
+    'eu-normativa' when its global tuples give it eu_corpus.*/rag.*.
+
+    No seed list any more (clodia-platform#669: `rag_read` is gone). The data a
+    scope imports is not a routing signal either: every participant of a room
+    reads all of it (#653), so it would add the same titles to every candidate
+    and separate none of them."""
+    colls: set[str] = set()
     # The platform corpus as a routing signal: the agent reaches eu_corpus or
     # rag OUTSIDE a room (global tuples, #626 — the seeds no longer carry
     # verbs). A room's own RAG is the room's (#621), not a trait of the agent.

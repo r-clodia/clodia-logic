@@ -23,12 +23,14 @@ Nessuna `rag_collections` dichiarata dal pack in sé.
 
 ## 4. Datastore
 
-Il pack dichiara un datastore, `contacts` (`data/contacts.db`, SEAL-1, seed
-`clodia` — vedi `pack.yaml`). Non richiede provisioning: il file
-arriva con l'import/update stesso. Verifica dopo l'Update:
+Il pack dichiara un datastore, `contacts` (`data/contacts.db`, SEAL-1 — vedi
+`pack.yaml`). Non richiede provisioning: il file arriva con l'import/update
+stesso. No seed is mapped to it (clodia-platform#669): import it into the
+topic, DM or job where an agent should use it. Verifica dopo l'Update:
 
-- `datastore.read("base-pack/contacts", "SELECT count(*) FROM contacts")` come
-  seed `clodia` risponde (non "datastore non trovato").
+- in a scope that imports `base-pack/contacts`,
+  `datastore.read("base-pack/contacts", "SELECT count(*) FROM contacts")`
+  risponde (non "datastore non trovato").
 - Se risponde "non trovato" nonostante il pack sia alla versione che dichiara
   `datastores:`, il `plugin.yaml` importato è rimasto a una versione
   precedente: rilancia Update (clodia-platform#337 per un caso già visto).

@@ -509,6 +509,71 @@ async def api_delete_job(job_id: int, request: Request):
     return {"deleted": job_id}
 
 
+def _job_scope_tier(job: dict) -> str:
+    """The job's tier as a data scope (#670): the one it declares, else the
+    executing agent's effective clearance (the SEAL of the provider it runs
+    on), which is also what the gateway uses at call time."""
+    declared = str(job.get("tier") or "").strip()
+    if declared:
+        return declared
+    from ..sdk_runtime.session import _effective_clearance
+    return _effective_clearance(str(job.get("agent") or "")) or "SEAL-0"
+
+
+@router.post("/clodia/jobs/{job_id}/data")
+async def api_job_data(job_id: int, request: Request):
+    """Import a datastore/collection into an agentic job, or remove it
+    (clodia-platform#670): `{action: import|remove, kind, resource}`.
+
+    The job's owner (or an admin), a PERSON — like a topic's imports. The
+    gateway checks the import rules (catalog, importer, clearance, job tier ≥
+    resource tier) before anything is written; at every call it checks them
+    again on the job read live. A `topic_trigger` job keeps its topic's
+    imports and a `logic` job has no agent turn: neither imports here."""
+    from ..api import admin
+    from ..api.topic_data import _actor, _gw
+    job = _require_job(job_id)
+    who = _require_job_owner(request, job)
+    if not admin.is_human(who):
+        raise HTTPException(403, "i dati di un job li governa una persona, non un agente")
+    if (job.get("mode") or "agentic") != "agentic":
+        raise HTTPException(400, "solo un job agentico importa dati: un trigger di "
+                                 "topic usa quelli del suo topic")
+    body = await request.json()
+    action = (body or {}).get("action")
+    kind = str((body or {}).get("kind") or "")
+    resource = str((body or {}).get("resource") or "").strip()
+    if action not in ("import", "remove"):
+        raise HTTPException(400, "azione: import | remove")
+    if kind not in db.DATA_KINDS or not resource:
+        raise HTTPException(400, "kind: datastore | rag, e resource")
+    entries = list(job.get("data") or [])
+    present = any(e["kind"] == kind and e["name"] == resource for e in entries)
+    if action == "remove":
+        if not present:
+            raise HTTPException(400, f"{kind} '{resource}' non è importato nel job {job_id}")
+        entries = [e for e in entries if not (e["kind"] == kind and e["name"] == resource)]
+        updated = db.set_job_data(job_id, entries)
+        return {"ok": True, "removed": {"kind": kind, "name": resource},
+                "data": (updated or {}).get("data", entries)}
+    if present:
+        return {"ok": True, "already": True, "data": entries}
+    tier = await asyncio.to_thread(_job_scope_tier, job)
+    try:
+        checked = await asyncio.to_thread(topics_client.data_catalog, {
+            "action": "check_import", "kind": kind, "resource": resource,
+            "tier": tier, "scope_kind": "job", **_actor(who)})
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+    entries.append({"kind": kind, "name": resource})
+    updated = db.set_job_data(job_id, entries)
+    if updated is None:  # race: deleted meanwhile
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+    return {"ok": True, "imported": {"kind": kind, "name": resource,
+                                     "tier": (checked or {}).get("tier")},
+            "job_tier": tier, "data": updated["data"]}
+
+
 @router.post("/clodia/jobs/{job_id}/run")
 async def api_run_job(job_id: int, request: Request):
     """Fire manuale immediato (bypassa il cron). Utile per test e debug."""

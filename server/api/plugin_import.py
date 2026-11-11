@@ -225,19 +225,19 @@ def _norm_seal(raw: Any) -> str | None:
 
 def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
     """Dichiarazioni datastore del plugin (pack ops): lista di
-    {path, name?, purpose?, pii?, backup?, clearance?, seeds?}. Path SOLO
+    {path, name?, purpose?, pii?, backup?, clearance?}. Path SOLO
     relativi alla datadir del plugin (niente assoluti, niente traversal) — il
     db resta confinato in plugins/<nome>/. Entry malformate vengono scartate,
     non bloccano l'import.
 
     `name` è lo slug usato dai verbi `datastore.read`/`datastore.write` del
     gateway (`<pack>/<name>`) e dal token `<DATASTORE:name>` nelle skill;
-    default = stem del path (`data/contacts.db` → `contacts`). `clearance`
-    (tier SEAL minimo) e `seeds` (elenco di nomi seed autorizzati) sono
-    l'allowlist a due assi dei nuovi verbi — introdotti il 10 set 2026,
-    ASSENTI di proposito finché non dichiarati: un datastore vecchio non
-    concede nulla via quei verbi (fail-closed), l'inventario/backup restano
-    invariati."""
+    default = stem del path (`data/contacts.db` → `contacts`). `clearance` è il
+    tier SEAL minimo del datastore.
+
+    A `seeds:` list is dropped (clodia-platform#669): no seed is mapped to a
+    datastore any more. Access comes only from an import in the scope the
+    agent works in (topic, DM, job)."""
     out: list[dict[str, Any]] = []
     if not isinstance(raw, list):
         return out
@@ -259,11 +259,6 @@ def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
         clearance = _norm_seal(ds.get("clearance"))
         if clearance:
             entry["clearance"] = clearance
-        seeds = ds.get("seeds")
-        if isinstance(seeds, list):
-            clean_seeds = [str(s).strip() for s in seeds if str(s).strip()]
-            if clean_seeds:
-                entry["seeds"] = clean_seeds
         out.append(entry)
     return out
 
@@ -291,19 +286,9 @@ def _sanitize_rag_collections(raw: Any) -> list[dict[str, Any]]:
     su `SEAL-4` — visibile in UI e correggibile, mai un corpus aperto a tutti
     per una lettera sbagliata.
 
-    `seeds` (elenco di nomi seed autorizzati) è la member list della collection,
-    stesse regole di `_sanitize_datastores` qui sopra: lista di stringhe non
-    vuote, campo ASSENTE se non dichiarato o malformato, mai un default
-    permissivo. Il tier è l'asse clearance; questo è l'asse membri
-    (clodia-platform#343, 13 set 2026).
-
-    Attenzione a come lo legge il gateway, perché è DIVERSO dai datastore: qui
-    dichiarato = vincolante (restringe: serve `seeds` E il grant del seed), NON
-    dichiarato = regime attuale dei soli grant `rag_read`/`rag_write`. Un
-    fail-closed sull'ASSENZA sarebbe stato fail-closed su tutto: oggi nessun
-    manifest dichiara `seeds:` su una collection, e le collection vive si
-    raggiungono per grant — negarle tutte avrebbe spento il RAG di ogni agente
-    al deploy. Una dichiarazione qui può solo togliere accesso, mai darne."""
+    A `seeds:` list is dropped (clodia-platform#669): a collection has no
+    member list. Access comes only from an import in the scope the agent works
+    in (topic, DM, job)."""
     out: list[dict[str, Any]] = []
     if not isinstance(raw, list):
         return out
@@ -340,11 +325,6 @@ def _sanitize_rag_collections(raw: Any) -> list[dict[str, Any]]:
             "tier": tier,
             "resources": resources,
         }
-        seeds = col.get("seeds")
-        if isinstance(seeds, list):
-            clean_seeds = [str(s).strip() for s in seeds if str(s).strip()]
-            if clean_seeds:
-                entry["seeds"] = clean_seeds
         out.append(entry)
     return out
 
