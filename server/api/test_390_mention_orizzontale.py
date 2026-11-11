@@ -41,6 +41,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         self.agents = {
             "clodia": _a("clodia", "super", "P3", "2026-01-01T00:00:00Z"),
             "segretario": _a("segretario", "normal", "P3", "2026-01-01T00:00:01Z"),
+            "ophelia": _a("ophelia", "normal", "P3", "2026-01-01T00:00:02Z"),
             "worker": _a("worker", "normal", "P1", "2026-02-01T00:00:00Z"),
             "accountant": _a("accountant", "normal", "P1", "2026-02-01T00:00:01Z"),
             "messaggero": _a("messaggero", "normal", "P1", "2026-02-01T00:00:02Z"),
@@ -58,7 +59,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         channels._track_routing_decision = self._orig_track
 
     async def _delegate(self, from_agent: str, text: str, participants=None,
-                        debug: bool = False):
+                        debug: bool = False, orchestrator: str = "clodia"):
         """Esegue `_maybe_delegate` e ritorna (turni avviati, post, eventi)."""
         start = AsyncMock(return_value=True)
         posts: list[dict] = []
@@ -77,7 +78,10 @@ class _Base(unittest.IsolatedAsyncioTestCase):
             patch.object(channels, "_provider_seal_ok", return_value=True),
             patch.object(channels.topics_client, "open_topic", return_value={
                 "meta": {"tier": "P0",
-                         "participants": participants or self.PARTECIPANTI}}),
+                         "participants": participants or self.PARTECIPANTI,
+                         # #667: the orchestrator the room chose (Clodia unless
+                         # the test says otherwise).
+                         "orchestrator": orchestrator}}),
             patch.object(channels.topics_client, "post_message", side_effect=post),
             patch.object(channels.topics_client, "list_messages", return_value=[]),
             patch.object(channels.access_log, "touch", lambda *a, **k: None),
@@ -146,8 +150,16 @@ class VersoIlCoordinatoreSiPassaTests(_Base):
 
     async def test_uno_specialista_sveglia_il_segretario(self) -> None:
         avviati, _posts, _eventi = await self._delegate(
-            "worker", "@segretario sono bloccato, serve una decisione")
+            "worker", "@segretario sono bloccato, serve una decisione",
+            orchestrator="segretario")
         self.assertEqual(["segretario"], avviati)
+
+    async def test_the_orchestrator_not_chosen_is_not_woken(self) -> None:
+        """#667: one active orchestrator per room. Where Clodia leads, a
+        specialist's @segretario is a horizontal mention like any other."""
+        avviati, _posts, _eventi = await self._delegate(
+            "worker", "@segretario sono bloccato, serve una decisione")
+        self.assertEqual([], avviati)
 
     async def test_la_menzione_orizzontale_non_rende_ambigua_la_richiesta(self) -> None:
         """«@clodia, per la parte fiscale servirebbe @accountant» è UNA richiesta
@@ -170,8 +182,20 @@ class IlCoordinatoreDelegaComePrimaTests(_Base):
 
     async def test_il_segretario_assegna_a_uno_specialista(self) -> None:
         avviati, _posts, _eventi = await self._delegate(
-            "segretario", "@accountant a te")
+            "segretario", "@accountant a te", orchestrator="segretario")
         self.assertEqual(["accountant"], avviati)
+
+    async def test_ophelia_assigns_when_the_room_chose_her(self) -> None:
+        avviati, _posts, _eventi = await self._delegate(
+            "ophelia", "@accountant a te",
+            participants=self.PARTECIPANTI + ["ophelia"], orchestrator="ophelia")
+        self.assertEqual(["accountant"], avviati)
+
+    async def test_a_coordinator_not_chosen_does_not_assign(self) -> None:
+        """#667: where Clodia leads, the secretary is staff — its @worker opens
+        no turn."""
+        avviati, _posts, _eventi = await self._delegate("segretario", "@accountant a te")
+        self.assertEqual([], avviati)
 
     async def test_vale_il_SEED_non_l_etichetta_dell_istanza(self) -> None:
         """`clodia-2` è sempre il coordinatore: il confronto è per seed, come

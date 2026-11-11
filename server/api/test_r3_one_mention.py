@@ -44,6 +44,8 @@ def _post_sink() -> tuple[list, callable]:
 
 
 class _Base(unittest.IsolatedAsyncioTestCase):
+    ORCHESTRATOR: str | None = None
+
     def setUp(self) -> None:
         self.agents = {
             "clodia": _a("clodia", "super", "P3", "2026-01-01T00:00:00Z"),
@@ -72,7 +74,9 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         patches = [
             patch.object(channels, "_provider_seal_ok", return_value=True),
             patch.object(channels.topics_client, "open_topic", return_value={
-                "meta": {"tier": "P0", "participants": participants}}),
+                "meta": {"tier": "P0", "participants": participants,
+                         # #667: the room's chosen orchestrator, if the test declares one.
+                         **({"orchestrator": self.ORCHESTRATOR} if self.ORCHESTRATOR else {})}}),
             patch.object(channels.topics_client, "post_message", side_effect=post),
             patch.object(channels.topics_client, "list_messages",
                          return_value=list(history or [])),

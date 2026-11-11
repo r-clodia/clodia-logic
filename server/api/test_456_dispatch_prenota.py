@@ -48,7 +48,7 @@ class DueDispatcherPrenotanoTests(unittest.TestCase):
     def setUp(self) -> None:
         self.ordine: list[str] = []
 
-        async def _annuncio(tier, name, tier_real, participants=None):
+        async def _annuncio(tier, name, tier_real, participants=None, orchestrator=None):
             self.ordine.append("annuncio")
 
         async def _provider_ko(*a, **kw):

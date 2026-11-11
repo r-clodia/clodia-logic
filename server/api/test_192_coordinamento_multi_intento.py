@@ -74,7 +74,7 @@ class _Base(unittest.IsolatedAsyncioTestCase):
         _posts, post = _post_sink()
 
         def routing_plan(_participants, _tier, _message, trace=None,
-                         routing_messages=None):
+                         routing_messages=None, orchestrator=None):
             if trace is not None:
                 trace.update(trace_update)
             return list(piano)

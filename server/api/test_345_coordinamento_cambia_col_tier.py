@@ -101,8 +101,9 @@ class CambioCoordinatoreTests(unittest.TestCase):
 
     def _turno(self, tier_real: str) -> None:
         """Un turno di canale in questa stanza, al tier dato."""
+        # #667: the room chose Clodia; past her tier the fallback takes over.
         _esegui(channels._annuncia_cambio_coordinatore(
-            TIER, STANZA, tier_real, PARTECIPANTI))
+            TIER, STANZA, tier_real, PARTECIPANTI, "clodia"))
 
     def test_la_prima_volta_che_si_vede_la_stanza_non_si_annuncia_nulla(self) -> None:
         self._turno("SEAL-2")
@@ -149,7 +150,8 @@ class CambioCoordinatoreTests(unittest.TestCase):
 
         async def _open(tier, name):
             letture.append((tier, name))
-            return {"meta": {"tier": "SEAL-4", "participants": PARTECIPANTI}}
+            return {"meta": {"tier": "SEAL-4", "participants": PARTECIPANTI,
+                             "orchestrator": "clodia"}}
 
         with patch.object(channels.topics_client, "async_open_topic", _open):
             _esegui(channels._annuncia_cambio_coordinatore(TIER, STANZA, "SEAL-2"))
@@ -167,7 +169,7 @@ class ChiamataDaiDueDispatcherTests(unittest.TestCase):
         channels._tier_visto_reset()
         self.viste: list[tuple] = []
 
-        async def _spia(tier, name, tier_real, participants=None):
+        async def _spia(tier, name, tier_real, participants=None, orchestrator=None):
             self.viste.append((tier, name, tier_real, participants))
 
         async def _provider_ko(*a, **kw):

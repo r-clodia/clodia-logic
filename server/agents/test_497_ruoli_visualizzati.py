@@ -187,15 +187,15 @@ class SeedVeriTests(unittest.TestCase):
         vice = sorted(n for n, s in seeds.items() if s.get("deputy"))
         self.assertEqual(vice, ["segretario"])
 
-    def test_il_vice_e_anche_il_secondo_coordinatore_dichiarato(self) -> None:
-        """Le due dichiarazioni devono dire la stessa cosa. Se un giorno la
-        precedenza di `coordinator.DECLARED` cambia e il flag `deputy` resta
-        dov'è, il badge «acting manager» finisce sul seed sbagliato — e nessuno
-        se ne accorgerebbe guardando una delle due metà."""
+    def test_il_vice_e_l_orchestratore_di_ripiego(self) -> None:
+        """Le due dichiarazioni devono dire la stessa cosa. Since #667 the
+        secretary is the default orchestrator, first of `coordinator.DECLARED`:
+        the seed that takes over when the room's choice cannot serve carries
+        the `deputy` flag."""
         from .coordinator import DECLARED
         seeds = _seeds_del_pack()
         vice = [n for n, s in seeds.items() if s.get("deputy")]
-        self.assertEqual(vice, [DECLARED[-1]])
+        self.assertEqual(vice, [DECLARED[0]])
 
     def test_i_coordinatori_non_sono_contributor_qualsiasi(self) -> None:
         """clodia non è staff (è il capitano, non il personale) ma non deve

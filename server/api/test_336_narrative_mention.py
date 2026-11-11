@@ -50,6 +50,7 @@ class _Racconto(_Base):
             "segretario", "normal", "P1", "2026-02-01T00:00:03Z")
 
     async def _delegate(self, text: str, from_agent: str = "clodia"):
+        self.ORCHESTRATOR = from_agent.split("-")[0]   # the author leads the room (#667)
         start = AsyncMock(return_value=True)
         posts, apri = self._channel(_PARTECIPANTI)
         with apri(patch.object(channels, "_start_turn", start)):

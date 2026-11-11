@@ -232,8 +232,11 @@ async def tick(*, now: datetime | None = None) -> dict:
             # un'etichetta di spawn (`clodia-354`), il `@` deve comunque andare
             # al seed — e anche il controllo «è nella stanza» qui sotto, che
             # confronta coi partecipanti, che sono seed.
-            orchestratore = channels.indirizzo(
-                str(meta.get("contact_agent") or "clodia").strip())
+            # #667: the room's orchestrator; the contact agent only when the
+            # room has none that can serve.
+            orchestratore = (channels.orchestratore_da_meta(meta, tier)
+                             or channels.indirizzo(
+                                 str(meta.get("contact_agent") or "clodia").strip()))
             partecipanti = meta.get("participants") or []
             dentro = (orchestratore in (partecipanti.keys()
                                         if isinstance(partecipanti, dict) else partecipanti)

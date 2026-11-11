@@ -365,7 +365,9 @@ def _coordinator_of(meta: dict, participants: list, tier: str) -> str | None:
     parti = [p for p in participants if not _is_messenger(p)]
     try:
         from .channels import _pick_responder
-        spec = _pick_responder(parti, meta.get("tier", tier), None, coordinator_only=True)
+        from ..agents import coordinator as _coord
+        spec = _pick_responder(parti, meta.get("tier", tier), None, coordinator_only=True,
+                               orchestrator=_coord.room_choice(meta))
         return getattr(spec, "name", None)
     except Exception as e:  # noqa: BLE001
         LOG.warning("coordinatore di %s non determinabile: %s", tier, e)

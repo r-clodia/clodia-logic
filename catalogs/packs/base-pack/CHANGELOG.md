@@ -10,6 +10,12 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.49.0] — 2026-11-11
+- **The room chooses its orchestrator** (clodia-platform#667): one per room, Segretario by default, Clodia or Ophelia with one click in the participants list (agent-server ≥ 6.351.0, gateway ≥ 2.170.0).
+- New skill **`orchestrazione`**: the ship model for whoever leads the room — talk to the user, classify, assign one mention at a time, collect reports and escalations, close with the result. Segretario gets it explicitly; Clodia and Ophelia through `base-pack/*`.
+- Prompts: Segretario is the default orchestrator; Clodia and Ophelia lead only when chosen (Ophelia gains the orchestration and room-linking sections). The `topic-state-boundary` rule lets the secretary conduct the conversation when the turn names it orchestrator.
+- `multiagent-collaboration`: specialists report to «the room's orchestrator» (named in the first line of every turn), no longer to «Clodia or Segretario».
+
 ## [7.48.0] — 2026-11-11
 - **No seed is mapped to a datastore any more** (clodia-platform#669, owner's decision): `seeds: ["clodia"]` removed from the `contacts` datastore in `pack.yaml` and in the plugin manifest. An agent reaches `base-pack/contacts` only where the topic, DM or job it works in imports it (Databases → import, or the topic's «Dati» panel, or the job editor). Requires clodia-logic ≥ 6.349.0 and clodia-tools ≥ 2.167.0. **On deploy, clodia loses the seed-based access to `contacts`** until the datastore is imported into the scopes where it is used. `SETUP.md` updated.
 - sysadmin's prompt: verifying a pack's collections uses `rag.collections`; `rag.list` reads a collection's documents only in a scope that imports it — the provisioner exception covers create and initial ingest, not reads (#669).

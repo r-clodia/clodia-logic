@@ -1294,14 +1294,17 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     # Il Messaggero NON è eccezione: uno specialista senza grant di
     # comunicazione riferisce a Clodia/Segretario, che è la stessa frase del
     # principio 4. L'unica eccezione è il guardiano in debug (sotto).
-    if plan and not _is_declared_coordinator(from_agent):
-        ammessi = [p for p in plan if _mention_opens_turn(p[0])]
+    orchestratore = _coordinatore_al_tier(
+        [p for p in participants if isinstance(p, str)], tier_real,
+        coordinator_mod.room_choice(meta))
+    if plan and not _is_declared_coordinator(from_agent, orchestratore):
+        ammessi = [p for p in plan if _mention_opens_turn(p[0], orchestratore)]
         negati = [_target_identity(t) for t, _k in plan if (t, _k) not in ammessi]
         if negati:
             LOG.info("horizontal-mention-blocked: %s ha taggato %s su %s/%s, "
                      "nessun turno: non è coordinatore dichiarato e apre turni "
                      "solo verso %s (#390)", from_agent, ", ".join(negati),
-                     tier, name, " o ".join(coordinator_mod.DECLARED))
+                     tier, name, orchestratore or " o ".join(coordinator_mod.DECLARED))
             try:
                 await bus.publish(Event(
                     type="routing_decision",
@@ -1873,7 +1876,7 @@ def _seed_name(label: str | None) -> str | None:
     return _split_ord(label)[0]
 
 
-def _is_declared_coordinator(label: str | None) -> bool:
+def _is_declared_coordinator(label: str | None, orchestrator: str | None = None) -> bool:
     """L'etichetta è un coordinatore dichiarato? Il confronto è per SEED.
 
     `clodia-2` coordina come `clodia`: il ruolo appartiene al seed, non allo
@@ -1881,10 +1884,15 @@ def _is_declared_coordinator(label: str | None) -> bool:
     il ripiego del router e chi introduce un topic nuovo — perché una seconda
     copia della regola diverge al primo cambiamento (#188).
     """
+    # #667: in a room the coordinator is ONE, the room's orchestrator (its
+    # choice, or the fallback when the choice cannot serve). Without a room
+    # (`orchestrator` None) any declared seed counts, as before.
+    if orchestrator:
+        return (_seed_name(label) or "") == orchestrator
     return (_seed_name(label) or "") in coordinator_mod.DECLARED
 
 
-def _mention_opens_turn(tag: str | None) -> bool:
+def _mention_opens_turn(tag: str | None, orchestrator: str | None = None) -> bool:
     """Un `@tag` scritto da chi NON è coordinatore può aprire un turno?
 
     Solo verso un coordinatore dichiarato — il resoconto e l'escalation del
@@ -1893,7 +1901,7 @@ def _mention_opens_turn(tag: str | None) -> bool:
     ordinaria verso il coordinatore può non funzionare. Fuori dal debug quella
     porta è chiusa come le altre, così non diventa la scorciatoia di tutti.
     """
-    return (_is_declared_coordinator(tag)
+    return (_is_declared_coordinator(tag, orchestrator)
             or (debug_watch.enabled() and _seed_name(tag) == debug_watch.WATCHER))
 
 
@@ -2816,6 +2824,17 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
         ))
     except Exception as e:  # noqa: BLE001 — un'etichetta non ferma un turno
         LOG.debug("spawn_label non pubblicata per %s: %s", chat_id, e)
+    # #667: every turn says who leads the room — the orchestrator is ONE and
+    # the room chooses it; the shared skills say «riferisci all'orchestratore».
+    orchestratore = await _orchestratore_della_stanza(tier, name, tier_real)
+    if orchestratore == spec.name:
+        directive = ("[Sei l'ORCHESTRATORE di questa stanza: parli tu con l'utente, "
+                     "assegni i compiti e chiudi con il risultato (skill "
+                     "`orchestrazione`).]\n" + (directive or ""))
+    elif orchestratore:
+        directive = (f"[Orchestratore di questa stanza: {orchestratore}. Esiti e "
+                     f"blocchi li riferisci a lui con @{orchestratore}, non "
+                     f"all'utente.]\n" + (directive or ""))
     if inst_ord is not None:
         directive = (f"[Sei lo spawn {spawn_nome}: una delle istanze concorrenti "
                      f"di {spec.name} in questo canale. I tuoi messaggi appaiono "
@@ -2927,7 +2946,9 @@ def _select_topic_intro_agent(meta: dict, tier: str) -> str:
         spec = registry.get_by_name(nome)
         if not spec or not _provider_seal_ok(spec, tier):
             return None
-        if nome == "clodia" and nome not in participants:
+        # Clodia and Ophelia introduce only a room they are already in; the
+        # secretary enters every room (#667: it is the default orchestrator).
+        if nome != "segretario" and nome not in participants:
             return None
         if nome == "segretario" and not _declares_all_tier(spec):
             return None
@@ -2935,14 +2956,17 @@ def _select_topic_intro_agent(meta: dict, tier: str) -> str:
 
     idonei = [s for s in (_intro_candidate(n) for n in coordinator_mod.DECLARED)
               if s is not None]
-    scelto, _reason = coordinator_mod.pick(idonei)
-    if scelto is not None and scelto.name == "clodia":
-        meta["team_bootstrap_agent"] = "clodia"
-        return "clodia"
+    scelto, _reason = coordinator_mod.pick(idonei, coordinator_mod.room_choice(meta))
+    if scelto is not None and scelto.name != "segretario":
+        meta["team_bootstrap_agent"] = scelto.name
+        return scelto.name
 
     segretario = registry.get_by_name("segretario")
     if scelto is not None and scelto.name == "segretario":
-        if meta.get("contact_agent") == "clodia":
+        # An unavailable default Clodia is replaced entirely; an available one
+        # stays in the room (#667: the secretary leads by default, Clodia is
+        # still a participant).
+        if meta.get("contact_agent") == "clodia" and _intro_candidate("clodia") is None:
             participants = [p for p in participants if p != "clodia"]
             meta["contact_agent"] = "segretario"
         if "segretario" not in participants:
@@ -3307,7 +3331,8 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
                     message: str = "", trace: dict | None = None,
                     routing_message: str | None = None,
                     routing_messages: list[dict] | None = None,
-                    coordinator_only: bool = False):
+                    coordinator_only: bool = False,
+                    orchestrator: str | None = None):
     """Chi risponde in un canale. Priorità:
     1. agente TAGGATO (@nome), se idoneo — override esplicito;
     2. il COORDINATORE dichiarato (`coordinator.pick`): dal modello nave
@@ -3373,7 +3398,7 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
         relevance, always available as fallback». Il profilo resta stretto, e con
         lui la calamita che non nasce.
         """
-        chosen, reason = coordinator_mod.pick(ai_all)
+        chosen, reason = coordinator_mod.pick(ai_all, orchestrator)
         if chosen is not None:
             return _record(chosen, f"fallback-{reason}", "coordinator", scored)
         # Ultima rete, e rumorosa. Il notebook lasciava aperto «no super, no
@@ -3456,7 +3481,8 @@ def _pick_responder(participants: list[str], tier: str, tagged: str | None,
 
 def _routing_plan(participants: list[str], tier: str, message: str,
                   trace: dict | None = None,
-                  routing_messages: list[dict] | None = None) -> list[tuple[object, str]]:
+                  routing_messages: list[dict] | None = None,
+                  orchestrator: str | None = None) -> list[tuple[object, str]]:
     """Build a per-agent plan, batching unmatched intents on the coordinator.
 
     Con risposta singola (default) NON si decompone il messaggio: un solo turno
@@ -3468,7 +3494,7 @@ def _routing_plan(participants: list[str], tier: str, message: str,
             routing_messages or [], config=route_cfg
         ) or message
         picked = _pick_responder(
-            participants, tier, None, message, trace=trace,
+            participants, tier, None, message, trace=trace, orchestrator=orchestrator,
             routing_message=semantic_message, routing_messages=routing_messages,
         )
         # UN responder, sempre: `_pick_responder` ritorna una spec o `None`. La
@@ -3500,7 +3526,7 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         # sotto-task sono il segnale consultivo che finisce nella trace del piano
         # e da lì nella telemetria.
         _pick_responder(
-            participants, tier, None, intent, trace=intent_trace,
+            participants, tier, None, intent, trace=intent_trace, orchestrator=orchestrator,
             routing_message=semantic_message, routing_messages=context,
         )
         unmatched.append(intent)
@@ -3528,7 +3554,8 @@ def _routing_plan(participants: list[str], tier: str, message: str,
         # vero. Due copie della stessa decisione divergono; ora è una.
         coord_trace: dict = {}
         coordinator = _pick_responder(participants, tier, None,
-                                      coordinator_only=True, trace=coord_trace)
+                                      coordinator_only=True, trace=coord_trace,
+                                      orchestrator=orchestrator)
         if coordinator is not None:
             grouped.setdefault(coordinator.name, (coordinator, []))[1].extend(unmatched)
             # SEMPRE coordinamento: il distinguo di prima («se aveva anche
@@ -4406,7 +4433,30 @@ def _tier_visto_reset() -> None:
     _TIER_VISTO.clear()
 
 
-def _coordinatore_al_tier(participants: list[str], tier: str) -> str | None:
+def orchestratore_da_meta(meta: dict, tier: str) -> str | None:
+    """The orchestrator leading a room now (#667): the room's choice, or the
+    fallback when the choice cannot serve (not a participant, not eligible at
+    the room's tier). One function for every reader — routing, the turn line,
+    the goal engagement, the goal watch, the UI badge."""
+    raw = (meta or {}).get("participants")
+    parti = list(raw.keys()) if isinstance(raw, dict) else list(raw or [])
+    return _coordinatore_al_tier(parti, (meta or {}).get("tier", tier),
+                                 coordinator_mod.room_choice(meta))
+
+
+async def _orchestratore_della_stanza(tier: str, name: str, tier_real: str) -> str | None:
+    """`orchestratore_da_meta` for a room by name. None if it cannot be told —
+    a turn is never stopped for a decorative line."""
+    try:
+        meta = ((await topics_client.async_open_topic(tier, name)) or {}).get("meta") or {}
+        return orchestratore_da_meta(meta, tier_real)
+    except Exception as e:  # noqa: BLE001
+        LOG.debug("orchestratore di %s/%s non determinabile: %s", tier, name, e)
+        return None
+
+
+def _coordinatore_al_tier(participants: list[str], tier: str,
+                          orchestrator: str | None = None) -> str | None:
     """Chi coordinerebbe questa stanza a quel tier.
 
     Non riapplica la regola del coordinatore: la CHIEDE a `_pick_responder`, che
@@ -4415,7 +4465,8 @@ def _coordinatore_al_tier(participants: list[str], tier: str) -> str | None:
     `agents/coordinator.py` denuncia — la ruling sta in una riga, e in una sola.
     """
     return getattr(_pick_responder(participants, tier, None,
-                                   coordinator_only=True), "name", None)
+                                   coordinator_only=True, orchestrator=orchestrator),
+                   "name", None)
 
 
 def _ruoli_mostrati(meta: dict, tier: str) -> list[dict]:
@@ -4440,7 +4491,8 @@ def _ruoli_mostrati(meta: dict, tier: str) -> list[dict]:
     partecipanti = list(raw.keys()) if isinstance(raw, dict) else list(raw or [])
     tier_real = meta.get("tier", tier)
     try:
-        manager = _coordinatore_al_tier(partecipanti, tier_real)
+        manager = _coordinatore_al_tier(partecipanti, tier_real,
+                                        coordinator_mod.room_choice(meta))
     except Exception as e:  # noqa: BLE001
         LOG.warning("coordinatore non calcolabile al tier %s: %s", tier_real, e)
         manager = None
@@ -4455,7 +4507,8 @@ def _ruoli_mostrati(meta: dict, tier: str) -> list[dict]:
 
 
 async def _annuncia_cambio_coordinatore(tier: str, name: str, tier_real: str,
-                                        participants: list[str] | None = None) -> None:
+                                        participants: list[str] | None = None,
+                                        orchestrator: str | None = None) -> None:
     """Il tier della stanza è cambiato e con esso chi coordina: lo dice in chat.
 
     L'idoneità si ricalcola a ogni turno, quindi una stanza promossa oltre il
@@ -4493,9 +4546,11 @@ async def _annuncia_cambio_coordinatore(tier: str, name: str, tier_real: str,
     try:
         if participants is None:
             topic = await topics_client.async_open_topic(tier, name)
-            participants = list(((topic or {}).get("meta") or {}).get("participants") or [])
-        prima = _coordinatore_al_tier(participants, precedente)
-        dopo = _coordinatore_al_tier(participants, tier_real)
+            _meta = (topic or {}).get("meta") or {}
+            participants = list(_meta.get("participants") or [])
+            orchestrator = orchestrator or coordinator_mod.room_choice(_meta)
+        prima = _coordinatore_al_tier(participants, precedente, orchestrator)
+        dopo = _coordinatore_al_tier(participants, tier_real, orchestrator)
         # `None` da una delle due parti vuol dire «nessun agente idoneo a quel
         # tier»: è una stanza senza coordinatore, che ha già la sua voce in
         # `_announce_provider_inadeguato` quando un turno non parte. Qui si
@@ -4861,6 +4916,7 @@ async def post_channel_message(
     plan = _routing_plan(
         participants, tier_real, content, trace=routing,
         routing_messages=routing_messages,
+        orchestrator=coordinator_mod.room_choice(meta),
     )
     if routing.get("mode") == "ambiguous":
         candidates = [
@@ -5488,7 +5544,8 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
         else:
             responder = _pick_responder(participants, tier_real, _tag,
                                         trigger_text or "", trace=routing,
-                                        routing_message=semantic_message)
+                                        routing_message=semantic_message,
+                                        orchestrator=coordinator_mod.room_choice(meta))
         if routing.get("chosen"):
             try:
                 payload = {"tier": tier, "name": name, **routing}
@@ -5516,7 +5573,8 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     # non passa da `_start_turn`, e coprirne uno solo lascerebbe muti i turni di
     # Telegram, trigger e workflow. Qui i partecipanti sono già in mano: si
     # passano, così la transizione non costa una lettura in più al gateway.
-    await _annuncia_cambio_coordinatore(tier, name, tier_real, participants)
+    await _annuncia_cambio_coordinatore(tier, name, tier_real, participants,
+                                        coordinator_mod.room_choice(meta))
     if not await _provider_della_stanza_ancora_valido(tier, name, tier_real,
                                                      responder, chat_id):
         return None, None
@@ -6180,6 +6238,12 @@ def channel_open(tier: str, name: str, request: Request) -> dict:
     # risposta che la pagina già chiede — un endpoint a parte raddoppierebbe le
     # richieste per un dato che cambia esattamente quando cambia la composizione.
     topic["display_roles"] = _ruoli_mostrati(topic.get("meta", {}), tier)
+    # #667: who leads the room now, for the participants' orchestrator check.
+    try:
+        topic["orchestrator"] = orchestratore_da_meta(topic.get("meta", {}), tier)
+    except Exception as e:  # noqa: BLE001 — a badge never stops the room opening
+        LOG.warning("orchestratore di %s/%s non calcolabile: %s", tier, name, e)
+        topic["orchestrator"] = None
     # Il primo bit del vettore viene dal gateway insieme al topic: senza, il
     # punteggio conterebbe solo i due bit statici — cioè quelli che non cambiano.
     _t = topic.get("taint") or {}
