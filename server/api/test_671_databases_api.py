@@ -82,6 +82,52 @@ class DoorTests(_Base):
         self.assertEqual((r.status_code, r.json()["detail"]), (403, "non importato nel topic"))
 
 
+class JobScopeTests(_Base):
+    """#670 jobs are scopes too: listed for admins, cleaned on delete."""
+
+    def setUp(self):
+        from ..scheduler import db
+        self.jobs = {7: {"id": 7, "data": [{"kind": "rag", "name": "manuali"},
+                                           {"kind": "datastore", "name": "a/b"}]},
+                     8: {"id": 8, "data": []}}
+        self.written = {}
+        for name, fake in (("list_jobs", lambda: list(self.jobs.values())),
+                           ("get_job", lambda i: self.jobs.get(i)),
+                           ("set_job_data", lambda i, d: self.written.update({i: d}) or {})):
+            p = patch.object(db, name, fake, create=True)
+            p.start()
+            self.addCleanup(p.stop)
+
+    def test_admins_see_job_scopes_in_the_catalogue(self):
+        data = {"is_admin": True, "entries": [
+            {"key": "rag:manuali", "imported_by_scopes": ["SEAL-2/commerciale"]},
+            {"key": "datastore:x/y", "imported_by_scopes": []}]}
+        out = self.client("davide", admin_=True, data=data).get("/clodia/databases").json()
+        self.assertEqual(out["entries"][0]["imported_by_scopes"], ["SEAL-2/commerciale", "job:7"])
+        self.assertEqual(out["entries"][1]["imported_by_scopes"], [])
+        data["is_admin"] = False
+        data["entries"][0]["imported_by_scopes"] = ["SEAL-2/commerciale"]
+        out = self.client("mario", data=data).get("/clodia/databases").json()
+        self.assertEqual(out["entries"][0]["imported_by_scopes"], ["SEAL-2/commerciale"])
+
+    def test_delete_removes_the_resource_from_job_imports(self):
+        c = self.client("davide", admin_=True, data={"ok": True, "imports_removed": ["SEAL-2/x"],
+                                                     "imports_failed": []})
+        r = c.post("/clodia/databases", json={"action": "delete", "kind": "rag",
+                                              "name": "manuali", "confirm": "manuali"})
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual(self.sent[-1][2]["json"]["job_scopes"], ["job:7"])
+        self.assertEqual(self.written, {7: [{"kind": "datastore", "name": "a/b"}]})
+        self.assertEqual(r.json()["imports_removed"], ["SEAL-2/x", "job:7"])
+
+    def test_a_refused_gateway_delete_touches_no_job(self):
+        c = self.client("davide", admin_=True, status=403, data={"error": "clearance"})
+        r = c.post("/clodia/databases", json={"action": "delete", "kind": "rag",
+                                              "name": "manuali", "confirm": "manuali"})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(self.written, {})
+
+
 class UploadTests(_Base):
     def test_the_file_is_forwarded_raw_with_its_name(self):
         c = self.client("mario")
@@ -102,6 +148,30 @@ class UploadTests(_Base):
                        files={"file": ("a.txt", b"12345", "text/plain")})
         self.assertEqual(r.status_code, 413)
         self.assertEqual(self.sent, [])
+
+    def test_the_limit_holds_before_the_multipart_is_parsed(self):
+        c = self.client("mario")
+        parsed = []
+        from starlette.requests import Request as R
+        real = R.form
+
+        def spy(self, *a, **k):
+            parsed.append(1)
+            return real(self, *a, **k)
+        with patch.object(D, "_upload_max", lambda: 10), patch.object(R, "form", spy):
+            # A declared Content-Length above the ceiling: refused unread.
+            r = c.post("/clodia/databases/collection/manuali/upload", content=b"x" * 10,
+                       headers={"Content-Length": str(10 * 1024 * 1024),
+                                "Content-Type": "multipart/form-data; boundary=b"})
+            self.assertEqual(r.status_code, 413)
+            # No Content-Length (chunked): the streaming cap stops it.
+            def gen():
+                for _ in range(200):
+                    yield b"y" * 1024
+            r = c.post("/clodia/databases/collection/manuali/upload", content=gen(),
+                       headers={"Content-Type": "multipart/form-data; boundary=b"})
+            self.assertEqual(r.status_code, 413)
+        self.assertEqual((parsed, self.sent), ([], []))
 
 
 class SurfaceTests(unittest.TestCase):

@@ -27,7 +27,8 @@ import os
 from urllib.parse import quote
 
 import requests
-from fastapi import APIRouter, File, Form, HTTPException, Request, UploadFile
+from fastapi import APIRouter, HTTPException, Request
+from starlette.datastructures import UploadFile as StarletteUploadFile
 
 from . import admin, gateway_pdp
 
@@ -102,21 +103,78 @@ async def _body(request: Request) -> dict:
     return body
 
 
+# ── Jobs as data scopes (#670) ───────────────────────────────────────────────
+#
+# A job's imports live HERE, in the scheduler's records, not in the gateway:
+# the catalogue learns from this side which jobs import a resource, and a
+# delete removes the resource from them here, after the gateway has exported
+# and dropped it (the gateway's tombstone already refuses every job call).
+
+def _job_scopes() -> dict[str, list[str]]:
+    """`{"<kind>:<name>": ["job:<id>", …]}` over every job's `data`."""
+    from ..scheduler import db
+    out: dict[str, list[str]] = {}
+    for j in db.list_jobs():
+        for e in j.get("data") or []:
+            if isinstance(e, dict) and e.get("kind") and e.get("name"):
+                out.setdefault(f"{e['kind']}:{e['name']}", []).append(f"job:{j['id']}")
+    return out
+
+
+def _drop_from_jobs(kind: str, name: str, scopes: list[str]) -> tuple[list[str], list[dict]]:
+    from ..scheduler import db
+    removed, failed = [], []
+    for s in scopes:
+        try:
+            jid = int(s.split(":", 1)[1])
+            job = db.get_job(jid)
+            if job is None:
+                continue
+            left = [e for e in job.get("data") or []
+                    if not (e.get("kind") == kind and e.get("name") == name)]
+            db.set_job_data(jid, left)
+            removed.append(s)
+        except Exception as e:  # noqa: BLE001 — reported; the tombstone already cuts access
+            failed.append({"scope": s, "error": str(e)[:200]})
+    return removed, failed
+
+
 @router.get("/clodia/databases")
 async def get_catalogue(request: Request) -> dict:
-    return await _acall(_person(request), "GET", "")
+    who = _person(request)
+    out = await _acall(who, "GET", "")
+    if out.get("is_admin"):
+        # Admins see every scope importing a resource, jobs included.
+        try:
+            jobs = await asyncio.to_thread(_job_scopes)
+        except Exception as e:  # noqa: BLE001 — the catalogue stays readable
+            LOG.warning("databases: job imports not read (%s)", type(e).__name__)
+            jobs = {}
+        for e in out.get("entries") or []:
+            e["imported_by_scopes"] = list(e.get("imported_by_scopes") or []) + \
+                jobs.get(e.get("key") or "", [])
+    return out
 
 
 @router.post("/clodia/databases")
 async def post_catalogue(request: Request) -> dict:
     who = _person(request)
     if not admin.is_admin(who):
+        # Recorded as a refused control-plane action by `audit_mw` (status 403).
         raise HTTPException(403, "creare ed eliminare datastore e collection è riservato agli admin")
     body = await _body(request)
     if body.get("action") not in _ADMIN_ACTIONS:
         raise HTTPException(400, "azione: " + " | ".join(_ADMIN_ACTIONS))
-    return await _acall(who, "POST", "", json=body,
-                        timeout=_DELETE_TIMEOUT if body.get("action") == "delete" else _TIMEOUT)
+    if body.get("action") != "delete":
+        return await _acall(who, "POST", "", json=body)
+    kind, name = str(body.get("kind") or ""), str(body.get("name") or "")
+    jobs = (await asyncio.to_thread(_job_scopes)).get(f"{kind}:{name}", [])
+    out = await _acall(who, "POST", "", json={**body, "job_scopes": jobs},
+                       timeout=_DELETE_TIMEOUT)
+    removed, failed = await asyncio.to_thread(_drop_from_jobs, kind, name, jobs)
+    out["imports_removed"] = list(out.get("imports_removed") or []) + removed
+    out["imports_failed"] = list(out.get("imports_failed") or []) + failed
+    return out
 
 
 @router.get("/clodia/databases/datastore/{pack}/{name}/tables")
@@ -163,18 +221,54 @@ async def collection_chunks(name: str, request: Request) -> dict:
                         params=_params(request, "doc", "version", "limit", "offset", "scope"))
 
 
+#: Room for the multipart envelope and the small form fields around the file.
+_MULTIPART_OVERHEAD = 64 * 1024
+
+
 @router.post("/clodia/databases/collection/{name}/upload")
-async def collection_upload(name: str, request: Request, file: UploadFile = File(...),
-                            doc_name: str = Form(""), version: str = Form("1"),
-                            scope: str = Form("")) -> dict:
+async def collection_upload(name: str, request: Request) -> dict:
+    """Multipart (`file`, `doc_name?`, `version?`, `scope?`). The size ceiling
+    is enforced BEFORE the body is parsed (#671 review): a declared
+    Content-Length above it is refused at once, and the body is read with a
+    cap — a form parameter would have let Starlette spool the whole upload to
+    disk first."""
     who = _person(request)
     limit = _upload_max()
-    data = await file.read(limit + 1)
+    cap = limit + _MULTIPART_OVERHEAD
+    declared = request.headers.get("content-length") or ""
+    if declared.isdigit() and int(declared) > cap:
+        raise HTTPException(413, f"file troppo grande (max {limit // (1024 * 1024)} MB)")
+    raw = bytearray()
+    async for chunk in request.stream():
+        raw += chunk
+        if len(raw) > cap:
+            raise HTTPException(413, f"file troppo grande (max {limit // (1024 * 1024)} MB)")
+    from starlette.requests import Request as _Req
+    body = bytes(raw)
+    sent = False
+
+    async def receive():
+        nonlocal sent
+        if sent:
+            return {"type": "http.request", "body": b"", "more_body": False}
+        sent = True
+        return {"type": "http.request", "body": body, "more_body": False}
+    form = await _Req(request.scope, receive).form()
+    try:
+        file = form.get("file")
+        if not isinstance(file, StarletteUploadFile):
+            raise HTTPException(400, "campo 'file' richiesto")
+        data = await file.read()
+        filename = file.filename or ""
+        fields = {k: str(form.get(k) or "") for k in ("doc_name", "version", "scope")}
+    finally:
+        await form.close()
     if len(data) > limit:
         raise HTTPException(413, f"file troppo grande (max {limit // (1024 * 1024)} MB)")
-    params = {"filename": file.filename or "", "doc_name": doc_name, "version": version or "1"}
-    if scope:
-        params["scope"] = scope
+    params = {"filename": filename, "doc_name": fields["doc_name"],
+              "version": fields["version"] or "1"}
+    if fields["scope"]:
+        params["scope"] = fields["scope"]
     return await _acall(who, "POST", f"/collection/{_seg(name)}/upload", params=params,
                         data=data, headers={"Content-Type": "application/octet-stream"},
                         timeout=_UPLOAD_TIMEOUT)
