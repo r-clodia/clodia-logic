@@ -1,4 +1,5 @@
-"""Sanificazione di una collection RAG (`clodia-platform#343`): `tier` e `seeds`.
+"""Sanificazione di una collection RAG (`clodia-platform#343`): `tier`, and
+`seeds` dropped (#669).
 
 `tier`: normalizzato e validato come il `clearance` di un datastore
 (`test_sanitize_datastores.py`). Il valore non resta una stringa qualsiasi:
@@ -7,12 +8,9 @@ viene scritto nel manifest registrato, letto dal provisioner
 minuscolo o un `SEAL-9` inventato oggi passavano verbatim, e a valle non
 combaciano con nessun gradino della scala.
 
-`seeds`: member list dichiarata dal pack, stesso stampo di
-`test_sanitize_datastores.py` — un campo ASSENTE non è un campo vuoto, è il
-manifest che non si è pronunciato. La differenza sta a valle, nel gateway:
-dichiarato = vincolante (restringe), non dichiarato = regime dei grant. Qui si
-misura solo che il campo arrivi intero e che un `seeds` malformato non
-sopravviva in una forma che il gate poi interpreterebbe.
+`seeds`: no seed is mapped to a collection any more (clodia-platform#669). A
+manifest that still declares a member list loads, and the list is dropped —
+at import and in the API projection.
 """
 from __future__ import annotations
 
@@ -65,37 +63,12 @@ class SanitizeRagCollectionsTierTests(unittest.TestCase):
 
 
 class SanitizeRagCollectionsSeedsTests(unittest.TestCase):
-    def test_declared_seeds_round_trip(self) -> None:
-        out = _sanitize_rag_collections([
-            {"name": "prassi-fiscale", "tier": "SEAL-1", "seeds": ["aitiero", "archivista"]},
-        ])
-        self.assertEqual(out[0]["seeds"], ["aitiero", "archivista"])
-
-    def test_seeds_absent_when_not_declared(self) -> None:
-        """Il campo NON compare se il pack non lo dichiara: è la distinzione su
-        cui si regge il gate a valle («il manifest non si è pronunciato» ≠
-        «nessuno è autorizzato»)."""
-        out = _sanitize_rag_collections([{"name": "prassi-fiscale"}])
-        self.assertNotIn("seeds", out[0])
-
-    def test_seeds_must_be_a_list_of_strings(self) -> None:
-        out = _sanitize_rag_collections([
-            {"name": "prassi-fiscale", "seeds": "aitiero"},
-        ])
-        self.assertNotIn("seeds", out[0])
-
-    def test_empty_seeds_list_is_dropped_not_kept_as_empty(self) -> None:
-        """Una lista vuota nel manifest è quasi sempre un residuo di editing, e
-        tenuta come `[]` significherebbe «nessuno può entrare»: si scarta, come
-        per i datastore."""
-        out = _sanitize_rag_collections([{"name": "prassi-fiscale", "seeds": []}])
-        self.assertNotIn("seeds", out[0])
-
-    def test_blank_entries_are_dropped(self) -> None:
-        out = _sanitize_rag_collections([
-            {"name": "prassi-fiscale", "seeds": ["aitiero", "  ", "", "archivista"]},
-        ])
-        self.assertEqual(out[0]["seeds"], ["aitiero", "archivista"])
+    def test_a_declared_member_list_is_dropped(self) -> None:
+        for seeds in (["aitiero", "archivista"], "aitiero", [], ["  "]):
+            with self.subTest(seeds=seeds):
+                out = _sanitize_rag_collections([
+                    {"name": "prassi-fiscale", "tier": "SEAL-1", "seeds": seeds}])
+                self.assertNotIn("seeds", out[0])
 
     def test_existing_fields_unaffected(self) -> None:
         """Nessuna regressione sui campi già presenti prima di questo cambio."""
@@ -113,9 +86,7 @@ class SanitizeRagCollectionsSeedsTests(unittest.TestCase):
 
 
 class PluginItemProjectionTests(unittest.TestCase):
-    """La proiezione API non deve buttare via `seeds` — è lo stesso difetto che
-    `clodia-logic#412` ha corretto per i datastore: campo sanificato, persistito
-    e poi perso nel punto che lo mostra."""
+    """The API projection carries no member list (#669)."""
 
     def _item(self, collection: dict) -> dict:
         item = _plugin_item(
@@ -125,13 +96,9 @@ class PluginItemProjectionTests(unittest.TestCase):
         )
         return item["rag_collections"][0]
 
-    def test_declared_seeds_are_projected(self) -> None:
-        row = self._item({"name": "prassi-fiscale", "seeds": ["aitiero"]})
-        self.assertEqual(row["seeds"], ["aitiero"])
-
-    def test_undeclared_seeds_stay_absent_in_the_projection(self) -> None:
-        row = self._item({"name": "prassi-fiscale"})
-        self.assertNotIn("seeds", row)
+    def test_seeds_are_never_projected(self) -> None:
+        self.assertNotIn("seeds", self._item({"name": "prassi-fiscale", "seeds": ["aitiero"]}))
+        self.assertNotIn("seeds", self._item({"name": "prassi-fiscale"}))
 
 
 if __name__ == "__main__":

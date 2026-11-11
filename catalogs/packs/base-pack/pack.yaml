@@ -4,7 +4,7 @@ description: >-
   primitive trasversali di piattaforma + gli agent seed di sistema (clodia,
   ophelia, sysadmin, segretario). A differenza dei pack di terze parti è trusted per
   costruzione: non passa dal security-review gate e non è disinstallabile.
-version: 7.46.0
+version: 7.48.0
 license: AGPL-3.0-or-later
 first_party: true
 # Sorgente per Check update / Update (Opzione A): il pack si aggiorna dal suo
@@ -26,8 +26,9 @@ plugins:
   - base-pack
 # `contacts` (10 set 2026): staccato dal pack tomato — un CRM di anagrafiche
 # non è di un'azienda, è di piattaforma. Letto/scritto dai nuovi verbi
-# datastore.read/datastore.write (clodia-tools 2.13.0), gated da clearance +
-# seeds (schema in server/api/plugin_import.py::_sanitize_datastores). La
+# datastore.read/datastore.write (clodia-tools 2.13.0). No seed list
+# (clodia-platform#669): an agent reaches it only where a topic, a DM or a job
+# imports it (schema in server/api/plugin_import.py::_sanitize_datastores). La
 # skill osint-lead (12 set 2026: generalizzata in business-pack, clodia-packs)
 # continua a referenziarlo con <DATASTORE:contacts> — risolto cross-pack da
 # skill_sync, indipendentemente da quale pack dichiari la skill.
@@ -38,4 +39,3 @@ datastores:
     pii: true
     backup: true
     clearance: "SEAL-1"
-    seeds: ["clodia"]

@@ -175,11 +175,9 @@ class PluginsApiTest(unittest.TestCase):
         self.assertEqual(headers["Authorization"], "•••")          # secret mascherato
         self.assertEqual(headers["X-Api-Key"], "${WEATHER_KEY}")   # placeholder visibile
 
-    def test_datastore_projection_keeps_clearance_and_seeds(self) -> None:
-        """#341: clearance e seed autorizzati sono dichiarati nel manifest e
-        gated dai verbi `datastore.read/write`; se la proiezione li butta via,
-        la webui non ha modo di mostrarli (né la pagina Databases, che legge da
-        qui via `datastores.py`)."""
+    def test_datastore_projection_keeps_clearance_without_seeds(self) -> None:
+        """#341: clearance is declared in the manifest and the projection keeps
+        it; a seed list is dropped (#669)."""
         (self.plugins_meta / "crm-pack").mkdir()
         (self.plugins_meta / "crm-pack" / "plugin.yaml").write_text(yaml.safe_dump({
             "name": "crm-pack",
@@ -193,8 +191,7 @@ class PluginsApiTest(unittest.TestCase):
         ds = self._by_name("crm-pack")["datastores"]
         self.assertEqual(
             {"path": "data/contacts.db", "name": "contacts", "purpose": "CRM contatti",
-             "pii": True, "backup": True, "clearance": "SEAL-1",
-             "seeds": ["messaggero", "clodia"]},
+             "pii": True, "backup": True, "clearance": "SEAL-1"},
             ds[0])
         # Fail-closed: non dichiarare non significa "tutti" — i campi restano
         # assenti, come li lascia `_sanitize_datastores`.

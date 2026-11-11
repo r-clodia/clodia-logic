@@ -214,50 +214,26 @@ class DatastoresInventoryTests(unittest.TestCase):
         stati = [r["status"] for r in out["rag_collections"] if r["name"] == "prassi-fiscale"]
         self.assertEqual(["active"], stati)
 
-    # --- member list delle collection (#341) -----------------------------
+    # --- no member list (#669) -------------------------------------------
 
-    def test_an_active_collection_shows_the_seeds_that_declare_it(self) -> None:
-        """La member list di una collection non è un campo del manifest: è
-        l'indice inverso dei grant `rag_read`/`rag_write` dei seed. Senza
-        proiezione la pagina Databases mostra il clearance e tace su CHI
-        entra, che è metà del requisito di #341."""
+    def test_a_collection_carries_no_seed_list(self) -> None:
+        """No seed is mapped to a collection (#669): a seed that still declares
+        `rag_read`/`rag_write` loads, and nothing of it reaches the inventory."""
         self._install_pack()  # dichiara "prassi-fiscale"
-        self._seed("aitiero", rag_read=["prassi-fiscale"])
-        self._seed("archivista", rag_read=["prassi-fiscale"],
-                   rag_write=["prassi-fiscale"])
-
+        self._seed("aitiero", rag_read=["prassi-fiscale"], rag_write=["prassi-fiscale"])
         rc = self._rag_row("prassi-fiscale")
-        self.assertEqual(["aitiero", "archivista"], rc["seeds_read"])
-        self.assertEqual(["archivista"], rc["seeds_write"])
-        self.assertEqual([], rc["seeds_bypass"])
+        for key in ("seeds", "seeds_read", "seeds_write", "seeds_bypass"):
+            self.assertNotIn(key, rc)
+        from ..agents.loader import registry as _reg
+        self.assertIsNotNone(_reg.get_by_name("aitiero"))
 
-    def test_the_namespace_holder_is_projected_apart_from_the_members(self) -> None:
-        """sysadmin (`rag.*`, il provisioner dei pack) entra ovunque senza
-        nominare nessuna collection: sta in `seeds_bypass`, non nella member
-        list — altrimenti risulterebbe membro di ogni riga."""
-        self._install_pack()
-        self._seed("sysadmin")
-        # Who covers `rag.*` is the gateway's global tuples (#626/#656).
-        from unittest.mock import patch
-
-        from ..agents import authz_grants
-        with patch.object(authz_grants, "global_grants",
-                          lambda n: ["rag.*"] if n == "sysadmin" else []):
-            rc = self._rag_row("prassi-fiscale")
-        self.assertEqual([], rc["seeds_read"])
-        self.assertEqual(["sysadmin"], rc["seeds_bypass"])
-
-    def test_an_orphaned_collection_carries_its_member_list_too(self) -> None:
-        """L'orfana è il caso che un `seeds:` nel manifest non coprirebbe mai:
-        nessun pack installato la dichiara più, ma i seed che la leggono sono
-        ancora lì e vanno visti."""
-        self._seed("aitiero", rag_read=["vecchio-corpus"])
+    def test_an_orphaned_collection_carries_no_seed_list_either(self) -> None:
         rag_store.list_collections = lambda: [
             {"collection": "vecchio-corpus", "tier": "SEAL-0", "documents": 9, "chunks": 200},
         ]
         rc = self._rag_row("vecchio-corpus")
         self.assertEqual("orphaned", rc["status"])
-        self.assertEqual(["aitiero"], rc["seeds_read"])
+        self.assertNotIn("seeds_read", rc)
 
     def _rag_row(self, name: str) -> dict:
         righe = [r for r in asyncio.run(datastores.list_datastores())["rag_collections"]

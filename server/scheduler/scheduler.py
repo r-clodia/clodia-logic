@@ -978,6 +978,14 @@ def reload_all_enabled_jobs() -> int:
 # Fire: spawn della chat Looper
 # ---------------------------------------------------------------------------
 
+def job_chat_id(job_id: int) -> str:
+    """`job:<id>:<timestamp>-<hex>` — the chat of one agentic run (#670). The
+    `job:<id>:` prefix is the scope the gateway reads from the signed claim
+    (`topic_data.scope_of_call`); the suffix keeps each run's chat unique."""
+    from ..sdk_runtime.session import _new_chat_id
+    return f"job:{int(job_id)}:{_new_chat_id()}"
+
+
 def _fire_job_threadsafe(job_id: int) -> None:
     """Callback eseguito dal thread di APScheduler.
 
@@ -1220,7 +1228,12 @@ async def fire_job(job_id: int) -> dict:
     LOG.info("Firing job id=%s name=%s agent=%s", job_id, job["name"], agent)
     chat_id: Optional[str] = None
     try:
-        chat = await manager.create(kind=agent, run_id=f"job:{job_id}")
+        # The job is the turn's DATA scope (clodia-platform#670): its id rides
+        # in the chat id, which the session token signs as the `chat` claim
+        # (`job:<id>:<suffix>`). The gateway reads the job's imports from it;
+        # a random chat id left every data call of a job without a scope.
+        chat = await manager.create(chat_id=job_chat_id(job_id), kind=agent,
+                                    run_id=f"job:{job_id}")
         chat_id = chat.chat_id
         # Titolo custom: lo spec richiede "[CRON] <job-name>". Va impostato
         # PRIMA di consegnare il prompt — `_record()` sovrascrive il titolo

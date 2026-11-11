@@ -5,8 +5,9 @@ The gateway holds the catalog, the imports and the decision (clodia-tools
 
 - `GET  /clodia/data-catalog`: any person; a non-admin sees the resources
   they may import.
-- `POST /clodia/data-catalog`: admins (update tier/importers, retire, sync,
-  migration plan/apply, the `data_access` switch).
+- `POST /clodia/data-catalog`: admins (update tier/importers, retire, sync).
+  The legacy seed mode, its switch and its migration are gone (#669): scope
+  imports are the only data access.
 - `POST /clodia/channels/{tier}/{name}/data`: the topic's owner, a PERSON
   (import, remove, grant). The gateway re-checks importer, clearance, tier.
 - `GET|POST /clodia/channels/{tier}/{name}/tools` (#609): the room's toolbox —
@@ -29,7 +30,7 @@ from . import admin, topics_client
 LOG = logging.getLogger("agent-server.topic_data")
 router = APIRouter()
 
-_ADMIN_ACTIONS = {"update", "retire", "sync", "migration_plan", "migration_apply", "set_mode"}
+_ADMIN_ACTIONS = {"update", "retire", "sync"}
 
 
 def _person(request: Request) -> str:

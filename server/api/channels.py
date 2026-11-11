@@ -1682,9 +1682,12 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
 
 # I DM sono canali a 2 partecipanti (meta.kind="dm"): nome deterministico (i due
 # nomi ordinati) così "owner↔clodia" e "clodia↔owner" sono lo STESSO canale.
-# Tier P0: l'accesso è ristretto ai 2 membri dal gate _require_member, non dal
-# tier; P0 garantisce che l'AeI coinvolto possa sempre rispondere (clearance≥P0).
-_DM_TIER = "SEAL-0"
+# A new DM is SEAL-0: access is limited to its two members by _require_member,
+# not by the tier, and SEAL-0 lets the agent always answer. Its owner may then
+# set another tier, like a topic's (owner, 11 Nov 2026, clodia-platform#670):
+# this is the DEFAULT, never a value that overrides the DM's current tier.
+_DM_DEFAULT_TIER = "SEAL-0"
+_DM_TIERS = ("SEAL-0", "SEAL-1", "SEAL-2", "SEAL-3", "SEAL-4")
 
 
 def _dm_name(a: str, b: str) -> str:
@@ -5633,6 +5636,17 @@ async def dm_create(request: Request) -> dict:
     if other == principal:
         raise HTTPException(400, "non puoi aprire un DM con te stesso")
     name = _dm_name(principal, other)
+    # Reopening returns the DM where it is: its owner may have moved it to
+    # another tier, and creating it at the default would collide with the
+    # platform-unique name.
+    for t in _DM_TIERS:
+        try:
+            found = await topics_client.async_open_topic(t, name)
+        except topics_client.TopicsClientError as e:
+            raise HTTPException(502, f"apertura DM fallita: {str(e)[:160]}")
+        if found:
+            return {"tier": found.get("tier") or t, "name": name,
+                    "meta": found.get("meta") or {}}
     meta = {
         "title": f"{principal} ↔ {other}",
         "type": "dm",
@@ -5642,10 +5656,10 @@ async def dm_create(request: Request) -> dict:
         "contact_agent": other,
     }
     try:
-        created = await topics_client.async_create_topic(_DM_TIER, name, meta)
+        created = await topics_client.async_create_topic(_DM_DEFAULT_TIER, name, meta)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"creazione DM fallita: {str(e)[:160]}")
-    return {"tier": _DM_TIER, "name": name, "meta": created}
+    return {"tier": _DM_DEFAULT_TIER, "name": name, "meta": created}
 
 
 def _scope_role(meta: dict, chi: str | None) -> str | None:

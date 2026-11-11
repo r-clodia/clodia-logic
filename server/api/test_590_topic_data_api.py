@@ -55,8 +55,12 @@ class CatalogTests(_Base):
         c = self.client("davide", admin_=True)
         self.assertEqual(c.post("/clodia/data-catalog", json={"action": "x"}).status_code, 400)
         self.assertEqual(c.post("/clodia/data-catalog",
-                                json={"action": "migration_plan"}).status_code, 200)
+                                json={"action": "sync"}).status_code, 200)
         self.assertEqual(self.sent[-1]["by"], "davide")
+        # #669: no legacy mode to switch, nothing to migrate.
+        for gone in ("set_mode", "migration_plan", "migration_apply"):
+            self.assertEqual(c.post("/clodia/data-catalog",
+                                    json={"action": gone}).status_code, 400, gone)
         self.assertIs(self.sent[-1]["by_admin"], True)
 
     def test_an_agent_is_refused(self):

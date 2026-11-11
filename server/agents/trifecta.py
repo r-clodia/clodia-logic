@@ -450,7 +450,7 @@ ROOM_FLOOR = "topic.*"
 #: divergenza qui SOTTOSTIMA il punteggio.
 _DATA_READ_VERBS = {"rag": ("rag.search", "rag.list", "rag.collections"),
                     "datastore": ("datastore.read",)}
-_DATA_WRITE_VERBS = {"datastore": ("datastore.write",)}
+_DATA_WRITE_VERBS = {"datastore": ("datastore.write",), "rag": ("rag.ingest", "rag.remove")}
 _DATA_MODES = ("read", "write")
 
 

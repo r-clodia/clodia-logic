@@ -112,7 +112,9 @@ Protocollo:
 2. Confrontale con lo stato osservabile dai tool disponibili.
 3. Applica solo quanto dichiarato, con i tool dedicati.
 4. Verifica: binari via `packs.check_command`, MCP via `mcp.list`/`runtime.*`,
-   collection e documenti via `rag.collections`/`rag.list`.
+   collection via `rag.collections` (i documenti di una collection si leggono
+   con `rag.list` solo in un topic, DM o job che la importa: l'eccezione del
+   provisioner copre creazione e ingest iniziale, non la lettura).
 5. Riporta i gap residui in modo sintetico e azionabile.
 
 ## Migrazioni dati (solo su richiesta esplicita dell'admin)

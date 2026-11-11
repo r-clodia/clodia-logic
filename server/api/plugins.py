@@ -273,11 +273,9 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
     rules = _dedupe(bucket["rules"])
     # I datastore dichiarati dal plugin: esposti così il pack si auto-descrive
     # nella UI accanto a skill/rule/mcp. Si proietta con la stessa sanificazione
-    # dell'import (`_sanitize_datastores`), non con una copia a mano: quella
-    # copia perdeva `name`, `clearance` e `seeds` — cioè proprio l'allowlist a
-    # due assi dei verbi `datastore.read/write` — e la webui non aveva modo di
-    # mostrarli (#341). In più una riga attiva esce ora con la stessa forma di
-    # una archiviata, che da `datastores.py` passa già di qui.
+    # dell'import (`_sanitize_datastores`), non con una copia a mano (#341). In
+    # più una riga attiva esce ora con la stessa forma di una archiviata, che da
+    # `datastores.py` passa già di qui. No seed list (clodia-platform#669).
     # La sezione `workflows` del manifest non si legge più — il motore non c'è —
     # e un manifest che la dichiara non è un errore: resta ignorata, perché
     # rifiutare il pack per una chiave che non serve più romperebbe i pack di
@@ -299,15 +297,6 @@ def _plugin_item(name: str, bucket: dict[str, Any], external) -> dict[str, Any]:
                 for r in (c.get("resources") or []) if isinstance(r, dict)
             ],
         }
-        # `seeds` (member list dichiarata, clodia-platform#343) SOLO se c'è: il
-        # campo assente vuol dire «il manifest non si è pronunciato», e un `[]`
-        # messo qui per comodità di serializzazione si leggerebbe a schermo — e
-        # nel gate — come «nessuno è autorizzato». È lo stesso errore che #412
-        # ha corretto per i datastore, all'incontrario: lì il campo si perdeva,
-        # qui si inventerebbe.
-        seeds = c.get("seeds")
-        if isinstance(seeds, list) and seeds:
-            row["seeds"] = [str(s) for s in seeds]
         return row
 
     rag_collections = [

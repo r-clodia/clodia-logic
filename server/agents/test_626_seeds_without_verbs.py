@@ -104,16 +104,14 @@ class AdminComposeTests(_Base):
 
 
 class SignalsTests(_Base):
-    def test_routing_and_rag_members_read_the_global_tuples(self):
+    def test_routing_reads_the_global_tuples(self):
         from ..api import responder_routing as RR
-        from . import rag_members as RM
         rows = {"tuples": [{"agent": "esperto", "verb": "eu_corpus.search",
                             "rule": [{"effect": "allow"}]},
                            {"agent": "esperto", "verb": "rag.*", "rule": [{"effect": "allow"}]}]}
         with patch.object(topics_client, "authz_tuples", lambda a=None: rows):
             self.assertIn("eu-normativa",
-                          RR._agent_collections(NS(name="esperto", rag_read=[])))
-            self.assertTrue(RM._copre_i_verbi_rag("esperto", {}))
+                          RR._agent_collections(NS(name="esperto")))
 
     def test_the_trifecta_reads_the_global_tuples(self):
         from . import trifecta as T
@@ -128,17 +126,15 @@ class SignalsTests(_Base):
         """#656: gateway silent ⇒ no grant, at every former seed-fallback site
         — a stale `tool_permissions` on the object is not read."""
         from ..api import responder_routing as RR
-        from . import rag_members as RM
         from . import trifecta as T
 
         def boom(*a, **k):
             raise topics_client.TopicsClientError("giù")
-        spec = NS(name="esperto", type="bot", native_tools=None, rag_read=[],
+        spec = NS(name="esperto", type="bot", native_tools=None,
                   tool_permissions=["rag.*", "eu_corpus.search", "email.send"])
         with patch.object(topics_client, "authz_tuples", boom), \
                 patch.object(topics_client, "authz_available", boom):
             self.assertEqual(RR._agent_collections(spec), [])
-            self.assertFalse(RM._copre_i_verbi_rag("esperto", {"esperto": spec}))
             p = T.agent_profile(spec, all_specs=[spec])
         self.assertFalse(any("email.send" in w for ws in p["why"].values() for w in ws))
 

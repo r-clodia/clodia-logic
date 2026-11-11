@@ -95,6 +95,15 @@ class RoomGrantsTests(unittest.TestCase):
         self.assertNotIn("datastore.write", b)   # grant di sola lettura
         self.assertNotIn("rag.search", b)        # nessun grant su quell'indice
 
+    def test_writing_a_collection_brings_ingest_and_remove(self) -> None:
+        """clodia-platform#669: the gateway's `_WRITE_VERBS["rag"]` is
+        `rag.ingest`/`rag.remove`; without them here a room that lets an agent
+        feed a collection scored as if it could not write."""
+        meta = {"data": [{"kind": "rag", "name": "corpus", "grants": {"a": "write"}}]}
+        a = trifecta.room_grants(meta, "a")
+        self.assertIn("rag.ingest", a)
+        self.assertIn("rag.remove", a)
+
     def test_an_unreadable_toolbox_does_not_become_permissive(self) -> None:
         for rotta in ({"tools": "email.*"}, {"tools": {"enabled": "email.*"}},
                       {"tools": {"enabled": [""], "except": ["dev"]}}, {}):

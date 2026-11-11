@@ -10,6 +10,10 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.48.0] — 2026-11-11
+- **No seed is mapped to a datastore any more** (clodia-platform#669, owner's decision): `seeds: ["clodia"]` removed from the `contacts` datastore in `pack.yaml` and in the plugin manifest. An agent reaches `base-pack/contacts` only where the topic, DM or job it works in imports it (Databases → import, or the topic's «Dati» panel, or the job editor). Requires clodia-logic ≥ 6.349.0 and clodia-tools ≥ 2.167.0. **On deploy, clodia loses the seed-based access to `contacts`** until the datastore is imported into the scopes where it is used. `SETUP.md` updated.
+- sysadmin's prompt: verifying a pack's collections uses `rag.collections`; `rag.list` reads a collection's documents only in a scope that imports it — the provisioner exception covers create and initial ingest, not reads (#669).
+
 ## [7.46.0] — 2026-11-09
 - **TLDR = one telegraphic line** (clodia-platform#664): the topic-management skill and the segretario prompt ask for ONE line, max 120 characters, no title — state, key numbers, next action (owner's example: `Discovery chiusa. Stima 3 mesi 300k euro. Next action decidere escrow.`) — and to rewrite it when `topic.save_summary` answers `tldr_warning` (gateway ≥ 2.164.0).
 
