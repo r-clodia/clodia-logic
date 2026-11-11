@@ -83,27 +83,32 @@ class DoorTests(_Base):
 
 
 class JobScopeTests(_Base):
-    """#670 jobs are scopes too: listed for admins, cleaned on delete."""
+    """#670 jobs are scopes too: listed for admins, cleaned on delete — on the
+    real scheduler records (`db.set_job_data`), in a temp jobs dir."""
 
     def setUp(self):
+        import tempfile
+        from pathlib import Path
         from ..scheduler import db
-        self.jobs = {7: {"id": 7, "data": [{"kind": "rag", "name": "manuali"},
-                                           {"kind": "datastore", "name": "a/b"}]},
-                     8: {"id": 8, "data": []}}
-        self.written = {}
-        for name, fake in (("list_jobs", lambda: list(self.jobs.values())),
-                           ("get_job", lambda i: self.jobs.get(i)),
-                           ("set_job_data", lambda i, d: self.written.update({i: d}) or {})):
-            p = patch.object(db, name, fake, create=True)
-            p.start()
-            self.addCleanup(p.stop)
+        self.db = db
+        tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(tmp.cleanup)
+        p = patch.object(db, "JOBS_DIR", Path(tmp.name))
+        p.start()
+        self.addCleanup(p.stop)
+        j7 = db.create_job("sette", "0 8 * * *", "p")
+        db.create_job("otto", "0 9 * * *", "p")
+        db.set_job_data(j7["id"], [{"kind": "rag", "name": "manuali"},
+                                   {"kind": "datastore", "name": "a/b"}])
+        self.j7 = j7["id"]
 
     def test_admins_see_job_scopes_in_the_catalogue(self):
         data = {"is_admin": True, "entries": [
             {"key": "rag:manuali", "imported_by_scopes": ["SEAL-2/commerciale"]},
             {"key": "datastore:x/y", "imported_by_scopes": []}]}
         out = self.client("davide", admin_=True, data=data).get("/clodia/databases").json()
-        self.assertEqual(out["entries"][0]["imported_by_scopes"], ["SEAL-2/commerciale", "job:7"])
+        self.assertEqual(out["entries"][0]["imported_by_scopes"],
+                         ["SEAL-2/commerciale", f"job:{self.j7}"])
         self.assertEqual(out["entries"][1]["imported_by_scopes"], [])
         data["is_admin"] = False
         data["entries"][0]["imported_by_scopes"] = ["SEAL-2/commerciale"]
@@ -116,16 +121,16 @@ class JobScopeTests(_Base):
         r = c.post("/clodia/databases", json={"action": "delete", "kind": "rag",
                                               "name": "manuali", "confirm": "manuali"})
         self.assertEqual(r.status_code, 200)
-        self.assertEqual(self.sent[-1][2]["json"]["job_scopes"], ["job:7"])
-        self.assertEqual(self.written, {7: [{"kind": "datastore", "name": "a/b"}]})
-        self.assertEqual(r.json()["imports_removed"], ["SEAL-2/x", "job:7"])
+        self.assertEqual(self.sent[-1][2]["json"]["job_scopes"], [f"job:{self.j7}"])
+        self.assertEqual(self.db.get_job(self.j7)["data"], [{"kind": "datastore", "name": "a/b"}])
+        self.assertEqual(r.json()["imports_removed"], ["SEAL-2/x", f"job:{self.j7}"])
 
     def test_a_refused_gateway_delete_touches_no_job(self):
         c = self.client("davide", admin_=True, status=403, data={"error": "clearance"})
         r = c.post("/clodia/databases", json={"action": "delete", "kind": "rag",
                                               "name": "manuali", "confirm": "manuali"})
         self.assertEqual(r.status_code, 403)
-        self.assertEqual(self.written, {})
+        self.assertEqual(len(self.db.get_job(self.j7)["data"]), 2)
 
 
 class UploadTests(_Base):
