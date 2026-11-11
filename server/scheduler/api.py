@@ -477,6 +477,8 @@ async def api_update_job(job_id: int, req: JobUpdate, request: Request):
         _require_valid_cron(cron)
     if req.agent is not None:
         _require_valid_agent(req.agent)
+    if req.tier is not None:
+        await _check_job_tier_change(_require_job(job_id), req.tier)
     try:
         updated = db.update_job(
             job_id,
@@ -509,15 +511,26 @@ async def api_delete_job(job_id: int, request: Request):
     return {"deleted": job_id}
 
 
-def _job_scope_tier(job: dict) -> str:
-    """The job's tier as a data scope (#670): the one it declares, else the
-    executing agent's effective clearance (the SEAL of the provider it runs
-    on), which is also what the gateway uses at call time."""
-    declared = str(job.get("tier") or "").strip()
-    if declared:
-        return declared
-    from ..sdk_runtime.session import _effective_clearance
-    return _effective_clearance(str(job.get("agent") or "")) or "SEAL-0"
+#: Owner, 11 Nov 2026: a job that imports data declares its tier first.
+JOB_NO_TIER = "set the job tier before importing data"
+
+
+async def _check_job_tier_change(job: dict, new_tier: str) -> None:
+    """A job's tier cannot go below the data it imports, nor be removed while
+    it imports any (#670). The gateway holds the catalog, so it decides."""
+    from ..api.topic_data import _gw
+    data = list(job.get("data") or [])
+    if not data:
+        return
+    if not str(new_tier or "").strip():
+        raise HTTPException(400, "a job that imports data needs a tier: remove its "
+                                 "imported data first")
+    try:
+        await asyncio.to_thread(topics_client.data_catalog, {
+            "action": "check_scope_tier", "data": data, "tier": new_tier,
+            "scope_kind": "job"})
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
 
 
 @router.post("/clodia/jobs/{job_id}/data")
@@ -525,10 +538,12 @@ async def api_job_data(job_id: int, request: Request):
     """Import a datastore/collection into an agentic job, or remove it
     (clodia-platform#670): `{action: import|remove, kind, resource}`.
 
-    The job's owner (or an admin), a PERSON — like a topic's imports. The
-    gateway checks the import rules (catalog, importer, clearance, job tier ≥
-    resource tier) before anything is written; at every call it checks them
-    again on the job read live. A `topic_trigger` job keeps its topic's
+    The job's owner (or an admin), a PERSON — like a topic's imports. The job
+    must declare a tier first (owner, 11 Nov 2026: no fallback to the agent's
+    clearance). The gateway checks the import rules (catalog, importer,
+    clearance, job tier ≥ resource tier) before anything is written; at every
+    call it checks them again on the job read live, with the executing agent's
+    clearance ≥ the job's tier. A `topic_trigger` job keeps its topic's
     imports and a `logic` job has no agent turn: neither imports here."""
     from ..api import admin
     from ..api.topic_data import _actor, _gw
@@ -558,7 +573,9 @@ async def api_job_data(job_id: int, request: Request):
                 "data": (updated or {}).get("data", entries)}
     if present:
         return {"ok": True, "already": True, "data": entries}
-    tier = await asyncio.to_thread(_job_scope_tier, job)
+    tier = str(job.get("tier") or "").strip()
+    if not tier:
+        raise HTTPException(400, JOB_NO_TIER)
     try:
         checked = await asyncio.to_thread(topics_client.data_catalog, {
             "action": "check_import", "kind": kind, "resource": resource,

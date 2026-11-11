@@ -1330,6 +1330,21 @@ def _tier_impact(meta: dict, new_tier: str) -> dict:
             "lose_access": perde, "gain_access": guadagna}
 
 
+def _require_dm_tier_within_owner(meta: dict, new_tier: str) -> None:
+    """A DM's tier cannot exceed its owner's clearance (owner, 11 Nov 2026,
+    clodia-platform#670). Lowering below what it imports is the gateway's
+    `check_retier`, as for every topic; the agent keeps acting only with
+    clearance ≥ the tier, as in every topic (`channels._eligibility`)."""
+    if (meta.get("kind") or meta.get("type")) != "dm":
+        return
+    owner = str(meta.get("owner") or "")
+    cap = _principal_clearance(owner) if owner else "SEAL-0"
+    cap = cap if cap in _TIERS else "SEAL-0"
+    if _TIERS.index(new_tier) > _TIERS.index(cap):
+        raise HTTPException(
+            403, f"il DM non può superare la clearance del suo owner '{owner}' ({cap})")
+
+
 @router.get("/api/topics/{tier}/{name}/tier-preview")
 async def topic_tier_preview(tier: str, name: str, request: Request, to: str = Query(...)):
     """Anteprima di una riclassificazione: cosa cambia per chi partecipa."""
@@ -1337,6 +1352,7 @@ async def topic_tier_preview(tier: str, name: str, request: Request, to: str = Q
     nuovo = (to or "").strip().upper()
     if nuovo not in _TIERS:
         raise HTTPException(400, f"livello non valido: {to}")
+    _require_dm_tier_within_owner(meta, nuovo)
     return await asyncio.to_thread(_tier_impact, meta, nuovo)
 
 
@@ -1364,6 +1380,7 @@ async def topic_set_tier(tier: str, name: str, request: Request):
         raise HTTPException(400, "serve una motivazione")
     if body.get("accept_responsibility") is not True:
         raise HTTPException(400, "serve la presa di responsabilità esplicita")
+    _require_dm_tier_within_owner(meta, nuovo)
     impatto = await asyncio.to_thread(_tier_impact, meta, nuovo)
     try:
         esito = await topics_client.async_set_topic_tier(tier, name, nuovo, principal, motivo)
