@@ -10,6 +10,9 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.46.0] — 2026-11-09
+- **TLDR = one telegraphic line** (clodia-platform#664): the topic-management skill and the segretario prompt ask for ONE line, max 120 characters, no title — state, key numbers, next action (owner's example: `Discovery chiusa. Stima 3 mesi 300k euro. Next action decidere escrow.`) — and to rewrite it when `topic.save_summary` answers `tldr_warning` (gateway ≥ 2.164.0).
+
 ## [7.45.0] — 2026-11-09
 - **The sandbox carries only the shell guards** (clodia-platform#656, owner's decision): `allow_read`, `deny_read` and `allow_write` removed from clodia, ophelia, segretario and sysadmin. They were applied only by the claude runtime, relative paths matched nothing in the spawn cwd, and a shell walked around a Read deny. The file boundary is the spawn's uid against root-only directories; least privilege inside a room is A·V·R·Q. `allow_shell_cmds` and `deny_shell_patterns` stay (the latter is also enforced by opencode). sysadmin's absolute deny paths were checked against that boundary — see the clodia-logic PR for #656. Requires clodia-logic ≥ 6.342.0, which ignores the removed keys in older seeds instead of refusing them.
 - No base-pack seed declares `tool_permissions` (already removed in 7.41.0); the field is now gone from the seed schema too. The archseed declares no verbs either: the gateway uses its built-in floor.

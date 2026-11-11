@@ -62,8 +62,11 @@ description: |
    → **escala a owner**.
 
 ## Disciplina editoriale del `summary` (da cui dipende la card webui)
-- **Prima riga = TLDR**: una frase sintetica con titolo + stato corrente (è ciò
-  che appare in grande sulla card). Tienila sempre significativa e aggiornata.
+- **Prima riga = TLDR**: **UNA riga telegrafica**, massimo 120 caratteri, senza
+  titolo (la card lo mostra già): stato, numeri chiave, prossima azione. Esempio:
+  `Discovery chiusa. Stima 3 mesi 300k euro. Next action decidere escrow.`
+  Niente frasi complete, niente premesse. Se `topic.save_summary` risponde con
+  `tldr_warning`, riscrivi la riga e risalva.
 - Sezione **`## Prossimi passi`**: il racconto degli action point aperti. La
   versione strutturata — con date e assegnatari, da cui deriva la deadline del
   topic — è la lista to-do (`meta.todos`): tienile allineate. Una data scritta
