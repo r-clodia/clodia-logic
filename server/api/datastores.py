@@ -15,8 +15,9 @@ Tre stati per una riga:
   in `plugins-archive/<nome>-<timestamp>/` (`plugin_import.archive_plugin_dir`)
   e può essere cancellata definitivamente da qui;
 - `orphaned` — SOLO le collection RAG: il pack che le dichiarava non è più
-  installato, ma la collection resta viva in pgvector (nessuna azione da qui:
-  il servizio `eu-rag-search` non espone un endpoint di cancellazione).
+  installato, ma la collection resta viva in pgvector. Eliminarla (con
+  l'export prima della cancellazione) si fa dalla pagina Databases, via
+  `/clodia/databases` (`databases.py`, clodia-platform#671).
 
 No row carries a seed list (clodia-platform#669): no seed is mapped to a
 datastore or a collection. An agent reaches one only where the scope it works

@@ -67,7 +67,10 @@ PLUGINS_META_DIR = data_path("plugins")
 # è la label implicita delle entry flat del data catalog. Nessuno è importabile
 # dal path terze parti.
 RESERVED_PLUGIN_NAMES = {"base-pack", "editorial-pack", "comms-pack", "google-pack",
-                         "local-pack", "logic"}
+                         "local-pack", "logic",
+                         # The pseudo-pack of the datastores created from the
+                         # Databases page (`platform/<name>`, clodia-platform#671).
+                         "platform"}
 
 # What cannot be REMOVED is a different, smaller set (clodia-platform#562):
 # base-pack carries the native agents, skills and rules the platform needs to
