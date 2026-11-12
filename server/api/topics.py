@@ -877,6 +877,37 @@ async def set_topic_goal(tier: str, name: str, request: Request):
     return res
 
 
+@router.get("/api/topics/{tier}/{name}/listen")
+async def get_topic_listen(tier: str, name: str, request: Request):
+    """The room's «In ascolto» (clodia-platform#675/#676): the kinds of source
+    the instance can listen to and the sources this room listens to. Any
+    participant reads it."""
+    await asyncio.to_thread(_topic_for_contributor, request, tier, name)
+    try:
+        return await topics_client.async_topic_listen(tier, name)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
+@router.post("/api/topics/{tier}/{name}/listen")
+async def set_topic_listen(tier: str, name: str, request: Request):
+    """Add or remove a source the room listens to (template kinds; a chat is
+    linked through its connector action). Owner or admin: it moves the room's
+    trusted sources."""
+    await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
+    body = {k: (body or {}).get(k) for k in ("action", "connector", "kind", "address", "reply")}
+    try:
+        return await topics_client.async_topic_listen(tier, name, body)
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, str(e))
+
+
 @router.post("/api/topics/{tier}/{name}/orchestrator")
 async def set_topic_orchestrator(tier: str, name: str, request: Request):
     """Who orchestrates this room (clodia-platform#667): one click in the

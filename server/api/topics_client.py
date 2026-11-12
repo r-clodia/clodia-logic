@@ -451,6 +451,29 @@ def dm_tools(body: dict | None = None) -> dict:
     return r.json()
 
 
+def topic_listen(tier: str, name: str, body: dict | None = None) -> dict:
+    """The room's «In ascolto» (#676): GET {kinds, sources} without `body`,
+    POST {action: add|remove, connector, kind, address, reply?} with it.
+    A 400 carries the gateway's reason."""
+    url = f"{_base()}/{tier}/{name}/listen"
+    try:
+        if body is None:
+            r = _gw_http.get(url, headers=_headers(), timeout=30)
+        else:
+            r = _gw_http.post(url, headers=_headers(), json=body, timeout=30)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway listen irraggiungibile: {e}") from e
+    if r.status_code == 400:
+        try:
+            det = (r.json() or {}).get("error") or r.text[:160]
+        except ValueError:
+            det = r.text[:160]
+        raise ValueError(det)
+    if r.status_code != 200:
+        raise _http_error("listen", r)
+    return r.json()
+
+
 def topic_index_action(tier: str, name: str, body: dict) -> dict:
     """The topic's RAG index (#599): enable/disable → gateway."""
     url = _base().rsplit("/topics", 1)[0] + f"/topic-index/{tier}/{name}"
@@ -846,6 +869,7 @@ async_read_topic_logo = _async_of("read_topic_logo")
 async_set_status = _async_of("set_status")
 async_todo_action = _async_of("todo_action")
 async_set_goal = _async_of("set_goal")
+async_topic_listen = _async_of("topic_listen")
 async_set_orchestrator = _async_of("set_orchestrator")
 async_export_bundle = _async_of("export_bundle")
 async_import_bundle = _async_of("import_bundle")

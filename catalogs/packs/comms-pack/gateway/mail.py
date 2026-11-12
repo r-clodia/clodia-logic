@@ -306,7 +306,7 @@ def _deny_sender(verb: str, sender: str) -> None:
         f"{MITTENTE_NON_VAGLIATO}: questo canale è a INGRESSO STRETTO e ammette "
         "solo i messaggi di chi è nella stanza (owner e partecipanti) o di un "
         f"mittente dichiarato. Per leggere questo messaggio serve mailfrom:{addr} "
-        "fra i Mittenti del canale (Strumenti → Email), e lo aggiunge l'owner."
+        "fra le fonti In ascolto del canale (Mittente email), e lo aggiunge l'owner."
     )
 
 
@@ -635,7 +635,7 @@ def list_messages(account: str = "demo", folder: str = "INBOX", limit: int = 10)
             out["withheld"] = tolti
             out["note"] = (
                 f"{tolti} messaggi non mostrati: canale a ingresso stretto, il "
-                "mittente non è nella stanza né fra i Mittenti (Strumenti → Email). "
+                "mittente non è nella stanza né fra le fonti In ascolto. "
                 "Di questi messaggi non si vede nulla, nemmeno l'oggetto."
             )
     return out
@@ -851,8 +851,8 @@ def _deny_courier(header: str) -> None:
     _record_ingress("courier.mail", "deny")
     raise PermissionError(
         f"{MITTENTE_NON_VAGLIATO}: il corriere consegna in questa stanza solo "
-        f"la posta dei mittenti che la stanza dichiara (mailfrom:{addr} fra i "
-        "suoi ingress, lo aggiunge l'owner)")
+        f"la posta dei mittenti che la stanza ascolta (mailfrom:{addr} fra le "
+        "sue fonti In ascolto, lo aggiunge l'owner)")
 
 
 def _assert_courier_sender(result: object) -> None:
@@ -1258,7 +1258,7 @@ def search(query: str, account: str = "demo", folder: str = "INBOX", limit: int 
             out["withheld"] = tolti
             out["note"] = (
                 f"{tolti} risultati non mostrati: canale a ingresso stretto, il "
-                "mittente non è nella stanza né fra i Mittenti (Strumenti → Email)."
+                "mittente non è nella stanza né fra le fonti In ascolto."
             )
     return out
 

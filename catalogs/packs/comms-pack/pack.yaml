@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 2.6.2
+version: 2.7.0
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -144,6 +144,13 @@ connectors:
             - 'tg:{chat_id}'
           egress:
             - 'tg:{chat_id}'
+    # The room's «In ascolto» (clodia-platform#678): a Telegram chat is a
+    # source the room listens to through the link above; it is answered where
+    # it is (reply implicit). Needs clodia-tools ≥ 2.171.0 (#676).
+    listen:
+      - kind: chat
+        label: Chat o gruppo Telegram
+        action: telegram-link
     # La card della pagina Tools. Dalla fase 2 di #522 i campi sono quelli del
     # manifest del gateway (`builtin_manifests/telegram.yaml`) CAMPO PER CAMPO:
     # quando l'interruttore d'istanza passa a `pack`, quel documento esce di
@@ -342,6 +349,20 @@ connectors:
             - 'inbox:{address}'
           egress:
             - 'outbox:{address}'
+    # The room's «In ascolto» (clodia-platform#677): a sender the room listens
+    # to. Its mail reaches the room through the room's own inbox address (the
+    # message box) and any linked mailbox; `mailfrom:` is a trusted source
+    # (listening = trusted, owner 12 Nov 2026). Replying is the owner's choice.
+    listen:
+      - kind: sender
+        label: Mittente email
+        field:
+          name: sender
+          label: Indirizzo o dominio
+          placeholder: 'nome@dominio.it oppure *@dominio.it'
+        ingress: 'mailfrom:{sender}'
+        egress: 'mailto:{sender}'
+        reply: choice
     tools_card:
       icon: email
       setup_label: Gestisci caselle
