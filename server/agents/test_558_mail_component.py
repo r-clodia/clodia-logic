@@ -99,6 +99,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
         pack = json.loads(json.dumps(self.pack))
         pack.pop("providers")
         pack.pop("unmapped")
+        pack.pop("listen")      # #677: the room's «In ascolto», a pack addition
         for scheme in pack["schemes"]:
             if scheme["scheme"] in ("inbox", "outbox"):
                 scheme.pop("forms")
@@ -137,7 +138,7 @@ class DeclarationMatchesTheBuiltinTests(unittest.TestCase):
 class ComponentsBlockTests(unittest.TestCase):
     def test_one_gateway_component_from_this_repository(self) -> None:
         doc = _pack_doc()
-        self.assertEqual(doc["version"], "2.6.2")
+        self.assertEqual(doc["version"], "2.7.0")
         self.assertIs(doc["first_party"], True)
         # ONE gateway component per pack (the gateway refuses a second): from
         # 2.1.1 it serves mail and Telegram (#522, test_522_telegram_component).

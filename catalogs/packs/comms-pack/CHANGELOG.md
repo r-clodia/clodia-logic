@@ -8,6 +8,10 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.7.0] — 2026-11-12
+- **«In ascolto»** (clodia-platform#675, #677, #678): the mail connector declares the `sender` listen kind (`mailfrom:{sender}`, reply by the owner's choice → `mailto:{sender}`) and the Telegram connector the `chat` kind (the chat `telegram-link` binds, reply implicit). Needs clodia-tools ≥ 2.171.0; an older gateway ignores the section.
+- check-email and the mail notes speak of sources the room listens to (#681).
+
 ## [2.6.2] — 2026-11-09
 - Owner-facing wording (clodia-platform#662): the mail notes and the check-email skill name the room's lists as the webui now shows them — «Mittenti» and «Caselle collegate» in Strumenti → Email — instead of "ingress".
 

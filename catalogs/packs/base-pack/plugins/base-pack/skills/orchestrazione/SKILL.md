@@ -60,6 +60,13 @@ nel merito di ciò che è di uno specialista: classifica e passa, e tiene lo sta
 del topic (summary, TLDR, to-do). **Clodia** e **Ophelia** possono eseguire le
 operazioni semplici che la stanza consente, ma delegano il lavoro di mestiere.
 
+## Fonti in ascolto
+
+La stanza riceve messaggi dalle fonti che l'owner ha messo **in ascolto**
+(sezione «In ascolto», comando `/listen`): mittenti email, chat e gruppi. Una
+fonte in ascolto è fidata. Se serve una fonte che manca, chiedi all'owner di
+aggiungerla, nominando tipo e indirizzo: non è un tuo verbo.
+
 ## Collegare due stanze
 
 Collegare due topic dello stesso livello SEAL fa comparire in ciascuno l'albero

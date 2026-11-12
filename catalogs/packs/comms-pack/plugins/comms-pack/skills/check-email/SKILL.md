@@ -17,20 +17,24 @@ L'utente chiede di "avvisarlo quando arriva la mail di X", di "tenere d'occhio l
 casella" o di rispondere a una mail arrivata nel topic.
 
 ## Come arriva la posta
-Servono **due voci nella card Email della stanza** (Strumenti → Email; le aggiunge l'owner):
-- `inbox:<casella>` — da quale casella il corriere legge («Caselle collegate»);
-- `mailfrom:<mittente>` — fra i «Mittenti»: di chi è la posta che riguarda questa stanza. Una
-  casella serve molte stanze: ognuna riceve **solo** i mittenti che dichiara lei
-  (anche nella forma `mailfrom:*@dominio.it`). Le voci globali e i partecipanti
-  non bastano (clodia-platform#576).
+La stanza ha un suo **indirizzo** (l'inbox di canale, in cima a Strumenti): la
+posta inviata lì arriva, chiunque scriva. Per la posta che arriva altrove, l'owner
+mette la stanza **in ascolto** del mittente (sezione «In ascolto» o `/listen` →
+«Mittente email», `nome@dominio.it` oppure `*@dominio.it`): è la voce
+`mailfrom:<mittente>`, e un mittente in ascolto è una fonte fidata. Una casella
+collegata alla stanza («Caselle collegate», `inbox:<casella>`) porta la posta di
+quei mittenti anche da quella casella. Una casella serve molte stanze: ognuna
+riceve **solo** i mittenti che ascolta lei. Le voci globali e i partecipanti non
+bastano (clodia-platform#576).
 
-Con entrambe, ogni mail nuova di quei mittenti compare nel topic come messaggio di
+Con la stanza in ascolto, ogni mail nuova di quei mittenti compare nel topic come messaggio di
 `posta`, con gli allegati in `files/posta-…` e il messaggio intero in
 `local/mailbox/<data>-<chiave>.eml`. Un mittente aggiunto oggi porta la posta da
 oggi: quella già in casella non viene riconsegnata.
 
-- Casella senza mittenti dichiarati → **non arriva niente**: dillo all'utente e
-  chiedi all'owner il `mailfrom:` giusto. Non creare job di polling.
+- Mittente non in ascolto → **non arriva niente** (se non all'indirizzo della
+  stanza): dillo all'utente e chiedi all'owner di metterlo in ascolto. Non creare
+  job di polling.
 - Casella NON fra le «Caselle collegate» della stanza → la posta non arriva.
 - Fuori dal corriere, `mailfrom:` decide anche se il contenuto di quel mittente è
   fidato (taint) quando un agente legge la casella con `email.read`/`email.search`

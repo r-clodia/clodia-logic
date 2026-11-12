@@ -10,6 +10,9 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.50.0] — 2026-11-12
+- `orchestrazione`: a section on the sources the room listens to («In ascolto», `/listen`): trusted, added by the owner (clodia-platform#681).
+
 ## [7.49.0] — 2026-11-11
 - **The room chooses its orchestrator** (clodia-platform#667): one per room, Segretario by default, Clodia or Ophelia with one click in the participants list (agent-server ≥ 6.351.0, gateway ≥ 2.170.0).
 - New skill **`orchestrazione`**: the ship model for whoever leads the room — talk to the user, classify, assign one mention at a time, collect reports and escalations, close with the result. Segretario gets it explicitly; Clodia and Ophelia through `base-pack/*`.

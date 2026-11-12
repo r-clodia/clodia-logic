@@ -43,7 +43,8 @@ class MailfromNonEUnRelayTests(unittest.TestCase):
         sezione = self.sezione()
         self.assertIn("`inbox:<casella>`", sezione)
         self.assertIn("`mailfrom:<mittente>`", sezione)
-        self.assertIn("**solo** i mittenti che dichiara lei", sezione)
+        # #681: the room LISTENS to its senders («In ascolto»).
+        self.assertIn("**solo** i mittenti che ascolta lei", sezione)
 
     def test_senza_mittenti_non_arriva_niente(self) -> None:
         self.assertIn("**non arriva niente**", self.sezione())
