@@ -429,7 +429,10 @@ class AgentSpec(BaseModel):
     # Budget (secondi) del TURNO per i runtime che ne hanno uno — oggi opencode
     # (`_TurnBudget`): il tempo entro cui l'INTERO turno deve concludersi, non
     # quello della singola richiesta HTTP. None = default di piattaforma
-    # (`OPENCODE_TURN_TIMEOUT`, 180s). Esiste perché la soglia giusta dipende
+    # (`OPENCODE_TURN_TIMEOUT`, 1200s). Since 12 Nov 2026 it is the CEILING:
+    # a turn that keeps producing (tokens, tool calls) runs up to it, and one
+    # that falls silent for `OPENCODE_TURN_IDLE` (150s) stops earlier. Esiste
+    # perché la soglia giusta dipende
     # dall'agente e non dall'istanza: un esecutore di tool su modello lento
     # (glm-5.2 su Scaleway, clodia-platform#514) scade a 180s su lavori che
     # un altro seed chiude in venti, e l'unica leva era una variabile

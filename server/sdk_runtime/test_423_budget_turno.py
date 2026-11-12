@@ -222,7 +222,10 @@ class OgniRichiestaStaNelResiduoTests(unittest.TestCase):
                        for d in ast.walk(n))]
         post = [n for fn in fns for n in ast.walk(fn)
                 if isinstance(n, ast.Call) and getattr(n.func, "attr", "") == "post"]
-        self.assertGreaterEqual(len(post), 3, "le tre POST del turno non ci sono più")
+        # Two call sites since 12 Nov 2026: the message POST lives once in
+        # `_post_turn` (raced against the provider limit and the progress
+        # watchdog, used by both attempts) and the session POST in `_run_turn`.
+        self.assertGreaterEqual(len(post), 2, "le POST del turno non ci sono più")
         senza = [n.lineno for n in post
                  if not any(k.arg == "timeout" for k in n.keywords)]
         self.assertEqual(senza, [], f"POST senza timeout residuo alle righe {senza}")

@@ -3527,7 +3527,20 @@ OPENCODE_BIN = os.environ.get("OPENCODE_BIN", "opencode")
 # finché scade il read → la sessione resta "bloccata". Un cap più basso fa
 # fallire in fretta (fail-fast) con errore chiaro, e al timeout abortiamo il
 # turno lato opencode così la generazione runaway si ferma. Configurabile via env.
-_OPENCODE_TURN_TIMEOUT = float(os.environ.get("OPENCODE_TURN_TIMEOUT", "180"))
+#
+# Since 12 Nov 2026 (owner: «QUESTO ERRORE VA RISOLTO UNA VOLTA PER TUTTE») the
+# turn is judged on PROGRESS, not on wall-clock alone. A fixed 180s cut a
+# secretary on gemma that had streamed 3588 events — two minutes writing a long
+# minute, then seven quick tool calls — while it was still working. Now:
+#   - IDLE: no progress event (no token, no tool call) for this long → the turn
+#     is stuck (a hung tool call, a silent model) and stops;
+#   - MAX: the hard ceiling, the last net against a model that never stops.
+# `OPENCODE_TURN_TIMEOUT` and the seed's `turn_timeout` keep their meaning of
+# «the most a turn may last», i.e. MAX.
+_OPENCODE_TURN_TIMEOUT = float(os.environ.get("OPENCODE_TURN_TIMEOUT", "1200"))
+_OPENCODE_TURN_IDLE = float(os.environ.get("OPENCODE_TURN_IDLE", "150"))
+# How often the watchdog looks at the progress clock.
+_OC_WATCHDOG_TICK_S = 2.0
 # Margine minimo per TENTARE di nuovo dopo aver ricreato la sessione. Sotto
 # questa soglia il retry non produrrebbe una risposta: consumerebbe il residuo
 # e scadrebbe comunque, ma un secondo più tardi e con la colpa attribuita al
@@ -3561,12 +3574,34 @@ class _TurnBudget:
     salto dell'ora di sistema non deve accorciare né allungare un turno.
     """
 
-    __slots__ = ("total", "_clock", "_start")
+    __slots__ = ("total", "idle", "_clock", "_start", "_progress")
 
-    def __init__(self, total: float, *, clock=time.monotonic) -> None:
+    def __init__(self, total: float, *, idle: float | None = None,
+                 clock=time.monotonic) -> None:
         self.total = float(total)
+        # No progress for `idle` seconds stops the turn (12 Nov 2026); None or
+        # 0 = only the ceiling, as before.
+        self.idle = float(idle) if idle else None
         self._clock = clock
         self._start = clock()
+        self._progress = self._start
+
+    def progress(self) -> None:
+        """The turn produced something (a token, a tool call): it is alive."""
+        self._progress = self._clock()
+
+    def silent_for(self) -> float:
+        """Seconds since the last progress of this turn."""
+        return max(0.0, self._clock() - self._progress)
+
+    def verdict(self, *, watching: bool = True) -> str | None:
+        """Why the turn must stop now, or None. `watching` False = the event
+        stream is down, so silence proves nothing: only the ceiling applies."""
+        if self.elapsed() >= self.total:
+            return "max"
+        if watching and self.idle and self.silent_for() >= self.idle:
+            return "idle"
+        return None
 
     @property
     def start(self) -> float:
@@ -3719,7 +3754,9 @@ def _oc_nota_eventi(eventi: "int | None") -> str:
 
 def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
                              model: str | None, eventi: "int | None" = None,
-                             gateway: str = "", correlazione: str = "") -> str:
+                             gateway: str = "", correlazione: str = "",
+                             motivo: "str | None" = None, silenzio: float = 0.0,
+                             idle: "float | None" = None) -> str:
     """Il messaggio del turno scaduto: dice cosa si è OSSERVATO.
 
     Il testo precedente — «modello X non convergente» — era una diagnosi, non
@@ -3747,6 +3784,16 @@ def _oc_turn_timeout_message(*, tentativo: str, atteso: float, budget: float,
     """
     coda = "".join(f" — {nota}" for nota in
                    (_oc_nota_eventi(eventi), gateway, correlazione) if nota)
+    if motivo == "idle":
+        # The turn stopped because it stopped working, not because it was long.
+        return (f"turno opencode fermo ({tentativo}): nessun progresso — né testo "
+                f"né tool call — da {silenzio:.0f}s (soglia {int(idle or 0)}s), dopo "
+                f"{atteso:.0f}s di turno — modello {model or '?'} — turno "
+                f"interrotto{coda}")
+    if motivo == "max":
+        return (f"turno opencode oltre il tetto ({tentativo}): {atteso:.0f}s, il "
+                f"massimo per un turno è {int(budget)}s, e lavorava ancora — modello "
+                f"{model or '?'} — turno interrotto{coda}")
     return (f"turno opencode scaduto ({tentativo}): attesi {atteso:.0f}s "
             f"sul budget di {int(budget)}s per il turno — modello {model or '?'} "
             f"— turno interrotto{coda}")
@@ -4077,6 +4124,9 @@ class OpenCodeChatSession:
         if tipo == "session.status":
             self._note_retry_status((ev or {}).get("properties") or {})
         self.last_activity = datetime.now(timezone.utc)
+        bud = getattr(self, "_turn_budget", None)
+        if bud is not None:
+            bud.progress()
         # `getattr` e non `+=`, per la ragione di `ChatSession._segna_evento_sdk`:
         # una sessione costruita senza `__init__` (i fake dei test) non ha
         # l'attributo, e un contatore diagnostico non deve poter uccidere il
@@ -4108,20 +4158,32 @@ class OpenCodeChatSession:
         """
         url = f"{self._base_url}/session/{self._oc_session}/message"
         evt = getattr(self, "_provider_block_evt", None)
-        if evt is None:
-            return await c.post(url, json=body, timeout=self._budget_timeout(budget))
         post = asyncio.ensure_future(
             c.post(url, json=body, timeout=self._budget_timeout(budget)))
-        attesa = asyncio.ensure_future(evt.wait())
+        attesa = asyncio.ensure_future(evt.wait()) if evt is not None else None
+        guardia = asyncio.ensure_future(self._watchdog(budget))
+        gare = {post, guardia} | ({attesa} if attesa is not None else set())
         try:
-            done, _ = await asyncio.wait({post, attesa},
-                                         return_when=asyncio.FIRST_COMPLETED)
+            done, _ = await asyncio.wait(gare, return_when=asyncio.FIRST_COMPLETED)
         except BaseException:
-            post.cancel(); attesa.cancel()
+            for t in gare:
+                t.cancel()
             raise
         if post in done:
-            attesa.cancel()
+            guardia.cancel()
+            if attesa is not None:
+                attesa.cancel()
             return post.result()
+        if guardia in done:
+            # No progress for too long, or the ceiling: the turn stops here and
+            # `_run_turn` reports it as a timeout, with the reason (12 Nov 2026).
+            post.cancel()
+            if attesa is not None:
+                attesa.cancel()
+            import httpx
+            self._oc_stop_reason = guardia.result()
+            raise httpx.ReadTimeout(f"opencode turn stopped: {self._oc_stop_reason}")
+        guardia.cancel()
         post.cancel()
         await self._abort_oc()
         motivo = getattr(self, "_provider_block", None) or "limite del provider"
@@ -4135,6 +4197,19 @@ class OpenCodeChatSession:
                                        provider=self._provider,
                                        atteso=budget.elapsed()),
             eventi=getattr(self, "_eventi_turno", None))
+
+    async def _watchdog(self, budget: "_TurnBudget") -> str:
+        """Returns why the turn must stop — "idle" or "max" — when it must.
+
+        Silence counts only while the event stream is connected: with the
+        stream down no progress can be seen, and a working turn would look
+        stuck. Then only the ceiling applies."""
+        while True:
+            connesso, _gen = self._stato_stream()
+            motivo = budget.verdict(watching=connesso)
+            if motivo:
+                return motivo
+            await asyncio.sleep(_OC_WATCHDOG_TICK_S)
 
     async def _consume_events(self, resp) -> None:
         async for riga in resp.aiter_lines():
@@ -4440,7 +4515,9 @@ class OpenCodeChatSession:
         # Un budget per il TURNO, non per ogni richiesta: le POST che seguono
         # ricevono il residuo (vedi `_TurnBudget`, clodia-platform#423). Quanto
         # vale lo dice il seed, se lo dichiara (clodia-platform#514).
-        budget = _TurnBudget(self._turn_timeout_s())
+        budget = _TurnBudget(self._turn_timeout_s(), idle=_OPENCODE_TURN_IDLE)
+        self._turn_budget = budget
+        self._oc_stop_reason = None
         # Il conto riparte col turno: è la prova che decide se un turno scaduto
         # si può rimandare, e un conto ereditato dal turno precedente la
         # falsificherebbe in entrambe le direzioni (vedi `_note_event_line`).
@@ -4541,6 +4618,8 @@ class OpenCodeChatSession:
                 tentativo=tentativo, atteso=atteso,
                 budget=budget.total, model=self._model,
                 eventi=eventi,
+                motivo=getattr(self, "_oc_stop_reason", None),
+                silenzio=budget.silent_for(), idle=budget.idle,
                 # Il gateway va su ENTRAMBI i tentativi, al contrario della
                 # correlazione col loop: non è un'euristica sul passato recente
                 # ma un fatto datato dentro la finestra di QUESTO turno, e il
