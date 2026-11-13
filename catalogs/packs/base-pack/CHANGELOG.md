@@ -10,6 +10,9 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.51.0] — 2026-11-14
+- Clodia's prompt: reading a mail means reading the file the courier delivered (agents have no `email.*` verbs, owner 14 Nov 2026).
+
 ## [7.50.0] — 2026-11-12
 - `orchestrazione`: a section on the sources the room listens to («In ascolto», `/listen`): trusted, added by the owner (clodia-platform#681).
 
