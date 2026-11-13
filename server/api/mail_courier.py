@@ -522,13 +522,35 @@ async def run_box_room(room: dict, keys: list[str], delivered: list | None = Non
     return await run_room(room, only=nuove, delivered=delivered, box=True)
 
 
-async def run_cycle() -> int:
+#: One courier pass at a time: the periodic loop and an agent's «check now»
+#: (`topic.mail_check`, owner 14 Nov 2026) must not read the same mailbox
+#: concurrently, or a message would be delivered twice.
+_CYCLE_LOCK: "asyncio.Lock | None" = None
+
+
+def _lock() -> asyncio.Lock:
+    global _CYCLE_LOCK
+    if _CYCLE_LOCK is None:
+        _CYCLE_LOCK = asyncio.Lock()
+    return _CYCLE_LOCK
+
+
+async def run_cycle(only: "tuple[str, str] | None" = None) -> int:
+    """One courier pass over every room — or over ONE room (`only`), when an
+    agent asks the courier to check now. Serialised with every other pass."""
+    async with _lock():
+        return await _run_cycle(only)
+
+
+async def _run_cycle(only: "tuple[str, str] | None" = None) -> int:
     total = 0
     try:
         stanze = await asyncio.to_thread(rooms)
     except Exception as e:  # noqa: BLE001
         LOG.warning("mail courier: rooms unavailable (%s)", type(e).__name__)
         return 0
+    if only is not None:
+        stanze = [r for r in stanze if (str(r.get("tier")), str(r.get("name"))) == only]
     indice = None
     # The room's own address delivers whoever writes (clodia-tools ≥ 2.148.0,
     # #627): an indexed message-box row needs no declared sender.

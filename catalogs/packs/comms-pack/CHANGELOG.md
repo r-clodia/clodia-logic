@@ -8,6 +8,9 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.8.0] — 2026-11-14
+- **Mail is the courier's** (owner, 14 Nov 2026): no agent uses the `email.*` verbs (a platform rule of the gateway, clodia-tools ≥ 2.173.0). check-email: the courier delivers; an agent reads the delivered `.eml` with `topic.read_file` and may ask for a check now with `topic.mail_check`; replies stay `channel.deliver`.
+
 ## [2.7.1] — 2026-11-14
 - **Mailboxes are global** (owner, 14 Nov 2026): the `sender` listen kind is read-only (`reply: none`; recipients stay in Strumenti → Email → Destinatari). check-email and the mail notes: mailboxes are authorised by an admin for the whole instance, a room declares only its senders. Needs clodia-tools ≥ 2.172.0 for the courier to read the global mailboxes.
 

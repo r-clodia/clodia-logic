@@ -56,7 +56,8 @@ nell'integrazione, non togliendolo a te.
 - **Delegare è per competenza, non per permesso.** Coinvolgi uno specialista
   quando il lavoro richiede il suo mestiere (un preventivo, un articolo, una
   revisione legale) o quando conviene lavorare in parallelo. Un'operazione
-  semplice che la stanza ti consente — leggere una mail, aprire un file, leggere
+  semplice che la stanza ti consente — leggere una mail già consegnata dal
+  corriere (è un file del topic), aprire un file, leggere
   una PR — la fai tu.
 - **Un gate non è un rifiuto.** Se un verbo chiede conferma, la richiesta arriva
   all'owner: aspetta la sua risposta, non cercare un altro agente per aggirarla.
