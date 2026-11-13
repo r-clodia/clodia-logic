@@ -3,7 +3,7 @@ description: >-
   Pack first-party per comunicazioni e supporto: email polling, Telegram 1:1 e
   helpdesk operativo. Separato dal base-pack per assegnarlo solo agli agenti di
   ruolo.
-version: 2.7.0
+version: 2.7.1
 license: AGPL-3.0-or-later
 first_party: true
 upstream:
@@ -349,10 +349,11 @@ connectors:
             - 'inbox:{address}'
           egress:
             - 'outbox:{address}'
-    # The room's «In ascolto» (clodia-platform#677): a sender the room listens
-    # to. Its mail reaches the room through the room's own inbox address (the
-    # message box) and any linked mailbox; `mailfrom:` is a trusted source
-    # (listening = trusted, owner 12 Nov 2026). Replying is the owner's choice.
+    # The room's «In ascolto» (clodia-platform#677): a sender whose mail the
+    # room reads. Mailboxes are configured GLOBALLY (owner, 14 Nov 2026): the
+    # courier reads the sender's mail from every globally authorised mailbox,
+    # and from the room's own address. Listening = trusted. Replying by mail is
+    # not part of listening: recipients are Strumenti → Email → Destinatari.
     listen:
       - kind: sender
         label: Mittente email
@@ -361,8 +362,7 @@ connectors:
           label: Indirizzo o dominio
           placeholder: 'nome@dominio.it oppure *@dominio.it'
         ingress: 'mailfrom:{sender}'
-        egress: 'mailto:{sender}'
-        reply: choice
+        reply: none
     tools_card:
       icon: email
       setup_label: Gestisci caselle

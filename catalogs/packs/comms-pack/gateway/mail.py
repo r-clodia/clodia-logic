@@ -357,8 +357,9 @@ def _assert_mailbox_allowed(direction: str, addr: str) -> None:
     lista = "ingress" if direction == "inbox" else "egress"
     raise PermissionError(
         f"la casella '{addr}' non è nella whitelist {direction} di questo "
-        f"canale. Chiedi all'owner di aggiungere {direction}:{addr} agli "
-        f"{lista} del topic (o globalmente, da Integrazioni)."
+        f"canale. Le caselle si configurano a livello di istanza: chiedi a un "
+        f"admin di aggiungere {direction}:{addr} agli {lista} globali "
+        f"(Integrazioni)."
     )
 
 
@@ -609,9 +610,10 @@ def folders(account: str = "demo") -> dict:
         out["accounts_not_allowed"] = negati
         out["note"] = (
             f"esistono e funzionano anche: {', '.join(negati)} — ma la loro "
-            "casella non è nella whitelist di questo canale. Chiedi all'owner "
-            "di collegarla al canale: inbox:<email> fra le Caselle collegate "
-            "(Strumenti → Email), o globalmente."
+            "casella non è autorizzata per questo canale. Le caselle si "
+            "configurano a livello di istanza: chiedi a un admin di aggiungere "
+            "inbox:<email> agli ingressi globali; il canale dichiara solo i "
+            "mittenti."
         )
     return out
 

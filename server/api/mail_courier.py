@@ -144,6 +144,41 @@ def _state_path(room: dict):
     return d / f"{hashlib.sha256(key.encode()).hexdigest()[:32]}.json"
 
 
+#: How many delivered keys a room remembers across its mailboxes (14 Nov 2026).
+ROOM_SEEN_MAX = 5000
+
+
+def _room_seen_path(room: dict):
+    """The keys delivered to THIS room through any of its mailboxes: since
+    mailboxes are global (owner, 14 Nov 2026) the same message can reach a
+    room from two of them — or from a mailbox and the room's own address —
+    and is delivered once. The key is the Message-ID's hash (comms-pack
+    `envelope_key`), the same whatever mailbox it came from."""
+    import hashlib
+    d = data_path("mail-courier-state")
+    d.mkdir(parents=True, exist_ok=True)
+    key = "\x00".join(("room", room["tier"], room["name"]))
+    return d / f"room-{hashlib.sha256(key.encode()).hexdigest()[:32]}.json"
+
+
+def _room_seen(room: dict) -> list:
+    try:
+        return list(json.loads(_room_seen_path(room).read_text(encoding="utf-8")) or [])
+    except Exception:  # noqa: BLE001 — none yet, or unreadable: nothing seen
+        return []
+
+
+def _room_seen_add(room: dict, key: str) -> None:
+    seen = _room_seen(room)
+    if key in seen:
+        return
+    seen.append(key)
+    p = _room_seen_path(room)
+    tmp = p.with_name(p.name + ".tmp")
+    tmp.write_text(json.dumps(seen[-ROOM_SEEN_MAX:]), encoding="utf-8")
+    os.replace(tmp, p)
+
+
 def _load(room: dict) -> dict:
     p = _state_path(room)
     try:
@@ -427,8 +462,15 @@ async def run_room(room: dict, only: list[str] | None = None,
             _save(room, state)
     nuove = list(out.get("envelopes") or [])
     consegnate = 0
+    gia_in_stanza = set(_room_seen(room))
     for env in reversed(nuove):           # oldest first
         key = env.get("key")
+        if key and key in gia_in_stanza:
+            # Delivered to this room through another mailbox (or its own
+            # address): recorded as seen here, not delivered twice.
+            state["keys"].append(key)
+            _save(room, state)
+            continue
         try:
             item = await _deliver(room, env)
             consegnate += 1
@@ -459,6 +501,9 @@ async def run_room(room: dict, only: list[str] | None = None,
         state.get("fails", {}).pop(key, None)
         state["keys"].append(key)
         _save(room, state)
+        if key:
+            _room_seen_add(room, key)
+            gia_in_stanza.add(key)
     return consegnate
 
 

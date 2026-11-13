@@ -8,6 +8,9 @@ one.
 > they are not reconstructed below, because a changelog that invents its own
 > past is worse than one that says where it begins.
 
+## [2.7.1] — 2026-11-14
+- **Mailboxes are global** (owner, 14 Nov 2026): the `sender` listen kind is read-only (`reply: none`; recipients stay in Strumenti → Email → Destinatari). check-email and the mail notes: mailboxes are authorised by an admin for the whole instance, a room declares only its senders. Needs clodia-tools ≥ 2.172.0 for the courier to read the global mailboxes.
+
 ## [2.7.0] — 2026-11-12
 - **«In ascolto»** (clodia-platform#675, #677, #678): the mail connector declares the `sender` listen kind (`mailfrom:{sender}`, reply by the owner's choice → `mailto:{sender}`) and the Telegram connector the `chat` kind (the chat `telegram-link` binds, reply implicit). Needs clodia-tools ≥ 2.171.0; an older gateway ignores the section.
 - check-email and the mail notes speak of sources the room listens to (#681).

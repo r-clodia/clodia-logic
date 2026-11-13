@@ -104,6 +104,29 @@ class CourierTests(unittest.TestCase):
         self.run_with(fake)
         self.assertEqual(len(fake.posts), 1)
 
+    def test_the_same_mail_in_two_mailboxes_is_delivered_once(self):
+        """Mailboxes are global (owner, 14 Nov 2026): a message CC'd to two of
+        them reaches the room once — same Message-ID, same key."""
+        studio = dict(ROOM, account="studio", address="studio@x.it")
+        fake = _Fake([])
+        self.run_with(fake)                      # prime info@
+        self.run_with(fake, studio)              # prime studio@
+        fake.new = [_env(7)]
+        self.assertEqual(self.run_with(fake), 1)
+        self.assertEqual(self.run_with(fake, studio), 0)
+        self.assertEqual(len(fake.posts), 1)
+        # …and studio@ recorded it, so it does not come back on the next pass.
+        self.assertEqual(self.run_with(fake, studio), 0)
+        self.assertIn("k7", fake.skips[-1])
+
+    def test_another_room_still_gets_it(self):
+        other = dict(ROOM, name="altra")
+        fake = _Fake([])
+        self.run_with(fake); self.run_with(fake, other)
+        fake.new = [_env(8)]
+        self.run_with(fake); self.run_with(fake, other)
+        self.assertEqual([p[1] for p in fake.posts], ["preventivi", "altra"])
+
     def test_oldest_first(self):
         fake = _Fake([])
         self.run_with(fake)
