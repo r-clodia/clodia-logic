@@ -67,7 +67,6 @@ GATEWAY = PACK / "gateway"
 GMAIL_CORE = GATEWAY / "gmail_core.py"
 CLIENT = GATEWAY / "email_client.py"
 BASE_SKILLS = Path(workspace_path("catalogs/packs/base-pack/plugins/base-pack/skills"))
-COMMS_GATEWAY = Path(workspace_path("catalogs/packs/comms-pack/gateway"))
 BUILTIN = Path(__file__).resolve().parent / "fixtures" / "524_builtin_google.yaml"
 TOOLS_SRC = os.environ.get("CLODIA_TOOLS_SRC", "")
 
@@ -991,15 +990,6 @@ class GatewayValidatorTests(unittest.TestCase):
                          sorted(v for c in _pack_doc()["connectors"]
                                 for v in c.get("unmapped") or []))
 
-    def test_held_with_mail_on_comms_pack(self) -> None:
-        comms = yaml.safe_load(Path(workspace_path(
-            "catalogs/packs/comms-pack/pack.yaml")).read_text(encoding="utf-8"))
-        # Only its mail vocabulary: Telegram's vault entry needs its own switch.
-        comms["connectors"] = [_connector(comms, "mail")]
-        reg = self.registry(released=("google", "mail"),
-                            packs={"comms-pack": comms, "google-pack": _pack_doc()})
-        self.assertEqual(sorted(p.id for p in reg.providers_of("mail")), ["gmail", "imap"])
-
     def test_the_pdp_reads_the_same_mappings(self) -> None:
         native = self.registry(released=(), packs={})
         packed = self.registry(released=("google",), packs={"google-pack": _pack_doc()})
@@ -1118,11 +1108,11 @@ class _IsolatedTmp(unittest.TestCase):
         return patch.object(self.core, "CLIENT", probe)
 
 
-class GmailClientIsCommsPacksTests(unittest.TestCase):
-    """The bundled client is the same as comms-pack's gateway component's (and,
-    with CLODIA_TOOLS_SRC, the gateway's own) — except for the vendoring note.
-    (Until comms-pack 1.4.0 `gmail_core` also mirrored comms-pack's transport
-    function by function; the transport is gone since comms-pack 2.0.0.)"""
+class GmailClientIsTheGatewaysTests(unittest.TestCase):
+    """The bundled client is the same as the gateway's own mail code's
+    (`server/mail/email_client.py` since clodia-tools 2.174.0, #683; checked
+    with CLODIA_TOOLS_SRC) — except for the vendoring note. comms-pack, which
+    held another copy, is gone."""
 
     @staticmethod
     def _body(path: Path) -> str:
@@ -1131,19 +1121,20 @@ class GmailClientIsCommsPacksTests(unittest.TestCase):
         end = text.index('"""', start)
         return text[:start] + text[end:]
 
-    def test_the_bundled_client_is_comms_packs_copy(self) -> None:
+    def test_the_bundled_client_is_the_one_in_use(self) -> None:
         self.assertEqual(_mcore().CLIENT, CLIENT.resolve())
-        self.assertEqual(self._body(CLIENT), self._body(COMMS_GATEWAY / "email_client.py"))
         self.assertIn("r-clodia/clodia-tools:vendor/email_client.py",
                       CLIENT.read_text(encoding="utf-8")[:1200])
 
     @unittest.skipUnless(TOOLS_SRC, "set CLODIA_TOOLS_SRC to a clodia-tools checkout")
     def test_the_bundled_client_is_the_gateways_copy(self) -> None:
-        gw = Path(TOOLS_SRC) / "vendor" / "email_client.py"
+        gw = Path(TOOLS_SRC) / "server" / "mail" / "email_client.py"
         if not gw.is_file():
-            self.skipTest("the gateway no longer ships a mail client (clodia-tools "
-                          "≥ 2.120.0, #523)")
-        self.assertEqual(self._body(CLIENT), gw.read_text(encoding="utf-8"))
+            self.skipTest("clodia-tools checkout older than 2.174.0 (#683): no "
+                          "server/mail/email_client.py")
+        text = gw.read_text(encoding="utf-8")
+        self.assertEqual(self._body(CLIENT),
+                         self._body(gw) if "\nVendored into" in text else text)
 
 
 class GmailRefusalTests(_IsolatedTmp):

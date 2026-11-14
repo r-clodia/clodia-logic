@@ -1,4 +1,4 @@
-"""Test della logica pura del relay telegram-proxy (binding istanza↔chat).
+"""Test della logica pura del relay (binding istanza↔chat), sull adapter di prova `relay_fixture` (Telegram rimosso, #683).
 
 Perni: l'autorizzazione del mittente è un INGRESS dello scope, chiesta al gateway
 e fail-closed (clodia-platform#365); il bot risponde solo se interpellato; il
@@ -8,11 +8,11 @@ import asyncio
 import unittest
 from unittest.mock import patch
 
-from . import channel_relay, telegram_relay_adapter
+from . import channel_relay, relay_fixture
 from .channel_relay import _is_messenger, _is_vetted_sender
 from .relay_adapters import _addresses_bot
 
-_TG = telegram_relay_adapter.ADAPTER
+_TG = relay_fixture.ADAPTER
 _context_block, _line = _TG.context_block, _TG.line
 
 
@@ -33,7 +33,7 @@ class _Risposta:
 class VettedSourceTests(unittest.TestCase):
     """La domanda «questo mittente è autorizzato?» la fa il GATEWAY.
 
-    Qui si verifica che il relay la ponga nella forma giusta (uri `tg:@handle`,
+    Qui si verifica che il relay la ponga nella forma giusta (uri `xc:@handle`,
     direzione ingresso, scope del BINDING) e che non se la risponda da solo
     quando la risposta non arriva.
     """
@@ -58,14 +58,14 @@ class VettedSourceTests(unittest.TestCase):
         self._chiedi("@TheRealDadabit", {"vetted": True})
         path, params = self.chiamate[0]
         self.assertEqual(path, "/internal/egress")
-        self.assertEqual(params, {"uri": "tg:@TheRealDadabit", "direction": "ingress",
+        self.assertEqual(params, {"uri": "xc:@TheRealDadabit", "direction": "ingress",
                                   "scope": "SEAL-1/software-house"})
 
     def test_an_unvetted_handle_is_refused(self):
         self.assertFalse(self._chiedi("estraneo", {"vetted": False}))
 
     def test_a_sender_without_a_handle_is_refused_without_even_asking(self):
-        """`tg:` in ingresso registra un `@handle`, non un uid: un mittente senza
+        """`xc:` in ingresso registra un `@handle`, non un uid: un mittente senza
         handle non è vagliabile per costruzione, e va rifiutato senza esplodere."""
         self.assertFalse(self._chiedi(None, {"vetted": True}))
         self.assertFalse(self._chiedi("", {"vetted": True}))
@@ -84,7 +84,7 @@ class RelayGateTests(unittest.TestCase):
     """Il percorso vero: chi è vagliato innesca il turno, chi non lo è riceve il
     rifiuto su Telegram e il topic non viene toccato."""
 
-    BINDING = {"instance": "messaggero-1", "tier": "SEAL-1", "topic": "software-house"}
+    BINDING = {"connector": "chat", "instance": "messaggero-1", "tier": "SEAL-1", "topic": "software-house"}
 
     def _run(self, vetted, testo="@clodia riassumi", username="therealdadabit",
              group=False, extra=None, msgs=None, coordinatore="clodia", can_deliver=True):
@@ -119,7 +119,7 @@ class RelayGateTests(unittest.TestCase):
         with patch.object(channel_relay, "_state_path", lambda c: d / "s.json"), \
                 patch.object(channel_relay, "_is_vetted_sender", _vetted), \
                 patch.object(channel_relay, "_is_vetted_chat", _group), \
-                patch.object(telegram_relay_adapter.telegram_client, "send_async", _send), \
+                patch.object(relay_fixture.chat_client, "send_async", _send), \
                 patch.object(channel_relay.topics_client, "async_open_topic", _open), \
                 patch.object(channel_relay.topics_client, "async_post_message", _post), \
                 patch.object(channel_relay, "run_topic_turn", _turn), \
@@ -134,8 +134,8 @@ class RelayGateTests(unittest.TestCase):
         """La richiesta arriva con la sintassi del messaggero (menzione vera del
         coordinatore + messaggio riportato), e parte il turno del coordinatore."""
         inviati, postati, turni = self._run(True)
-        atteso = ("@clodia, riporto dal gruppo telegram «-5279916551» (chat_id -5279916551) il seguente "
-                  "messaggio di utente telegram therealdadabit: '`@clodia` riassumi'")
+        atteso = ("@clodia, riporto dal gruppo chat «-5279916551» (chat_id -5279916551) il seguente "
+                  "messaggio di utente chat therealdadabit: '`@clodia` riassumi'")
         self.assertTrue(any("Ricevuto" in t for t in inviati))
         self.assertEqual(postati, [atteso])
         self.assertEqual(turni, [atteso])
@@ -161,7 +161,7 @@ class RelayGateTests(unittest.TestCase):
         self.assertNotIn(channel_relay._DENY, inviati)
         self.assertTrue(any("Ricevuto" in t for t in inviati))
         self.assertEqual(len(postati), 1)
-        self.assertIn("utente telegram estraneo", postati[0])
+        self.assertIn("utente chat estraneo", postati[0])
         self.assertEqual(turni, postati)
 
     def test_in_a_whitelisted_group_a_reply_to_the_bot_counts_as_a_mention(self):
@@ -194,7 +194,7 @@ class RelayGateTests(unittest.TestCase):
         with patch("server.api.observe._gw", _gw):
             ok = asyncio.run(channel_relay._is_vetted_chat(_TG, "-5411149155", "SEAL-1", "software-house"))
         self.assertTrue(ok)
-        self.assertEqual(chiamate, [("/internal/egress", {"uri": "tg:-5411149155",
+        self.assertEqual(chiamate, [("/internal/egress", {"uri": "xc:-5411149155",
                                                           "direction": "ingress",
                                                           "scope": "SEAL-1/software-house"})])
 
@@ -209,15 +209,15 @@ class RelayGateTests(unittest.TestCase):
     # ── richiesta azionabile (clodia-platform#402, seconda parte) ────────────
     def test_the_request_goes_to_the_coordinator_with_an_explicit_directive(self):
         """Sintassi decisa da Davide: «@clodia, riporto dal gruppo telegram … il
-        seguente messaggio di utente telegram <nome>: '<testo>'». L'unica
+        seguente messaggio di utente chat <nome>: '<testo>'». L'unica
         convocazione è il coordinatore, che risponde con `channel.deliver`
         (clodia-platform#531: il messaggero è stato ritirato)."""
         from . import mentions
         _i, postati, turni = self._run(False, testo="@clodia_topics_bot chiedi la lista delle issue",
                                        username="therealdadabit", group=True,
                                        extra={"chat_title": "Clodia Sviluppo"})
-        atteso = ("@clodia, riporto dal gruppo telegram «Clodia Sviluppo» (chat_id -5279916551) il seguente "
-                  "messaggio di utente telegram therealdadabit: "
+        atteso = ("@clodia, riporto dal gruppo chat «Clodia Sviluppo» (chat_id -5279916551) il seguente "
+                  "messaggio di utente chat therealdadabit: "
                   "'`@clodia_topics_bot` chiedi la lista delle issue'")
         self.assertEqual(postati, [atteso])
         self.assertEqual(turni, [atteso])
@@ -226,7 +226,7 @@ class RelayGateTests(unittest.TestCase):
         self.assertEqual(kw["responder_hint"], "clodia")
         self.assertEqual(kw["directive"], channel_relay._directive(_TG))
         self.assertIn("channel.deliver", kw["directive"])
-        self.assertIn("tg:<chat_id>", kw["directive"])
+        self.assertIn("xc:<chat_id>", kw["directive"])
         self.assertIn("chat_id esattamente come è scritto", kw["directive"])
         self.assertEqual(kw["trigger_kind"], "external")
 
@@ -239,7 +239,7 @@ class RelayGateTests(unittest.TestCase):
         self.assertIn("`@giocasu75`", postati[0])
         # The relay is code: its post is the connector's, not an agent turn,
         # and a vetted request does not taint the room (kind `telegram`).
-        self.assertEqual("telegram", self.post_kinds[-1][1])
+        self.assertEqual("chat", self.post_kinds[-1][1])
 
     # ── coordinatore senza `channel.deliver` (clodia-platform#531) ───────────
     def test_a_coordinator_that_cannot_deliver_gets_no_turn_and_no_ack(self):
@@ -271,7 +271,7 @@ class RelayGateTests(unittest.TestCase):
         async def _put(tier, name, fname, b64):
             return {}
 
-        with patch.object(telegram_relay_adapter.telegram_client, "download_async", _dl), \
+        with patch.object(relay_fixture.chat_client, "download_async", _dl), \
                 patch.object(channel_relay.topics_client, "async_put_file", _put):
             _i, postati, _t = self._run(False, testo="@clodia_topics_bot leggi questo",
                                         group=True,
@@ -331,11 +331,11 @@ class ContextTests(unittest.TestCase):
         m = self._m(76632169, "therealdadabit", "ciao")
         m["chat_title"] = "Proof-of-flex"
         line = _line(m, "-5279916551")
-        self.assertEqual(line, "[tg://Proof-of-flex/therealdadabit] -> ciao")
+        self.assertEqual(line, "[xc://Proof-of-flex/therealdadabit] -> ciao")
 
     def test_line_falls_back_to_chat_id(self):
         line = _line({"from_id": 999, "text": "spam"}, "-5")
-        self.assertEqual(line, "[tg://-5/999] -> spam")
+        self.assertEqual(line, "[xc://-5/999] -> spam")
 
     def test_line_with_saved_file(self):
         m = self._m(76632169, "therealdadabit", "")
@@ -356,8 +356,8 @@ class ContextTests(unittest.TestCase):
                   self._m(76632169, "therealdadabit", "@clodia riassumi")]
         block = _context_block(buffer, "-5279916551")
         self.assertEqual(block,
-                         "[tg://-5279916551/giocasu75] -> guardate il doc\n"
-                         "[tg://-5279916551/therealdadabit] -> `@clodia` riassumi")
+                         "[xc://-5279916551/giocasu75] -> guardate il doc\n"
+                         "[xc://-5279916551/therealdadabit] -> `@clodia` riassumi")
 
 
 if __name__ == "__main__":

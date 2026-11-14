@@ -46,7 +46,7 @@ class Features(BaseModel):
     # via GET /profile (la webui gata le pagine, il gateway gata i verbi).
     rag: Literal["off", "single", "full"] = "full"
     integrations: Literal["off", "fixed", "full"] = "full"
-    channels: bool = True          # channel adapter Telegram (NON la webchat)
+    channels: bool = True          # relay of the linked chats (pack relays, NOT the webchat)
     packs_ui: bool = True
     providers_ui: bool = True
     databases_ui: bool = True

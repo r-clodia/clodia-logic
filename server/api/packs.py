@@ -436,8 +436,8 @@ def _setup_pending(name: str, plugin_children: list) -> bool:
 def _used_by(plugins: list[str], own_agents: list[str]) -> list[dict[str, Any]]:
     """Agents OUTSIDE the pack that use its skills (`<plugin>/<skill>` or
     `<plugin>/*` among their capabilities): what a removal takes away from
-    them, shown before it is confirmed (#562 — base-pack's messaggero,
-    ophelia and sysadmin use comms-pack's skills)."""
+    them, shown before it is confirmed (#562 — e.g. a base-pack seed using
+    another pack's skills)."""
     if not plugins:
         return []
     own = set(own_agents)

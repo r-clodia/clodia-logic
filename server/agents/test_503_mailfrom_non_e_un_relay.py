@@ -1,17 +1,15 @@
-"""`mailfrom:` non è un relay (clodia-platform#503).
+"""`mailfrom:` is not a relay (clodia-platform#503).
 
-Il difetto era **testuale**: il mandato del messaggero diceva che un mittente
-Telegram autorizzato è un ingress «esattamente come un mittente email», e chi lo
-leggeva concludeva che scrivere `mailfrom:<indirizzo>` negli ingress facesse
-arrivare la posta di quel mittente. Non è così: `mailfrom:` decide se il
-contenuto è fidato (taint), e nei canali a ingresso stretto chi passa.
-
-Dal 19 ott 2026 (clodia-platform#531) il messaggero non esiste più e la posta
-ARRIVA davvero nelle stanze, portata dal corriere; da #576 servono DUE voci della
-stanza: `inbox:<casella>` (da dove) e `mailfrom:<mittente>` (di chi), e quelle
-globali non contano. La spiegazione vive nella skill `check-email`, che è ciò che
-l'agente legge quando parla di posta; il controllo resta sul TESTO, perché se la
-frase sbagliata torna non fallisce nient'altro.
+The defect was **textual**: a mandate said that an authorised chat sender is an
+ingress «exactly like a mail sender», and whoever read it concluded that
+writing `mailfrom:<address>` among the ingress entries made that sender's mail
+arrive. Since #531 the courier does deliver mail into rooms, and since #576 two
+things are needed: the mailbox authorised for the instance (`inbox:`) and the
+sender the room listens to (`mailfrom:`); global entries are not enough. The
+explanation lives in base-pack's `mail` skill (formerly comms-pack's
+`check-email`, #683), which is what an agent reads when mail comes up; the
+check stays on the TEXT, because if the wrong sentence comes back nothing else
+fails.
 """
 from __future__ import annotations
 
@@ -21,36 +19,40 @@ from pathlib import Path
 from ..config import workspace_path
 
 SKILL = Path(workspace_path(
-    "catalogs/packs/comms-pack/plugins/comms-pack/skills/check-email/SKILL.md"))
+    "catalogs/packs/base-pack/plugins/base-pack/skills/mail/SKILL.md"))
 
-#: L'equivalenza che aveva prodotto la promessa sbagliata.
-EQUIVALENZA = "esattamente come un mittente email"
+#: The equivalence that produced the wrong promise.
+EQUIVALENCES = ("esattamente come un mittente email", "exactly like a mail sender")
 
 
-class MailfromNonEUnRelayTests(unittest.TestCase):
+class MailfromIsNotARelayTests(unittest.TestCase):
     def setUp(self) -> None:
-        self.testo = SKILL.read_text(encoding="utf-8")
+        self.text = SKILL.read_text(encoding="utf-8")
 
-    def sezione(self) -> str:
-        pezzi = self.testo.split("\n## Come arriva la posta", 1)
-        self.assertEqual(2, len(pezzi), "sezione «Come arriva la posta» sparita")
-        return pezzi[1].split("\n## ", 1)[0]
+    def section(self) -> str:
+        parts = self.text.split("\n## How mail arrives", 1)
+        self.assertEqual(2, len(parts), "section «How mail arrives» is gone")
+        return parts[1].split("\n## ", 1)[0]
 
-    def test_non_equipara_la_posta_a_telegram(self) -> None:
-        self.assertNotIn(EQUIVALENZA, self.testo)
+    def test_mail_is_not_equated_with_a_chat(self) -> None:
+        for e in EQUIVALENCES:
+            self.assertNotIn(e, self.text)
 
-    def test_distingue_le_due_voci(self) -> None:
-        sezione = self.sezione()
-        self.assertIn("`inbox:<casella>`", sezione)
-        self.assertIn("`mailfrom:<mittente>`", sezione)
-        # #681: the room LISTENS to its senders («In ascolto»).
-        self.assertIn("**solo** i mittenti che ascolta lei", sezione)
+    def test_the_two_entries_are_told_apart(self) -> None:
+        section = self.section()
+        self.assertIn("`inbox:<mailbox>`", section)
+        self.assertIn("`mailfrom:<sender>`", section)
+        self.assertIn("**only** the senders it listens to", section)
 
-    def test_senza_mittenti_non_arriva_niente(self) -> None:
-        self.assertIn("**non arriva niente**", self.sezione())
+    def test_without_senders_nothing_arrives(self) -> None:
+        self.assertIn("**nothing arrives**", self.section())
 
-    def test_le_voci_globali_non_bastano(self) -> None:
-        self.assertIn("Le voci globali e i partecipanti", self.sezione())
+    def test_global_entries_are_not_enough(self) -> None:
+        self.assertIn("Global entries and the room's participants are not", self.section())
+
+    def test_agents_have_no_mail_verbs(self) -> None:
+        self.assertIn("You have no `email.*` verbs", self.text)
+        self.assertIn("topic.mail_check", self.text)
 
 
 if __name__ == "__main__":  # pragma: no cover

@@ -206,7 +206,7 @@ async def _lifespan(app: FastAPI):
             LOG.warning("pack ops boot reconcile fallito: %s", e)
     asyncio.create_task(_safe_boot_reconcile())
 
-    # Relay inbound canale esterno → topic (modello telegram-proxy): LONG-POLL
+    # Relay inbound canale esterno → topic (relay dei pack, #638): LONG-POLL
     # server-side, trasporto MECCANICO (nessuna logica AI). Ogni ciclo blocca (in un
     # thread) sul poll di ogni trasporto con chat legate finché arriva un messaggio →
     # latenza quasi zero, meno carico dei poll ripetuti. Instrada le chat legate ai
@@ -230,7 +230,7 @@ async def _lifespan(app: FastAPI):
                 # ha nascosto per un giorno la causa vera di un altro guasto,
                 # perché chi cercava un colpevole nei log trovava questi.
                 #
-                # Il binding si crea a runtime (`telegram.listen`, gated sugli
+                # Il binding si crea a runtime (azione del connettore, gated sugli
                 # ingress del topic bersaglio), quindi si ricontrolla invece di
                 # uscire: il relay riparte da sé entro mezzo minuto da quando una
                 # chat viene legata.
@@ -251,7 +251,7 @@ async def _lifespan(app: FastAPI):
     if profile.features.channels:
         relay_task = asyncio.create_task(_channel_relay_loop())
     else:
-        LOG.info("feature 'channels' OFF (profilo '%s'): relay telegram non avviato",
+        LOG.info("feature 'channels' OFF (profilo '%s'): relay dei canali non avviato",
                  profile.edition)
         relay_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
 

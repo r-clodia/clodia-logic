@@ -10,6 +10,10 @@ one.
 > quietly fills its own gaps is worse than one that admits them.
 
 
+## [7.52.0] — 2026-11-14
+- comms-pack is gone (clodia-platform#683): its `helpdesk` skill moves here (sysadmin gets it through `base-pack/*`); `check-email` becomes the `mail` skill (the courier delivers envelopes and `local/mailbox/*.eml`, `topic.mail_check` asks an immediate check, answers go through `channel.deliver` to `mailto:`); `telegram-1to1` is removed with Telegram.
+- Telegram removed from the texts: sysadmin's BotFather setup steps, the platform-core constitution, the SETUP notes on the Telegram relay. Ophelia's `comms-pack/*` capability is dropped.
+
 ## [7.51.0] — 2026-11-14
 - Clodia's prompt: reading a mail means reading the file the courier delivered (agents have no `email.*` verbs, owner 14 Nov 2026).
 

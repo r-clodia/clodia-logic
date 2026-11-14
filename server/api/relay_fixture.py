@@ -1,22 +1,36 @@
-"""Telegram come adapter del relay — il primo, e per ora l'unico.
+"""A relay adapter for the relay's tests (clodia-platform#683).
 
-Tutto ciò che qui dentro sa di Telegram stava fino al 14 ott 2026 dentro
-`channel_relay`: il long-poll, il token nel vault del gateway dietro
-`telegram_client`, la forma degli URI di ingress (`tg:@handle` per la persona,
-`tg:<chat_id>` per il gruppo), la neutralizzazione degli `@handle` e la riga di
-contesto `[tg://gruppo/utente]`. Il modello del relay non è qui: è in
-`channel_relay`, uno solo per tutti i trasporti (clodia-platform#521).
-
-Quando #522 porterà Telegram nel comms-pack, è questo file a diventare il
-connettore del pack — il nucleo non si tocca.
+Telegram was the relay's first transport and its tests were written through
+its adapter. Telegram is gone; the relay model (`channel_relay`) is not, and a
+pack relay (WhatsApp) uses it. This adapter keeps the shape the tests were
+written against — `xc:@handle` for a person, `xc:<chat_id>` for a group, a
+transport with its own `@handle` mentions, 1:1 chats addressed to the bot —
+over a fake `chat_client` the tests patch. Not a test module: it is imported
+by them (`test_*` files only are discovered).
 """
 from __future__ import annotations
 
 import asyncio
 import re
+from types import SimpleNamespace
 
-from . import telegram_client
+from . import relay_adapters
 from .relay_adapters import RelayAdapter
+
+
+async def _never_async(*a, **k):  # pragma: no cover — tests patch these
+    raise AssertionError("chat_client not patched")
+
+
+def _never(*a, **k):  # pragma: no cover
+    raise AssertionError("chat_client not patched")
+
+
+#: The transport's client: patched by the tests (`poll`, `send_async`,
+#: `download_async`).
+chat_client = SimpleNamespace(poll=_never, send_async=_never_async,
+                              download_async=_never_async)
+
 
 #: Un `@handle` di Telegram nel testo riportato. Nel canale lo stesso sigillo è
 #: una CONVOCAZIONE: `@clodia_topics_bot` diventava la menzione di un agente che
@@ -26,35 +40,35 @@ from .relay_adapters import RelayAdapter
 _TG_HANDLE_RE = re.compile(r"(?<![\w@`.])@([A-Za-z][A-Za-z0-9_]{2,31})\b")
 
 
-class TelegramRelayAdapter(RelayAdapter):
-    connector = "telegram"
-    transport_label = "telegram"
-    uri_scheme = "tg"
-    post_kind = "telegram"
+class ChatRelayAdapter(RelayAdapter):
+    connector = "chat"
+    transport_label = "chat"
+    uri_scheme = "xc"
+    post_kind = "chat"
 
     async def poll(self, timeout: int) -> list:
         """LONG-POLL del gateway: blocca (in un thread) fino a un messaggio o al
         timeout, e ritorna i messaggi nuovi di TUTTE le chat."""
-        return await asyncio.to_thread(telegram_client.poll, timeout)
+        return await asyncio.to_thread(chat_client.poll, timeout)
 
     async def send(self, chat_id, text: str, thread_id=None) -> None:
-        await telegram_client.send_async(str(chat_id), text, thread_id)
+        await chat_client.send_async(str(chat_id), text, thread_id)
 
     async def download(self, file_ref: dict) -> str | None:
-        dl = await telegram_client.download_async(file_ref["file_id"])
+        dl = await chat_client.download_async(file_ref["file_id"])
         return dl["content_b64"]
 
     def sender_uri(self, msg: dict) -> str | None:
-        """`tg:@handle`. Un mittente senza handle non è vagliabile per
-        costruzione — `tg:` in ingresso registra `@handle`, non un uid — quindi
+        """`xc:@handle`. Un mittente senza handle non è vagliabile per
+        costruzione — `xc:` in ingresso registra `@handle`, non un uid — quindi
         qui vale None, e il relay lo rifiuta senza nemmeno chiedere."""
         handle = str((msg or {}).get("from_username") or "").strip().lstrip("@")
-        return f"tg:@{handle}" if handle else None
+        return f"xc:@{handle}" if handle else None
 
     def chat_uri(self, chat_id) -> str | None:
-        """`tg:<chat_id>`: il GRUPPO come fonte vagliata (clodia-platform#402)."""
+        """`xc:<chat_id>`: il GRUPPO come fonte vagliata (clodia-platform#402)."""
         cid = str(chat_id or "").strip()
-        return f"tg:{cid}" if cid else None
+        return f"xc:{cid}" if cid else None
 
     def addresses_bot(self, msg: dict, participants: list) -> bool:
         """The platform rule (a mention or a reply to the bot), plus: a 1:1
@@ -78,7 +92,7 @@ class TelegramRelayAdapter(RelayAdapter):
     # nel nucleo neutro: se il contesto tornerà (è una decisione di prodotto,
     # non un dettaglio di codice) sarà di nuovo nel posto giusto.
     def line(self, m: dict, chat_id) -> str:
-        """Una riga compatta per messaggio: `[tg://<gruppo>/<user>] -> <verbatim>`.
+        """Una riga compatta per messaggio: `[xc://<gruppo>/<user>] -> <verbatim>`.
         `<gruppo>` = NOME/titolo della chat (leggibile), fallback al chat_id.
         `<user>` = username Telegram (identità autenticata) o uid se assente.
         Se il messaggio ha un allegato, aggiunge il riferimento al file salvato."""
@@ -101,4 +115,8 @@ class TelegramRelayAdapter(RelayAdapter):
                          if (m.get("text") or "").strip() or m.get("file"))
 
 
-ADAPTER = TelegramRelayAdapter()
+ADAPTER = ChatRelayAdapter()
+
+#: Registered in-process on import: the relay finds it for the `chat`
+#: connector the way it found the built-in Telegram adapter.
+relay_adapters.register(ADAPTER)

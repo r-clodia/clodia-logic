@@ -654,7 +654,7 @@ def declared_connectors(manifest: dict) -> list:
     """Il blocco `connectors:` del pack.yaml sorgente, ricopiato com'è.
 
     clodia-platform#516 ha dato la grammatica e #522 la prima dichiarazione
-    vera (Telegram in comms-pack); chi la LEGGE arriva con #518 (registry) e
+    vera (Telegram in comms-pack, rimosso con #683); chi la LEGGE arriva con #518 (registry) e
     #519 (rifiuto a install time), e legge il manifest REGISTRATO in
     `<datadir>/packs/<pack>/pack.yaml`, non il sorgente — che dopo
     l'installazione può non esistere più, perché l'archivio è temporaneo.

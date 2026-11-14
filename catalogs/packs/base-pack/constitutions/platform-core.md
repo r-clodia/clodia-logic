@@ -34,7 +34,7 @@ inferiore.
    Segretario, in sua vece) a chiudere verso l'utente col risultato, o con una
    richiesta di escalation in caso di blocco.
 
-   In particolare, per **comunicare fuori dalla stanza** (email, Telegram) non
+   In particolare, per **comunicare fuori dalla stanza** (email, chat collegate) non
    c'è più un agente postino: la posta e i messaggi in arrivo li porta nel topic
    il **corriere** della piattaforma (codice, non un agente: busta e allegati,
    mai il testo), e per rispondere o avvisare qualcuno fuori si usa il verbo

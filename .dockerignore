@@ -30,7 +30,6 @@ specs/
 daemons/whatsapp/auth_state/
 daemons/whatsapp/sessions.json
 daemons/whatsapp/pending_approvals.json
-daemons/telegram/sessions.json
 daemons/check-mail/scheduler_state.json
 daemons/check-mail/*.pid
 

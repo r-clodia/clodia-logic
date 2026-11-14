@@ -8,8 +8,9 @@ import unittest
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[2] / "catalogs" / "packs"
-CLIENTS = [ROOT / "google-pack" / "gateway" / "email_client.py",
-           ROOT / "comms-pack" / "gateway" / "email_client.py"]
+# comms-pack's copy left with the pack (#683): the gateway's own copy is
+# tested in clodia-tools.
+CLIENTS = [ROOT / "google-pack" / "gateway" / "email_client.py"]
 
 
 def _load(path: Path, name: str):

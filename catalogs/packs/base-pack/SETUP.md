@@ -57,9 +57,8 @@ On an existing instance the agent-server (clodia-logic ≥ 6.312.0) archives the
 old `messaggero` seed at boot, memory included (`agents-archive/`), and keeps the
 name reserved: no pack and no API call can install an agent called `messaggero`
 and inherit its identity. Its gateway whitelist entry and vault grants are inert
-without a seed; revoke them as owner to tidy up. The Telegram relay no longer
-needs it.
+without a seed; revoke them as owner to tidy up.
 
 A room whose coordinator lacks `channel.deliver` (for example `segretario` in a
-room without Clodia) does not answer on a linked Telegram group: the relay says
+room without Clodia) does not answer on a linked chat group: the relay says
 so on the group and leaves a notice for the owner in the topic.

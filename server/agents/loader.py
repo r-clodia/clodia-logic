@@ -195,18 +195,6 @@ def _messaggio_errore(e: Exception) -> str:
     return msg
 
 
-def _tg_key(value: object) -> str:
-    """Chiave di confronto per un recapito Telegram: niente spazi, niente '@',
-    tutto minuscolo (gli username Telegram sono case-insensitive).
-
-    Lo `strip()` viene PRIMA: `" @Davide_C ".lstrip("@")` non toglie niente,
-    perché la stringa inizia con uno spazio — e il valore che arriva da una
-    riga scritta a mano ne ha spesso uno. La tolleranza era dichiarata nel
-    docstring e non applicata in quell'ordine.
-    """
-    return str(value or "").strip().lstrip("@").strip().lower()
-
-
 class AgentRegistry:
     """Cache in memoria degli agenti definiti. Ricaricabile a runtime
     (utile in dev: edit dell'agent.yaml + POST /api/agents/reload).
@@ -311,25 +299,6 @@ class AgentRegistry:
 
     def get_by_name(self, name: str) -> Optional[AgentSpec]:
         return self._agents.get(name)
-
-    def get_by_telegram(self, handle: Optional[str]) -> Optional[AgentSpec]:
-        """Lookup inverso `handle/chat_id Telegram → principal HUMAN registrato`.
-
-        Ritorna lo spec dell'human con `telegram` corrispondente, o None (→ il
-        mittente è un proxy, non registrato). Match tollerante: ignora un '@'
-        iniziale, gli spazi e il case. Solo `type == "human"`: gli AI non sono
-        committenti-umani di un canale."""
-        if handle is None:
-            return None
-        want = _tg_key(handle)
-        if not want:
-            return None
-        for spec in self._agents.values():
-            if spec.type != "human" or not spec.telegram:
-                continue
-            if _tg_key(spec.telegram) == want:
-                return spec
-        return None
 
 
 # Singleton globale; caricata al primo accesso, ricaricabile via API.

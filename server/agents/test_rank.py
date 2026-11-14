@@ -77,30 +77,5 @@ class RankOfNameTests(unittest.TestCase):
         self.assertEqual(rank.rank_of_name(""), rank.RANK_OUTSIDE)
 
 
-class GetByTelegramTests(unittest.TestCase):
-    """Lookup inverso tg_user → principal HUMAN registrato (o None = proxy)."""
-
-    def _reg(self) -> AgentRegistry:
-        reg = AgentRegistry()
-        for spec in (_a("davide", "human", "superadmin", telegram="@Davide_C"),
-                     _a("mara", "human", "member", telegram="123456"),
-                     _a("clodia", "super", telegram="@clodia_bot")):
-            reg._agents[spec.name] = spec
-        return reg
-
-    def test_matches_human_by_handle_tolerant(self) -> None:
-        reg = self._reg()
-        self.assertEqual(reg.get_by_telegram("davide_c").name, "davide")   # no @, lower
-        self.assertEqual(reg.get_by_telegram("@Davide_C").name, "davide")
-        self.assertEqual(reg.get_by_telegram(" 123456 ").name, "mara")     # chat_id
-
-    def test_proxy_and_ai_are_not_matched(self) -> None:
-        reg = self._reg()
-        self.assertIsNone(reg.get_by_telegram("sconosciuto"))   # non registrato = proxy
-        self.assertIsNone(reg.get_by_telegram("clodia_bot"))    # è un AI, non un human
-        self.assertIsNone(reg.get_by_telegram(None))
-        self.assertIsNone(reg.get_by_telegram(""))
-
-
 if __name__ == "__main__":
     unittest.main()

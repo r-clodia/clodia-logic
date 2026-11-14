@@ -140,28 +140,9 @@ class PhantomVerbTests(unittest.TestCase):
         self.assertFalse(legs["private_data"])
 
     def test_the_real_send_verbs_are_all_egress(self) -> None:
-        for verb in ("email.send", "email.reply", "telegram.send",
-                     "telegram.send_file"):
+        for verb in ("email.send", "email.reply", "channel.deliver"):
             with self.subTest(verb=verb):
                 self.assertTrue(_legs(verb)["egress"])
-
-
-class LeaseTests(unittest.TestCase):
-    """§9.4 — `telegram.lease_*` è controllo d'accesso, non lettura."""
-
-    def test_lease_verbs_light_nothing(self) -> None:
-        for verb in ("telegram.lease_acquire", "telegram.lease_release"):
-            with self.subTest(verb=verb):
-                self.assertEqual(_score(verb), 0)
-
-    def test_a_postino_with_a_lease_stays_egress_only(self) -> None:
-        # È il caso misurato in #102: il lease gonfiava il punteggio di un
-        # agente che non legge niente.
-        p = trifecta.agent_profile(
-            _spec("postino", ["telegram.send", "telegram.send_file",
-                              "telegram.lease_acquire", "telegram.lease_release"]))
-        self.assertEqual(p["score"], 1)
-        self.assertTrue(p["legs"]["egress"])
 
 
 class OpenQuestionTests(unittest.TestCase):
