@@ -11,6 +11,7 @@ audit.
     POST /clodia/databases {action: create_datastore | create_collection
                             | create_instance | delete | restore, ...}  admins
     GET  /clodia/databases/structures                           pack structures + instances
+    POST /clodia/databases {action: migrate_instance, id}       admins: retry one migration
     GET  /clodia/databases/datastore/{pack}/{name}/tables       ?scope=
     GET  /clodia/databases/datastore/{pack}/{name}/rows         ?table&limit&offset&q&scope
     POST /clodia/databases/datastore/{pack}/{name}/rows         {op, table, rowid?, values?, scope?}
@@ -46,7 +47,7 @@ _UPLOAD_TIMEOUT = 330
 _DELETE_TIMEOUT = 330
 
 _ADMIN_ACTIONS = ("create_datastore", "create_collection", "create_instance", "delete",
-                  "restore")
+                  "restore", "migrate_instance")
 
 
 def _upload_max() -> int:
@@ -174,8 +175,10 @@ async def get_structures(request: Request) -> dict:
             jobs = {}
         for st in out.get("structures") or []:
             for inst in st.get("instances") or []:
-                inst["imported_by_scopes"] = int(inst.get("imported_by_scopes") or 0) + \
-                    len(jobs.get(f"datastore:{inst.get('id')}", []))
+                scopes = list(inst.get("imported_by_scopes") or []) + \
+                    jobs.get(f"datastore:{inst.get('id')}", [])
+                inst["imported_by_scopes"] = scopes
+                inst["imported_count"] = len(scopes)
     return out
 
 
@@ -188,6 +191,21 @@ async def post_catalogue(request: Request) -> dict:
     body = await _body(request)
     if body.get("action") not in _ADMIN_ACTIONS:
         raise HTTPException(400, "azione: " + " | ".join(_ADMIN_ACTIONS))
+    if body.get("action") == "migrate_instance":
+        # Retry the schema migration of ONE instance (#687, review of #608):
+        # the same service route the pack update uses, asked by this admin.
+        from . import gateway_admin
+        iid = str(body.get("id") or "").strip()
+        if ":" not in iid or "/" not in iid:
+            raise HTTPException(400, "id: '<pack>/<struttura>:<nome>'")
+        try:
+            return await asyncio.to_thread(gateway_admin.migrate_datastores, [], who, ids=[iid])
+        except requests.HTTPError as e:
+            code = e.response.status_code if e.response is not None else 502
+            raise HTTPException(code if 400 <= code < 600 else 502,
+                                f"migrazione non eseguita: HTTP {code}") from e
+        except requests.RequestException as e:
+            raise HTTPException(502, f"gateway irraggiungibile: {e}") from e
     if body.get("action") != "delete":
         return await _acall(who, "POST", "", json=body)
     kind, name = str(body.get("kind") or ""), str(body.get("name") or "")

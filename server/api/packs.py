@@ -686,7 +686,10 @@ async def _migrate_datastores(result: dict, principal: str) -> None:
             "migrazione dei datastore non riuscita per "
             + (", ".join(str(f.get("id") or f.get("structure")) for f in report.get("failed") or [])
                or ", ".join(plugins))
-            + ": vedi datastore_migrations (backup in CLODIA_DATA/migrations/)")
+            + ": quelle istanze restano chiuse finché non sono migrate. Correggi la causa "
+              "(datastore_migrations), poi rilancia l'Update del pack oppure, da admin, "
+              "«Riprova migrazione» sull'istanza (POST /clodia/databases {action: "
+              "migrate_instance, id}). Backup in CLODIA_DATA/migrations/")
 
 
 def _maybe_trigger_pack_ops(result: dict) -> None:

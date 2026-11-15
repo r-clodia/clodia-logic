@@ -135,12 +135,14 @@ def connectors_validate(pack: str, connectors: list) -> dict:
 _MIGRATE_TIMEOUT = 300
 
 
-def migrate_datastores(packs: list[str], by: str = "") -> dict:
+def migrate_datastores(packs: list[str], by: str = "", *, ids: list[str] | None = None) -> dict:
     """Ask the gateway to migrate every instance of these plugins' datastore
-    structures to their latest schema (clodia-platform#687). The gateway owns
-    the instances, their registry and the backups; it answers `{migrated,
-    failed, current}`."""
-    payload = {"packs": list(packs), "by": str(by or "")[:120]}
+    structures (or only the instances `ids`) to their latest schema
+    (clodia-platform#687). The gateway owns the instances, their registry and
+    the backups; it answers `{migrated, failed, current, retry?}`."""
+    payload: dict = {"packs": list(packs), "by": str(by or "")[:120]}
+    if ids:
+        payload["ids"] = list(ids)
     r = requests.post(f"{_root_url()}/internal/datastores/migrate",
                       headers=_headers(), json=payload, timeout=_MIGRATE_TIMEOUT)
     r.raise_for_status()

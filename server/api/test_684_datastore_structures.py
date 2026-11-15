@@ -100,14 +100,16 @@ class InstallAndArchiveTests(_Datadir):
                 patch.object(PI.catalog, "_invalidate", lambda k: None):
             return PI.install_plugin_from_root(src, source="test")
 
-    def test_schema_and_migrations_land_next_to_the_manifest(self):
+    def test_schema_and_migrations_land_in_the_dedicated_folder(self):
         out = self.install(self.pack_source())
         self.assertEqual("contabilita", out["datastores"][0]["name"])
         root = self.plugins / "assetti-contabili"
-        self.assertTrue((root / "mcp" / "schema.sql").is_file())
-        self.assertTrue((root / "mcp" / "migrations" / "001_add.sql").is_file())
+        self.assertTrue((root / ".structures/contabilita/schema.sql").is_file())
+        self.assertTrue((root / ".structures/contabilita/migrations/001_add.sql").is_file())
         meta = yaml.safe_load((root / "plugin.yaml").read_text())
-        self.assertEqual("mcp/schema.sql", meta["datastores"][0]["schema"])
+        self.assertEqual(".structures/contabilita/schema.sql", meta["datastores"][0]["schema"])
+        self.assertEqual(".structures/contabilita/migrations",
+                         meta["datastores"][0]["migrations"])
 
     def test_schema_outside_mcp_is_copied_too(self):
         src = self.pack_source(decl=[{"name": "c", "schema": "db/schema.sql",
@@ -117,8 +119,33 @@ class InstallAndArchiveTests(_Datadir):
         (src / "db" / "migrations" / "001_x.sql").write_text("SELECT 1;\n")
         self.install(src)
         root = self.plugins / "assetti-contabili"
-        self.assertTrue((root / "db" / "schema.sql").is_file())
-        self.assertTrue((root / "db" / "migrations" / "001_x.sql").is_file())
+        self.assertTrue((root / ".structures/c/schema.sql").is_file())
+        self.assertTrue((root / ".structures/c/migrations/001_x.sql").is_file())
+
+    def test_a_manifest_cannot_make_the_update_wipe_the_plugin(self):
+        """`migrations: "."` or `"data"` (review of #608): never an rmtree of
+        the plugin's folder or of its legacy data."""
+        self.install(self.pack_source())
+        root = self.plugins / "assetti-contabili"
+        (root / "data").mkdir()
+        (root / "data" / "contabilita.db").write_bytes(b"BOOKS")
+        for mig in (".", "./", "data"):
+            with self.subTest(migrations=mig):
+                src = self.pack_source(decl=[{"name": "contabilita", "schema": "mcp/schema.sql",
+                                              "migrations": mig}])
+                (src / "data").mkdir(exist_ok=True)
+                (src / "data" / "x.sql").write_text("SELECT 1;\n")
+                self.install(src)
+                self.assertEqual(b"BOOKS", (root / "data" / "contabilita.db").read_bytes())
+                self.assertTrue((root / "plugin.yaml").is_file())
+                self.assertTrue((root / "mcp" / "server.py").is_file())
+        self.assertEqual([], _sanitize_datastores([{"name": "c", "schema": "s.sql",
+                                                    "migrations": "."}]))
+
+    def test_env_colliding_structures_are_dropped(self):
+        out = _sanitize_datastores([{"name": "a-b", "schema": "s.sql"},
+                                    {"name": "a_b", "schema": "s.sql"}])
+        self.assertEqual(["a-b"], [d["name"] for d in out])
 
     def test_a_structure_without_its_schema_file_is_dropped(self):
         out = self.install(self.pack_source(schema=False))
@@ -146,6 +173,13 @@ class InstallAndArchiveTests(_Datadir):
         # schema and migrations are reinstallable, not "undeclared" data
         undeclared = [r for r in res["datastores_archived"] if r.get("undeclared")]
         self.assertEqual([], undeclared)
+        # and the archived inventory lists the two instances
+        from . import datastores as DS
+        with patch.object(PI, "_archive_root", lambda: self.data / "plugins-archive"):
+            rows = [r for r in DS._archived_datastores() if r.get("instance")]
+        self.assertEqual({"assetti-contabili/contabilita:tomato",
+                          "assetti-contabili/contabilita:uncommon"}, {r["instance"] for r in rows})
+        self.assertEqual({"archived"}, {r["status"] for r in rows})
 
 
 class SkillTokenTests(_Datadir):
@@ -198,6 +232,7 @@ class MigrateOnUpdateTests(_Datadir):
         out = self.run_it(lambda p, by="": {"migrated": [], "current": [], "failed": [
             {"id": "assetti-contabili/contabilita:uncommon", "error": "boom"}]})
         self.assertIn("assetti-contabili/contabilita:uncommon", out["warnings"][0])
+        self.assertIn("rilancia l'Update", out["warnings"][0])
 
     def test_an_unreachable_gateway_is_reported_not_raised(self):
         def boom(p, by=""):
@@ -259,13 +294,33 @@ class DoorTests(unittest.TestCase):
     def test_structures_are_forwarded_with_job_counts_for_admins(self):
         data = {"is_admin": True, "caller_clearance": "SEAL-3", "structures": [
             {"id": "assetti-contabili/contabilita", "instances": [
-                {"id": "assetti-contabili/contabilita:tomato", "imported_by_scopes": 2}]}]}
+                {"id": "assetti-contabili/contabilita:tomato",
+                 "imported_by_scopes": ["SEAL-2/a", "SEAL-2/b"], "imported_count": 2}]}]}
         r = self.client("davide", admin_=True, data=data).get("/clodia/databases/structures")
         self.assertEqual(200, r.status_code)
         self.assertEqual("http://gw/internal/databases/structures", self.sent[-1][1])
         self.assertEqual("Bearer tok-davide", self.sent[-1][2]["headers"]["Authorization"])
-        self.assertEqual(3, r.json()["structures"][0]["instances"][0]["imported_by_scopes"])
+        inst = r.json()["structures"][0]["instances"][0]
+        self.assertEqual(["SEAL-2/a", "SEAL-2/b", "job:3"], inst["imported_by_scopes"])
+        self.assertEqual(3, inst["imported_count"])
         self.assertEqual("SEAL-3", r.json()["caller_clearance"])
+
+    def test_migrate_instance_goes_to_the_service_route(self):
+        from . import gateway_admin
+        sent = []
+
+        def fake(packs, by="", *, ids=None):
+            sent.append((packs, by, ids))
+            return {"migrated": [{"id": ids[0]}], "failed": [], "current": []}
+        body = {"action": "migrate_instance", "id": "assetti-contabili/contabilita:tomato"}
+        with patch.object(gateway_admin, "migrate_datastores", fake):
+            self.assertEqual(403, self.client("mario").post("/clodia/databases",
+                                                            json=body).status_code)
+            r = self.client("davide", admin_=True).post("/clodia/databases", json=body)
+            self.assertEqual(200, r.status_code, r.text)
+            self.assertEqual(400, self.client("davide", admin_=True).post(
+                "/clodia/databases", json={"action": "migrate_instance", "id": "x"}).status_code)
+        self.assertEqual([([], "davide", ["assetti-contabili/contabilita:tomato"])], sent)
 
     def test_instance_key_is_encoded_in_the_detail_routes(self):
         c = self.client("davide", admin_=True)

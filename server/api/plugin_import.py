@@ -234,6 +234,8 @@ def _confined_rel(raw: Any) -> str | None:
     p = str(raw or "").strip()
     if not p or p.startswith(("/", "~", "\\")) or ".." in Path(p).parts:
         return None
+    if not Path(p).parts:
+        return None             # "." — the plugin's folder itself (review of #608)
     return p
 
 
@@ -286,13 +288,22 @@ def _sanitize_datastores(raw: Any) -> list[dict[str, Any]]:
     out: list[dict[str, Any]] = []
     if not isinstance(raw, list):
         return out
+    env_keys: set[str] = set()
     for ds in raw:
         if not isinstance(ds, dict):
             continue
         if ds.get("schema"):
             st = _sanitize_structure(ds)
-            if st is not None:
-                out.append(st)
+            if st is None:
+                continue
+            # `a-b` and `a_b` would hand the MCP the same CLODIA_DATASTORE_A_B.
+            key = re.sub(r"[^A-Z0-9]", "_", st["name"].upper())
+            if key in env_keys:
+                LOG.warning("datastore structure '%s' collides with another one "
+                            "(same CLODIA_DATASTORE_%s): dropped", st["name"], key)
+                continue
+            env_keys.add(key)
+            out.append(st)
             continue
         path = str(ds.get("path") or "").strip()
         if not path or path.startswith(("/", "~")) or ".." in Path(path).parts:
@@ -509,7 +520,10 @@ def install_plugin_from_root(
 
     skills = [_install_skill_into_plugin(d, plugin) for d in skill_dirs]
     rules = [_install_rule_into_plugin(f, plugin) for f in rule_files]
-    datastores = _structures_present(plugin_root, _sanitize_datastores(manifest.get("datastores")))
+    # The pack's own paths (`sources`) are only read from; the installed
+    # manifest points at the copies in the plugin's dedicated `.structures/`.
+    sources = _structures_present(plugin_root, _sanitize_datastores(manifest.get("datastores")))
+    datastores = _installed_structures(sources)
     rag_collections = _sanitize_rag_collections(manifest.get("rag_collections"))
     requires = _sanitize_requires(manifest.get("requires"))
     topic_playbooks = _sanitize_playbooks(manifest.get("topic_playbooks"))
@@ -534,7 +548,7 @@ def install_plugin_from_root(
             dirs_exist_ok=True,
             ignore=shutil.ignore_patterns("__pycache__", "*.pyc"),
         )
-    _copy_structure_files(plugin_root, PLUGINS_META_DIR / plugin, datastores)
+    _copy_structure_files(plugin_root, PLUGINS_META_DIR / plugin, sources)
     catalog._invalidate("skill")
     catalog._invalidate("rule")
     LOG.info(
@@ -551,16 +565,44 @@ def install_plugin_from_root(
     }
 
 
+#: The plugin's folder for the copies of its structures' schema and
+#: migrations: `.structures/<structure>/{schema.sql, migrations/}`. The only
+#: place the import ever replaces wholesale (review of #608: a manifest's
+#: `migrations: data` must not be able to wipe the plugin's data).
+STRUCTURES_DIR = ".structures"
+
+
 def _structures_present(plugin_root: Path, datastores: list[dict[str, Any]]) -> list[dict[str, Any]]:
     """Drop a structure whose schema file is not in the pack (a structure
-    without a schema cannot be instantiated), logging it."""
+    without a schema cannot be instantiated), or whose declared migrations
+    are not a folder of the pack, logging it."""
     out = []
     for ds in datastores:
         if "schema" in ds and not (plugin_root / ds["schema"]).is_file():
             LOG.warning("datastore structure '%s': schema '%s' not in the pack, dropped",
                         ds["name"], ds["schema"])
             continue
+        if ds.get("migrations") and not (plugin_root / ds["migrations"]).is_dir():
+            LOG.warning("datastore structure '%s': migrations '%s' not a folder of the "
+                        "pack, dropped", ds["name"], ds["migrations"])
+            continue
         out.append(ds)
+    return out
+
+
+def _installed_structures(sources: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    """The declarations as installed: schema and migrations of each structure
+    point at its copy under `.structures/<name>/`."""
+    out = []
+    for ds in sources:
+        if "schema" not in ds:
+            out.append(ds)
+            continue
+        base = f"{STRUCTURES_DIR}/{ds['name']}"
+        inst = {**ds, "schema": f"{base}/schema.sql"}
+        if ds.get("migrations"):
+            inst["migrations"] = f"{base}/migrations"
+        out.append(inst)
     return out
 
 
@@ -569,20 +611,26 @@ def _structure_paths(datastores: list[dict[str, Any]]) -> list[str]:
 
 
 def _copy_structure_files(plugin_root: Path, meta_dir: Path,
-                          datastores: list[dict[str, Any]]) -> None:
-    """The schema and migrations of the structures, next to the manifest:
-    the gateway reads them from `CLODIA_DATA/plugins/<plugin>/` to create and
-    migrate instances (#685, #687). A migrations folder is replaced as a
-    whole, so a migration removed from the pack does not linger."""
-    for rel in _structure_paths(datastores):
-        src, dst = plugin_root / rel, meta_dir / rel
-        if src.is_dir():
-            if dst.exists():
-                shutil.rmtree(dst)
-            shutil.copytree(src, dst, ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
-        elif src.is_file():
-            dst.parent.mkdir(parents=True, exist_ok=True)
-            shutil.copy2(src, dst)
+                          sources: list[dict[str, Any]]) -> None:
+    """The schema and migrations of the structures, into the plugin's
+    dedicated `.structures/` (read by the gateway to create and migrate
+    instances, #685/#687). That folder is rebuilt as a whole — a migration
+    removed from the pack does not linger — and nothing outside it is ever
+    removed or overwritten here."""
+    dest_root = meta_dir / STRUCTURES_DIR
+    if dest_root.is_dir() and not dest_root.is_symlink():
+        shutil.rmtree(dest_root)
+    elif dest_root.exists() or dest_root.is_symlink():
+        dest_root.unlink()
+    for ds in sources:
+        if "schema" not in ds:
+            continue
+        dest = dest_root / ds["name"]
+        dest.mkdir(parents=True, exist_ok=True)
+        shutil.copy2(plugin_root / ds["schema"], dest / "schema.sql")
+        if ds.get("migrations"):
+            shutil.copytree(plugin_root / ds["migrations"], dest / "migrations",
+                            ignore=shutil.ignore_patterns("__pycache__", "*.pyc"))
 
 
 def _archive_root() -> Path:
@@ -616,7 +664,7 @@ def _reinstallable(rel: Path, structure_paths: list[str] | None = None) -> bool:
     sorgente. Tutto il resto è comparso a runtime e nessuno lo sa ricreare.
     Since #685 also the schema and migrations of the declared structures.
     """
-    if rel.parts == ("plugin.yaml",) or rel.parts[:1] == ("mcp",):
+    if rel.parts == ("plugin.yaml",) or rel.parts[:1] in (("mcp",), (STRUCTURES_DIR,)):
         return True
     return any(rel == Path(p) or Path(p) in rel.parents for p in structure_paths or [])
 

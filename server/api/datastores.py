@@ -102,11 +102,29 @@ def _archived_datastores() -> list[dict[str, Any]]:
             except Exception as e:  # noqa: BLE001 — un manifest illeggibile non deve rompere l'elenco
                 LOG.warning("datastores: manifest archiviato di '%s' illeggibile (%s)",
                            entry.name, str(e)[:120])
+        # The instances of the plugin's structures archived with it (#685):
+        # one row each. To use one again after a reinstall, its file goes back
+        # to `CLODIA_DATA/datastores/<pack>/<structure>/` (the gateway then
+        # lists it as active again); its name stays reserved meanwhile.
+        inst_root = entry / "datastores"
+        if inst_root.is_dir():
+            for f in sorted(inst_root.rglob("*.db")):
+                rel = f.relative_to(inst_root)
+                structure = rel.parts[0] if len(rel.parts) > 1 else ""
+                out.append({"path": f"datastores/{rel}", "pack": pack, "status": "archived",
+                           "archive_dir": entry.name, "archived_at": ts,
+                           "structure": f"{pack}/{structure}",
+                           "instance": f"{pack}/{structure}:{f.stem}",
+                           "pii": next((d.get("pii") for d in declared
+                                        if d.get("name") == structure), None),
+                           "purpose": next((d.get("purpose", "") for d in declared
+                                            if d.get("name") == structure), "")})
+        declared = [d for d in declared if d.get("path")]   # a structure is no file
         if declared:
             for ds in declared:
                 out.append({**ds, "pack": pack, "status": "archived",
                            "archive_dir": entry.name, "archived_at": ts})
-        else:
+        elif not inst_root.is_dir():
             # Manifest assente/illeggibile o senza `datastores:` dichiarati:
             # l'intera cartella è comunque dato salvato (stesso principio del
             # ramo "undeclared" in `archive_plugin_dir`) — una riga sola che
