@@ -123,6 +123,13 @@ def _pack_datastore_map(pack: str) -> dict[str, str]:
     for ds in (meta.get("datastores") or []):
         if not isinstance(ds, dict):
             continue
+        if ds.get("schema") and ds.get("name"):
+            # A STRUCTURE (clodia-platform#684): no file to point at — each
+            # scope works on its own instance. The token becomes the structure
+            # id, which `datastore.*` (and the pack's MCP) resolve to the
+            # instance imported in the scope of the call.
+            out[str(ds["name"]).strip()] = f"{pack}/{str(ds['name']).strip()}"
+            continue
         rel = ds.get("path")
         if not rel or not isinstance(rel, str):
             continue

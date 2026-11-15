@@ -121,7 +121,8 @@ def _reconcile_prompt(reason: str, decls: dict[str, dict],
     ]
     for name, d in decls.items():
         req = ", ".join(f"{k}:{v}" for k, v in (d.get("requires") or {}).items()) or "-"
-        ds = ", ".join(x.get("path", "?") for x in (d.get("datastores") or [])) or "-"
+        ds = ", ".join(x.get("path") or f"{x.get('name', '?')} (struttura)"
+                       for x in (d.get("datastores") or [])) or "-"
         rc = ", ".join(
             f"{c.get('name')}({len(c.get('resources') or [])} risorse)"
             for c in (d.get("rag_collections") or [])) or "-"

@@ -33,8 +33,8 @@ from pydantic import BaseModel
 from ..agents import pack_state, seed_sync
 from ..agents.loader import registry
 from ..config import workspace_path
-from . import (catalog, gateway_pdp, pack_deprovision, pack_import,
-               pack_mcp_mount, plugins as plugins_api)
+from . import (catalog, gateway_admin, gateway_pdp, pack_deprovision, pack_import,
+               pack_mcp_mount, plugin_import, plugins as plugins_api)
 
 LOG = logging.getLogger("agent-server.api.packs")
 router = APIRouter()
@@ -647,6 +647,51 @@ def _has_pack_ops_declarations(result: dict) -> bool:
                for p in result.get("plugins", []) if isinstance(p, dict))
 
 
+def _structure_plugins(result: dict) -> list[str]:
+    """The plugins installed by this import/update that declare datastore
+    STRUCTURES (`datastores:` entries with a `schema`, #684)."""
+    from .pack_mcp_mount import _plugin_names
+    out = []
+    for plugin in _plugin_names(result):
+        manifest = plugin_import.PLUGINS_META_DIR / plugin / "plugin.yaml"
+        try:
+            meta = yaml.safe_load(manifest.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001 — no manifest, no structure
+            continue
+        if any(isinstance(d, dict) and d.get("schema") for d in meta.get("datastores") or []):
+            out.append(plugin)
+    return out
+
+
+async def _migrate_datastores(result: dict, principal: str) -> None:
+    """After an install or update: the gateway migrates every instance of
+    the structures these plugins declare to the latest schema, each with a
+    backup (clodia-platform#687). The outcome goes into the result —
+    `datastore_migrations: {migrated, failed, current}` — and a failure is
+    never silent; it does not fail the update itself (the files are in)."""
+    plugins = _structure_plugins(result)
+    if not plugins:
+        return
+    try:
+        report = await asyncio.to_thread(gateway_admin.migrate_datastores, plugins,
+                                         str(principal or ""))
+    except Exception as e:  # noqa: BLE001 — reported, never raised
+        LOG.warning("datastore migrations for %s not run: %s", ", ".join(plugins),
+                    type(e).__name__)
+        report = {"error": f"gateway: migrazioni non eseguite ({type(e).__name__})",
+                  "plugins": plugins}
+    result["datastore_migrations"] = report
+    if report.get("failed") or report.get("error"):
+        result.setdefault("warnings", []).append(
+            "migrazione dei datastore non riuscita per "
+            + (", ".join(str(f.get("id") or f.get("structure")) for f in report.get("failed") or [])
+               or ", ".join(plugins))
+            + ": quelle istanze restano chiuse finché non sono migrate. Correggi la causa "
+              "(datastore_migrations), poi rilancia l'Update del pack oppure, da admin, "
+              "«Riprova migrazione» sull'istanza (POST /clodia/databases {action: "
+              "migrate_instance, id}). Backup in CLODIA_DATA/migrations/")
+
+
 def _maybe_trigger_pack_ops(result: dict) -> None:
     """Post-import: consegna la riconciliazione all'agente pack_ops (fire-and-forget).
 
@@ -692,6 +737,7 @@ async def import_pack_zip(request: Request, file: UploadFile = File(...)):
         return JSONResponse(status_code=500, content={"error": f"import fallito: {str(e)[:160]}"})
     pack_mcp_mount.auto_mount_imported_mcp(result, principal)
     plugins_api.invalidate_plugins()
+    await _migrate_datastores(result, principal)
     _maybe_trigger_pack_ops(result)
     return result
 
@@ -710,6 +756,7 @@ async def import_pack_url(payload: PackImportUrl, request: Request):
         return JSONResponse(status_code=500, content={"error": f"import fallito: {str(e)[:160]}"})
     pack_mcp_mount.auto_mount_imported_mcp(result, principal)
     plugins_api.invalidate_plugins()
+    await _migrate_datastores(result, principal)
     _maybe_trigger_pack_ops(result)
     return result
 
@@ -976,6 +1023,9 @@ async def _perform_update(name: str, principal: str) -> dict:
     if not was_disabled:
         pack_mcp_mount.auto_mount_imported_mcp(result, principal, trusted=first_party)
     plugins_api.invalidate_plugins()
+    # Every instance of the pack's structures to the new schema (#687), also
+    # for a disabled pack: its files are the new ones already.
+    await _migrate_datastores(result, principal)
     try:
         registry.load()
     except Exception:  # noqa: BLE001
