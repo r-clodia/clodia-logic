@@ -119,8 +119,9 @@ def run_logical_setup(name: str, decls: dict, principal: str) -> dict:
     _pip_npm("npm", "packs.install_npm", req.get("npm") or [], principal, done, gaps)
     _bin_checks((req.get("bin") or []) + (req.get("system") or []), principal, done, gaps)
     _rag_collections(decls.get("rag_collections") or [], principal, done, gaps)
-    # datastores: nessuna azione qui di proposito — il file arriva con
-    # l'import/update stesso (vedi SETUP.md dei pack), non è un passo separato.
+    # datastores: no action here on purpose. A structure ships no file: its
+    # instances are created explicitly in the gateway (#685), and the update
+    # migrates them (`packs._migrate_datastores`, #687) before this runs.
     # mcp_servers: nessuna azione qui di proposito — il mount trusted per un
     # update first-party lo fa già `pack_mcp_mount.auto_mount_imported_mcp`
     # dentro `_perform_update`, prima che questa funzione sia chiamata.

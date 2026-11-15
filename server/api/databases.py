@@ -9,7 +9,8 @@ audit.
 
     GET  /clodia/databases                                      the catalogue
     POST /clodia/databases {action: create_datastore | create_collection
-                            | delete | restore, ...}            admins
+                            | create_instance | delete | restore, ...}  admins
+    GET  /clodia/databases/structures                           pack structures + instances
     GET  /clodia/databases/datastore/{pack}/{name}/tables       ?scope=
     GET  /clodia/databases/datastore/{pack}/{name}/rows         ?table&limit&offset&q&scope
     POST /clodia/databases/datastore/{pack}/{name}/rows         {op, table, rowid?, values?, scope?}
@@ -44,7 +45,8 @@ _UPLOAD_TIMEOUT = 330
 #: A delete exports the whole collection first.
 _DELETE_TIMEOUT = 330
 
-_ADMIN_ACTIONS = ("create_datastore", "create_collection", "delete", "restore")
+_ADMIN_ACTIONS = ("create_datastore", "create_collection", "create_instance", "delete",
+                  "restore")
 
 
 def _upload_max() -> int:
@@ -153,6 +155,27 @@ async def get_catalogue(request: Request) -> dict:
         for e in out.get("entries") or []:
             e["imported_by_scopes"] = list(e.get("imported_by_scopes") or []) + \
                 jobs.get(e.get("key") or "", [])
+    return out
+
+
+@router.get("/clodia/databases/structures")
+async def get_structures(request: Request) -> dict:
+    """The datastore structures of the installed packs and their instances
+    (clodia-platform#685, the shape of `packs.datastore_structures`), with
+    `caller_clearance` and `is_admin`. For an admin each instance's
+    `imported_by_scopes` count includes the jobs importing it (#670)."""
+    who = _person(request)
+    out = await _acall(who, "GET", "/structures")
+    if out.get("is_admin"):
+        try:
+            jobs = await asyncio.to_thread(_job_scopes)
+        except Exception as e:  # noqa: BLE001 — the structures stay readable
+            LOG.warning("databases: job imports not read (%s)", type(e).__name__)
+            jobs = {}
+        for st in out.get("structures") or []:
+            for inst in st.get("instances") or []:
+                inst["imported_by_scopes"] = int(inst.get("imported_by_scopes") or 0) + \
+                    len(jobs.get(f"datastore:{inst.get('id')}", []))
     return out
 
 
