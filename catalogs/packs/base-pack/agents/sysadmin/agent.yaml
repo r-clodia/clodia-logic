@@ -66,7 +66,8 @@ sandbox:
 
 capabilities:
   - "base-pack/*"
-  - "comms-pack/helpdesk"  # è l'agente del widget di assistenza (canale SEAL-1 helpdesk)
+  # `helpdesk` (the in-app support widget, SEAL-1 helpdesk channel) comes with
+  # `base-pack/*` since comms-pack was removed (clodia-platform#683).
 rules: []
 # Verbs are not declared here (#626, 27 Oct 2026): the room authorises them
 # (Strumenti), global A·V·R·Q rules cover governance and outside rooms.

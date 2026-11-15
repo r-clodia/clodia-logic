@@ -17,7 +17,6 @@ from unittest.mock import patch
 from . import channel_relay, pack_relay_adapter, relay_adapters, topics_client
 
 REGISTRY = {"connectors": [
-    {"id": "telegram", "schemes": [{"scheme": "tg"}]},
     {"id": "sms-demo", "schemes": [{"scheme": "sms"}],
      "relay": {"label": "sms", "attachments": False, "schemes": ["sms"]}},
     {"id": "mail", "schemes": [{"scheme": "inbox"}]},
@@ -120,19 +119,23 @@ class RegistryTests(_Base):
         _get("unknown")
         self.assertEqual(self.registry_calls, 1)
 
-    def test_telegram_keeps_its_builtin_adapter(self):
-        from .telegram_relay_adapter import ADAPTER
+    def test_an_in_process_adapter_keeps_precedence(self):
+        from .relay_fixture import ADAPTER
         self.registry = {"connectors": [
-            {"id": "telegram", "relay": {"label": "fake", "schemes": ["tg"]}}]}
-        self.assertIs(_get("telegram"), ADAPTER)
-        self.assertEqual(ADAPTER.post_kind, "telegram")
+            {"id": "chat", "relay": {"label": "fake", "schemes": ["xc"]}}]}
+        self.assertIs(_get("chat"), ADAPTER)
         self.assertEqual(ADAPTER.post_fields(), {})
 
-    def test_a_registry_failure_is_not_fatal_and_keeps_telegram(self):
-        from .telegram_relay_adapter import ADAPTER
+    def test_a_registry_failure_is_not_fatal_and_keeps_in_process_adapters(self):
+        from .relay_fixture import ADAPTER
         self.registry = RuntimeError("gateway down")
         self.assertIsNone(_get("sms-demo"))
-        self.assertIs(_get("telegram"), ADAPTER)
+        self.assertIs(_get("chat"), ADAPTER)
+
+    def test_no_telegram_adapter_is_left(self):
+        """#683: Telegram is gone; nothing serves its bindings."""
+        self.registry = {"connectors": []}
+        self.assertIsNone(_get("telegram"))
 
     def test_a_registry_failure_keeps_the_last_known_adapters(self):
         a = _get("sms-demo")
@@ -288,8 +291,8 @@ class MentionsAndLabelsTests(_Base):
         self.assertEqual(tags, ["clodia"])
         self.assertNotIn("\n", out)
 
-    def test_telegram_labels_are_sanitised_too(self):
-        from .telegram_relay_adapter import ADAPTER
+    def test_in_process_adapter_labels_are_sanitised_too(self):
+        from .relay_fixture import ADAPTER
         row = {"message_id": 1, "chat_id": "-1", "text": "@clodia x",
                "from_username": "ada", "chat_title": "Team @segretario"}
         out, tags = self._request(ADAPTER, row)
@@ -298,7 +301,7 @@ class MentionsAndLabelsTests(_Base):
         # a plain name renders as before
         out, _t = self._request(ADAPTER, dict(row, chat_title="Clodia Sviluppo"))
         self.assertIn("«Clodia Sviluppo»", out)
-        self.assertIn("utente telegram ada:", out)
+        self.assertIn("utente chat ada:", out)
 
     PROBES = ("``@clodia ciao", "`a`@clodia ciao", "a``@clodia ciao")
 
@@ -315,8 +318,8 @@ class MentionsAndLabelsTests(_Base):
     def test_backticks_cannot_unmask_a_mention_generic(self):
         self._probe(_get("sms-demo"))
 
-    def test_backticks_cannot_unmask_a_mention_telegram(self):
-        from .telegram_relay_adapter import ADAPTER
+    def test_backticks_cannot_unmask_a_mention_in_process(self):
+        from .relay_fixture import ADAPTER
         self._probe(ADAPTER)
 
     def test_the_directive_is_scheme_neutral(self):
@@ -344,15 +347,6 @@ class ActivationTests(_Base):
         self.assertFalse(self.a.addresses_bot(
             {"text": "ciao", "chat_type": "group", "mentions_bot": False}, []))
         self.assertFalse(self.a.addresses_bot({"text": "ciao", "mentions_bot": "yes"}, []))
-
-    def test_telegram_activation_ignores_the_generic_fields(self):
-        """Telegram does not read `mentions_bot` (a generic transport's flag);
-        since #642 a private chat is addressed, a group still is not."""
-        from .telegram_relay_adapter import ADAPTER
-        self.assertFalse(ADAPTER.addresses_bot(
-            {"text": "ciao", "chat_type": "group", "mentions_bot": True}, []))
-        self.assertTrue(ADAPTER.addresses_bot(
-            {"text": "ciao", "chat_type": "private"}, []))
 
 
 class AckTests(_Base):
@@ -456,23 +450,6 @@ class ConcurrencyTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(relayed, [("fastphone", "f1")])
         self.assertIn("slowphone", channel_relay._POLL_BACKOFF)
         self.assertEqual(slow.handled, 0)       # nothing handed over → no ack
-
-
-class TelegramUnchangedTests(unittest.IsolatedAsyncioTestCase):
-    async def test_telegram_posts_keep_their_kind_and_body(self):
-        from .telegram_relay_adapter import ADAPTER
-        captured = {}
-
-        def _post(url, headers=None, json=None, timeout=None):
-            captured["body"] = json
-            return type("R", (), {"status_code": 200, "json": lambda self: {}})()
-
-        with patch.object(topics_client._gw_http, "post", _post), \
-             patch.object(topics_client, "_headers", lambda: {}):
-            topics_client.post_message("SEAL-1", "ops", "telegram", "x",
-                                       kind=ADAPTER.post_kind, **ADAPTER.post_fields())
-        self.assertEqual(captured["body"], {"author": "telegram", "text": "x",
-                                            "kind": "telegram", "attachments": []})
 
 
 if __name__ == "__main__":

@@ -121,10 +121,10 @@ class UpdateTrustTests(_Env):
         self.assertEqual(self.installs, [])
 
     async def test_a_bundled_reserved_pack_uses_the_bundled_upstream(self) -> None:
-        self.fetched = "comms-pack"
+        self.fetched = "google-pack"
         # the datadir copy was tampered with: the bundled declaration wins
         with self._upstream("evil/acme") as pu:
-            await packs._perform_update("comms-pack", "davide")
+            await packs._perform_update("google-pack", "davide")
         pu.assert_not_called()
         self.assertEqual(self.installs[0]["allow_reserved"], True)
         self.assertEqual(self.installs[0]["source"], "github:r-clodia/clodia-logic")

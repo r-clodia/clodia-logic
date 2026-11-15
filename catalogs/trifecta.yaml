@@ -100,13 +100,6 @@ private_data:
   - email.*
   - -email.send
   - -email.reply
-  - telegram.*
-  - -telegram.send
-  - -telegram.send_file
-  # controllo d'accesso a una chat, non lettura di contenuto (#104 §9): un
-  # postino che acquisisce il lease non legge niente.
-  - -telegram.lease_acquire
-  - -telegram.lease_release
   - gdrive.*
   - -gdrive.upload
   - -gdrive.share
@@ -194,11 +187,6 @@ untrusted_input:
   - email.*
   - -email.send
   - -email.reply
-  - telegram.*
-  - -telegram.send
-  - -telegram.send_file
-  - -telegram.lease_acquire
-  - -telegram.lease_release
   # file e documenti caricati in un topic da chiunque (incluso AGENTS.md)
   - topic.open
   - topic.search
@@ -247,15 +235,13 @@ untrusted_input:
 egress:
   - email.send
   # `channel.deliver` (clodia-platform#531): the topic's outbound verb, running
-  # `email.send` / `telegram.send(_file)` for the caller. Outbound only — it
+  # `email.send` or a pack relay's send for the caller. Outbound only — it
   # reads nothing an agent would not already reach in its own room.
   - channel.deliver
   # `email.reply` risponde in thread CON allegati locali: è uscita a tutti gli
   # effetti e non era classificata affatto (trovato riallineando all'elenco
   # reale dei verbi, #104 §9).
   - email.reply
-  - telegram.send_file
-  - telegram.send
   # GitHub in scrittura: pubblica fuori da Clodia
   - github.add_comment_to_pending_review
   - github.add_issue_comment

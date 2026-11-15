@@ -6,7 +6,7 @@ Moves inbound mail into the topics whose room has a mailbox in its OWN
 - asks the gateway which rooms have a mailbox (`/internal/mail/courier/rooms`);
 - for each, the envelopes it has not delivered yet
   (`/internal/mail/courier/envelopes`): sender, recipients, subject, date,
-  attachment names. The gateway runs comms-pack's component inside the room's
+  attachment names. The gateway runs its mail code (#683) inside the room's
   claims, so the room's `inbox:` list and, on a strict room, its declared
   senders (#503) apply before anything leaves the gateway;
 - stores each attachment in the topic's files as `untrusted`, byte-identical
@@ -94,7 +94,7 @@ def envelopes(room: dict, skip: list[str], keys_only: bool = False,
 
 def box() -> dict | None:
     """The message-box index (#585): `{account, tags: {CODE: [keys]}}` from ONE
-    search of the colony mailbox. None when the gateway or comms-pack cannot
+    search of the colony mailbox. None when the gateway cannot
     give it (older versions, or the search failed)."""
     try:
         r = requests.post(f"{_base_url()}/box", headers=_headers(), timeout=_HTTP_TIMEOUT,
@@ -152,7 +152,7 @@ def _room_seen_path(room: dict):
     """The keys delivered to THIS room through any of its mailboxes: since
     mailboxes are global (owner, 14 Nov 2026) the same message can reach a
     room from two of them — or from a mailbox and the room's own address —
-    and is delivered once. The key is the Message-ID's hash (comms-pack
+    and is delivered once. The key is the Message-ID's hash (the gateway's
     `envelope_key`), the same whatever mailbox it came from."""
     import hashlib
     d = data_path("mail-courier-state")
@@ -393,7 +393,7 @@ async def _deliver(room: dict, env: dict) -> dict:
         eml_path = ""
         failed.append("messaggio completo (.eml)")
     if eml_path and auth and auth.get("authenticated") is True:
-        # #586: a sender the room declares (checked by comms-pack on these
+        # #586: a sender the room declares (checked by the gateway on these
         # very bytes) AND authenticated by the receiving server: its own text
         # is trusted — reading it does not taint. Forwarded parts and
         # attachments stay in the untrusted `.eml` and `files/`.
@@ -454,7 +454,7 @@ async def run_room(room: dict, only: list[str] | None = None,
                  room["tier"], room["name"], len(chiavi))
         return 0
     if only is not None:
-        # #585: what comms-pack REFUSED for this room (sender, tag) is seen —
+        # #585: what the gateway REFUSED for this room (sender, tag) is seen —
         # searched once, not every cycle. A key it did not reach is retried.
         rifiutate = [k for k in (out.get("withheld_keys") or []) if k in set(only)]
         if rifiutate:

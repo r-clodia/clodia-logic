@@ -38,7 +38,7 @@ LOG = logging.getLogger("agent-server.agent-registry")
 from pydantic import BaseModel, Field
 
 from ..agents import activity_log, pause as pause_mod, rank as rank_mod, registry
-from ..agents.models import AgentSpec, normalize_telegram
+from ..agents.models import AgentSpec
 from ..colony import pki
 from .. import scoped_overrides
 from .providers import (connected_provider_ids, candidate_providers, effective_provider,
@@ -581,7 +581,6 @@ class AgentPatch(BaseModel):
     avatar_color: Optional[str] = None
     clearance: Optional[str] = None
     email: Optional[str] = None
-    telegram: Optional[str] = None          # opzionale
     mailbox_parent: Optional[str] = None    # parent mailbox per il subaddress dei bot
     # Budget (s) del turno per questo agente (clodia-platform#514). `0` è il
     # `""` degli scalari stringa: rimuove il campo, cioè torna al default di
@@ -589,21 +588,6 @@ class AgentPatch(BaseModel):
     # `gt=0` renderebbe lo zero irraggiungibile e toglierebbe il modo di
     # tornare indietro.
     turn_timeout: Optional[int] = None
-
-
-def _telegram_or_400(value: Optional[str]) -> Optional[str]:
-    """Recapito normalizzato, o 400 con il perché.
-
-    La validazione sta PRIMA della scrittura perché questo endpoint scrive
-    `agent.yaml` e poi ricarica: un valore che lo schema rifiuta usciva di qui
-    come 500 «dopo la modifica l'agent non valida», lasciando sul disco un seed
-    che non carica più. Un errore dell'utente non deve poter rompere l'agente su
-    cui è stato commesso (clodia-platform#200).
-    """
-    try:
-        return normalize_telegram(value)
-    except ValueError as e:
-        raise HTTPException(400, str(e))
 
 
 def _is_immutable(spec) -> bool:
@@ -943,9 +927,6 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
     if patch.turn_timeout is not None and patch.turn_timeout > TURN_TIMEOUT_MAX_S:
         raise HTTPException(400, f"turn_timeout invalido: {patch.turn_timeout} "
                                  f"(massimo {TURN_TIMEOUT_MAX_S}s)")
-    # `""` resta `""` (= rimuovi il campo); qualunque altro valore passa dalla
-    # forma canonica prima di toccare il disco.
-    telegram = patch.telegram if patch.telegram in (None, "") else _telegram_or_400(patch.telegram)
     agent_dir = Path(spec.agent_dir)
 
     if patch.system_prompt is not None:
@@ -956,7 +937,7 @@ async def patch_agent(name: str, patch: AgentPatch, request: Request) -> AgentSp
         "agent_sdk": patch.agent_sdk, "model": patch.model,
         "description": patch.description, "display_name": patch.display_name,
         "avatar_color": patch.avatar_color, "clearance": patch.clearance,
-        "email": patch.email, "telegram": telegram,
+        "email": patch.email,
         "mailbox_parent": patch.mailbox_parent,
         # `0` → `""` → `_remove_yaml_scalar`: tornare al default è togliere il
         # campo, non scriverci dentro uno zero che fermerebbe ogni turno.
@@ -1043,10 +1024,9 @@ class AgentCreate(BaseModel):
     # Clearance di privacy del principal umano (P0–P3): vede un topic sse
     # T.privacy <= clearance. La sceglie l'admin alla creazione (default P0).
     clearance: Optional[str] = None
-    # Canali di contatto (umani: email + telegram; valorizzati anche dalla
-    # cert-request approvata). Per i regular l'email si deriva (subaddress).
+    # Canale di contatto (umani: email; valorizzata anche dalla cert-request
+    # approvata). Per i regular l'email si deriva (subaddress).
     email: Optional[str] = None
-    telegram: Optional[str] = None
 
 
 # Agenti NATIVI della piattaforma: seed nel repo (catalogs/agents-seed), clonati
@@ -1121,13 +1101,9 @@ async def create_agent(body: AgentCreate, request: Request) -> AgentSpec:
             "avatar_color": body.avatar_color,
             "created_at": created_at,
         }
-        # canali di contatto dell'umano (email/telegram), se forniti
+        # canale di contatto dell'umano (email), se fornito
         if body.email:
             spec_yaml["email"] = body.email.strip()
-        if body.telegram:
-            # Validato QUI e non dopo: il seed di una persona nasce da questa
-            # riga, e un recapito malformato la farebbe nascere non caricabile.
-            spec_yaml["telegram"] = _telegram_or_400(body.telegram)
         if body.pubkey:
             from ..colony import pki
             try:

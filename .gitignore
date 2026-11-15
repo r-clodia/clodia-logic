@@ -39,7 +39,7 @@ temp/
 .claude/projects/
 .claude/settings.local.json
 
-# === Stato/credenziali dei daemon (whatsapp, telegram, scheduler) ===
+# === Stato/credenziali dei daemon (whatsapp, scheduler) ===
 auth_state/
 sessions.json
 trusted.json

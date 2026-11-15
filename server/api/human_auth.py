@@ -13,8 +13,6 @@ import hashlib
 import json
 import logging
 import smtplib
-import urllib.parse
-import urllib.request
 from datetime import datetime, timezone
 from email.message import EmailMessage
 
@@ -87,7 +85,8 @@ async def whoami(body: TokenBody) -> dict:
 
 
 def _notify_admin(text: str) -> list[str]:
-    """Invia `text` ai canali admin configurati (telegram + email se presenti).
+    """Invia `text` al canale admin configurato (email, se presente; Telegram
+    è stato rimosso con clodia-platform#683).
     Ritorna i canali usati. Se nessun canale è configurato → [] (richiesta persa,
     loggato). Best-effort: un canale che fallisce non blocca gli altri."""
     if not NOTIFY_CONFIG.is_file():
@@ -99,16 +98,6 @@ def _notify_admin(text: str) -> list[str]:
         LOG.warning("admin_notify.json illeggibile: %s", e)
         return []
     sent: list[str] = []
-    tg = cfg.get("telegram") or {}
-    if tg.get("bot_token") and tg.get("chat_id"):
-        try:
-            data = urllib.parse.urlencode({"chat_id": tg["chat_id"], "text": text}).encode()
-            req = urllib.request.Request(
-                f"https://api.telegram.org/bot{tg['bot_token']}/sendMessage", data=data)
-            urllib.request.urlopen(req, timeout=15)
-            sent.append("telegram")
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("notifica telegram fallita: %s", e)
     em = cfg.get("email") or {}
     if em.get("smtp_host") and em.get("to"):
         try:
@@ -140,7 +129,7 @@ class CertRequest(BaseModel):
 async def cert_request(body: CertRequest) -> dict:
     """Un nuovo utente (non ancora registrato) chiede all'admin di emettere il
     certificato per la propria pubkey. NON crea nulla: notifica solo l'admin
-    (telegram/email), che poi crea l'agent umano incollando la pubkey."""
+    (email), che poi crea l'agent umano incollando la pubkey."""
     pub = (body.pubkey or "").strip()
     if "BEGIN PUBLIC KEY" not in pub:
         raise HTTPException(400, "pubkey non valida (attesa PEM 'BEGIN PUBLIC KEY')")

@@ -34,8 +34,6 @@ import yaml
 from ..config import workspace_path
 from . import catalog, pack_import, plugin_import
 
-#: La dichiarazione vera, quella di comms-pack.
-COMMS_PACK = Path(workspace_path("catalogs/packs/comms-pack/pack.yaml"))
 
 
 def _plugin(dir_: Path, nome: str) -> None:
@@ -180,58 +178,6 @@ class ConnectorsSurviveInstallTests(unittest.TestCase):
         d = self._pack_root("senza", {"name": "senza", "version": "1.0.0"})
         pack_import.install_pack_from_root(d, source="test")
         self.assertNotIn("connectors", self._installato("senza"))
-
-
-class CommsPackDeclaresTelegramTests(unittest.TestCase):
-    """La dichiarazione vera di #522, letta dal pack che la porta."""
-
-    def setUp(self) -> None:
-        self.manifest = yaml.safe_load(COMMS_PACK.read_text(encoding="utf-8")) or {}
-        self.telegram = next(
-            (c for c in pack_import.declared_connectors(self.manifest)
-             if c.get("id") == "telegram"), None)
-        self.assertIsNotNone(self.telegram, "comms-pack non dichiara Telegram")
-
-    def test_both_forms_of_tg_and_no_third(self):
-        """clodia-platform#363: un gruppo è un id numerico, una persona è un
-        @handle, e non c'è una terza forma. Sono gli stessi due pattern di
-        `egress._TG_GROUP` / `_TG_HANDLE`: la parità con le tabelle di oggi è
-        ciò che rende la dichiarazione sostituibile a quelle (#518)."""
-        schemi = self.telegram["schemes"]
-        self.assertEqual([s["scheme"] for s in schemi], ["tg"])
-        self.assertEqual(schemi[0]["direction"], "both")
-        self.assertEqual([f["pattern"] for f in schemi[0]["forms"]],
-                         [r"^-?\d+$", r"^@[A-Za-z0-9_]{5,32}$"])
-
-    def test_the_link_action_writes_both_directions_and_binds(self):
-        """Il bottone Telegram (`connectors.actions.apply` del gateway) fa i DUE
-        passi insieme: whitelist nelle due direzioni E binding del canale. Senza il secondo il messaggero non
-        riporta nulla pur con la whitelist scritta — era il sintomo del 23 set
-        2026, e una dichiarazione che lo dimenticasse lo farebbe tornare."""
-        a = self.telegram["topic_actions"][0]
-        self.assertEqual(a["binding"], "channel")
-        self.assertEqual(a["adds"]["ingress"], ["tg:{chat_id}"])
-        self.assertEqual(a["adds"]["egress"], ["tg:{chat_id}"])
-
-    def test_it_declares_only_the_two_verbs_the_pdp_checks_today(self):
-        """Parità, in negativo: `egress._SPECS` controlla `telegram.send` e
-        `telegram.send_file` e basta. Dichiarare anche `telegram.inbox` come
-        `source` sembrerebbe più completo e sarebbe un controllo che oggi non
-        esiste — cioè una differenza di comportamento introdotta di nascosto in
-        una migrazione che deve essere a parità."""
-        self.assertEqual([v["verb"] for v in self.telegram["verbs"]],
-                         ["telegram.send", "telegram.send_file"])
-        self.assertTrue(all(v["direction"] == "egress"
-                            for v in self.telegram["verbs"]))
-
-    def test_the_connector_id_is_the_one_the_relay_binds_on(self):
-        """Un solo nome per la stessa cosa: l'id del connettore è la chiave dei
-        binding (`channel-bindings.json`, #521) ed è ciò che l'adapter del relay
-        dichiara. Se divergono, i binding di un canale e la sua dichiarazione
-        parlano di due connettori diversi e nessuno se ne accorge."""
-        from .telegram_relay_adapter import ADAPTER
-        self.assertEqual(self.telegram["id"], ADAPTER.connector)
-        self.assertEqual(self.telegram["schemes"][0]["scheme"], ADAPTER.uri_scheme)
 
 
 if __name__ == "__main__":

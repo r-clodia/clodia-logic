@@ -17,17 +17,18 @@ DATADIR="${1:-/datadir}"
 # clodia/ophelia perdono editoriale/comms). Rewrite idempotente e YAML-safe
 # (gestisce sia le liste INLINE `[...]` sia quelle a BLOCCO `- item`):
 #  1) ri-referenzia le skill spostate al nuovo pack;
-#  2) chi ha `base-pack/*` riceve anche `editorial-pack/*` + `comms-pack/*`, così
+#  2) chi ha `base-pack/*` riceve anche `editorial-pack/*`, così
 #     mantiene il comportamento pre-diet (base-pack/* prima le includeva tutte).
 python3 - "$DATADIR/agents" <<'PYMIG'
 import glob, os, re, sys
 base = sys.argv[1]
+# comms-pack is gone (clodia-platform#683): `helpdesk` is base-pack's again,
+# `check-email` and `telegram-1to1` no longer exist — none of them moves.
 MOVED = {
-    "check-email": "comms-pack", "telegram-1to1": "comms-pack", "helpdesk": "comms-pack",
     "article-spec": "editorial-pack", "editorial-review": "editorial-pack",
     "fact-check": "editorial-pack",
 }
-ADD = ["editorial-pack/*", "comms-pack/*"]
+ADD = ["editorial-pack/*"]
 # item a blocco che è ESATTAMENTE base-pack/* (con o senza quote): "  - base-pack/*"
 BLOCK_RE = re.compile(r'^(\s*)-\s*(["\']?)base-pack/\*\2\s*$')
 
@@ -35,7 +36,7 @@ def migrate(txt: str) -> str:
     # 1) skill spostate → nuovo pack (safe ovunque)
     for skill, pack in MOVED.items():
         txt = txt.replace(f"base-pack/{skill}", f"{pack}/{skill}")
-    # 2) aggiungi editorial-pack/* + comms-pack/* accanto a base-pack/* (una volta)
+    # 2) aggiungi editorial-pack/* accanto a base-pack/* (una volta)
     if "base-pack/*" in txt and "editorial-pack/*" not in txt:
         out, done = [], False
         for line in txt.splitlines(keepends=True):
@@ -53,14 +54,17 @@ def migrate(txt: str) -> str:
                 if q in txt:
                     ch = q[0]
                     txt = txt.replace(
-                        q, f"{ch}base-pack/*{ch}, {ch}editorial-pack/*{ch}, "
-                           f"{ch}comms-pack/*{ch}", 1)
+                        q, f"{ch}base-pack/*{ch}, {ch}editorial-pack/*{ch}", 1)
                     break
     return txt
 
+def back_from_comms(txt: str) -> str:
+    # clodia-platform#683: comms-pack's `helpdesk` is base-pack's again.
+    return txt.replace("comms-pack/helpdesk", "base-pack/helpdesk")
+
 for f in glob.glob(os.path.join(base, "*", "agent.yaml")):
     orig = open(f, encoding="utf-8").read()
-    new = migrate(orig)
+    new = back_from_comms(migrate(orig))
     if new != orig:
         open(f, "w", encoding="utf-8").write(new)
         print(f"[migrate] capabilities (base-pack diet): "

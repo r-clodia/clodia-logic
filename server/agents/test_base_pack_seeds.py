@@ -166,21 +166,17 @@ class HumanContactFieldTests(unittest.TestCase):
     stringa che nessuno valida e che ogni lettore interpreta a modo suo.
     """
 
-    def test_telegram_is_a_declared_field_of_the_spec(self) -> None:
+    def test_the_retired_telegram_contact_is_dropped_on_load(self) -> None:
+        """Telegram was removed (#683): a person's seed that still carries the
+        field loads, without it — not as a field, not among the extras."""
         from .models import AgentSpec
-        self.assertIn("telegram", AgentSpec.model_fields,
-                      "A10: telegram è tornato un extra")
-
-    def test_a_human_carries_it_outside_the_extras(self) -> None:
-        from .models import AgentSpec
+        self.assertNotIn("telegram", AgentSpec.model_fields)
         s = AgentSpec.model_validate({
             "name": "davide", "description": "d", "display_name": "Davide",
             "type": "human", "role": "superadmin", "telegram": "76632169",
         })
-        self.assertEqual("76632169", s.telegram)
-        extras = getattr(s, "extras", None) or {}
-        self.assertNotIn("telegram", extras,
-                         "A10: il valore è finito anche negli extras — due fonti, una divergerà")
+        self.assertFalse(hasattr(s, "telegram") and getattr(s, "telegram", None))
+        self.assertNotIn("telegram", getattr(s, "extras", None) or {})
 
 
 class NativeToolsFormTests(unittest.TestCase):

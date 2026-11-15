@@ -322,8 +322,8 @@ class JobRootTests(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(end["result"]["status"], "ok")
 
 
-class TelegramRootTests(unittest.IsolatedAsyncioTestCase):
-    async def test_the_relay_names_the_telegram_message_and_the_channel_message(self) -> None:
+class RelayRootTests(unittest.IsolatedAsyncioTestCase):
+    async def test_the_relay_names_the_chat_message_and_the_channel_message(self) -> None:
         seen = {}
 
         async def turn(*_a, **_kw):
@@ -332,15 +332,22 @@ class TelegramRootTests(unittest.IsolatedAsyncioTestCase):
                           AsyncMock(return_value={"id": "m-77"})), \
                 patch.object(channel_relay, "run_topic_turn", turn), \
                 patch.object(channels, "_pick_responder", return_value=None):
-            from .api import telegram_relay_adapter
+            from .api import relay_fixture
             await channel_relay._act_on_request(
-                -100123, "messaggero", "SEAL-1", "ops", {"tier": "SEAL-1"},
-                ["clodia", "messaggero"],
+                -100123, "segretario", "SEAL-1", "ops", {"tier": "SEAL-1"},
+                ["clodia", "segretario"],
                 {"message_id": 88, "text": "@clodia ciao", "from_username": "davide"},
-                telegram_relay_adapter.ADAPTER)
+                relay_fixture.ADAPTER)
         self.assertEqual(seen["cause"]["root"], {
-            "kind": "telegram_relay", "message_id": "m-77",
-            "telegram": {"chat_id": "-100123", "message_id": "88"}})
+            "kind": "chat_relay", "message_id": "m-77",
+            "chat": {"chat_id": "-100123", "message_id": "88"}})
+
+    def test_any_relay_is_a_root_trigger(self) -> None:
+        """#683: not only `telegram_relay` — any `<connector>_relay`."""
+        for kind in ("job", "chat_relay", "sms-demo_relay"):
+            self.assertTrue(audit_events.is_root_trigger(kind), kind)
+        for kind in ("message", "_relay", "", None):
+            self.assertFalse(audit_events.is_root_trigger(kind), kind)
 
 
 if __name__ == "__main__":

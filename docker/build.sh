@@ -13,7 +13,7 @@ docker build -f docker/bundle.Dockerfile -t clodia-bundle .
 echo "=== 3/3  clodia-agent-server ==="
 docker build -f docker/agent-server.Dockerfile -t clodia-agent-server .
 
-# I daemon (telegram, whatsapp, check-mail) girano come processi dentro
+# I daemon (whatsapp, check-mail) girano come processi dentro
 # l'agent-server, accesi/spenti dalla webui. Niente image dedicate.
 
 echo ""

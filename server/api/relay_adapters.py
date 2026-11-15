@@ -40,22 +40,16 @@ cannot show. The generic pack adapter treats `chat_type == "private"` and
 `chat_uri` and `sender_uri`, already validated by the gateway against the
 connector's schemes.
 
-Il registro è una tabella id→modulo invece di un import diretto: così il
-processo non importa il client di un trasporto che l'istanza non usa, e non ci
-sono cicli (l'adapter importa il suo client, il nucleo importa il registro).
-Quando #519 darà gli endpoint generici dei connettori, questa tabella diventerà
-la proiezione del registry dei pack — il punto in cui cambiarla è uno.
+The adapters are the projection of the gateway's pack registry
+(`pack_relay_adapter`), plus any registered in-process. The only built-in
+transport, Telegram, was removed in clodia-platform#683.
 """
 from __future__ import annotations
 
-import importlib
 import logging
 import re
 
 LOG = logging.getLogger("agent-server.relay_adapters")
-
-#: id del connettore (chiave dei binding) → modulo che espone `ADAPTER`.
-_BUILTIN = {"telegram": "server.api.telegram_relay_adapter"}
 
 _CACHE: dict = {}
 #: connectors already reported as having no adapter: one log line, not one per cycle.
@@ -101,9 +95,9 @@ class RelayAdapter:
 
     #: id del connettore come appare nei binding (`channel-bindings.json`).
     connector = ""
-    #: come il trasporto si chiama nel testo che arriva nel canale («telegram»).
+    #: how the transport is named in the text posted in the channel.
     transport_label = ""
-    #: schema degli URI di ingress di questo trasporto («tg»), per i messaggi
+    #: scheme of this transport's ingress URIs (e.g. «wa»), for the messages
     #: d'errore e per chi legge: gli URI veri li costruiscono i metodi sotto.
     uri_scheme = ""
     #: kind of the relay's posts in the room. A relayed request comes from a
@@ -128,9 +122,8 @@ class RelayAdapter:
         raise NotImplementedError
 
     async def send(self, chat_id, text: str, thread_id=None) -> None:
-        """`thread_id`: dove rispondere dentro la chat, se il trasporto ha i
-        thread (topic di un forum Telegram, clodia-platform#548); None = come
-        prima."""
+        """`thread_id`: where to answer inside the chat, if the transport has
+        threads (clodia-platform#548); None = the chat itself."""
         raise NotImplementedError
 
     async def download(self, file_ref: dict) -> str | None:
@@ -171,26 +164,15 @@ def get(connector: str):
     pack disinstallato o non ancora installato, e il relay deve continuare a
     servire gli altri canali invece di morire sul primo nome che non conosce.
 
-    Order (#638): an adapter registered in-process, then the built-ins
-    (Telegram keeps precedence over any pack declaring the same id), then the
-    connectors of installed packs that declare `relay:` — read from the
-    gateway's registry through a short TTL cache (`pack_relay_adapter`), so a
-    pack installed or removed is seen without a restart and a registry outage
-    is never fatal.
+    Order (#638): an adapter registered in-process, then the connectors of
+    installed packs that declare `relay:` — read from the gateway's registry
+    through a short TTL cache (`pack_relay_adapter`), so a pack installed or
+    removed is seen without a restart and a registry outage is never fatal.
+    There is no built-in transport since Telegram was removed (#683).
     """
     cid = str(connector or "")
     if _CACHE.get(cid) is not None:
         return _CACHE[cid]
-    modulo = _BUILTIN.get(cid)
-    if modulo:
-        adapter = None
-        try:
-            adapter = getattr(importlib.import_module(modulo), "ADAPTER", None)
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("adapter '%s' non caricabile (%s)", cid, e)
-        if adapter is not None:
-            _CACHE[cid] = adapter
-            return adapter
     adapter = None
     try:
         from . import pack_relay_adapter
@@ -216,7 +198,6 @@ def forget(connector: str) -> None:
 
 
 def is_local(connector: str) -> bool:
-    """True for a connector served without the gateway's registry: a built-in
-    or an adapter registered in-process."""
-    cid = str(connector or "")
-    return cid in _BUILTIN or _CACHE.get(cid) is not None
+    """True for a connector served without the gateway's registry: an adapter
+    registered in-process."""
+    return _CACHE.get(str(connector or "")) is not None

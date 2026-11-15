@@ -16,7 +16,7 @@ echo "Inizializzazione datadir: $DATADIR"
 # per agent), pki/providers. (data/boot/codex-home/claude-home/agent-* restano
 # per ora per compatibilità con compose/codice; la loro rimozione è il cleanup
 # successivo dopo migrazione vault/MCP/home-effimere.)
-mkdir -p "$DATADIR"/{secrets,data,topics,boot/retrospectives,daemon-state/{whatsapp,telegram,check-mail},claude-home,codex-home,agents,jobs,spawns,sessions,pki,providers,agent-workspaces,agent-state,agency-shared,skills-catalog,rules-catalog}
+mkdir -p "$DATADIR"/{secrets,data,topics,boot/retrospectives,daemon-state/{whatsapp,check-mail},claude-home,codex-home,agents,jobs,spawns,sessions,pki,providers,agent-workspaces,agent-state,agency-shared,skills-catalog,rules-catalog}
 
 # (rimosso 6 lug 2026) contacts.db NON viene più creato al bootstrap: era un
 # residuo del CRM di Clodia Primal. Le edizioni cliente integrano il PROPRIO
@@ -93,7 +93,6 @@ echo ""
 echo "Prossimo passo: crea .env nella root del bundle con:"
 echo "  CLODIA_DATA=$DATADIR"
 echo "  ANTHROPIC_API_KEY=sk-ant-..."
-echo "  TELEGRAM_BOT_TOKEN=..."
 echo ""
 echo "Per agenti agent_sdk=codex, il worker usa @openai/codex installato"
 echo "nell'immagine e la subscription auth persistita in codex-home:"

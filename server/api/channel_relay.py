@@ -218,8 +218,11 @@ def _safe_filename(name: str) -> str:
 # ── relay di una singola chat legata (binding) ────────────────────────────────
 async def _relay_chat(chat_id: str, binding: dict, messages: list, adapter=None) -> None:
     if adapter is None:
-        adapter = relay_adapters.get(binding.get("connector")
-                                     or cb.LEGACY_CONNECTOR)
+        # A binding without its connector belonged to Telegram, the only
+        # transport before #521; Telegram is gone (#683): nothing serves it.
+        if not binding.get("connector"):
+            return
+        adapter = relay_adapters.get(binding.get("connector"))
         if adapter is None:
             return
     # The author of the relay's posts is the connector, not the agent that
@@ -462,9 +465,8 @@ async def _act_on_request(chat_id, instance: str, tier: str, topic: str,
         return
     # The root of the chain on the audit trail (clodia-platform#465): the
     # message relayed from the transport and the channel message that carries
-    # it. Ids only — the text stays in the channel. The key stays `telegram`
-    # for the transport that had it: an audit trail is read backwards, and
-    # renaming a root changes the meaning of what was already written.
+    # it. Ids only — the text stays in the channel. The transport's ids are
+    # under the connector's own key (`audit_events.is_root_trigger`).
     from .. import audit_events
     root = {"kind": f"{adapter.connector}_relay",
             "message_id": posted.get("id") if isinstance(posted, dict) else None,

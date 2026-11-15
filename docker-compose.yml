@@ -134,7 +134,7 @@ services:
       timeout: 5s
       retries: 3
 
-  # I daemon (telegram, whatsapp) NON sono più servizi dedicati: girano come
+  # I daemon (whatsapp) NON sono più servizi dedicati: girano come
   # processi figli dell'agent-server, accesi/spenti dalla webui via
   # start.sh/stop.sh. Nessun auto-avvio all'avvio del container.
   # (check-mail dismesso — issue #91; sostituibile da un job schedulato.)

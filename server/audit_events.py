@@ -106,7 +106,7 @@ def report_sync(event: dict) -> bool:
 
 # ── what started the chain (#465) ─────────────────────────────────────────────
 # A turn records WHICH event woke it — the id of the human message, the job and
-# its run, the Telegram message relayed — and, when another turn delegated it
+# its run, the chat message a relay brought in — and, when another turn delegated it
 # (handoff, report-back, disambiguation), that turn's trace and span as its
 # parent. From any `tool.call` an auditor follows `trace_id` to its
 # `turn.start`, then `parent_span_id` / `decision.trigger.parent` to the
@@ -117,14 +117,23 @@ def report_sync(event: dict) -> bool:
 # work it starts. `asyncio.create_task` copies it, so the delegate's task,
 # spawned from inside the delegating turn, finds that turn as its parent.
 #
-# Shape: {"root": {kind, message_id?, job_id?, run_id?, telegram?},
+# Shape: {"root": {kind, message_id?, job_id?, run_id?, <connector>?},
 #         "parent": <Turn> | {"trace_id", "span_id", "spawn"?} | None}
 _CAUSE: contextvars.ContextVar["dict | None"] = contextvars.ContextVar(
     "clodia_audit_cause", default=None)
 
 #: Root kinds the turn itself reports as its trigger kind when it is the first
 #: of the chain (#465): the dispatch path alone says `external` or `system`.
-ROOT_TRIGGER_KINDS = ("job", "telegram_relay")
+#: A relay's root is `<connector>_relay` (`channel_relay`), whatever the
+#: transport (clodia-platform#683): see `is_root_trigger`.
+ROOT_TRIGGER_KINDS = ("job",)
+RELAY_SUFFIX = "_relay"
+
+
+def is_root_trigger(kind) -> bool:
+    """A job, or the message a relay brought in from any connector."""
+    k = str(kind or "")
+    return k in ROOT_TRIGGER_KINDS or (k.endswith(RELAY_SUFFIX) and len(k) > len(RELAY_SUFFIX))
 
 _TRACE_RE = re.compile(r"^[0-9a-f]{32}$")
 _SPAN_RE = re.compile(r"^[0-9a-f]{16}$")
@@ -183,7 +192,7 @@ def message_posted(message_id: str | None) -> None:
     and its run are the root, the message id is added); anything else starts
     a new chain with no parent."""
     cur = (_CAUSE.get() or {}).get("root") or {}
-    if cur.get("kind") in ROOT_TRIGGER_KINDS:
+    if is_root_trigger(cur.get("kind")):
         set_cause({"message_id": message_id}, keep_root=True)
     else:
         set_cause({"kind": "message", "message_id": message_id})
@@ -251,11 +260,15 @@ class Turn:
         self.root = c.get("root") or _root_of(c.get("parent"))
         if self.parent is None and self.root:
             # The first turn of the chain: the event that woke it IS the root.
-            for k in ("message_id", "job_id", "run_id", "telegram"):
+            kind = str(self.root.get("kind") or "")
+            keys = ["message_id", "job_id", "run_id"]
+            if kind.endswith(RELAY_SUFFIX):
+                keys.append(kind[: -len(RELAY_SUFFIX)])   # the transport's ids
+            for k in keys:
                 if self.root.get(k) is not None:
                     self.trigger.setdefault(k, self.root[k])
-            if self.root.get("kind") in ROOT_TRIGGER_KINDS:
-                # `job` and `telegram_relay` by name: the dispatch path alone
+            if is_root_trigger(kind):
+                # A job or a relay by name: the dispatch path alone
                 # says `system` or `external`, which it keeps as `dispatch`.
                 self.trigger["dispatch"] = self.trigger.get("kind")
                 self.trigger["kind"] = self.root["kind"]

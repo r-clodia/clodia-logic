@@ -104,8 +104,7 @@ def _bearer(request: Request) -> str:
 def is_agent(name: str | None) -> bool:
     """Il chiamante è un AGENTE della colonia, non una persona?
 
-    La distinzione è `type` nella registry — la stessa che usa
-    `loader.get_by_telegram` per non prendere un AI per un committente umano.
+    La distinzione è `type` nella registry.
     Serve qui perché un token di sessione ha la stessa forma per i due (claim
     `agent` = il nome, nessun `on_behalf`): senza guardare il tipo, la guardia
     trattava un agente come un umano senza ruolo, cioè come un utente
