@@ -19,6 +19,7 @@ audit.
     GET  /clodia/databases/collection/{name}/documents          ?scope=
     GET  /clodia/databases/collection/{name}/chunks             ?doc&version&limit&offset&scope
     POST /clodia/databases/collection/{name}/upload             multipart: file, doc_name?, version?, scope?
+                                                                (a .zip is unpacked by the gateway, #698)
     POST /clodia/databases/collection/{name}/remove             {doc_name, version?, scope?}
 """
 from __future__ import annotations
@@ -43,6 +44,9 @@ _UPLOAD_MAX = 20 * 1024 * 1024
 _TIMEOUT = 60
 #: Extraction + embedding of a large document runs inside the request.
 _UPLOAD_TIMEOUT = 330
+#: A `.zip` is unpacked by the gateway and up to 500 members are indexed in the
+#: same request (#698): the same file ceiling, more time.
+_ARCHIVE_UPLOAD_TIMEOUT = 900
 #: A delete exports the whole collection first.
 _DELETE_TIMEOUT = 330
 
@@ -312,7 +316,8 @@ async def collection_upload(name: str, request: Request) -> dict:
         params["scope"] = fields["scope"]
     return await _acall(who, "POST", f"/collection/{_seg(name)}/upload", params=params,
                         data=data, headers={"Content-Type": "application/octet-stream"},
-                        timeout=_UPLOAD_TIMEOUT)
+                        timeout=_ARCHIVE_UPLOAD_TIMEOUT
+                        if filename.lower().endswith(".zip") else _UPLOAD_TIMEOUT)
 
 
 @router.post("/clodia/databases/collection/{name}/remove")

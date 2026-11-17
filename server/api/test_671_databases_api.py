@@ -146,6 +146,19 @@ class UploadTests(_Base):
         self.assertEqual(kw["params"], {"filename": "Guida.pptx", "doc_name": "Guida",
                                         "version": "1", "scope": "SEAL-2/commerciale"})
 
+    def test_a_zip_is_forwarded_as_is_with_a_longer_timeout(self):
+        c = self.client("mario")
+        r = c.post("/clodia/databases/collection/manuali/upload",
+                   files={"file": ("Pacco.ZIP", b"PK\x03\x04", "application/zip")},
+                   data={"scope": "SEAL-2/commerciale"})
+        self.assertEqual(r.status_code, 200, r.text)
+        _m, _u, kw = self.sent[-1]
+        self.assertEqual((kw["data"], kw["params"]["filename"], kw["timeout"]),
+                         (b"PK\x03\x04", "Pacco.ZIP", D._ARCHIVE_UPLOAD_TIMEOUT))
+        c.post("/clodia/databases/collection/manuali/upload",
+               files={"file": ("a.txt", b"x", "text/plain")})
+        self.assertEqual(self.sent[-1][2]["timeout"], D._UPLOAD_TIMEOUT)
+
     def test_an_oversized_file_stops_here(self):
         c = self.client("mario")
         with patch.object(D, "_upload_max", lambda: 4):
