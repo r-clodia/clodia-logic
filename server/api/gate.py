@@ -491,7 +491,10 @@ async def approve(request: Request):
     except Exception as e:  # noqa: BLE001
         LOG.error("mint_capability(gate) fallito per %s@%s:%s: %s", agent, instance, verb, e)
         return JSONResponse({"error": "mint_failed", "detail": str(e)}, status_code=500)
-    grant_body = {"agent": agent, "instance": instance, "verb": verb, "token": cap["token"]}
+    # The row of the matrix (#693): the gateway must not turn «solo questo
+    # spawn» / «questo seed» into a list entry for every agent afterwards.
+    grant_body = {"agent": agent, "instance": instance, "verb": verb, "token": cap["token"],
+                  "who": chi}
     if modified:
         grant_body["modified"] = modified
     r = _gw("POST", "/grant", principal, grant_body)

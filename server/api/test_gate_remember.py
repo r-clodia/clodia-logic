@@ -244,3 +244,47 @@ class MatrixTests(unittest.TestCase):
             with self.subTest(body=body):
                 r, _ = _chiama("davide", body, gw=self._gw(self.AUTHZ))
                 self.assertEqual(r.status_code, 400)
+
+
+class MatrixGrantCarriesWhoTests(MatrixTests):
+    def test_the_grant_says_which_row(self):
+        for who in ("spawn", "seed", "all"):
+            with self.subTest(who=who):
+                body = self.body(BASE["verb"], who=who, **({} if who == "spawn" else {"where": "chat"}))
+                _chiama("davide", body, gw=self._gw(BASE["verb"]))
+                (grant,) = [c for c in self.calls if c[1] == "/grant"]
+                self.assertEqual(grant[2]["who"], who)
+
+    def test_a_seed_on_a_destination_is_a_rule_not_a_list(self):
+        verb = BASE["verb"]
+        _chiama("davide", self.body(verb, who="seed", where="chat"), gw=self._gw(verb))
+        (rem,) = [c for c in self.calls if c[1] == "/remember"]
+        self.assertEqual(rem[2]["agent"], "officer")
+        self.assertEqual([c for c in self.calls if c[1] == "/allow"], [])
+
+
+class RulesProxyTests(unittest.TestCase):
+    """#693: the rules panel. Reading a room's rules is any person of the
+    room's; removing one is the owner's (or an admin's); the global list is an
+    admin's."""
+
+    def test_titles(self):
+        from fastapi import HTTPException
+        from . import topic_data as T
+        calls = []
+
+        async def person(request, tier, name, *, owner):
+            calls.append(owner)
+            return "davide"
+        with patch.object(T, "_room_person", person), \
+             patch.object(T.topics_client, "authz_rules", lambda scope: [{"id": "gate-1"}]), \
+             patch.object(T.topics_client, "authz_rule_remove", lambda s, i, b: True):
+            out = asyncio.run(T.channel_rules("SEAL-1", "acme", object()))
+            self.assertEqual(out["rules"], [{"id": "gate-1"}])
+            asyncio.run(T.channel_rule_remove("SEAL-1", "acme", "gate-1", object()))
+        self.assertEqual(calls, [False, True])
+        with patch.object(T, "_person", lambda r: "davide"), \
+             patch.object(T.admin, "is_admin", lambda n: False):
+            with self.assertRaises(HTTPException) as e:
+                asyncio.run(T.global_rules(object()))
+            self.assertEqual(e.exception.status_code, 403)

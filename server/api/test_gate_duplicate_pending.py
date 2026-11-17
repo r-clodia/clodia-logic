@@ -95,7 +95,7 @@ class DuplicatePending(unittest.TestCase):
         self.assertEqual(code, 200, corpo)
         self.assertIn(("POST", "/grant", {"agent": "sysadmin", "instance": "-",
                                           "verb": "egress.allow",
-                                          "token": "ccap1…"}), chiamate)
+                                          "token": "ccap1…", "who": "spawn"}), chiamate)
 
     def test_una_pendente_di_un_altra_stanza_blocca_l_approvazione(self):
         """Approvare il verbo sbloccherebbe anche la richiesta della stanza B:

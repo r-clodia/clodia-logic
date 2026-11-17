@@ -163,6 +163,57 @@ async def _room_person(request: Request, tier: str, name: str, *, owner: bool) -
     return _require_scope_owner(request, meta) if owner else _require_member(request, meta)
 
 
+@router.get("/clodia/channels/{tier}/{name}/rules")
+async def channel_rules(tier: str, name: str, request: Request) -> dict:
+    """The room's explicit rules (#693), those a gate wrote included: who,
+    which verb, which target, which effect, from where. Any person of the room
+    reads them; removing is the owner's (or an admin's)."""
+    await _room_person(request, tier, name, owner=False)
+    try:
+        return {"rules": await asyncio.to_thread(topics_client.authz_rules, f"{tier}/{name}")}
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+
+
+@router.delete("/clodia/channels/{tier}/{name}/rules/{rule_id}")
+async def channel_rule_remove(tier: str, name: str, rule_id: str, request: Request) -> dict:
+    who = await _room_person(request, tier, name, owner=True)
+    try:
+        removed = await asyncio.to_thread(topics_client.authz_rule_remove,
+                                          f"{tier}/{name}", rule_id, who)
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+    if not removed:
+        raise HTTPException(404, "regola non trovata")
+    return {"removed": True}
+
+
+@router.get("/clodia/authz/rules")
+async def global_rules(request: Request) -> dict:
+    """The global rules (`authz.json`, #693): an admin's."""
+    who = _person(request)
+    if not admin.is_admin(who):
+        raise HTTPException(403, "le regole globali le vede e le toglie un admin")
+    try:
+        return {"rules": await asyncio.to_thread(topics_client.authz_rules, None)}
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+
+
+@router.delete("/clodia/authz/rules/{rule_id}")
+async def global_rule_remove(rule_id: str, request: Request) -> dict:
+    who = _person(request)
+    if not admin.is_admin(who):
+        raise HTTPException(403, "le regole globali le vede e le toglie un admin")
+    try:
+        removed = await asyncio.to_thread(topics_client.authz_rule_remove, None, rule_id, who)
+    except topics_client.TopicsClientError as e:
+        raise _gw(e)
+    if not removed:
+        raise HTTPException(404, "regola non trovata")
+    return {"removed": True}
+
+
 #: The actions of the room's tools (#609), and the MCP form of #620: whole
 #: MCPs and their resource rows. No per-agent exceptions (owner, 26 Oct). The
 #: gateway validates every argument; this list only keeps unknown actions off
