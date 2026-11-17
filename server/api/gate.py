@@ -397,13 +397,27 @@ async def approve(request: Request):
     modified = body.get("arguments")
     if modified is not None and not isinstance(modified, dict):
         return JSONResponse({"error": "arguments deve essere un oggetto"}, status_code=400)
-    # Fin dove vale questo sì: solo adesso, sempre in questa stanza, ovunque.
-    ricorda = (body.get("remember") or "once").strip().lower()
+    # Fin dove vale questo sì (clodia-platform#693): una matrice CHI × DOVE.
+    # CHI: solo questo spawn (il consenso di oggi), questo seed, tutti gli
+    # agenti; DOVE: questa stanza o tutta l'istanza. `remember` è la forma di
+    # prima (webui più vecchie): once = solo lo spawn, topic/global = tutti gli
+    # agenti in stanza / ovunque — ciò che quei bottoni hanno sempre fatto.
     if not (agent and verb):
         return JSONResponse({"error": "agent/verb richiesti"}, status_code=400)
-    if ricorda not in ("once", "topic", "global"):
-        return JSONResponse({"error": f"remember sconosciuto: {ricorda}"},
-                            status_code=400)
+    chi = str(body.get("who") or "").strip().lower()
+    dove_w = str(body.get("where") or "").strip().lower()
+    if not chi:
+        legacy = (body.get("remember") or "once").strip().lower()
+        if legacy not in ("once", "topic", "global"):
+            return JSONResponse({"error": f"remember sconosciuto: {legacy}"},
+                                status_code=400)
+        chi, dove_w = {"once": ("spawn", ""), "topic": ("all", "chat"),
+                       "global": ("all", "global")}[legacy]
+    if chi not in ("spawn", "seed", "all"):
+        return JSONResponse({"error": f"who sconosciuto: {chi}"}, status_code=400)
+    if chi != "spawn" and dove_w not in ("chat", "global"):
+        return JSONResponse({"error": "where: chat o global"}, status_code=400)
+    ricorda = "once" if chi == "spawn" else ("topic" if dove_w == "chat" else "global")
     if modified and ricorda != "once":
         # A correction answers THIS call (#448). Remembering it would turn one
         # corrected message into a standing rule. Refused before anything is minted.
@@ -533,12 +547,20 @@ async def approve(request: Request):
                                  "non so in quale stanza ricordarlo: la richiesta "
                                  "non dichiara un canale")}
         else:
-            # The direction is the gate's own (`egress:…` / `ingress:…`): a
-            # source approved «always» goes into the INGRESS list, not the
-            # egress one (clodia-platform#569).
-            _dir = verb.split(":", 1)[0] if verb.startswith(("egress:", "ingress:")) else "egress"
-            rr = _gw("POST", "/allow", principal,
-                     {"verb": verb, "direction": _dir, "scope": dove})
+            if chi == "all" and verb.startswith(("egress:", "ingress:")):
+                # The direction is the gate's own (`egress:…` / `ingress:…`): a
+                # source approved «always» goes into the INGRESS list, not the
+                # egress one (clodia-platform#569).
+                _dir = verb.split(":", 1)[0]
+                rr = _gw("POST", "/allow", principal,
+                         {"verb": verb, "direction": _dir, "scope": dove})
+            else:
+                # A rule (#693): the gateway decides which cells the gate has
+                # and writes the A·V·R·Q tuple — the seed or `*`, the verb,
+                # the exact targets of the gate, at the level that asked.
+                rr = _gw("POST", "/remember", principal,
+                         {"verb": verb, "agent": agent if chi == "seed" else "*",
+                          "scope": dove, "by": principal})
             # `remembered` si scrive SEMPRE, anche in caso di errore. Lasciarlo
             # assente farebbe funzionare i controlli — una chiave mancante è
             # falsa — al prezzo di un corpo in cui «non ricordato» è
@@ -552,9 +574,12 @@ async def approve(request: Request):
                 memoria = {"remembered": False,
                            "error": str(memoria.get("error") or f"HTTP {rr.status_code}")[:200]}
     if r.status_code == 200:
-        quanto = {"once": "per stavolta",
-                  "topic": "e ricordato per questa stanza",
-                  "global": "e ricordato per tutta l'istanza"}[ricorda]
+        per_chi = {"spawn": "", "seed": f" per {agent}",
+                   "all": " per tutti gli agenti"}[chi]
+        quanto = {"once": f"per stavolta (solo {instance})" if instance not in ("", "-")
+                  else "per stavolta",
+                  "topic": f"e ricordato{per_chi} in questa stanza",
+                  "global": f"e ricordato{per_chi} in tutta l'istanza"}[ricorda]
         if memoria and not memoria.get("remembered"):
             # Dirlo: un'approvazione che si crede permanente e non lo è
             # ricompare domani, e chi la rivede pensa che il gate sia rotto.

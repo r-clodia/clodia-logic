@@ -65,7 +65,7 @@ def _chiama(chi, body, pendenti, *, admin_ok=False,
         chiamate.append((metodo, path, corpo))
         if path == "/pending":
             return _Risposta(200, {"requests": pendenti})
-        if path == "/allow":
+        if path in ("/allow", "/remember"):    # lists or a rule (#693)
             return _Risposta(200, {"remembered": True, "uri": "…"})
         return _Risposta(200, {"ok": True})
 
@@ -146,8 +146,9 @@ class DuplicatePending(unittest.TestCase):
         self.assertEqual(code, 200, corpo)
         self.assertFalse(corpo["memory"]["remembered"])
         self.assertIn("stanze diverse", corpo["memory"]["error"])
-        self.assertNotIn("/allow", [c[1] for c in chiamate],
-                         "nessuna voce permanente su una stanza indovinata")
+        for path in ("/allow", "/remember"):
+            self.assertNotIn(path, [c[1] for c in chiamate],
+                             "nessuna voce permanente su una stanza indovinata")
 
 
 if __name__ == "__main__":

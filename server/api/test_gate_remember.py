@@ -160,3 +160,87 @@ class ApprovalSurvivesAFailedMemoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MatrixTests(unittest.TestCase):
+    """clodia-platform#693: CHI (spawn · seed · tutti) × DOVE (stanza · istanza).
+    Il gateway scrive la regola; qui si decide chi ha titolo e cosa chiedere."""
+
+    AUTHZ = "authz:web.post|https://api.example.com/"
+
+    def _gw(self, verb, remember_ok=True):
+        pend = {"requests": [{**PENDING["requests"][0], "verb": verb,
+                              "agent": "officer", "instance": "officer-28"}]}
+
+        self.calls = []
+
+        def gw(metodo, path, principal, corpo=None):
+            self.calls.append((metodo, path, corpo))
+            if path == "/pending":
+                return _Risposta(200, pend)
+            if path == "/remember":
+                return (_Risposta(200, {"remembered": True, "kind": "rule"}) if remember_ok
+                        else _Risposta(400, {"remembered": False,
+                                             "error": "si decide a livello globale"}))
+            if path == "/allow":
+                return _Risposta(200, {"remembered": True, "uri": "…"})
+            return _Risposta(200, {"ok": True})
+        return gw
+
+    def body(self, verb, **kw):
+        return {"agent": "officer", "instance": "officer-28", "verb": verb, **kw}
+
+    def test_this_seed_in_this_room_writes_a_rule_for_the_seed(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="seed", where="chat"),
+                        gw=self._gw(self.AUTHZ))
+        self.assertEqual(r.status_code, 200)
+        (rem,) = [c for c in self.calls if c[1] == "/remember"]
+        self.assertEqual((rem[2]["agent"], rem[2]["scope"], rem[2]["verb"]),
+                         ("officer", "SEAL-1/acme", self.AUTHZ))
+        self.assertTrue(json.loads(bytes(r.body).decode())["memory"]["remembered"])
+
+    def test_every_agent_on_an_authz_gate_is_a_rule_for_star(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="all", where="chat"),
+                        gw=self._gw(self.AUTHZ))
+        (rem,) = [c for c in self.calls if c[1] == "/remember"]
+        self.assertEqual(rem[2]["agent"], "*")
+        self.assertEqual([c for c in self.calls if c[1] == "/allow"], [])
+
+    def test_every_agent_on_a_destination_keeps_the_lists(self):
+        verb = BASE["verb"]
+        r, _ = _chiama("davide", self.body(verb, who="all", where="chat"),
+                        gw=self._gw(verb))
+        self.assertEqual(len([c for c in self.calls if c[1] == "/allow"]), 1)
+        self.assertEqual([c for c in self.calls if c[1] == "/remember"], [])
+
+    def test_the_instance_column_is_an_admin_s(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="seed", where="global"),
+                        gw=self._gw(self.AUTHZ))
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual([c for c in self.calls if c[1] in ("/remember", "/grant")], [])
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="seed", where="global"),
+                        admin_ok=True, gw=self._gw(self.AUTHZ))
+        (rem,) = [c for c in self.calls if c[1] == "/remember"]
+        self.assertEqual(rem[2]["scope"], "")
+
+    def test_this_spawn_is_today_s_consent_only(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="spawn"),
+                        gw=self._gw(self.AUTHZ))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([c for c in self.calls if c[1] in ("/remember", "/allow")], [])
+
+    def test_a_cell_the_gate_does_not_have_is_said_and_the_call_proceeds(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="seed", where="chat"),
+                       gw=self._gw(self.AUTHZ, remember_ok=False))
+        self.assertEqual(r.status_code, 200)
+        mem = json.loads(bytes(r.body).decode())["memory"]
+        self.assertFalse(mem["remembered"])
+        self.assertIn("globale", mem["error"])
+
+    def test_unknown_words_are_refused(self):
+        for body in (self.body(self.AUTHZ, who="qualcuno", where="chat"),
+                     self.body(self.AUTHZ, who="seed", where="ovunque"),
+                     self.body(self.AUTHZ, who="seed")):
+            with self.subTest(body=body):
+                r, _ = _chiama("davide", body, gw=self._gw(self.AUTHZ))
+                self.assertEqual(r.status_code, 400)
