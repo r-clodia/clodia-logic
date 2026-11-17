@@ -1871,6 +1871,52 @@ def _is_known_seed(nome: str) -> bool:
         return False
 
 
+#: The skill of the room's orchestrator (#667), as a capability.
+ORCHESTRATION_SKILL = "base-pack/orchestrazione"
+
+
+def _has_capability(spec, cap: str) -> bool:
+    """Does the seed carry the skill `cap` (`<pack>/<skill>`)? Its effective
+    capabilities (with `parents`): the skill itself, its bare name, its pack's
+    glob or a catalogue wildcard. In doubt (registry not readable) → False:
+    the turn then carries the text, which costs tokens, never the job."""
+    try:
+        from ..agents.inheritance import effective_capabilities_of
+        from ..agents.skill_sync import WILDCARDS
+        caps = set(effective_capabilities_of(spec) or [])
+    except Exception:  # noqa: BLE001
+        return False
+    pack, _, skill = cap.partition("/")
+    return bool(caps & ({cap, skill, f"{pack}/*"} | set(WILDCARDS)))
+
+
+_ORCH_BRIEF: list = []
+
+
+def _orchestration_brief() -> str:
+    """The `orchestrazione` skill's text without its front matter, for an
+    orchestrator whose seed does not carry it (#695). Read once from the
+    catalogue the runtime materialises skills from (`skill_sync`: the
+    instance's catalogue first, then the bundle). Empty if it cannot be read:
+    the directive's first line still says who leads."""
+    if _ORCH_BRIEF:
+        return _ORCH_BRIEF[0]
+    testo = ""
+    try:
+        from pathlib import Path
+        from ..agents.skill_sync import _resolve_skill_source
+        src = _resolve_skill_source(ORCHESTRATION_SKILL)
+        if src is not None:
+            raw = (Path(src) / "SKILL.md").read_text(encoding="utf-8")
+            if raw.startswith("---"):
+                raw = raw.split("---", 2)[2] if raw.count("---") >= 2 else raw
+            testo = raw.strip()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("skill orchestrazione non leggibile per il brief (%s)", type(e).__name__)
+    _ORCH_BRIEF.append(testo)
+    return testo
+
+
 def _seed_name(label: str | None) -> str | None:
     """Nome del seed da un'etichetta istanza ('fullstack-dev#2' → 'fullstack-dev')."""
     return _split_ord(label)[0]
@@ -2828,9 +2874,18 @@ async def _start_turn(tier: str, name: str, tier_real: str, spec, principal: str
     # the room chooses it; the shared skills say «riferisci all'orchestratore».
     orchestratore = await _orchestratore_della_stanza(tier, name, tier_real)
     if orchestratore == spec.name:
+        # #695: any AI participant may orchestrate. A seed whose capabilities
+        # do not carry the `orchestrazione` skill gets its text here, in the
+        # turn: the same job on every runtime, without editing its seed.
+        mestiere = ("" if _has_capability(spec, ORCHESTRATION_SKILL)
+                    else _orchestration_brief())
         directive = ("[Sei l'ORCHESTRATORE di questa stanza: parli tu con l'utente, "
                      "assegni i compiti e chiudi con il risultato (skill "
-                     "`orchestrazione`).]\n" + (directive or ""))
+                     "`orchestrazione`).]\n"
+                     + (f"[Il mestiere dell'orchestratore, dalla skill "
+                        f"`orchestrazione` (il tuo seed non la porta):]\n{mestiere}\n"
+                        if mestiere else "")
+                     + (directive or ""))
     elif orchestratore:
         directive = (f"[Orchestratore di questa stanza: {orchestratore}. Esiti e "
                      f"blocchi li riferisci a lui con @{orchestratore}, non "
@@ -2946,6 +3001,8 @@ def _select_topic_intro_agent(meta: dict, tier: str) -> str:
         spec = registry.get_by_name(nome)
         if not spec or not _provider_seal_ok(spec, tier):
             return None
+        if nome not in coordinator_mod.DECLARED and getattr(spec, "type", None) != "bot":
+            return None
         # Clodia and Ophelia introduce only a room they are already in; the
         # secretary enters every room (#667: it is the default orchestrator).
         if nome != "segretario" and nome not in participants:
@@ -2954,9 +3011,13 @@ def _select_topic_intro_agent(meta: dict, tier: str) -> str:
             return None
         return spec
 
-    idonei = [s for s in (_intro_candidate(n) for n in coordinator_mod.DECLARED)
-              if s is not None]
-    scelto, _reason = coordinator_mod.pick(idonei, coordinator_mod.room_choice(meta))
+    # #695: the room's choice may be any AI participant, not only the
+    # DECLARED fallback seeds: it is a candidate too (on the participant rule).
+    scelta = coordinator_mod.room_choice(meta)
+    nomi = list(coordinator_mod.DECLARED) + (
+        [scelta] if scelta and scelta not in coordinator_mod.DECLARED else [])
+    idonei = [s for s in (_intro_candidate(n) for n in nomi) if s is not None]
+    scelto, _reason = coordinator_mod.pick(idonei, scelta)
     if scelto is not None and scelto.name != "segretario":
         meta["team_bootstrap_agent"] = scelto.name
         return scelto.name
