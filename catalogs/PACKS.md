@@ -45,6 +45,23 @@ The shape of a pack (the `clodia-packs` repository is a directory of them):
 └── plugins/<plugin>/       # each one a plugin (plugin.json/plugin.yaml, or bare)
 ```
 
+**Deprecation** (clodia-platform#700). A pack that should no longer be used
+says so in its `pack.yaml`:
+
+```yaml
+deprecated:
+  reason: "the skills moved to business-pack"
+  replacement: business-pack     # optional
+  since: "2026-11-18"            # optional
+```
+
+`deprecated: true` is accepted too (no reason). The Packs page shows the tag
+on the pack, in the catalogue and in the «Aggiorna tutto» outcome. A
+deprecated pack that is not installed is listed but cannot be installed; an
+installed one keeps working until the owner removes it. A pack deleted from
+its catalogue is not «deprecated»: an installed copy is shown as «rimosso dal
+catalogo», to uninstall.
+
 Runtime manifest: `CLODIA_DATA/packs/<pack>/pack.yaml` (name, description,
 version, source, agents, plugins — and, copied as declared, what the gateway
 reads: `upstream`, `first_party`, `license`, `connectors`, `components`).
@@ -126,6 +143,11 @@ schedules them. Catalogue configuration is exposed with secrets masked.
 
 - `GET /clodia/packs` · `GET /clodia/packs/{name}` — packs with their agents
   (installed, `requires`/`missing_plugins`) and resolved plugins
+- `GET /clodia/packs/catalogue[?refresh=1]` — every public pack (`r-clodia/clodia-packs`
+  `packs/*` + the bundled first-party packs) with its state here: `installed`,
+  `update_available`, `available`, `deprecated`, `removed_from_catalogue`
+  (#700); `POST /clodia/packs/catalogue/{name}/install` installs one from its
+  catalogue upstream (refused when deprecated)
 - `POST /clodia/packs/import` · `/import-url` — unified pack|plugin import
 - `DELETE /clodia/packs/{name}`
 - `GET /clodia/plugins` · `GET /clodia/plugins/{name}` — every plugin, loose ones included
