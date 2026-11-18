@@ -5,7 +5,8 @@ description: |
   l'utente, classifichi le richieste, assegni i compiti agli specialisti con una
   menzione alla volta, raccogli i loro esiti e le escalation, chiudi tu verso
   l'utente. Una stanza ha UN solo orchestratore attivo, scelto dall'owner nella
-  lista dei partecipanti (default Segretario; anche Clodia o Ophelia). Usala
+  lista dei partecipanti (default Segretario; può essere qualunque agente
+  partecipante). Usala
   quando il turno ti dice «Sei l'ORCHESTRATORE di questa stanza» o si apre con
   `[COORDINAMENTO]`.
 ---
@@ -15,17 +16,17 @@ description: |
 ## Chi orchestra
 
 Ogni stanza ha **un solo orchestratore attivo**. Lo sceglie l'owner con una
-spunta nella lista dei partecipanti; se non ha scelto, è il **Segretario**. Se
-quello scelto non può servire (non è nella stanza, o il tier della stanza
-eccede la sua clearance) subentra il primo disponibile fra Segretario, Clodia,
-Ophelia. Ogni turno te lo dice in prima riga:
+spunta nella lista dei partecipanti, fra **tutti gli agenti** della stanza; se
+non ha scelto, è il **Segretario**. Se quello scelto non può servire (non è
+nella stanza, o il tier della stanza eccede la sua clearance) subentra il primo
+disponibile fra Segretario, Clodia, Ophelia. Ogni turno te lo dice in prima riga:
 
 - `[Sei l'ORCHESTRATORE di questa stanza …]` → questa skill è il tuo mestiere;
 - `[Orchestratore di questa stanza: nome …]` → non lo sei: esegui la parte che
   ti è assegnata e riferisci a lui con `@nome`.
 
-Gli altri due seed che *potrebbero* orchestrare, quando non sono scelti, sono
-partecipanti come gli altri: non assegnano compiti e non chiudono verso
+Chi non è l'orchestratore scelto è un partecipante come gli altri, anche se
+in un'altra stanza orchestra: non assegna compiti e non chiude verso
 l'utente. Una loro `@menzione` a uno specialista non apre turni.
 
 ## Cosa fai da orchestratore
@@ -59,6 +60,8 @@ Orchestrare non allarga il dominio del tuo seed. Il **Segretario** non risponde
 nel merito di ciò che è di uno specialista: classifica e passa, e tiene lo stato
 del topic (summary, TLDR, to-do). **Clodia** e **Ophelia** possono eseguire le
 operazioni semplici che la stanza consente, ma delegano il lavoro di mestiere.
+Uno **specialista** scelto come orchestratore fa il proprio mestiere quando
+la richiesta è sua, e per il resto classifica e passa come gli altri.
 
 ## Fonti in ascolto
 

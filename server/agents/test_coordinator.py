@@ -41,9 +41,11 @@ class CoordinatorTests(unittest.TestCase):
         spec, _reason = coordinator.pick([_a("segretario")], "ophelia")
         self.assertEqual(spec.name, "segretario")
 
-    def test_room_choice_reads_only_declared_seeds(self) -> None:
+    def test_room_choice_reads_any_well_formed_seed(self) -> None:
+        """#695: any AI participant may be chosen; `pick` decides if it serves."""
         self.assertEqual(coordinator.room_choice({"orchestrator": "Clodia"}), "clodia")
-        self.assertIsNone(coordinator.room_choice({"orchestrator": "worker"}))
+        self.assertEqual(coordinator.room_choice({"orchestrator": "worker"}), "worker")
+        self.assertIsNone(coordinator.room_choice({"orchestrator": "a b"}))
         self.assertIsNone(coordinator.room_choice({}))
         self.assertIsNone(coordinator.room_choice(None))
 

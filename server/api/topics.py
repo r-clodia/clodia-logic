@@ -908,11 +908,30 @@ async def set_topic_listen(tier: str, name: str, request: Request):
         raise HTTPException(502, str(e))
 
 
+def _orchestrator_problem(tier: str, name: str, who: str) -> str:
+    """Why `who` cannot orchestrate this room, or "" (#695)."""
+    from ..agents import registry
+    from . import channels
+    spec = registry.get_by_name(who)
+    if spec is None:
+        return f"'{who}' non è un agente di questa istanza"
+    if getattr(spec, "type", None) != "bot":
+        return (f"'{who}' è una persona o un proxy: l'orchestratore di una stanza "
+                "è un agente")
+    topic = topics_client.open_topic(tier, name) or {}
+    tier_real = (topic.get("meta") or {}).get("tier", tier)
+    if not channels._provider_seal_ok(spec, tier_real):
+        return (f"'{who}' non può servire una stanza {tier_real}: nessun suo provider "
+                "connesso regge questo livello SEAL")
+    return ""
+
+
 @router.post("/api/topics/{tier}/{name}/orchestrator")
 async def set_topic_orchestrator(tier: str, name: str, request: Request):
     """Who orchestrates this room (clodia-platform#667): one click in the
-    participants list. Owner (or admin) only — choosing who leads the room is
-    the owner's act, like pinning the goal. `orchestrator: null` goes back to
+    participants list — any AI participant eligible at the room's tier (#695).
+    Owner (or admin) only — choosing who leads the room is the owner's act,
+    like pinning the goal. `orchestrator: null` goes back to
     the default (the secretary). The change leaves a system line in the room,
     and the effective orchestrator comes back (it may be a fallback)."""
     principal = await asyncio.to_thread(_require_topic_owner, request, tier, name)
@@ -922,6 +941,14 @@ async def set_topic_orchestrator(tier: str, name: str, request: Request):
         body = {}
     who = (body or {}).get("orchestrator")
     who = str(who).strip().lower() if who else None
+    if who:
+        # #695: any AI participant, not only the three fallback seeds — but an
+        # AGENT (a person or a proxy does not orchestrate) able to serve at the
+        # room's tier. The gateway checks the participant rule; the type and
+        # the tier are known here.
+        problema = await asyncio.to_thread(_orchestrator_problem, tier, name, who)
+        if problema:
+            raise HTTPException(400, problema)
     try:
         res = await topics_client.async_set_orchestrator(tier, name, who, by=principal)
     except ValueError as e:

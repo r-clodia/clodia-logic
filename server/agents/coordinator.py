@@ -37,25 +37,34 @@ in quanto all-tier» — cade fuori gratis, senza una seconda regola che lo dica
 from __future__ import annotations
 
 import logging
+import re
 
 LOG = logging.getLogger("agent-server.agents.coordinator")
 
-#: The seeds that can orchestrate a room, in FALLBACK order. Since
-#: clodia-platform#667 (owner, 11 Nov 2026) the room CHOOSES its orchestrator
-#: (`meta.orchestrator`, one click in the participants list) and this order only
-#: decides when the choice is absent or cannot serve (not a participant, not
-#: eligible at the room's tier). The default is the secretary everywhere;
-#: before #667 it was «clodia if present» (ruling of 11 Aug 2026).
+#: The FALLBACK order of a room's orchestrator. Since clodia-platform#667
+#: (owner, 11 Nov 2026) the room CHOOSES its orchestrator (`meta.orchestrator`,
+#: one click in the participants list), and since #695 (owner, 17 Nov 2026) the
+#: choice may be ANY AI participant, not only these three. This order only
+#: decides when the choice is absent or cannot serve (not a participant, not an
+#: AI agent, not eligible at the room's tier). The default is the secretary
+#: everywhere; before #667 it was «clodia if present» (ruling of 11 Aug 2026).
 DECLARED: tuple[str, ...] = ("segretario", "clodia", "ophelia")
 
 #: The meta key holding the room's choice.
 META_KEY = "orchestrator"
 
 
+#: A seed name as it may be stored in `meta.orchestrator`.
+_NAME = re.compile(r"^[a-z0-9][a-z0-9_.-]{0,63}$")
+
+
 def room_choice(meta: dict | None) -> str | None:
-    """The orchestrator the room chose, if it is one that can orchestrate."""
+    """The orchestrator the room chose, or None. Any well-formed name (#695):
+    whether it can serve — an AI participant eligible at the room's tier — is
+    decided by `pick` against the eligible specs the caller passes, so a choice
+    that cannot serve falls back to `DECLARED` with a reason, never silently."""
     v = str((meta or {}).get(META_KEY) or "").strip().lower()
-    return v if v in DECLARED else None
+    return v if v and _NAME.match(v) else None
 
 
 def pick(specs, preferred: str | None = None) -> tuple[object | None, str]:

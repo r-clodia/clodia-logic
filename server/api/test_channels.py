@@ -644,6 +644,27 @@ class ResponderTests(unittest.TestCase):
         self.assertEqual(meta["participants"], ["owner", "clodia"])
         self.assertEqual(meta["team_bootstrap_agent"], "clodia")
 
+    def test_topic_intro_follows_any_chosen_agent(self) -> None:
+        """#695: the room may choose any AI participant, e.g. a specialist."""
+        meta = {"contact_agent": "clodia", "participants": ["owner", "clodia", "worker"],
+                "orchestrator": "worker"}
+        with patch.object(channels, "_provider_seal_ok", return_value=True):
+            intro = channels._select_topic_intro_agent(meta, "SEAL-1")
+        self.assertEqual(intro, "worker")
+        self.assertEqual(meta["team_bootstrap_agent"], "worker")
+
+    def test_a_chosen_specialist_routes_unaddressed_messages(self) -> None:
+        """#695: the room's choice leads the room, not only the three seeds."""
+        r = channels._pick_responder(["owner", "clodia", "worker", "segretario"], "P0",
+                                     None, coordinator_only=True, orchestrator="worker")
+        self.assertEqual(r.name, "worker")
+        # a proxy or a person chosen cannot lead: the fallback order decides
+        for chi in ("github-hook", "owner"):
+            with self.subTest(chi=chi):
+                r = channels._pick_responder(["owner", "github-hook", "segretario"], "P0",
+                                             None, coordinator_only=True, orchestrator=chi)
+                self.assertEqual(r.name, "segretario")
+
     def test_topic_intro_replaces_ineligible_clodia_with_segretario(self) -> None:
         meta = {"contact_agent": "clodia", "participants": ["owner", "clodia"]}
 
