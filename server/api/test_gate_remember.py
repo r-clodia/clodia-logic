@@ -160,3 +160,131 @@ class ApprovalSurvivesAFailedMemoryTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class MatrixTests(unittest.TestCase):
+    """clodia-platform#693: CHI (spawn · seed · tutti) × DOVE (stanza · istanza).
+    Il gateway scrive la regola; qui si decide chi ha titolo e cosa chiedere."""
+
+    AUTHZ = "authz:web.post|https://api.example.com/"
+
+    def _gw(self, verb, remember_ok=True):
+        pend = {"requests": [{**PENDING["requests"][0], "verb": verb,
+                              "agent": "officer", "instance": "officer-28"}]}
+
+        self.calls = []
+
+        def gw(metodo, path, principal, corpo=None):
+            self.calls.append((metodo, path, corpo))
+            if path == "/pending":
+                return _Risposta(200, pend)
+            if path == "/remember":
+                return (_Risposta(200, {"remembered": True, "kind": "rule"}) if remember_ok
+                        else _Risposta(400, {"remembered": False,
+                                             "error": "si decide a livello globale"}))
+            if path == "/allow":
+                return _Risposta(200, {"remembered": True, "uri": "…"})
+            return _Risposta(200, {"ok": True})
+        return gw
+
+    def body(self, verb, **kw):
+        return {"agent": "officer", "instance": "officer-28", "verb": verb, **kw}
+
+    def test_this_seed_in_this_room_writes_a_rule_for_the_seed(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="seed", where="chat"),
+                        gw=self._gw(self.AUTHZ))
+        self.assertEqual(r.status_code, 200)
+        (rem,) = [c for c in self.calls if c[1] == "/remember"]
+        self.assertEqual((rem[2]["agent"], rem[2]["scope"], rem[2]["verb"]),
+                         ("officer", "SEAL-1/acme", self.AUTHZ))
+        self.assertTrue(json.loads(bytes(r.body).decode())["memory"]["remembered"])
+
+    def test_every_agent_on_an_authz_gate_is_a_rule_for_star(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="all", where="chat"),
+                        gw=self._gw(self.AUTHZ))
+        (rem,) = [c for c in self.calls if c[1] == "/remember"]
+        self.assertEqual(rem[2]["agent"], "*")
+        self.assertEqual([c for c in self.calls if c[1] == "/allow"], [])
+
+    def test_every_agent_on_a_destination_keeps_the_lists(self):
+        verb = BASE["verb"]
+        r, _ = _chiama("davide", self.body(verb, who="all", where="chat"),
+                        gw=self._gw(verb))
+        self.assertEqual(len([c for c in self.calls if c[1] == "/allow"]), 1)
+        self.assertEqual([c for c in self.calls if c[1] == "/remember"], [])
+
+    def test_the_instance_column_is_an_admin_s(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="seed", where="global"),
+                        gw=self._gw(self.AUTHZ))
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual([c for c in self.calls if c[1] in ("/remember", "/grant")], [])
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="seed", where="global"),
+                        admin_ok=True, gw=self._gw(self.AUTHZ))
+        (rem,) = [c for c in self.calls if c[1] == "/remember"]
+        self.assertEqual(rem[2]["scope"], "")
+
+    def test_this_spawn_is_today_s_consent_only(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="spawn"),
+                        gw=self._gw(self.AUTHZ))
+        self.assertEqual(r.status_code, 200)
+        self.assertEqual([c for c in self.calls if c[1] in ("/remember", "/allow")], [])
+
+    def test_a_cell_the_gate_does_not_have_is_said_and_the_call_proceeds(self):
+        r, _ = _chiama("davide", self.body(self.AUTHZ, who="seed", where="chat"),
+                       gw=self._gw(self.AUTHZ, remember_ok=False))
+        self.assertEqual(r.status_code, 200)
+        mem = json.loads(bytes(r.body).decode())["memory"]
+        self.assertFalse(mem["remembered"])
+        self.assertIn("globale", mem["error"])
+
+    def test_unknown_words_are_refused(self):
+        for body in (self.body(self.AUTHZ, who="qualcuno", where="chat"),
+                     self.body(self.AUTHZ, who="seed", where="ovunque"),
+                     self.body(self.AUTHZ, who="seed")):
+            with self.subTest(body=body):
+                r, _ = _chiama("davide", body, gw=self._gw(self.AUTHZ))
+                self.assertEqual(r.status_code, 400)
+
+
+class MatrixGrantCarriesWhoTests(MatrixTests):
+    def test_the_grant_says_which_row(self):
+        for who in ("spawn", "seed", "all"):
+            with self.subTest(who=who):
+                body = self.body(BASE["verb"], who=who, **({} if who == "spawn" else {"where": "chat"}))
+                _chiama("davide", body, gw=self._gw(BASE["verb"]))
+                (grant,) = [c for c in self.calls if c[1] == "/grant"]
+                self.assertEqual(grant[2]["who"], who)
+
+    def test_a_seed_on_a_destination_is_a_rule_not_a_list(self):
+        verb = BASE["verb"]
+        _chiama("davide", self.body(verb, who="seed", where="chat"), gw=self._gw(verb))
+        (rem,) = [c for c in self.calls if c[1] == "/remember"]
+        self.assertEqual(rem[2]["agent"], "officer")
+        self.assertEqual([c for c in self.calls if c[1] == "/allow"], [])
+
+
+class RulesProxyTests(unittest.TestCase):
+    """#693: the rules panel. Reading a room's rules is any person of the
+    room's; removing one is the owner's (or an admin's); the global list is an
+    admin's."""
+
+    def test_titles(self):
+        from fastapi import HTTPException
+        from . import topic_data as T
+        calls = []
+
+        async def person(request, tier, name, *, owner):
+            calls.append(owner)
+            return "davide"
+        with patch.object(T, "_room_person", person), \
+             patch.object(T.topics_client, "authz_rules", lambda scope: [{"id": "gate-1"}]), \
+             patch.object(T.topics_client, "authz_rule_remove", lambda s, i, b: True):
+            out = asyncio.run(T.channel_rules("SEAL-1", "acme", object()))
+            self.assertEqual(out["rules"], [{"id": "gate-1"}])
+            asyncio.run(T.channel_rule_remove("SEAL-1", "acme", "gate-1", object()))
+        self.assertEqual(calls, [False, True])
+        with patch.object(T, "_person", lambda r: "davide"), \
+             patch.object(T.admin, "is_admin", lambda n: False):
+            with self.assertRaises(HTTPException) as e:
+                asyncio.run(T.global_rules(object()))
+            self.assertEqual(e.exception.status_code, 403)

@@ -498,6 +498,37 @@ def topic_index_status(tier: str, name: str) -> dict:
     return r.json()
 
 
+def _rules_url(scope: str | None) -> str:
+    if scope:
+        tier, _, name = scope.partition("/")
+        return f"{_base()}/{tier}/{name}/rules"
+    return _base().rsplit("/topics", 1)[0] + "/authz/rules"
+
+
+def authz_rules(scope: str | None = None) -> list[dict]:
+    """The explicit A·V·R·Q rules of a room (`tier/name`) or the global ones
+    (None), those a gate wrote included (#693)."""
+    try:
+        r = _gw_http.get(_rules_url(scope), headers=_headers(), timeout=15)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway authz irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("authz/rules", r)
+    return list((r.json() or {}).get("rules") or [])
+
+
+def authz_rule_remove(scope: str | None, rule_id: str, by: str) -> bool:
+    """Remove one explicit rule of a room or of the instance (#693)."""
+    try:
+        r = _gw_http.request("DELETE", _rules_url(scope), headers=_headers(),
+                             json={"id": rule_id, "by": by}, timeout=15)
+    except requests.RequestException as e:
+        raise TopicsClientError(f"gateway authz irraggiungibile: {e}") from e
+    if r.status_code != 200:
+        raise _http_error("authz/rules", r)
+    return bool((r.json() or {}).get("removed"))
+
+
 def authz_available(agent: str, verbs, scope: str | None = None) -> dict[str, bool]:
     """«Does `agent` have these verbs here?» from the gateway's A·V·R·Q tuples
     (#626): the seeds no longer carry verbs. No `scope` = outside a room."""
