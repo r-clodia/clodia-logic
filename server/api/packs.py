@@ -33,8 +33,8 @@ from pydantic import BaseModel
 from ..agents import pack_state, seed_sync
 from ..agents.loader import registry
 from ..config import workspace_path
-from . import (catalog, gateway_admin, gateway_pdp, pack_deprovision, pack_import,
-               pack_mcp_mount, plugin_import, plugins as plugins_api)
+from . import (catalog, gateway_admin, gateway_pdp, pack_catalogue, pack_deprovision,
+               pack_import, pack_mcp_mount, plugin_import, plugins as plugins_api)
 
 LOG = logging.getLogger("agent-server.api.packs")
 router = APIRouter()
@@ -521,6 +521,8 @@ def _list_packs() -> list[dict[str, Any]]:
             "providers": prov["providers"],
             "dpa_missing": prov["dpa_missing"],
             "third_party": bool(manifest.get("third_party")),
+            # #700: `deprecated: true | {reason, replacement, since}`.
+            "deprecated": pack_catalogue.deprecation(manifest),
             "counts": {
                 "agents": len(agents),
                 "plugins": len(plugin_children),
@@ -609,6 +611,51 @@ def _available_first_party() -> list[dict[str, Any]]:
 async def list_available_packs(request: Request) -> list[dict[str, Any]]:
     await gateway_pdp.require_authz_async(request, "packs.import_url")  # admin-only
     return _available_first_party()
+
+
+@router.get("/clodia/packs/catalogue")
+async def pack_catalogue_list(request: Request, refresh: bool = False) -> dict[str, Any]:
+    """Every public pack with its state here (#700): the clodia-packs
+    repository plus the bundled first-party packs. `?refresh=1` skips the
+    cache. Admin-only, as `/clodia/packs/available`."""
+    await gateway_pdp.require_authz_async(request, "packs.import_url")
+    return await asyncio.to_thread(pack_catalogue.entries, bool(refresh))
+
+
+@router.post("/clodia/packs/catalogue/{name}/install")
+async def pack_catalogue_install(name: str, request: Request):
+    """Install a pack of the catalogue (#700), from the catalogue's upstream,
+    the trusted path of an Update (a first install: no seed is forced over).
+    A deprecated pack is not installable (owner, 18 Nov 2026); an installed
+    one is updated, not installed again."""
+    principal = await gateway_pdp.require_authz_async(request, "packs.import_url")
+    if not catalog._NAME_RE.fullmatch(name):
+        return JSONResponse(status_code=400, content={"error": "nome non valido"})
+    row = await asyncio.to_thread(pack_catalogue.entry, name)
+    if row is None or not row.get("upstream") or row.get("state") == "removed_from_catalogue":
+        return JSONResponse(status_code=404, content={
+            "error": f"'{name}' non è nel catalogo"})
+    if row.get("installed"):
+        return JSONResponse(status_code=400, content={
+            "error": f"'{name}' è già installato: usa Update"})
+    if row.get("deprecated"):
+        dep = row["deprecated"]
+        extra = f" Usa invece '{dep['replacement']}'." if dep.get("replacement") else ""
+        return JSONResponse(status_code=400, content={
+            "error": f"'{name}' è deprecato e non si installa"
+                     + (f": {dep['reason']}" if dep.get("reason") else "") + "." + extra})
+    if row.get("source") == "first-party":
+        # The bundled first-party path (#562): reserved names, its own checks.
+        return await install_first_party_pack(name, request)
+    try:
+        result = await _perform_update(name, principal, up=dict(row["upstream"]),
+                                       fresh=True)
+    except ValueError as e:
+        return JSONResponse(status_code=400, content={"error": str(e)})
+    except RuntimeError as e:
+        return JSONResponse(status_code=500, content={"error": str(e)})
+    pack_catalogue.clear_cache()
+    return {**result, "installed": name, "agents_restarted": await _restart_agents()}
 
 
 @router.get("/clodia/packs/{name}")
@@ -815,8 +862,15 @@ def _download_upstream_tarball(up: dict, tmp: Path) -> Path:
     if root != base and base not in root.parents:
         raise pack_import.PackImportError("il path dell'upstream esce dall'archivio")
     if not (root / "pack.yaml").is_file():
-        raise pack_import.PackImportError(f"path '{up['path']}' senza pack.yaml nel repo")
+        raise UpstreamPackGone(
+            f"rimosso dal catalogo: {up['repo']}@{up['ref']} non contiene più "
+            f"'{up['path'] or '/'}'. Disinstallalo da Packs")
     return root
+
+
+class UpstreamPackGone(pack_import.PackImportError):
+    """The pack's upstream path no longer holds a pack (#700): it was removed
+    from its catalogue, and the owner should uninstall it."""
 
 
 def _gateway_component_packs(result: Any) -> list[str]:
@@ -971,7 +1025,8 @@ def _check_update_root(root: Path, name: str) -> None:
             f"l'upstream contiene il pack '{got}', non '{name}': update rifiutato")
 
 
-async def _perform_update(name: str, principal: str) -> dict:
+async def _perform_update(name: str, principal: str, *, up: dict | None = None,
+                          fresh: bool = False) -> dict:
     """Il lavoro di un Update, senza il layer HTTP: scarica dall'upstream,
     SOSTITUISCE seed/skill/mcp (force), monta gli MCP trusted, aggiorna il
     manifest e RIAVVIA tutti gli agenti. Estratta da `update_pack` per essere
@@ -983,7 +1038,11 @@ async def _perform_update(name: str, principal: str) -> dict:
     """
     if not catalog._NAME_RE.fullmatch(name):
         raise ValueError("nome non valido")
-    up = _update_upstream(name)
+    # `up`/`fresh` (#700): a first install from the catalogue, from the
+    # catalogue's upstream, without forcing over any existing seed.
+    up = up or _update_upstream(name)
+    if up and not _valid_upstream(up):
+        raise ValueError("upstream non valido")
     if not up:
         raise ValueError(f"'{name}' non dichiara un upstream: update non disponibile")
     # Trust comes from WHERE the code is fetched, never from what the pack
@@ -1005,10 +1064,12 @@ async def _perform_update(name: str, principal: str) -> dict:
             result = pack_import.install_pack_from_root(
                 root, source=f"github:{up['repo']}",
                 allow_reserved=first_party and name in pack_import.RESERVED_PACK_NAMES,
-                force=True,
+                force=not fresh,
                 # From a third party, replace only the seeds this pack already
                 # owned: never a native, never another pack's (#564).
-                force_only=None if first_party else _owned_seeds(name))
+                force_only=None if (first_party or fresh) else _owned_seeds(name))
+    except UpstreamPackGone as e:
+        raise ValueError(str(e)[:200]) from e
     except _PIE as e:
         raise ValueError(f"update: {str(e)[:160]}") from e
     except Exception as e:  # noqa: BLE001
@@ -1309,8 +1370,11 @@ async def update_all_packs(request: Request):
         try:
             up = await _perform_update(name, principal)
         except (ValueError, RuntimeError) as e:
-            results.append({"name": name, "updated": False, "error": str(e)})
+            results.append({"name": name, "updated": False, "error": str(e),
+                            # #700: gone from its catalogue — uninstall, not retry.
+                            "removed_from_catalogue": str(e).startswith("rimosso dal catalogo")})
             continue
+        dep = pack_catalogue.deprecation(_pack_meta(name))
         # Rilette DOPO l'update, e per i PLUGIN che il pack porta davvero — un
         # pack e il suo plugin non condividono sempre lo stesso nome, e
         # `_perform_update` può averne cambiato il set (es. un pack che aggiunge
@@ -1332,6 +1396,7 @@ async def update_all_packs(request: Request):
         if pack_state.is_disabled(name):
             # Updated, but off (#563): nothing is provisioned until enabled.
             results.append({"name": name, "updated": True, "version": up.get("version"),
+                            "deprecated": dep,
                             "disabled": True, "setup_done": False,
                             "setup_gaps": [], "setup_actions": []})
             continue
@@ -1339,6 +1404,7 @@ async def update_all_packs(request: Request):
             # A third party's `requires:` (pip/npm installs, MCP) is not run
             # by a click on «Aggiorna tutto» (#564): the owner reviews it.
             results.append({"name": name, "updated": True, "version": up.get("version"),
+                            "deprecated": dep,
                             "setup_done": False, "setup_actions": [],
                             "setup_gaps": [{"detail": "pack di terze parti: setup da "
                                                       "rivedere e completare a mano"}]})
@@ -1348,6 +1414,7 @@ async def update_all_packs(request: Request):
         if not setup["gaps"]:
             record_setup_done(name, by=str(principal or ""))
         results.append({"name": name, "updated": True, "version": up.get("version"),
+                        "deprecated": dep,
                         "setup_done": not setup["gaps"],
                         "setup_gaps": setup["gaps"], "setup_actions": setup["done"]})
     stopped = []
