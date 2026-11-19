@@ -338,7 +338,7 @@ def auth_line(auth: dict | None) -> str:
 
 def envelope_text(env: dict, saved: list[str], failed: list[str],
                   eml_path: str = "", auth: dict | None = None,
-                  body_path: str = "") -> str:
+                  body_path: str = "", summary: str = "") -> str:
     """The post: the envelope only, never a body. An authenticated mail's own
     text is a FILE of the topic (#586), named here, not quoted."""
     righe = [f"📧 Nuova mail da {_plain(env.get('from')) or '?'}",
@@ -356,6 +356,10 @@ def envelope_text(env: dict, saved: list[str], failed: list[str],
         righe.append(f"Testo (fidato): `{body_path}`")
     if eml_path:
         righe.append(f"Messaggio completo (non fidato): `{eml_path}`")
+    if summary:
+        # #708: one tool-less model call; untrusted like the rest of the post.
+        from .mail_summary import LABEL, sanitise
+        righe.append(f"{LABEL}: {sanitise(summary)}")
     righe.append(f"(id {env.get('id')} nella casella)")
     return "\n".join(righe)
 
@@ -379,6 +383,7 @@ async def _deliver(room: dict, env: dict) -> dict:
     # The whole message, untrusted, next to its attachments (#576). A copy
     # that fails is named in the post, never retried at the envelope's cost.
     eml_path, auth, body_path = "", None, ""
+    raw = b""
     try:
         got = await asyncio.to_thread(eml, room, env["id"], str(env.get("key") or ""))
         raw = base64.b64decode(got["content_b64"])
@@ -409,9 +414,21 @@ async def _deliver(room: dict, env: dict) -> dict:
                 LOG.warning("mail courier: text of %s/%s not saved (%s)",
                             room["tier"], room["name"], type(e).__name__)
                 body_path = ""
+    # #708: the courier's summary — the trusted body when extracted, else the
+    # plain text of the .eml. Bounded by its own timeout, never retried.
+    summary = ""
+    if raw:
+        try:
+            from . import mail_summary
+            fonte = plain_body(raw)
+            summary = await mail_summary.summarise(room["tier"], room["name"], fonte)
+        except Exception as e:  # noqa: BLE001 — a summary never stops delivery
+            LOG.info("mail courier: summary of %s/%s skipped (%s)",
+                     room["tier"], room["name"], type(e).__name__)
     await topics_client.async_post_message(
         room["tier"], room["name"], AUTHOR,
-        envelope_text(env, saved, failed, eml_path, auth, body_path), kind="proxy")
+        envelope_text(env, saved, failed, eml_path, auth, body_path, summary),
+        kind="proxy")
     return {"from": _plain(env.get("from")), "subject": _plain(env.get("subject")),
             "eml": eml_path}
 
