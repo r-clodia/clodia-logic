@@ -33,6 +33,7 @@ trovato.
 from __future__ import annotations
 
 import logging
+import os
 import re
 import shutil
 from pathlib import Path
@@ -79,7 +80,9 @@ def persist(agent: str, chat_id: str, spawn_dirs) -> list[Path]:
     for d in spawn_dirs or []:
         for src in _sources(d):
             try:
-                dest_dir.mkdir(parents=True, exist_ok=True)
+                # Root-only (clodia-platform#704): a transcript is the whole
+                # conversation, and a spawn's shell must not read another's.
+                dest_dir.mkdir(mode=0o700, parents=True, exist_ok=True)
                 dest = dest_dir / f"{_safe(src.stem)}.jsonl"
                 # SHORTCUT: copia integrale a ogni turno. Regge finché il
                 #           transcript sta nell'ordine dei MB (misurato: 1,1 MB
@@ -88,6 +91,7 @@ def persist(agent: str, chat_id: str, spawn_dirs) -> list[Path]:
                 #           append-only, quindi basta la coda oltre la
                 #           dimensione già copiata.
                 shutil.copyfile(src, dest)
+                os.chmod(dest, 0o600)
                 scritti.append(dest)
             except Exception as e:  # noqa: BLE001 — una copia non ferma un turno
                 LOG.warning("transcript non persistito (%s → %s): %s",

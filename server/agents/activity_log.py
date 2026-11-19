@@ -28,6 +28,7 @@ import asyncio
 import hashlib
 import json
 import logging
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Optional
@@ -69,9 +70,13 @@ def append(
         "payload": payload or {},
     }
     path = _file_for(agent, now)
-    path.parent.mkdir(parents=True, exist_ok=True)
+    # Root-only from birth (clodia-platform#704): `run_started` and `run_done`
+    # carry what was written and answered, and a spawn's shell must not read
+    # them. `boundary_check.harden_content_stores` fixes what is already there.
+    path.parent.mkdir(mode=0o700, parents=True, exist_ok=True)
     try:
-        with path.open("a", encoding="utf-8") as f:
+        fd = os.open(path, os.O_WRONLY | os.O_APPEND | os.O_CREAT, 0o600)
+        with os.fdopen(fd, "a", encoding="utf-8") as f:
             f.write(json.dumps(entry, ensure_ascii=False) + "\n")
     except Exception as e:
         LOG.error("Activity log write failed (%s/%s): %s", agent, event_type, e)

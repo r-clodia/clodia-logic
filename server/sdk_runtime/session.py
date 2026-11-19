@@ -2353,7 +2353,13 @@ class ChatSession:
             activity_log.append(self.kind, "run_started",
                                 {"prompt": _snippet(content), "principal": self.principal,
                                  "chat_id": self.chat_id, "trace": trace.current()})
-            LOG.info("turno START %s: %s", self.chat_id, _snippet(content, 80))
+            # The LENGTH, never the text (clodia-platform#704): this file is
+            # what `logs.tail` serves to sysadmin, whose charter is «never the
+            # contents», and it sits on the shared datadir. Who wrote what is
+            # in the room and in the activity log, both behind their own
+            # permissions; the operator needs to know a turn started, where,
+            # and how big it was.
+            LOG.info("turno START %s (%d chars)", self.chat_id, len(content or ""))
             self._last_usage = {}
             # Stesso motivo del reasoning qui sotto: il conto è di QUESTO turno,
             # e se restasse quello del precedente un turno morto subito

@@ -1,4 +1,4 @@
-version: "1.0.0"
+version: "2.0.0"
 owner: owner
 status: APPROVED
 input_schema:
@@ -18,12 +18,10 @@ output_schema:
     next_step: {type: string}
     escalation_needed: {type: boolean}
 required_tools:
-  - app_runtime.get
-  - app_runtime.set
-  - app_runtime.list
-  - app_runtime.reset
-  - app_runtime.health
-side_effects: [app_runtime_write]
-idempotency_policy: scoped_app_state_only
+  - runtime.health
+  - runtime.inspect_topic
+  - logs.tail
+side_effects: [gated_governance]
+idempotency_policy: confirmation_card_per_write
 retry_policy:
   on_denied_scope: escalate

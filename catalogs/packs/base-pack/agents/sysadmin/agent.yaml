@@ -1,6 +1,6 @@
 name: sysadmin
 display_name: Sysadmin
-description: "Steward della piattaforma (guida WebUI + platform-ops): è l'agente del widget di assistenza — guida l'utente alla pagina giusta (marker goto), fa triage, guida il setup delle integrazioni — E amministra la piattaforma entro i tool realmente esposti: pack import/remove/setup_done, provisioning pack dichiarato (pip/npm runtime, bin check, MCP mount, RAG collection/ingest), agent capability grant/revoke, job, provider, integration, settings, runtime restart/diagnosi, lettura codice/log. CONFINI HARD: clearance SEAL-1 (mai dati confidenziali), accede ai FILE dei topic con le regole comuni (participant + clearance, via topic.*; cross-topic → gate) e li ispeziona dal widget entro clearance (runtime.inspect_topic), nessun segreto. (Consolida janitor + sysadmin.)"
+description: "Steward della piattaforma (guida WebUI + platform-ops): è l'agente del widget di assistenza — guida l'utente alla pagina giusta (marker goto), fa triage, guida il setup delle integrazioni — E amministra la piattaforma entro i tool realmente esposti: pack import/remove/setup_done, provisioning pack dichiarato (pip/npm runtime, bin check, MCP mount, RAG collection/ingest), agent capability grant/revoke, job, provider, integration, settings, runtime restart/diagnosi, lettura codice/log. STRUMENTI DI RUOLO ovunque (DM del widget compreso, non nella toolbox delle stanze): GitHub r-clodia/*, diagnostica (runtime.*, logs.tail, runtime.health), governo (packs/agents/jobs, contenitori di datastore e collection). CONFINI HARD: MAI i contenuti degli scope (messaggi, file, righe, documenti) — dei topic vede solo i metadati (runtime.inspect_topic), clearance SEAL-1, nessun segreto. (Consolida janitor + sysadmin.)"
 type: bot
 # Immutabile a runtime: agent di sistema, si modifica solo via seed/rebuild.
 immutable: true
@@ -38,9 +38,16 @@ mailbox_parent: clodia
 #       topic di cui NON è participant scatta il gate cross-topic (approvazione
 #       owner). Nessun accesso RAW-FS ai topic: come per gli agenti di canale,
 #       il canale ai file sono i TOOL, non il filesystem.
-#     - Ispezione dal widget: `runtime.inspect_topic` (metadati + agenti + ultimi
-#       messaggi) anche da NON-participant, ma solo entro la clearance (SEAL < tier
-#       → 403). I confidenziali sopra la sua SEAL restano invisibili.
+#     - Ispezione dal widget: `runtime.inspect_topic` — SOLO METADATI
+#       (partecipanti, tier, stato, conteggi, timestamp, toolbox, import), mai il
+#       testo dei messaggi (clodia-platform#704) — anche da NON-participant, ma
+#       solo entro la clearance (SEAL < tier → 403).
+#     - CONTENUTI MAI (owner, 18 Nov 2026, #701): messaggi, file, righe e
+#       documenti degli scope non sono suoi, nemmeno dove un verbo lo
+#       permetterebbe. Governa la configurazione, non il contenuto. È una
+#       proprietà tecnica dei suoi strumenti di ruolo (#704), non solo una regola
+#       del prompt: inspect_topic e logs.tail non restituiscono testo, e gli
+#       archivi di attività/trascrizioni/log sono root-only per l'uid di sandbox.
 #     - `topic.post_message` resta prerogativa di clodia/ophelia (non di sysadmin).
 #   • NIENTE confidenziale: clearance SEAL-1 < soglia SEAL-2; nessun dato utente fuori
 #     dai datastore dichiarati dai pack.
@@ -66,11 +73,19 @@ sandbox:
 
 capabilities:
   - "base-pack/*"
-  # `helpdesk` (the in-app support widget, SEAL-1 helpdesk channel) comes with
-  # `base-pack/*` since comms-pack was removed (clodia-platform#683).
+  # `helpdesk` (the in-app support widget: the person's DM with sysadmin,
+  # clodia-platform#701) comes with `base-pack/*` since comms-pack was removed
+  # (clodia-platform#683).
 rules: []
 # Verbs are not declared here (#626, 27 Oct 2026): the room authorises them
 # (Strumenti), global A·V·R·Q rules cover governance and outside rooms.
+# ROLE TOOLS (clodia-platform#703): GitHub, diagnostics and governance work
+# everywhere through global tuples naming sysadmin, `where: everywhere`. They
+# are a PLAN the owner applies (`POST /internal/authz {action: role_plan}` then
+# `{action: merge, plan}`, clodia-tools ≥ 2.181.0), never written by the seed:
+# a seed that granted its own verbs would be the authority over itself.
+# They hold ONLY when the turn's signed principal is a human admin
+# (`authz_runtime.role_principal_ok`): a non-admin's DM gets none.
 # Verbi che per QUESTO agent richiedono un consenso umano a ogni uso
 # (clodia-platform#104). Dichiarati nel seed perché è qui che si sa quali dei
 # propri verbi sono pericolosi — e perché un controllo che non viaggia col seed
