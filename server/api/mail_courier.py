@@ -413,7 +413,7 @@ async def _deliver(room: dict, env: dict) -> dict:
         room["tier"], room["name"], AUTHOR,
         envelope_text(env, saved, failed, eml_path, auth, body_path), kind="proxy")
     return {"from": _plain(env.get("from")), "subject": _plain(env.get("subject")),
-            "eml": eml_path}
+            "eml": eml_path, "body": body_path}
 
 
 async def run_room(room: dict, only: list[str] | None = None,
@@ -585,7 +585,8 @@ async def _run_cycle(only: "tuple[str, str] | None" = None) -> int:
                 # the trigger's owner side does, like the scheduler's topic
                 # trigger (#628).
                 from ..scheduler import mail_triggers
-                await mail_triggers.fire(tier, name, items)
+                # segretario's TLDR and the room's own trigger (#708).
+                await mail_triggers.on_delivered(tier, name, items)
             except Exception as e:  # noqa: BLE001 — a trigger never stops the courier
                 LOG.warning("mail trigger %s/%s: %s", tier, name, type(e).__name__)
     return total

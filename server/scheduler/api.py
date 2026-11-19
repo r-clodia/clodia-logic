@@ -346,6 +346,29 @@ async def api_delete_topic_mail_trigger(tier: str, name: str, request: Request):
     return {"deleted": True}
 
 
+class TopicMailTldrSet(BaseModel):
+    enabled: bool
+
+
+@router.get("/clodia/channels/{tier}/{name}/mail-tldr")
+async def api_get_topic_mail_tldr(tier: str, name: str, request: Request):
+    """segretario's TLDR of the delivered mail (#708): ON unless switched off."""
+    from . import mail_triggers
+    await asyncio.to_thread(_require_topic_reader, request, tier, name)
+    return {"tldr": mail_triggers.tldr_get(tier, name)}
+
+
+@router.put("/clodia/channels/{tier}/{name}/mail-tldr")
+async def api_put_topic_mail_tldr(tier: str, name: str, req: TopicMailTldrSet,
+                                  request: Request):
+    from . import mail_triggers
+    owner, _meta = await asyncio.to_thread(_require_topic_owner, request, tier, name)
+    try:
+        return {"tldr": mail_triggers.tldr_set(tier, name, req.enabled, by=owner)}
+    except ValueError as e:
+        raise HTTPException(422, str(e))
+
+
 def _with_freshness(job: dict) -> dict:
     """Allega al payload il giudizio di freschezza (#273).
 

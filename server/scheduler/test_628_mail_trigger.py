@@ -16,9 +16,10 @@ class _Tmp(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.addCleanup(self.tmp.cleanup)
-        p = mock.patch.object(MT, "DIR", Path(self.tmp.name))
-        p.start()
-        self.addCleanup(p.stop)
+        for p in (mock.patch.object(MT, "DIR", Path(self.tmp.name)),
+                  mock.patch.object(MT, "TLDR_DIR", Path(self.tmp.name) / "tldr")):
+            p.start()
+            self.addCleanup(p.stop)
 
 
 class StoreTests(_Tmp):

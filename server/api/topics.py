@@ -1505,6 +1505,8 @@ async def topic_set_tier(tier: str, name: str, request: Request):
         from ..scheduler import mail_triggers
         esito["mail_trigger"] = await asyncio.to_thread(
             mail_triggers.retier, vecchio, esito.get("to") or nuovo, name)
+        await asyncio.to_thread(
+            mail_triggers.tldr_retier, vecchio, esito.get("to") or nuovo, name)
     except Exception as e:  # noqa: BLE001
         LOG.warning("riclassificazione %s/%s: trigger posta non riallineato: %s",
                     tier, name, e)
