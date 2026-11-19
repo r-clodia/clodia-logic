@@ -203,6 +203,9 @@ class OneShotCallTests(unittest.TestCase):
         self.assertNotIn("tools", sent["body"])
         self.assertNotIn("tool_choice", sent["body"])
         self.assertEqual([m["role"] for m in sent["body"]["messages"]], ["system", "user"])
+        # Verified live on 19 Nov 2026: without it gemma on Scaleway spends the
+        # whole budget on hidden reasoning and answers with an empty string.
+        self.assertEqual(sent["body"].get("reasoning_effort"), "none")
 
 
 class SwitchTests(_Base):

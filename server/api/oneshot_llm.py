@@ -91,6 +91,15 @@ def _model_for(pid: str, bundle: dict) -> str:
     return m
 
 
+#: Reasoning switched off where the model reasons by default (#708, verified
+#: live 19 Nov 2026): gemma-4-26b on Scaleway spent all 160 output tokens on
+#: hidden reasoning (`reasoning_tokens: 159`, `finish_reason: length`) and
+#: returned an EMPTY answer; with `reasoning_effort: none` it answers at once.
+#: A one-line summary needs no reasoning. OpenAI's reasoning models take
+#: `minimal` (they reject `none`).
+_REASONING_EFFORT: dict[str, str] = {"scaleway": "none", "openai-api": "minimal"}
+
+
 def complete(tier: str | None, system: str, text: str, *, max_tokens: int = 200,
              timeout: float = DEFAULT_TIMEOUT_S) -> tuple[str, str]:
     """`(answer, provider)` of ONE tool-less completion at `tier`. Raises on
@@ -109,7 +118,9 @@ def complete(tier: str | None, system: str, text: str, *, max_tokens: int = 200,
                        headers={"Authorization": f"Bearer {key}"} if key else {},
                        json={"model": model, "max_tokens": max_tokens, "temperature": 0.2,
                              "messages": [{"role": "system", "content": system},
-                                          {"role": "user", "content": text}]})
+                                          {"role": "user", "content": text}],
+                             **({"reasoning_effort": _REASONING_EFFORT[pid]}
+                                if pid in _REASONING_EFFORT else {})})
             r.raise_for_status()
             out = r.json()["choices"][0]["message"]["content"] or ""
         elif pid in _ANTHROPIC:
