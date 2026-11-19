@@ -225,3 +225,62 @@ class NoTokenOnArgvAnywhereTests(unittest.TestCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFixesTests(unittest.TestCase):
+    """Independent review of #614: S2, M1, M7."""
+
+    def test_m7_mcp_remote_is_pinned(self):
+        with tempfile.TemporaryDirectory() as td:
+            _env, cfg = OpenCodeTokenOffArgvTests()._write(Path(td))
+        self.assertIn(f"mcp-remote@{S.MCP_REMOTE_VERSION}", cfg["mcp"]["clodia-tools"]["command"])
+        self.assertEqual(S.MCP_REMOTE_VERSION, "0.16.7")
+
+    def test_s2_the_opencode_client_authenticates_and_the_password_is_off_argv(self):
+        sess = _opencode_session()
+        sess._oc_password = "pw-only-in-memory"
+        client = sess._oc_http(base_url="http://127.0.0.1:1")
+        try:
+            import httpx
+            req = client.build_request("GET", "/doc")
+            req = next(client._auth.sync_auth_flow(req)) if client._auth else req
+            self.assertEqual(req.headers["authorization"],
+                             httpx.BasicAuth(S.OPENCODE_SERVER_USERNAME, "pw-only-in-memory")
+                             ._auth_header)
+        finally:
+            asyncio.run(client.aclose())
+
+    def test_s2_start_puts_the_password_in_the_serve_env_not_its_argv(self):
+        sess = _opencode_session()
+        sdir = Path(tempfile.mkdtemp())
+        sess._proc = None
+        sess._sandbox_uid = None
+        captured = {}
+
+        async def _fake_exec(*argv, env=None, **kw):
+            captured["argv"], captured["env"] = argv, env
+            raise RuntimeError("stop here")
+        with tempfile.TemporaryDirectory() as td, \
+             mock.patch.object(S, "_materialize_spawn", return_value=(None, Path(td))), \
+             mock.patch.object(S.OpenCodeChatSession, "_write_config", return_value={}), \
+             mock.patch.object(S, "_sandbox_prepare", return_value=(None, [], {})), \
+             mock.patch.object(S.asyncio, "create_subprocess_exec", _fake_exec), \
+             mock.patch.object(S.OpenCodeChatSession, "sessions_dir",
+                               new=property(lambda self: sdir)):
+            with self.assertRaises(RuntimeError):
+                asyncio.run(sess.start())
+        pw = captured["env"]["OPENCODE_SERVER_PASSWORD"]
+        self.assertTrue(len(pw) >= 32)
+        self.assertEqual(pw, sess._oc_password)
+        self.assertNotIn(pw, " ".join(map(str, captured["argv"])))
+
+    def test_m1_the_system_prompt_goes_as_a_file(self):
+        with tempfile.TemporaryDirectory() as td:
+            spawn = Path(td) / "clodia-1"
+            spawn.mkdir()
+            (spawn / "system-prompt.md").write_text("SECRET SYSTEM PROMPT")
+            sess = _start_claude(spawn)
+            argv = _claude_argv(sess._captured_opts)
+        self.assertNotIn("SECRET SYSTEM PROMPT", "\0".join(argv))
+        i = argv.index("--system-prompt-file")
+        self.assertEqual(argv[i + 1], str(spawn / "system-prompt.md"))

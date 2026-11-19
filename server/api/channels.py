@@ -6817,7 +6817,8 @@ def _paired_gateway(request: Request) -> None:
     if not atteso:
         return
     ricevuto = (request.headers.get("x-orchestrator-secret") or "").strip()
-    if not (ricevuto and hmac.compare_digest(ricevuto, atteso)):
+    from .caller_auth import secret_matches
+    if not (ricevuto and secret_matches(atteso, ricevuto)):
         raise HTTPException(403, "annuncio: chiamante non accoppiato a questo server")
 
 
@@ -6828,7 +6829,8 @@ def _paired_gateway_ok(request: Request) -> bool:
     atteso = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
     hdrs = getattr(request, "headers", None) or {}
     ricevuto = (hdrs.get("x-orchestrator-secret") or "").strip()
-    return bool(atteso and ricevuto and hmac.compare_digest(ricevuto, atteso))
+    from .caller_auth import secret_matches
+    return bool(atteso and ricevuto and secret_matches(atteso, ricevuto))
 
 
 @router.post("/clodia/channels/{tier}/{name}/announce/internal")

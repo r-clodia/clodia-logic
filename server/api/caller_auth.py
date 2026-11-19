@@ -63,6 +63,11 @@ PUBLIC: dict[tuple[str, str], str] = {
         "same signed gate link: verifies its own token (gate_sign)",
     ("GET", "/api/agents/{name}/pfp"):
         "agent avatar image, loaded by an <img> that cannot carry a header",
+    ("GET", "/topics/{tier}/{name}/download"):
+        "signed file link (exp/sig from /download-url, which checks login and "
+        "membership) opened by the webui with window.open, which carries no "
+        "header; the handler verifies the signature and otherwise requires a "
+        "member's session (anonymous → 401)",
     ("POST", "/topics/{classification}/{name}/refresh"):
         "event trigger of the topic-management helper (`topic end`, a bare "
         "curl): fast-forwards a legacy topic's working copy to its own origin; "
@@ -115,7 +120,14 @@ def is_paired_gateway(request: Request) -> bool:
     gateway this agent-server is paired with. No secret configured → never."""
     expected = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
     got = (request.headers.get("x-orchestrator-secret") or "").strip()
-    return bool(expected and got and hmac.compare_digest(expected, got))
+    return bool(expected and got and secret_matches(expected, got))
+
+
+def secret_matches(expected: str, got: str) -> bool:
+    """Constant-time comparison on BYTES: `hmac.compare_digest` on two `str`
+    raises TypeError for non-ASCII input, i.e. a 500 where the answer is no."""
+    return hmac.compare_digest(expected.encode("utf-8", "surrogateescape"),
+                               got.encode("utf-8", "surrogateescape"))
 
 
 _UNSET = object()

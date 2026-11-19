@@ -1782,6 +1782,15 @@ def _cli_stderr_sink(kind: str, chat_id: str, tail):
     return sink
 
 
+#: The installed claude-agent-sdk knows `{"type": "file", "path": …}` for the
+#: system prompt (`--system-prompt-file`).
+try:
+    from claude_agent_sdk.types import SystemPromptFile as _SystemPromptFile  # noqa: F401
+    _SDK_SYSTEM_PROMPT_FILE = True
+except ImportError:  # pragma: no cover — older SDK
+    _SDK_SYSTEM_PROMPT_FILE = False
+
+
 class ChatSession:
     """Una singola chat con un agente (Clodia o Ada): subprocess claude
     + history dedicata sotto la cartella sessions/ del kind."""
@@ -1943,7 +1952,15 @@ class ChatSession:
         if spawn_dir is not None:
             sp = spawn_dir / "system-prompt.md"
             if sp.is_file():
-                opts_kwargs["system_prompt"] = sp.read_text(encoding="utf-8")
+                # As a FILE (--system-prompt-file), not as argv text that every
+                # process in the container reads from /proc (#706 review). The
+                # file is in the spawn dir, chowned to the spawn uid with it.
+                # An SDK without the file form would silently drop a dict it
+                # does not know, so the text form stays the fallback.
+                if _SDK_SYSTEM_PROMPT_FILE:
+                    opts_kwargs["system_prompt"] = {"type": "file", "path": str(sp)}
+                else:
+                    opts_kwargs["system_prompt"] = sp.read_text(encoding="utf-8")
         else:
             # Fallback (kind senza seed, es. ada/looper): governance dal seed se
             # disponibile + niente auto-load della CLAUDE.md del bundle.
@@ -3870,6 +3887,14 @@ def _opencode_reasoning_effort(kind: str, model: str | None) -> str | None:
     return None
 
 
+#: User of the HTTP basic auth that `opencode serve` (>= 1.17) enforces when
+#: `OPENCODE_SERVER_PASSWORD` is set; `opencode` is also its default.
+OPENCODE_SERVER_USERNAME = "opencode"
+
+#: mcp-remote version pinned for the opencode bridge: the one whose `--header`
+#: `${VAR}` expansion from its own environment was verified (#706).
+MCP_REMOTE_VERSION = "0.16.7"
+
 #: Environment variable of the `mcp-remote` bridge that carries the opencode
 #: spawn's `Authorization` value; the bridge's argv only names it (#706).
 OPENCODE_MCP_AUTH_ENV = "CLODIA_TOOLS_AUTHORIZATION"
@@ -4055,7 +4080,7 @@ class OpenCodeChatSession:
                                          unattended=getattr(self, "unattended", False))
             cfg["mcp"]["clodia-tools"] = {
                 "type": "local",
-                "command": ["npx", "-y", "mcp-remote", CLODIA_TOOLS_MCP_URL,
+                "command": ["npx", "-y", f"mcp-remote@{MCP_REMOTE_VERSION}", CLODIA_TOOLS_MCP_URL,
                             "--header", "Authorization:${" + OPENCODE_MCP_AUTH_ENV + "}",
                             "--transport", "http-only", "--allow-http"],
                 "environment": {OPENCODE_MCP_AUTH_ENV: f"Bearer {tok}"},
@@ -4106,9 +4131,24 @@ class OpenCodeChatSession:
             secondi = 0.0
         return secondi if secondi > 0 else _OPENCODE_TURN_TIMEOUT
 
+    def _oc_http(self, **kw):
+        """httpx client toward THIS session's `opencode serve` (#706 review).
+
+        The server listens on 127.0.0.1 and its port is on its argv, so any
+        spawn could reach it and drive another agent's session or read its
+        config. It now requires HTTP basic auth (`OPENCODE_SERVER_PASSWORD`,
+        opencode >= 1.17, user `opencode`): a random password per session,
+        kept in this process and in the serve process's environment — which
+        only the spawn's own uid can read."""
+        import httpx
+        pw = getattr(self, "_oc_password", None)
+        if pw:
+            kw.setdefault("auth", httpx.BasicAuth(OPENCODE_SERVER_USERNAME, pw))
+        return httpx.AsyncClient(**kw)
+
     async def _http(self):
         import httpx
-        return httpx.AsyncClient(base_url=self._base_url,
+        return self._oc_http(base_url=self._base_url,
                                  timeout=httpx.Timeout(self._turn_timeout_s()))
 
     @staticmethod
@@ -4131,7 +4171,7 @@ class OpenCodeChatSession:
             return
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=10.0) as c:
+            async with self._oc_http(timeout=10.0) as c:
                 await c.post(f"{self._base_url}/session/{self._oc_session}/abort")
         except Exception:  # noqa: BLE001
             pass
@@ -4328,7 +4368,7 @@ class OpenCodeChatSession:
         import httpx
         while self._proc is not None and self._proc.returncode is None:
             try:
-                async with httpx.AsyncClient(base_url=self._base_url,
+                async with self._oc_http(base_url=self._base_url,
                                              timeout=httpx.Timeout(10.0, read=None)) as c:
                     async with c.stream("GET", "/event") as r:
                         # A new connection is a new generation: whatever was
@@ -4389,7 +4429,7 @@ class OpenCodeChatSession:
         import httpx
         for _ in range(60):  # ~30s
             try:
-                async with httpx.AsyncClient(timeout=2.0) as c:
+                async with self._oc_http(timeout=2.0) as c:
                     r = await c.get(f"{self._base_url}/doc")
                     if r.status_code == 200:
                         return
@@ -4405,6 +4445,11 @@ class OpenCodeChatSession:
         if self._spawn_dir is None:
             run_cwd.mkdir(parents=True, exist_ok=True)
         env = self._write_config(run_cwd)
+        # Basic auth on `opencode serve` (see `_oc_http`).
+        import secrets as _secrets
+        self._oc_password = _secrets.token_urlsafe(32)
+        env["OPENCODE_SERVER_USERNAME"] = OPENCODE_SERVER_USERNAME
+        env["OPENCODE_SERVER_PASSWORD"] = self._oc_password
         self._port = self._free_port()
         self._base_url = f"http://127.0.0.1:{self._port}"
         # As root, `opencode serve` and the bash it runs could read
@@ -4459,7 +4504,7 @@ class OpenCodeChatSession:
             self._oc_session = self._ocsession_file.read_text().strip() or None
         if not self._oc_session:
             import httpx
-            async with httpx.AsyncClient(timeout=30.0) as c:
+            async with self._oc_http(timeout=30.0) as c:
                 r = await c.post(f"{self._base_url}/session", json={})
                 self._oc_session = (r.json() or {}).get("id")
             if self._oc_session:
@@ -4572,7 +4617,7 @@ class OpenCodeChatSession:
             return False
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=10.0) as c:
+            async with self._oc_http(timeout=10.0) as c:
                 await c.post(f"{self._base_url}/session/{self._oc_session}/abort")
         except Exception:  # noqa: BLE001
             pass

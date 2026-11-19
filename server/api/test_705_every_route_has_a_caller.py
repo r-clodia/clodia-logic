@@ -314,3 +314,79 @@ class AdminActsTests(_AppCase):
 
 if __name__ == "__main__":
     unittest.main()
+
+
+class ReviewFixesTests(_AppCase):
+    """Independent review of #614 (19 Nov 2026): B1, S1, S3, M2."""
+
+    def test_b1_a_signed_download_link_opens_without_a_header(self) -> None:
+        from . import download_sign, topics as T
+        exp, sig = download_sign.make(T._download_scope("SEAL-2", "t", "files/a.pdf"))
+        with patch("server.api.topics_client.get_file", return_value=b"PDF") as gf, \
+             patch("server.api.topics_client.open_topic", return_value={"meta": ROOM}):
+            ok = self.client.get(f"/topics/SEAL-2/t/download?path=files/a.pdf&exp={exp}&sig={sig}")
+            bad = self.client.get(f"/topics/SEAL-2/t/download?path=files/a.pdf&exp={exp}&sig=x{sig}")
+            anon = self.client.get("/topics/SEAL-2/t/download?path=files/a.pdf")
+        self.assertEqual((ok.status_code, ok.content), (200, b"PDF"))
+        self.assertEqual(bad.status_code, 401)
+        self.assertEqual(anon.status_code, 401)
+        gf.assert_called_once()
+
+    def test_s1_files_refuse_an_agent_token(self) -> None:
+        for path in ("/files/download?path=/tmp/x", "/files/check?path=/tmp/x"):
+            r = self.client.get(path, headers=self.as_("tok-clodia"))
+            self.assertEqual(r.status_code, 403, path)
+
+    def test_s1_files_refuse_spawn_dirs_and_mcp_configs_even_to_a_person(self) -> None:
+        import tempfile
+        from pathlib import Path
+        from . import files as F
+        with tempfile.TemporaryDirectory() as td:
+            data = Path(td).resolve()
+            victim = data / "spawns" / "ophelia-3"
+            victim.mkdir(parents=True)
+            (victim / ".clodia-mcp.json").write_text("{}")
+            (victim / "notes.md").write_text("x")
+            ok = data / "dump.md"
+            ok.write_text("x")
+            tmp_cfg = Path(tempfile.mkdtemp(prefix="clodia-mcp-")).resolve()
+            (tmp_cfg / ".clodia-mcp.json").write_text("{}")
+            with patch.object(F, "CLODIA_DATA", data), \
+                 patch.object(F, "ALLOWED_ROOTS", [data, Path("/tmp").resolve(),
+                                                   Path(tempfile.gettempdir()).resolve()]):
+                self.assertFalse(F._is_allowed(victim / ".clodia-mcp.json"))
+                self.assertFalse(F._is_allowed(victim / "notes.md"))
+                self.assertFalse(F._is_allowed(tmp_cfg / ".clodia-mcp.json"))
+                self.assertTrue(F._is_allowed(ok))
+                r = self.client.get(f"/files/check?path={victim / 'notes.md'}",
+                                    headers=self.as_("tok-davide"))
+                self.assertEqual(r.json()["allowed"], False)
+            import shutil
+            shutil.rmtree(tmp_cfg, ignore_errors=True)
+
+    def test_s1_spawn_listing_is_for_persons(self) -> None:
+        self.assertEqual(self.client.get("/api/spawns", headers=self.as_("tok-clodia")).status_code, 403)
+        self.assertEqual(self.client.get("/api/spawns", headers=self.as_("tok-giovanni")).status_code, 200)
+
+    def test_s3_pause_and_resume_are_the_gateways_or_an_admins(self) -> None:
+        import asyncio
+        from fastapi import HTTPException
+        from . import agent_pause as AP
+
+        class _R:
+            def __init__(self, h):
+                from types import SimpleNamespace
+                self.headers = h
+                self.state = SimpleNamespace()
+        with patch.object(AP.registry, "get_by_name", return_value=object()), \
+             patch.object(AP.pause_mod, "pause", return_value={"ok": True}) as pz:
+            with self.assertRaises(HTTPException) as cm:
+                asyncio.run(AP.pause_agent("clodia", _R({"authorization": "Bearer tok-ophelia"})))
+            self.assertEqual(cm.exception.status_code, 403)
+            pz.assert_not_called()
+            asyncio.run(AP.pause_agent("clodia", _R({"x-orchestrator-secret": SECRET})))
+            pz.assert_called_once()
+
+    def test_m2_a_non_ascii_secret_is_a_401_not_a_500(self) -> None:
+        r = self.client.get("/clodia/jobs", headers={"X-Orchestrator-Secret": "sécrèt".encode("utf-8")})
+        self.assertEqual(r.status_code, 401)
