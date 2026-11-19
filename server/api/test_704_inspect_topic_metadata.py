@@ -42,9 +42,11 @@ META = {"title": "Fatture", "status": "active", "type": "progetto", "owner": "da
 
 
 class InspectTopicTests(unittest.IsolatedAsyncioTestCase):
-    async def _call(self, body, *, signed="sysadmin", clearance_ok=True):
+    async def _call(self, body, *, signed="sysadmin", clearance_ok=True, gateway=False):
+        from . import caller_auth
         spec = SimpleNamespace(name="sysadmin", type="bot")
-        with patch.object(ch, "_principal_from_request", return_value=signed), \
+        with patch.object(caller_auth, "caller_principal", return_value=signed), \
+                patch.object(caller_auth, "is_paired_gateway", return_value=gateway), \
                 patch.object(ch.registry, "get_by_name",
                              side_effect=lambda n: spec if n in ("sysadmin", "clodia") else None), \
                 patch.object(ch, "_effective_clearance", return_value="SEAL-1"), \
@@ -76,7 +78,13 @@ class InspectTopicTests(unittest.IsolatedAsyncioTestCase):
         with self.assertRaises(HTTPException) as cm:
             await self._call({"tier": "SEAL-1", "name": "fatture", "by": "sysadmin"},
                              signed=None)
-        self.assertEqual(cm.exception.status_code, 401)
+        # `_require_declared_by` (#705): a `by` nobody signed is refused.
+        self.assertEqual(cm.exception.status_code, 403)
+
+    async def test_the_paired_gateway_may_declare_by(self):
+        out = await self._call({"tier": "SEAL-1", "name": "fatture", "by": "sysadmin"},
+                               signed=None, gateway=True)
+        self.assertNotIn(SECRET, json.dumps(out, ensure_ascii=False))
 
     async def test_naming_another_agent_is_refused(self):
         with self.assertRaises(HTTPException) as cm:
