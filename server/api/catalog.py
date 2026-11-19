@@ -25,7 +25,7 @@ from pathlib import Path
 from typing import Any, Literal
 
 import yaml
-from fastapi import APIRouter, File, HTTPException, UploadFile
+from fastapi import APIRouter, File, HTTPException, Request, UploadFile
 from fastapi.responses import JSONResponse
 from pydantic import BaseModel
 
@@ -529,9 +529,18 @@ def _require_user_skill_dir(name: str) -> Path:
     return d
 
 
+def _skills_writer(request: Request) -> None:
+    """A user-pack skill is an instruction every agent may be handed: writing or
+    removing one is for an admin (or the paired gateway), not for any signed
+    caller — an agent token included (clodia-platform#705)."""
+    from . import caller_auth
+    caller_auth.require_gateway_or_admin(request)
+
+
 @router.post("/clodia/skills/import")
-async def import_skill_zip(file: UploadFile = File(...)):
+async def import_skill_zip(request: Request, file: UploadFile = File(...)):
     """Importa una skill da archivio .zip → pack `user-pack`."""
+    _skills_writer(request)
     from .skill_import import SkillImportError, import_zip
     data = await file.read()
     try:
@@ -544,8 +553,9 @@ async def import_skill_zip(file: UploadFile = File(...)):
 
 
 @router.post("/clodia/skills/import-url")
-async def import_skill_url(payload: SkillImportUrl):
+async def import_skill_url(payload: SkillImportUrl, request: Request):
     """Importa una skill da URL (git repo o .zip remoto) → pack `user-pack`."""
+    _skills_writer(request)
     from .skill_import import SkillImportError, import_url
     try:
         names = import_url(payload.url)
@@ -557,7 +567,8 @@ async def import_skill_url(payload: SkillImportUrl):
 
 
 @router.delete("/clodia/skills/{name}")
-async def delete_skill(name: str):
+async def delete_skill(name: str, request: Request):
+    _skills_writer(request)
     try:
         d = _require_user_skill_dir(name)
     except HTTPException as e:

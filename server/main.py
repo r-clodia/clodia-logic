@@ -10,7 +10,7 @@ from pathlib import Path
 if not os.environ.get("ANTHROPIC_API_KEY"):
     os.environ.pop("ANTHROPIC_API_KEY", None)
 
-from fastapi import FastAPI, HTTPException, Request
+from fastapi import Depends, FastAPI, HTTPException, Request
 from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__, instance_profile
@@ -401,7 +401,13 @@ async def _lifespan(app: FastAPI):
 
 
 def create_app() -> FastAPI:
-    app = FastAPI(title="Clodia agent-server", version=__version__, lifespan=_lifespan)
+    # Every route has a signed caller (clodia-platform#705): a person's session,
+    # an agent's own token, or the paired gateway. The few exceptions are listed,
+    # each with its reason, in `api/caller_auth.PUBLIC`/`BOOTSTRAP`, and a test
+    # walks the routes so that a new one cannot be born open by omission.
+    from .api import caller_auth
+    app = FastAPI(title="Clodia agent-server", version=__version__, lifespan=_lifespan,
+                  dependencies=[Depends(caller_auth.require_signed_caller)])
 
     app.add_middleware(
         CORSMiddleware,

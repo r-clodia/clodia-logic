@@ -42,8 +42,27 @@ class EventVisibilityTests(unittest.TestCase):
                 "clodia", False, _Ev({"tier": "SEAL-3", "name": "x"})))
 
     def test_events_without_a_room_stay_for_the_webui(self):
-        self.assertTrue(agents._event_visible(
-            "davide", False, _Ev({"agent": "clodia", "state": "busy"})))
+        with patch("server.api.admin.is_human", lambda n: n == "davide"):
+            self.assertTrue(agents._event_visible(
+                "davide", False, _Ev({"agent": "clodia", "state": "busy"})))
+
+    def test_an_agent_token_gets_no_event_without_a_room(self):
+        """Every spawn holds an agent token; roomless events carry the live
+        text of every session (clodia-platform#705)."""
+        with patch("server.api.admin.is_human", lambda n: n == "davide"):
+            self.assertFalse(agents._event_visible(
+                "ophelia", False, _Ev({"chat_id": "job-7", "delta": "secret text"})))
+
+    def test_a_session_chunk_is_judged_by_the_room_of_its_chat(self):
+        """`message_chunk` has no tier/name, only `chat_id`: the room comes from
+        there, so a chunk of a room reaches its participants only."""
+        meta = {"owner": "davide", "participants": ["clodia"]}
+        with patch.object(agents, "_room_meta", return_value=meta) as rm, \
+             patch("server.api.admin.is_human", lambda n: True):
+            ev = _Ev({"chat_id": "chan:SEAL-3:segreto:clodia", "delta": "x"})
+            self.assertTrue(agents._event_visible("davide", False, ev))
+            self.assertFalse(agents._event_visible("giovanni", False, ev))
+        rm.assert_called_with("SEAL-3", "segreto")
 
     def test_a_proxy_gets_nothing_outside_its_rooms(self):
         """Un sistema terzo vede la stanza in cui è stato ammesso, e basta."""

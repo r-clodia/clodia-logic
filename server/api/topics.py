@@ -24,7 +24,7 @@ from fastapi.responses import FileResponse, PlainTextResponse, Response
 
 from ..config import workspace_path
 from . import admin, mentions, topics_client
-from . import access_log
+from . import access_log, caller_auth
 from .agents import _principal_from_request
 
 router = APIRouter()
@@ -1625,6 +1625,14 @@ async def list_topics(request: Request) -> list[dict]:
     return items
 
 
+def _gateway_or_admin(request: Request) -> bool:
+    try:
+        caller_auth.require_gateway_or_admin(request)
+    except HTTPException:
+        return False
+    return True
+
+
 def _visible_to(me: str | None, row: dict) -> bool:
     """Un topic compare nell'index/preview SOLO a owner e partecipanti. Un agente
     non autorizzato non lo vede affatto (nessuna preview, nessun titolo)."""
@@ -1634,31 +1642,47 @@ def _visible_to(me: str | None, row: dict) -> bool:
 
 
 @router.post("/topics/index/rebuild")
-async def rebuild_all_topic_indexes_endpoint() -> dict:
-    """Rigenera esplicitamente `topics/.index/` per tutti i topic attivi."""
+async def rebuild_all_topic_indexes_endpoint(request: Request) -> dict:
+    """Rigenera esplicitamente `topics/.index/` per tutti i topic attivi.
+
+    The answer carries every legacy topic's tldr and action points: the paired
+    gateway or an admin only (clodia-platform#705)."""
+    caller_auth.require_gateway_or_admin(request)
     return rebuild_all_topic_indexes()
 
 
 @router.get("/topics/{tier}/{name}/summary", response_class=PlainTextResponse)
-async def get_topic_summary(tier: str, name: str) -> str:
-    """Contenuto raw del summary del topic v2 (via gateway). `tier` = P0..P3."""
+async def get_topic_summary(tier: str, name: str, request: Request) -> str:
+    """Contenuto raw del summary del topic v2 (via gateway). `tier` = P0..P3.
+
+    The gateway is asked with the agent-server's own service token, so the
+    decision is taken HERE, on the caller (clodia-platform#705): owner or
+    participant of the room, with a clearance at least its tier. Before, any
+    process in the container read any summary at any tier."""
+    if not caller_auth.caller_claims(request):
+        raise HTTPException(401, "login richiesto")
     try:
         info = await topics_client.async_open_topic(tier, name)
     except topics_client.TopicsClientError as e:
         raise HTTPException(502, f"gateway topics non disponibile: {str(e)[:160]}")
     if info is None:
         raise HTTPException(404, f"topic non trovato: {tier}/{name}")
+    await asyncio.to_thread(caller_auth.require_topic_reader, request, tier,
+                            info.get("meta") or {})
     return info.get("summary", "")
 
 
 @router.post("/topics/{classification}/{name}/index/rebuild")
-async def rebuild_topic_index_endpoint(classification: str, name: str) -> dict:
+async def rebuild_topic_index_endpoint(classification: str, name: str,
+                                       request: Request) -> dict:
     """Rigenera esplicitamente l'indice card del topic.
 
     Pensato per il workflow `.note`: dopo update + commit del summary, il
     caller può invocare questo endpoint per riallineare `topics/.index/`.
     `GET /topics` fa comunque self-healing lazy se l'indice è stale.
     """
+    # The answer carries the topic's tldr and action points (#705).
+    caller_auth.require_gateway_or_admin(request)
     # `rebuild_topic_index` legge il repo con `git log` sincrono: sul thread
     # dell'event loop fermerebbe tutto il processo per la sua durata (#397 §1).
     return await asyncio.to_thread(rebuild_topic_index, classification, name)
@@ -1694,7 +1718,8 @@ def _pull_and_reindex(topic_dir: Path, classification: str, name: str) -> tuple[
 
 
 @router.post("/topics/{classification}/{name}/refresh")
-async def refresh_topic_endpoint(classification: str, name: str) -> dict:
+async def refresh_topic_endpoint(classification: str, name: str,
+                                 request: Request) -> dict:
     """Allinea la working copy del topic all'origin e rigenera l'indice.
 
     Trigger event-driven del protocollo topic-management: dopo che un agent
@@ -1722,6 +1747,12 @@ async def refresh_topic_endpoint(classification: str, name: str) -> dict:
     # dovrebbero accorgersi di un guasto (#397 §1, misurato da core.loop_lag).
     pull, index = await asyncio.to_thread(_pull_and_reindex, topic_dir,
                                           classification, name)
+    # Public trigger (clodia-platform#705, `caller_auth.PUBLIC`): the
+    # topic-management helper calls it with a bare `curl`. A stranger may make
+    # the working copy catch up with its own origin — nothing more — and reads
+    # nothing back: the index (tldr, action points) only to the gateway/admin.
+    if not _gateway_or_admin(request):
+        return {"pull": pull}
     return {"pull": pull, "index": {"tldr": index.get("tldr"),
                                     "action_points": index.get("action_points"),
                                     "last_commit": index.get("last_commit")}}
@@ -1774,7 +1805,7 @@ def _scan_dir(dir_path: Path, topic_root: Path, depth: int) -> list[dict]:
 
 
 @router.get("/topics/{classification}/{name}/tree")
-async def get_topic_tree(classification: str, name: str) -> dict:
+async def get_topic_tree(classification: str, name: str, request: Request) -> dict:
     """Struttura ad albero del topic: nodo root con due figli (summary + files/).
 
     Solo due figli per design (spec sidebar resize/topic-tree):
@@ -1783,7 +1814,11 @@ async def get_topic_tree(classification: str, name: str) -> dict:
       depth massima _MAX_TREE_DEPTH).
 
     Anti path-traversal: tutto risolto sotto TOPICS_ROOT/<classification>.
+
+    Legacy on-disk topics carry no participants the agent-server could check,
+    so their files are for an admin (or the paired gateway) only (#705).
     """
+    caller_auth.require_gateway_or_admin(request)
     if classification not in CLASSIFICATIONS:
         raise HTTPException(404, f"classification '{classification}' non valida")
     base = (TOPICS_ROOT / classification).resolve()
@@ -1840,6 +1875,7 @@ _MAX_FILE_BYTES = 5 * 1024 * 1024  # 5 MB hard cap per il viewer
 
 @router.get("/topics/{classification}/{name}/file", response_class=PlainTextResponse)
 async def get_topic_file(
+    request: Request,
     classification: str,
     name: str,
     path: str = Query(..., description="path relativo al topic root"),
@@ -1849,7 +1885,10 @@ async def get_topic_file(
     `path` è relativo al topic root (es. 'files/foo.md'). Anti path-traversal:
     il path risolto deve stare sotto TOPICS_ROOT/<classification>/<name>.
     Cap a _MAX_FILE_BYTES e whitelist di estensioni testuali.
+
+    Raw file contents of a legacy topic: admin or paired gateway only (#705).
     """
+    caller_auth.require_gateway_or_admin(request)
     if classification not in CLASSIFICATIONS:
         raise HTTPException(404, f"classification '{classification}' non valida")
     if not path or path.startswith("/"):

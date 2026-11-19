@@ -9,7 +9,7 @@ import json
 import logging
 from datetime import datetime, timezone
 
-from fastapi import APIRouter, Request
+from fastapi import APIRouter, HTTPException, Request
 
 from sse_starlette.sse import EventSourceResponse
 
@@ -91,8 +91,44 @@ def _spawn_rows() -> list[dict]:
 
 
 @router.get("/clodia/runtime/sessions")
-async def runtime_sessions() -> dict:
-    """Vista 'top'/Activity Monitor: agenti spawnati con topic, token, stato."""
+async def runtime_sessions(request: Request) -> dict:
+    """Vista 'top'/Activity Monitor: agenti spawnati con topic, token, stato.
+
+    Every live session names its room (DMs included) and its principal: the
+    paired gateway and admins see them all, anyone else only the sessions of the
+    rooms they are in (clodia-platform#705)."""
+    from . import caller_auth
+    try:
+        caller_auth.require_gateway_or_admin(request)
+        everyone = True
+    except HTTPException:
+        everyone = False
+    me = caller_auth.caller_principal(request)
+    result = await _runtime_sessions_all()
+    if everyone:
+        return result
+    rows = await asyncio.to_thread(_sessions_in_rooms_of, me, result["sessions"])
+    return {**result, "sessions": rows}
+
+
+def _sessions_in_rooms_of(me: str | None, rows: list[dict]) -> list[dict]:
+    """The session rows whose room `me` is owner or participant of."""
+    from .topics import _visible_to
+    out = []
+    for row in rows:
+        topic = row.get("topic") or ""
+        if "/" not in topic or not me:
+            continue
+        tier, _, name = topic.partition("/")
+        meta = _room_meta(tier, name)
+        if meta is not None and _visible_to(
+                me, {"owner": meta.get("owner"),
+                     "participants": meta.get("participants") or []}):
+            out.append(row)
+    return out
+
+
+async def _runtime_sessions_all() -> dict:
     rows = []
     seen_spawns = set()
     for c in manager.list():
@@ -130,11 +166,16 @@ async def runtime_sessions() -> dict:
 
 
 @router.post("/clodia/runtime/restart-agent")
-async def runtime_restart_agent(body: dict) -> dict:
+async def runtime_restart_agent(body: dict, request: Request) -> dict:
     """Restart mirato delle sessioni vive di un agente (per sbloccarlo se il
     runtime si impunta). La history persiste: al prossimo messaggio la chat
     rimaterializza il seed da zero. Verbo di ops di sysadmin (via gateway
-    runtime.restart_agent)."""
+    runtime.restart_agent).
+
+    The paired gateway (which authorised the verb) or an admin only: anyone
+    else on the container network could stop any agent's sessions (#705)."""
+    from . import caller_auth
+    caller_auth.require_gateway_or_admin(request)
     agent = str((body or {}).get("agent") or "").strip()
     if not agent:
         return {"ok": False, "error": "agent mancante"}
@@ -343,6 +384,30 @@ def _stream_principal(request: Request):
     return chi, is_proxy, _stanza_dal_token(payload)
 
 
+def _event_room(payload: dict) -> tuple[str, str]:
+    """`(tier, name)` of the room an event comes from, or `("", "")`.
+
+    Room events say it (`tier`, `name`). Session events (`message_chunk`,
+    `thinking_chunk`, `tool_use`, `status`, `usage`…) carry the `chat_id`, whose
+    channel form names the room (`chan:<tier>:<name>:<responder>`, see
+    `_topic_of`); activity entries carry `channel: "<tier>/<name>"`.
+    """
+    tier = str(payload.get("tier") or "").strip()
+    name = str(payload.get("name") or "").strip()
+    if tier and name:
+        return tier, name
+    topic = _topic_of(str(payload.get("chat_id") or "")).get("topic") or ""
+    if not topic:
+        inner = payload.get("payload")
+        channel = payload.get("channel") or (inner.get("channel") if isinstance(inner, dict) else "")
+        topic = str(channel or "")
+    if "/" in topic:
+        t, _, n = topic.partition("/")
+        if t.strip() and n.strip():
+            return t.strip(), n.strip()
+    return "", ""
+
+
 def _event_visible(chi: str, is_proxy: bool, ev) -> bool:
     """Un evento raggiunge chi ha diritto di vedere la stanza da cui viene.
 
@@ -359,10 +424,16 @@ def _event_visible(chi: str, is_proxy: bool, ev) -> bool:
     from .topics import _visible_to
 
     payload = getattr(ev, "payload", None) or {}
-    tier = str(payload.get("tier") or "").strip()
-    name = str(payload.get("name") or "").strip()
+    tier, name = _event_room(payload)
     if not (tier and name):
-        return not is_proxy
+        # No room to judge by: a person in the webui only. Not a proxy, and not
+        # an AGENT token (clodia-platform#705): every spawn holds one, and these
+        # events carry the live text of every session (`message_chunk`,
+        # `thinking_chunk`, `tool_use`, activity snippets).
+        if is_proxy:
+            return False
+        from . import admin
+        return admin.is_human(chi)
     meta = _room_meta(tier, name)
     if meta is None:
         return False

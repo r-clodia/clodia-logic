@@ -435,11 +435,17 @@ _pfp_status: dict[str, dict] = {}
 
 
 @router.post("/{name}/pfp/generate")
-async def generate_agent_pfp(name: str, body: PfpGenerateBody) -> dict:
+async def generate_agent_pfp(name: str, body: PfpGenerateBody, request: Request) -> dict:
     """Avvia (async) la generazione della PFP via gpt-image-2 (sul gateway) e
     ritorna subito {status: generating}. Il salvataggio in `agent_dir/pfp.png`
     avviene in background; la UI segue /pfp/status. La OpenAI key vive solo nel
-    gateway (vault)."""
+    gateway (vault).
+
+    Overwrites the avatar and spends image credits: the agent itself, an admin
+    or the paired gateway (clodia-platform#705)."""
+    from . import caller_auth
+    if caller_auth.caller_principal(request) != name:
+        caller_auth.require_gateway_or_admin(request)
     spec = registry.get_by_name(name)
     if spec is None:
         raise HTTPException(404, f"agent '{name}' non trovato")

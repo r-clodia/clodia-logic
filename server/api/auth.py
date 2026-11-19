@@ -17,11 +17,22 @@ import shutil
 import time
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException
+from fastapi import APIRouter, Depends, HTTPException, Request
 from pydantic import BaseModel
 
 LOG = logging.getLogger("auth")
-router = APIRouter(prefix="/auth", tags=["auth"])
+
+
+def _admin_only(request: Request) -> None:
+    """The platform's own Claude login: starting it, feeding it a code, reading
+    its URL or deleting the credentials is an admin's act (clodia-platform#705).
+    Before, any process could log the platform out, or link an account it
+    controls by submitting its own OAuth code."""
+    from . import caller_auth
+    caller_auth.require_gateway_or_admin(request)
+
+
+router = APIRouter(prefix="/auth", tags=["auth"], dependencies=[Depends(_admin_only)])
 
 # Processo di login in corso (uno alla volta)
 _login_proc: asyncio.subprocess.Process | None = None

@@ -192,13 +192,30 @@ class LaRottaCheRiceveIRifiutiDalGatewayTests(unittest.TestCase):
 
         from . import api
 
+        import os
+        from unittest import mock
+        from ..api.caller_auth import GatewayRequestForTests as _GW
+
         app = FastAPI()
         app.include_router(api.router)
-        self.client = TestClient(app)
+        # The paired gateway calls this route (#705): its secret is required.
+        env = mock.patch.dict(os.environ, {"CLODIA_ORCHESTRATOR_SECRET": _GW.SECRET_FOR_TESTS})
+        env.start()
+        self.addCleanup(env.stop)
+        self.client = TestClient(app, headers={"X-Orchestrator-Secret": _GW.SECRET_FOR_TESTS})
         refusals.forget("chat-gw")
 
     def tearDown(self):
         refusals.forget("chat-gw")
+
+    def test_without_the_gateway_secret_it_is_refused(self):
+        """Any process in the container used to forge refusals (#705)."""
+        from fastapi.testclient import TestClient
+        r = TestClient(self.client.app).post(
+            "/clodia/jobs/refusal/internal",
+            json={"chat_id": "chat-gw", "verb": "email.send"})
+        self.assertEqual(r.status_code, 403)
+        self.assertEqual(refusals.peek("chat-gw"), [])
 
     def test_un_diniego_del_gateway_arriva_nel_registro(self):
         r = self.client.post("/clodia/jobs/refusal/internal",

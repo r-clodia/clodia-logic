@@ -8,6 +8,18 @@ from unittest import mock
 import yaml
 
 from . import api, db, scheduler
+from ..api.caller_auth import GatewayRequestForTests as _GW
+
+# Jobs are read and switched by the paired gateway in these tests (#705).
+_GW_ENV = mock.patch.dict("os.environ", {"CLODIA_ORCHESTRATOR_SECRET": _GW.SECRET_FOR_TESTS})
+
+
+def setUpModule():
+    _GW_ENV.start()
+
+
+def tearDownModule():
+    _GW_ENV.stop()
 
 
 class TopicTriggerDbTests(unittest.TestCase):
@@ -104,7 +116,7 @@ class TopicTriggerApiTests(unittest.IsolatedAsyncioTestCase):
         db.create_topic_trigger("SEAL-1", "ops", "controlla", interval_minutes=10)
         db.create_job("globale", "0 * * * *", "esegui")
 
-        jobs = await api.api_list_jobs()
+        jobs = await api.api_list_jobs(_GW())
 
         self.assertEqual([job["name"] for job in jobs], ["globale"])
 
@@ -416,8 +428,8 @@ class TriggerVisibileEFermabileTests(unittest.IsolatedAsyncioTestCase):
         self.tmp.cleanup()
 
     async def test_the_listing_can_show_topic_triggers(self):
-        default = await api.api_list_jobs()
-        tutti = await api.api_list_jobs(include_topic_triggers=True)
+        default = await api.api_list_jobs(_GW())
+        tutti = await api.api_list_jobs(_GW(), include_topic_triggers=True)
 
         self.assertEqual([j["id"] for j in default], [])
         self.assertEqual([j["id"] for j in tutti], [self.trigger["id"]])
@@ -429,6 +441,7 @@ class TriggerVisibileEFermabileTests(unittest.IsolatedAsyncioTestCase):
                 self.trigger["id"],
                 api.JobSetEnabled(enabled=False, by="sysadmin",
                                   reason="epic chiusa"),
+                _GW(),
             )
 
         # 1. non produce più run: né sul file, né in APScheduler.
@@ -450,7 +463,7 @@ class TriggerVisibileEFermabileTests(unittest.IsolatedAsyncioTestCase):
 
         with mock.patch.object(api.scheduler, "register_job") as register:
             esito = await api.api_set_job_enabled(
-                self.trigger["id"], api.JobSetEnabled(enabled=True))
+                self.trigger["id"], api.JobSetEnabled(enabled=True), _GW())
 
         self.assertTrue(esito["rearmed"])
         self.assertEqual(db.get_job(self.trigger["id"])["fired_count"], 0)
@@ -463,7 +476,7 @@ class TriggerVisibileEFermabileTests(unittest.IsolatedAsyncioTestCase):
     async def test_a_job_that_does_not_exist_is_a_404(self):
         with self.assertRaises(Exception) as ctx:
             await api.api_set_job_enabled(
-                9999, api.JobSetEnabled(enabled=False))
+                9999, api.JobSetEnabled(enabled=False), _GW())
         self.assertEqual(getattr(ctx.exception, "status_code", None), 404)
 
 

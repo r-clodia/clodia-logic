@@ -53,7 +53,7 @@ class RuntimeSessionsTests(unittest.IsolatedAsyncioTestCase):
             "spawn_instance": "5",
         }])
 
-        res = await agents.runtime_sessions()
+        res = await agents._runtime_sessions_all()
 
         self.assertEqual(len(res["sessions"]), 1)
         row = res["sessions"][0]
@@ -67,7 +67,7 @@ class RuntimeSessionsTests(unittest.IsolatedAsyncioTestCase):
         (agents.SPAWNS_ROOT / "ophelia-7" / "scratch").mkdir(parents=True)
         agents.manager = _FakeManager([])
 
-        res = await agents.runtime_sessions()
+        res = await agents._runtime_sessions_all()
 
         self.assertEqual(len(res["sessions"]), 1)
         row = res["sessions"][0]

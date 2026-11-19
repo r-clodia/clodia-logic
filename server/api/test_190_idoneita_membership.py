@@ -63,6 +63,11 @@ class _Req:
 
     def __init__(self, body: dict | None = None):
         self._body = body or {}
+        # The internal door believes `by` only from the paired gateway (#705).
+        from types import SimpleNamespace
+        from .caller_auth import GatewayRequestForTests as _G
+        self.headers = {"x-orchestrator-secret": _G.SECRET_FOR_TESTS}
+        self.state = SimpleNamespace()
 
     async def json(self) -> dict:
         return self._body
@@ -89,6 +94,13 @@ class DuePredicatiTests(unittest.TestCase):
 
 
 class AggiuntaTests(unittest.IsolatedAsyncioTestCase):
+    def setUp(self) -> None:
+        import os
+        from .caller_auth import GatewayRequestForTests as _G
+        p = patch.dict(os.environ, {"CLODIA_ORCHESTRATOR_SECRET": _G.SECRET_FOR_TESTS})
+        p.start()
+        self.addCleanup(p.stop)
+
     """I due ingressi dell'aggiunta, una guardia sola."""
 
     async def test_owner_cannot_seat_an_agent_below_the_tier(self) -> None:
