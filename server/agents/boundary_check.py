@@ -115,7 +115,168 @@ def check(loud: bool = True) -> dict:
     return esiti
 
 
+# ── Content stores (clodia-platform#704) ─────────────────────────────────────
+#
+# What someone WROTE also lives outside the topic store, in files the
+# agent-server keeps for itself: the activity log (`run_started` carries the
+# prompt's first 160 characters, `run_done` the reply up to 4000), the
+# persisted transcripts of every chat, the stored reasoning, and the
+# agent-server log. Until #704 the first two and the log were created with the
+# default umask — directories 755, files 644 — on the shared datadir, so ANY
+# spawn uid, sysadmin's `Bash` included, could `cat` them on a Linux host. On
+# a macOS host the datadir is a virtiofs bind and the bits are not enforced at
+# all (#544): there no chmod helps, and the store must move to a Docker volume.
+#
+# Two halves, like the rest of this file: `harden_content_stores` makes them
+# root-only (directories 700, files 600) where the filesystem enforces it, and
+# `check_content` asks the question as a spawn uid and logs ERROR when one is
+# still readable — which is exactly what it will say on a virtiofs bind.
+
+DIR_MODE = 0o700
+FILE_MODE = 0o600
+
+
+def content_stores() -> dict:
+    """{path: why} of the agent-server's own content stores. Resolved from
+    `CLODIA_DATA` at call time, not at import: tests and clones move it."""
+    from ..config import data_path
+    return {
+        str(data_path("agent-state") / "activity"):
+            "il log di attività: prompt (160 car.) e risposte (fino a 4000) di ogni turno",
+        str(data_path("agent-state") / "transcripts"):
+            "le trascrizioni persistite di ogni chat",
+        str(data_path("agent-state") / "reasoning"):
+            "il ragionamento salvato, che cita i contenuti del canale",
+        str(data_path("logs")):
+            "i log dell'agent-server e del gateway (righe di turno, decisioni)",
+    }
+
+
+def _private(path: str) -> None:
+    """chmod one tree to root-only, never following a symlink (an agent could
+    plant one to make root chmod an arbitrary file)."""
+    os.makedirs(path, mode=DIR_MODE, exist_ok=True)
+    os.chmod(path, DIR_MODE)
+    for root, dirs, files in os.walk(path, followlinks=False):
+        for d in dirs:
+            p = os.path.join(root, d)
+            if not os.path.islink(p) and os.stat(p).st_mode & 0o077:
+                os.chmod(p, DIR_MODE)
+        for f in files:
+            p = os.path.join(root, f)
+            if not os.path.islink(p) and os.stat(p).st_mode & 0o077:
+                os.chmod(p, FILE_MODE)
+
+
+def harden_content_stores() -> dict:
+    """Make every content store root-only. {path: "ok" | error}. Root only:
+    without it there is nobody to protect them from, and nothing to change."""
+    if os.geteuid() != 0:
+        return {}
+    out = {}
+    for path in content_stores():
+        try:
+            _private(path)
+            out[path] = "ok"
+        except OSError as e:
+            out[path] = f"{type(e).__name__}: {e}"[:200]
+            LOG.error("archivio di contenuti non reso privato: %s (%s)", path, out[path])
+    return out
+
+
+def _sentinel(directory: str) -> str | None:
+    """A 0600 root file inside `directory`, for the probe to try to read: a
+    directory listing alone would say nothing about files under a 711 dir."""
+    try:
+        path = os.path.join(directory, ".boundary-probe")
+        fd = os.open(path, os.O_WRONLY | os.O_CREAT | os.O_TRUNC
+                     | getattr(os, "O_NOFOLLOW", 0), FILE_MODE)
+        try:
+            os.fchmod(fd, FILE_MODE)
+            os.write(fd, b"probe")
+        finally:
+            os.close(fd)
+        return path
+    except OSError:
+        return None
+
+
+def _legge(path: str, uid: int) -> bool | None:
+    """`True` if the uid lists `path` OR reads a 0600 root file in it,
+    `False` if neither, `None` if it could not be verified."""
+    if not os.path.isdir(path):
+        return None
+    sentinella = _sentinel(path)
+    try:
+        r, w = os.pipe()
+        pid = os.fork()
+    except Exception:  # noqa: BLE001
+        if sentinella:
+            os.unlink(sentinella)
+        return None
+    if pid == 0:
+        os.close(r)
+        esito = b"0"
+        try:
+            os.setgroups([])
+            os.setgid(SPAWN_GID)
+            os.setuid(uid)
+            try:
+                os.listdir(path)
+                esito = b"1"
+            except Exception:  # noqa: BLE001
+                pass
+            if sentinella:
+                try:
+                    with open(sentinella, "rb") as fh:
+                        fh.read(1)
+                    esito = b"1"
+                except Exception:  # noqa: BLE001
+                    pass
+        except Exception:  # noqa: BLE001 — could not drop privileges
+            esito = b"?"
+        finally:
+            os.write(w, esito)
+            os.close(w)
+        os._exit(0)
+    os.close(w)
+    try:
+        esito = os.read(r, 1)
+    finally:
+        os.close(r)
+        os.waitpid(pid, 0)
+        if sentinella:
+            try:
+                os.unlink(sentinella)
+            except OSError:
+                pass
+    return {b"1": True, b"0": False}.get(esito)
+
+
+def check_content(loud: bool = True) -> dict:
+    """As a spawn uid: can any content store be read? {path: True|False|None}."""
+    if os.geteuid() != 0:
+        LOG.info("verifica degli archivi di contenuti saltata: serve root")
+        return {}
+    uid = _spawn_uid()
+    esiti: dict = {}
+    for path, perche in content_stores().items():
+        esiti[path] = _legge(path, uid)
+        if esiti[path] is True and loud:
+            LOG.error(
+                "CONTENUTI LEGGIBILI · uno spawn (uid %s) legge %s — %s "
+                "(clodia-platform#704). Su un bind virtiofs da macOS i bit non "
+                "valgono: l'archivio va su un volume Docker.", uid, path, perche)
+        elif esiti[path] is None and loud:
+            LOG.warning("archivio di contenuti non verificabile: %s", path)
+    if loud and esiti and all(v is False for v in esiti.values()):
+        LOG.info("archivi di contenuti verificati: uno spawn (uid %s) non legge "
+                 "attività, trascrizioni, ragionamento né log", uid)
+    return esiti
+
+
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO, format="%(levelname)s %(message)s")
     r = check()
-    sys.exit(1 if any(v is True for v in r.values()) else 0)
+    c = check_content()
+    sys.exit(1 if any(v is True for v in (*r.values(), *c.values())) else 0)

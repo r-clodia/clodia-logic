@@ -54,6 +54,13 @@ try:
     from .config import data_path
     _logdir = data_path("logs")
     _logdir.mkdir(parents=True, exist_ok=True)
+    # Root-only (clodia-platform#704): the turn lines say who did what where,
+    # and a spawn's shell must not read them; sysadmin reads through
+    # `logs.tail`, which redacts. Best effort: a non-root dev run keeps going.
+    try:
+        os.chmod(_logdir, 0o700)
+    except OSError:
+        pass
     _fh = RotatingFileHandler(_logdir / "agent-server.log",
                               maxBytes=2_000_000, backupCount=3, encoding="utf-8")
     _fh.setFormatter(logging.Formatter("%(asctime)s %(levelname)s %(name)s: %(message)s"))
@@ -96,6 +103,14 @@ async def _lifespan(app: FastAPI):
         _boundary()
     except Exception as e:  # noqa: BLE001 — una verifica che fallisce non blocca
         LOG.warning("verifica del confine non eseguita: %s", e)
+    # The content stores — activity, transcripts, reasoning, logs — made
+    # root-only, then verified as a spawn uid (clodia-platform#704).
+    try:
+        from .agents.boundary_check import check_content, harden_content_stores
+        harden_content_stores()
+        check_content()
+    except Exception as e:  # noqa: BLE001 — never blocks the boot
+        LOG.warning("verifica degli archivi di contenuti non eseguita: %s", e)
     try:
         from .agents.seed_sync import sync_seeds, backfill_new_fields
         nuovi = sync_seeds()

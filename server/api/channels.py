@@ -1347,11 +1347,16 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
         # Menzione narrativa DA SOLA: il turno parte comunque (vedi sopra), e
         # questa riga è l'unico modo per contare il pattern invece di dedurlo
         # dai canali — il «warning distinto per audit» chiesto dalla issue.
+        # Without the sentence (clodia-platform#704): it is the reply's text,
+        # and this log is served to sysadmin by `logs.tail`. Its length says
+        # enough to tell a one-word mention from a paragraph; the sentence
+        # itself stays in the routing decision's `reason`, where it was.
         LOG.warning("delega da %s su %s/%s: @%s convocato da una menzione che "
-                    "sembra narrativa (%r): turno avviato comunque, ma la "
-                    "forma giusta per un resoconto è il nome senza @ (#336)",
+                    "sembra narrativa (%d caratteri di contesto): turno avviato "
+                    "comunque, ma la forma giusta per un resoconto è il nome "
+                    "senza @ (#336)",
                     from_agent, tier, name, _target_identity(plan[0][0]),
-                    _mention_context(reply_text or "", plan[0][0]))
+                    len(_mention_context(reply_text or "", plan[0][0])))
     if not plan:
         # HANDOFF FUORI STANZA, e lo si DICE (#192). Il filtro qui sopra scarta i
         # `@` verso chi non partecipa al canale, e l'uscita era muta: né un
@@ -6939,20 +6944,68 @@ def _require_declared_by(request: Request, by: str) -> None:
     raise HTTPException(403, f"'by' ({by or '-'}) non è il chiamante firmato")
 
 
+#: Messages read to COUNT them in `runtime_inspect_topic`: the window the
+#: counts and timestamps describe. The text is read here, inside the
+#: agent-server, and never leaves it.
+_INSPECT_WINDOW = 500
+_HUMAN_KINDS = frozenset({"human"})
+_SYSTEM_KINDS = frozenset({"system", "event", "notice"})
+
+
+def _inspect_counts(raw: list[dict]) -> tuple[dict, dict]:
+    """`(counts, last_activity)` of a window of messages: numbers, authors'
+    names and timestamps — no text (clodia-platform#704)."""
+    counts = {"messages": len(raw), "messages_window": _INSPECT_WINDOW,
+              "human": 0, "agent": 0, "system": 0}
+    last = {"last_message_at": None, "last_human_at": None, "last_agent_at": None,
+            "last_message_author": None, "last_message_kind": None}
+    for m in raw:
+        kind = str(m.get("kind") or "")
+        ts = m.get("ts") or m.get("created_at")
+        ts = str(ts) if ts is not None else None
+        group = ("human" if kind in _HUMAN_KINDS else
+                 "system" if kind in _SYSTEM_KINDS else "agent")
+        counts[group] += 1
+        if ts and (last["last_message_at"] is None or ts >= last["last_message_at"]):
+            last.update(last_message_at=ts, last_message_author=m.get("author"),
+                        last_message_kind=kind or None)
+        key = {"human": "last_human_at", "agent": "last_agent_at"}.get(group)
+        if key and ts and (last[key] is None or ts >= last[key]):
+            last[key] = ts
+    return counts, last
+
+
 @router.post("/clodia/runtime/inspect-topic")
-async def runtime_inspect_topic(body: dict, request: Request) -> dict:
-    """Introspezione di UN topic per un agente steward (es. sysadmin) che lo chiama
-    dal widget mentre l'utente lo sta guardando. Bypassa l'asse PARTICIPANT (lo
-    steward non è partecipante) ma NON quello CLEARANCE: se la SEAL effettiva del
-    chiamante è < tier del topic, il topic è del tutto INVISIBILE (403) — i
-    confidenziali sopra il suo livello restano ciechi (Prima Legge). Entro
-    clearance ritorna metadati + agenti + ultimi messaggi (autore/testo/kind/ts)."""
+async def runtime_inspect_topic(request: Request) -> dict:
+    """Introspection of ONE topic for a steward agent (sysadmin) that calls it
+    from the widget while the person is looking at it.
+
+    **Metadata only** (clodia-platform#704): title, state, owner,
+    participants and agents, counts (messages in the window, by kind; files),
+    last-activity timestamps, the toolbox's enabled verbs and authorised MCPs,
+    and the data imports. Never a message's text, a file, the summary or a
+    row: sysadmin's charter is «never the contents», and until #704 this route
+    returned the latest 40 messages to a non-participant.
+
+    Bypasses the PARTICIPANT axis (the steward is not one) but not CLEARANCE:
+    above the caller's effective SEAL the topic is INVISIBLE (403).
+
+    The caller is the SIGNED one: `by` must match the token's agent. Before
+    #704 the route trusted `by` from the body and had no authentication, so
+    any process on the network — an agent's shell included — could name a
+    high-clearance agent and read as it. Requires clodia-tools ≥ 2.181.0,
+    which forwards the caller's token."""
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        body = {}
     tier = str((body or {}).get("tier") or "").strip()
     name = str((body or {}).get("name") or "").strip()
     by = str((body or {}).get("by") or "").strip()
     if not tier or not name or not by:
         return {"ok": False, "error": "tier, name, by richiesti"}
-    # The clearance below is `by`'s: `by` must be who is asking (#705).
+    # The clearance below is `by`'s: `by` must be who is asking — the signed
+    # caller, or the paired gateway that forwards it (#704, #705).
     _require_declared_by(request, by)
     by_spec = registry.get_by_name(by)
     if by_spec is None:
@@ -6967,18 +7020,32 @@ async def runtime_inspect_topic(body: dict, request: Request) -> dict:
     parts = meta.get("participants") or []
     agents = [p for p in parts if registry.get_by_name(p) is not None]
     try:
-        raw = await topics_client.async_list_messages(tier, name, limit=40)
+        raw = await topics_client.async_list_messages(tier, name, limit=_INSPECT_WINDOW)
     except Exception:  # noqa: BLE001
         raw = []
-    msgs = [{"author": m.get("author"), "kind": m.get("kind"),
-             "text": m.get("text"), "ts": m.get("ts") or m.get("created_at")}
-            for m in raw]
+    counts, last = _inspect_counts([m for m in raw if isinstance(m, dict)])
+    try:
+        counts["files"] = len(await topics_client.async_list_files(tier, name, ""))
+    except Exception:  # noqa: BLE001 — remote storage down: no count, not an error
+        pass
+    tools = meta.get("tools") if isinstance(meta.get("tools"), dict) else {}
+    mcp = tools.get("mcp") if isinstance(tools.get("mcp"), dict) else {}
+    imports = [{"kind": e.get("kind"), "name": e.get("name"),
+                "grants": {str(a): m for a, m in (e.get("grants") or {}).items()
+                           if m in ("read", "write")}
+                if isinstance(e.get("grants"), dict) else {}}
+               for e in (meta.get("data") if isinstance(meta.get("data"), list) else [])
+               if isinstance(e, dict) and e.get("kind") and e.get("name")]
     return {"ok": True, "tier": tier, "name": name,
             "meta": {"title": meta.get("title"), "status": meta.get("status"),
                      "type": meta.get("type"), "owner": meta.get("owner"),
                      "contact_agent": meta.get("contact_agent"),
                      "participants": parts, "agents": agents},
-            "messages": msgs, "message_count": len(msgs)}
+            "counts": counts, "last_activity": last,
+            "toolbox": {"enabled": [str(v) for v in tools.get("enabled") or []
+                                    if isinstance(v, str)],
+                        "mcp": sorted(str(k) for k in mcp)},
+            "imports": imports}
 
 
 @router.get("/clodia/channels/{tier}/{name}/files")
