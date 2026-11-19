@@ -84,6 +84,8 @@ rules: []
 # are a PLAN the owner applies (`POST /internal/authz {action: role_plan}` then
 # `{action: merge, plan}`, clodia-tools ≥ 2.181.0), never written by the seed:
 # a seed that granted its own verbs would be the authority over itself.
+# They hold ONLY when the turn's signed principal is a human admin
+# (`authz_runtime.role_principal_ok`): a non-admin's DM gets none.
 # Verbi che per QUESTO agent richiedono un consenso umano a ogni uso
 # (clodia-platform#104). Dichiarati nel seed perché è qui che si sa quali dei
 # propri verbi sono pericolosi — e perché un controllo che non viaggia col seed

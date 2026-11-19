@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import logging
 import os
+import stat
 import sys
 
 LOG = logging.getLogger("agent-server.agents.boundary")
@@ -127,60 +128,157 @@ def check(loud: bool = True) -> dict:
 # a macOS host the datadir is a virtiofs bind and the bits are not enforced at
 # all (#544): there no chmod helps, and the store must move to a Docker volume.
 #
-# Two halves, like the rest of this file: `harden_content_stores` makes them
-# root-only (directories 700, files 600) where the filesystem enforces it, and
-# `check_content` asks the question as a spawn uid and logs ERROR when one is
-# still readable — which is exactly what it will say on a virtiofs bind.
+# Two halves, like the rest of this file: `harden_content_stores` protects them
+# (root-only, or other-bits-off for the stores a group of spawns shares by
+# design, see `_STORES`) where the filesystem enforces it, and `check_content`
+# asks the question as a spawn uid and logs ERROR when one is still readable —
+# which is exactly what it will say on a virtiofs bind.
+#
+# What stays readable by a spawn, on purpose: its own spawn dir (its uid,
+# 700); `/datadir/spawns` itself only to traverse (711); the seed memory its
+# spawn dir links to (shared by the seed's gid); `plugins/`,
+# `packs/`, the skill/rule/constitution catalogues and the code trees
+# (`/clodia` minus `sessions/`, `/platform-src`) it reads to work; the
+# `agency-shared/` card handoff; `runtime/opencode-data/<seed>` to its seed's
+# spawns and `data/codex-home` to codex spawns (group). Nothing above is
+# touched by the hardening. `/datadir/agents` and the vault keep the boundary
+# `check()` verifies (NOT readable), unchanged.
 
 DIR_MODE = 0o700
 FILE_MODE = 0o600
+SPAWNS_ROOT_MODE = 0o711
+
+#: How a store is protected:
+#: - `private`: root only — dirs 700, files 600;
+#: - `group`: shared by design with a group of spawns (the seed's gid for
+#:   opencode, the codex gid for CODEX_HOME), so only the OTHER bits go —
+#:   another seed's spawn reads nothing, the owning group keeps working;
+#: - `spawns`: the root is traverse-only (711: a spawn reaches its own dir,
+#:   cannot list the others), each spawn dir loses its other bits; the spawn
+#:   dirs themselves are the spawn's (uid + 700 from `_sandbox_prepare`).
+PRIVATE, GROUP, SPAWNS = "private", "group", "spawns"
+
+#: gid of the probe for the content stores: outside the seed range
+#: (`_SANDBOX_GID_BASE` … +1000) and the codex gid (+1000), so «denied» means
+#: «a spawn of ANOTHER seed reads nothing», not «this gid happened to own it».
+PROBE_GID = 65531
+
+#: (path relative to the datadir — globs allowed —, mode, created if missing, why)
+_STORES = (
+    ("agent-state/activity", PRIVATE, True,
+     "il log di attività: prompt (160 car.) e risposte (fino a 4000) di ogni turno"),
+    ("agent-state/transcripts", PRIVATE, True, "le trascrizioni persistite di ogni chat"),
+    ("agent-state/reasoning", PRIVATE, True,
+     "il ragionamento salvato, che cita i contenuti del canale"),
+    ("logs", PRIVATE, True,
+     "i log dell'agent-server (anche i ruotati .1-.3) e del gateway"),
+    ("data/*-sessions", PRIVATE, False,
+     "la cronologia delle chat registrata dal server (chat-*.jsonl, ophelia compresa)"),
+    # Clodia's own chat history is NOT in the datadir: `KIND_SESSIONS_DIR`
+    # puts it under the code tree, which spawns read on purpose (`/clodia`).
+    ("@bundle/sessions", PRIVATE, False,
+     "la cronologia delle chat di clodia, dentro l'albero del codice (/clodia/sessions)"),
+    ("jobs", PRIVATE, False, "i job schedulati, con i loro prompt"),
+    ("job_proposals", PRIVATE, False, "le proposte di job, con i loro prompt"),
+    ("mail-courier-state", PRIVATE, False, "lo stato del corriere mail: buste e mittenti"),
+    ("mail-triggers", PRIVATE, False, "i trigger mail dei topic, con i loro prompt"),
+    ("channel-relay-state", PRIVATE, False, "lo stato del relay dei canali: messaggi in transito"),
+    ("routing", PRIVATE, False, "le decisioni e le correzioni del router dei messaggi"),
+    ("claude-home", PRIVATE, False,
+     "la home del CLI claude dell'orchestratore: sessioni e credenziali OAuth"),
+    ("agent-workspaces", PRIVATE, False, "i workspace legacy degli agenti (pre-spawn)"),
+    ("data/codex-home", GROUP, False,
+     "CODEX_HOME condiviso dagli spawn codex: login e sessioni (rollout) dei turni"),
+    ("runtime/opencode-data", GROUP, False,
+     "le sessioni di opencode, una cartella per seed (gid del seed)"),
+    ("spawns", SPAWNS, False,
+     "le cartelle degli spawn: trascrizioni Claude in .claude/projects/*.jsonl"),
+)
+
+
+def _datadir():
+    from ..config import data_path
+    return data_path("")
+
+
+def store_specs() -> list[tuple[str, str, bool, str]]:
+    """(absolute path, mode, create, why) of every store present, globs
+    expanded. Resolved at call time: tests and clones move `CLODIA_DATA`."""
+    import glob
+    from ..config import WORKSPACE_ROOT
+    root = str(_datadir())
+    out = []
+    for rel, mode, create, why in _STORES:
+        if rel.startswith("@bundle/"):
+            pattern = os.path.join(str(WORKSPACE_ROOT), rel[len("@bundle/"):])
+        else:
+            pattern = os.path.join(root, rel)
+        if any(c in rel for c in "*?["):
+            for p in sorted(glob.glob(pattern)):
+                if os.path.isdir(p) and not os.path.islink(p):
+                    out.append((p, mode, False, why))
+        elif create or (os.path.isdir(pattern) and not os.path.islink(pattern)):
+            out.append((pattern, mode, create, why))
+    return out
 
 
 def content_stores() -> dict:
-    """{path: why} of the agent-server's own content stores. Resolved from
-    `CLODIA_DATA` at call time, not at import: tests and clones move it."""
-    from ..config import data_path
-    return {
-        str(data_path("agent-state") / "activity"):
-            "il log di attività: prompt (160 car.) e risposte (fino a 4000) di ogni turno",
-        str(data_path("agent-state") / "transcripts"):
-            "le trascrizioni persistite di ogni chat",
-        str(data_path("agent-state") / "reasoning"):
-            "il ragionamento salvato, che cita i contenuti del canale",
-        str(data_path("logs")):
-            "i log dell'agent-server e del gateway (righe di turno, decisioni)",
-    }
+    """{path: why} of the content stores present (see `store_specs`)."""
+    return {p: why for p, _m, _c, why in store_specs()}
+
+
+def _walk(path: str):
+    """Every entry under `path`, never following a symlink (an agent could
+    plant one to make root chmod an arbitrary file)."""
+    for root, dirs, files in os.walk(path, followlinks=False):
+        for d in dirs:
+            yield os.path.join(root, d), True
+        for f in files:
+            yield os.path.join(root, f), False
 
 
 def _private(path: str) -> None:
-    """chmod one tree to root-only, never following a symlink (an agent could
-    plant one to make root chmod an arbitrary file)."""
     os.makedirs(path, mode=DIR_MODE, exist_ok=True)
     os.chmod(path, DIR_MODE)
-    for root, dirs, files in os.walk(path, followlinks=False):
-        for d in dirs:
-            p = os.path.join(root, d)
-            if not os.path.islink(p) and os.stat(p).st_mode & 0o077:
-                os.chmod(p, DIR_MODE)
-        for f in files:
-            p = os.path.join(root, f)
-            if not os.path.islink(p) and os.stat(p).st_mode & 0o077:
-                os.chmod(p, FILE_MODE)
+    for p, is_dir in _walk(path):
+        st = os.lstat(p)
+        if stat.S_ISLNK(st.st_mode) or not st.st_mode & 0o077:
+            continue
+        os.chmod(p, DIR_MODE if is_dir else FILE_MODE)
+
+
+def _no_other(path: str) -> None:
+    for p, _is_dir in [(path, True), *_walk(path)]:
+        st = os.lstat(p)
+        if not stat.S_ISLNK(st.st_mode) and st.st_mode & 0o007:
+            os.chmod(p, stat.S_IMODE(st.st_mode) & ~0o007)
+
+
+def _spawns(path: str) -> None:
+    os.chmod(path, SPAWNS_ROOT_MODE)
+    for name in os.listdir(path):
+        p = os.path.join(path, name)
+        st = os.lstat(p)
+        if stat.S_ISDIR(st.st_mode) and st.st_mode & 0o007:
+            os.chmod(p, stat.S_IMODE(st.st_mode) & ~0o007)
+
+
+_HARDEN = {PRIVATE: _private, GROUP: _no_other, SPAWNS: _spawns}
 
 
 def harden_content_stores() -> dict:
-    """Make every content store root-only. {path: "ok" | error}. Root only:
-    without it there is nobody to protect them from, and nothing to change."""
+    """Protect every content store per its mode. {path: "ok" | error}. Root
+    only: without it there is nobody to protect them from."""
     if os.geteuid() != 0:
         return {}
     out = {}
-    for path in content_stores():
+    for path, mode, _create, _why in store_specs():
         try:
-            _private(path)
+            _HARDEN[mode](path)
             out[path] = "ok"
         except OSError as e:
             out[path] = f"{type(e).__name__}: {e}"[:200]
-            LOG.error("archivio di contenuti non reso privato: %s (%s)", path, out[path])
+            LOG.error("archivio di contenuti non protetto: %s (%s)", path, out[path])
     return out
 
 
@@ -201,12 +299,20 @@ def _sentinel(directory: str) -> str | None:
         return None
 
 
-def _legge(path: str, uid: int) -> bool | None:
-    """`True` if the uid lists `path` OR reads a 0600 root file in it,
+def _drop(uid: int, gid: int) -> None:
+    """Lose root for good in the probe's child. A seam for the tests, which
+    cannot change uid: they replace it and keep the REAL fork and reads."""
+    os.setgroups([])
+    os.setgid(gid)
+    os.setuid(uid)
+
+
+def _legge(path: str, uid: int, gid: int = PROBE_GID, *, sentinel: bool = True) -> bool | None:
+    """`True` if (uid, gid) lists `path` OR reads a 0600 root file in it,
     `False` if neither, `None` if it could not be verified."""
     if not os.path.isdir(path):
         return None
-    sentinella = _sentinel(path)
+    sentinella = _sentinel(path) if sentinel else None
     try:
         r, w = os.pipe()
         pid = os.fork()
@@ -218,9 +324,7 @@ def _legge(path: str, uid: int) -> bool | None:
         os.close(r)
         esito = b"0"
         try:
-            os.setgroups([])
-            os.setgid(SPAWN_GID)
-            os.setuid(uid)
+            _drop(uid, gid)
             try:
                 os.listdir(path)
                 esito = b"1"
@@ -253,15 +357,41 @@ def _legge(path: str, uid: int) -> bool | None:
     return {b"1": True, b"0": False}.get(esito)
 
 
+#: Spawn dirs probed per boot: one is the proof, a few cover a mixed state.
+_SPAWN_SAMPLES = 3
+
+
+def _probe(path: str, mode: str, uid: int) -> bool | None:
+    if mode != SPAWNS:
+        return _legge(path, uid)
+    # The root: listing it would enumerate the others. Then a few spawn dirs,
+    # each probed as a spawn uid that is NOT its owner.
+    esiti = [_legge(path, uid)]
+    try:
+        figli = sorted(n for n in os.listdir(path)
+                       if os.path.isdir(os.path.join(path, n))
+                       and not os.path.islink(os.path.join(path, n)))[:_SPAWN_SAMPLES]
+    except OSError:
+        figli = []
+    for n in figli:
+        p = os.path.join(path, n)
+        owner = os.stat(p).st_uid
+        esiti.append(_legge(p, uid if owner != uid else uid + 1, sentinel=False))
+    if any(e is True for e in esiti):
+        return True
+    return None if any(e is None for e in esiti) else False
+
+
 def check_content(loud: bool = True) -> dict:
-    """As a spawn uid: can any content store be read? {path: True|False|None}."""
+    """As a spawn uid of no seed's group: can any content store be read?
+    {path: True|False|None}."""
     if os.geteuid() != 0:
         LOG.info("verifica degli archivi di contenuti saltata: serve root")
         return {}
     uid = _spawn_uid()
     esiti: dict = {}
-    for path, perche in content_stores().items():
-        esiti[path] = _legge(path, uid)
+    for path, mode, _create, perche in store_specs():
+        esiti[path] = _probe(path, mode, uid)
         if esiti[path] is True and loud:
             LOG.error(
                 "CONTENUTI LEGGIBILI · uno spawn (uid %s) legge %s — %s "
@@ -270,8 +400,8 @@ def check_content(loud: bool = True) -> dict:
         elif esiti[path] is None and loud:
             LOG.warning("archivio di contenuti non verificabile: %s", path)
     if loud and esiti and all(v is False for v in esiti.values()):
-        LOG.info("archivi di contenuti verificati: uno spawn (uid %s) non legge "
-                 "attività, trascrizioni, ragionamento né log", uid)
+        LOG.info("archivi di contenuti verificati: uno spawn (uid %s) non ne "
+                 "legge nessuno (%d)", uid, len(esiti))
     return esiti
 
 
