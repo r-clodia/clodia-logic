@@ -16,7 +16,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 # agent-server e devono trovare un binario stabile a build-time.
 # `docx` (docx-js): usato dalla skill docx per CREARE nuovi documenti Word.
 RUN npm install -g @anthropic-ai/claude-code @openai/codex@${OPENAI_CODEX_NPM_VERSION} \
-    opencode-ai@${OPENCODE_NPM_VERSION} mcp-remote docx
+    opencode-ai@${OPENCODE_NPM_VERSION} mcp-remote@0.16.7 docx
 
 # Verifica installazione
 RUN claude --version

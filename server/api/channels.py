@@ -6681,7 +6681,10 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     rispondere è indistinguibile, per chi guarda la stanza, da un membro che
     tace. La rimozione resta libera: si esce sempre.
 
-    Nessun principal: endpoint interno."""
+    `by` is declared in the body: it is believed only from the paired gateway
+    (which read it from the signed token), or when it IS the signed caller
+    (clodia-platform#705) — before, any process could name the owner as `by`
+    and add itself to any room."""
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "canale non trovato")
@@ -6692,6 +6695,7 @@ async def channel_set_participant_internal(tier: str, name: str, request: Reques
     add = bool(body.get("add", True))
     if not agent or not by:
         raise HTTPException(400, "agent e by richiesti")
+    _require_declared_by(request, by)
     # autorizzazione del CHIAMANTE
     if not (by == meta.get("owner") or by in (meta.get("participants") or [])):
         raise HTTPException(403, f"'{by}' non è owner/partecipante di questo canale")
@@ -6813,7 +6817,8 @@ def _paired_gateway(request: Request) -> None:
     if not atteso:
         return
     ricevuto = (request.headers.get("x-orchestrator-secret") or "").strip()
-    if not (ricevuto and hmac.compare_digest(ricevuto, atteso)):
+    from .caller_auth import secret_matches
+    if not (ricevuto and secret_matches(atteso, ricevuto)):
         raise HTTPException(403, "annuncio: chiamante non accoppiato a questo server")
 
 
@@ -6824,7 +6829,8 @@ def _paired_gateway_ok(request: Request) -> bool:
     atteso = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
     hdrs = getattr(request, "headers", None) or {}
     ricevuto = (hdrs.get("x-orchestrator-secret") or "").strip()
-    return bool(atteso and ricevuto and hmac.compare_digest(ricevuto, atteso))
+    from .caller_auth import secret_matches
+    return bool(atteso and ricevuto and secret_matches(atteso, ricevuto))
 
 
 @router.post("/clodia/channels/{tier}/{name}/announce/internal")
@@ -6922,8 +6928,19 @@ async def channel_runtime_facts_internal(request: Request) -> dict:
     }
 
 
+def _require_declared_by(request: Request, by: str) -> None:
+    """A `by` declared in a body is believed from the paired gateway, or when it
+    is the signed caller itself (clodia-platform#705)."""
+    from . import caller_auth
+    if caller_auth.is_paired_gateway(request):
+        return
+    if by and caller_auth.caller_principal(request) == by:
+        return
+    raise HTTPException(403, f"'by' ({by or '-'}) non è il chiamante firmato")
+
+
 @router.post("/clodia/runtime/inspect-topic")
-async def runtime_inspect_topic(body: dict) -> dict:
+async def runtime_inspect_topic(body: dict, request: Request) -> dict:
     """Introspezione di UN topic per un agente steward (es. sysadmin) che lo chiama
     dal widget mentre l'utente lo sta guardando. Bypassa l'asse PARTICIPANT (lo
     steward non è partecipante) ma NON quello CLEARANCE: se la SEAL effettiva del
@@ -6935,6 +6952,8 @@ async def runtime_inspect_topic(body: dict) -> dict:
     by = str((body or {}).get("by") or "").strip()
     if not tier or not name or not by:
         return {"ok": False, "error": "tier, name, by richiesti"}
+    # The clearance below is `by`'s: `by` must be who is asking (#705).
+    _require_declared_by(request, by)
     by_spec = registry.get_by_name(by)
     if by_spec is None:
         raise HTTPException(404, f"agente '{by}' non registrato")

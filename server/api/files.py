@@ -44,6 +44,24 @@ DENIED_SEGMENTS = {
 }
 
 
+#: Trees no client may read through `/files`, whoever asks (#706 review): the
+#: spawn dirs (each agent's MCP config with its token, opencode.json, scratch),
+#: the runtimes' shared opencode data, the per-agent content stores
+#: (transcripts, reasoning, activity), and the agent-server's private MCP-config
+#: temp dirs. The server reads as root: without this a signed caller could read
+#: another spawn's token from `/datadir/spawns/<victim>/.clodia-mcp.json`.
+def _denied_trees() -> list[Path]:
+    return [(CLODIA_DATA / rel).resolve()
+            for rel in ("spawns", "runtime", "agent-state", "agents", "jobs",
+                        "job_proposals", "data", "pki", "logs", "mail-courier-state",
+                        "channel-relay-state", "mail-triggers", "user-settings",
+                        "admin_notify.json")]
+
+
+#: File names refused anywhere (token-bearing runtime configs).
+DENIED_NAMES = {".clodia-mcp.json", "opencode.json", "config.toml", "auth.json"}
+
+
 def _is_allowed(p: Path) -> bool:
     """True se p è dentro almeno una root permessa e non contiene segmenti vietati."""
     try:
@@ -66,18 +84,32 @@ def _is_allowed(p: Path) -> bool:
         return False
     # Nessun segmento vietato
     for part in resolved.parts:
-        if part in DENIED_SEGMENTS:
+        if part in DENIED_SEGMENTS or part.startswith("clodia-mcp-"):
             return False
+    if resolved.name in DENIED_NAMES:
+        return False
+    for tree in _denied_trees():
+        try:
+            resolved.relative_to(tree)
+            return False
+        except ValueError:
+            continue
     return True
 
 
 def _require_login(request) -> str:
     """Fix sicurezza 7 lug 2026: gli endpoint /files erano senza auth —
-    chiunque col link scaricava file della datadir. Ora serve una sessione."""
-    from .agents import _principal_from_request
-    principal = _principal_from_request(request)
+    chiunque col link scaricava file della datadir. Ora serve una sessione.
+
+    A PERSON's session (#706 review): an agent's token is a signed caller too,
+    and these routes read the filesystem as root."""
+    from . import admin
+    from .caller_auth import caller_principal
+    principal = caller_principal(request)
     if not principal:
         raise HTTPException(401, "login richiesto")
+    if not admin.is_human(principal):
+        raise HTTPException(403, "riservato alle persone")
     return principal
 
 

@@ -25,8 +25,15 @@ LOG = logging.getLogger("agent-server.api.spawns")
 
 
 @router.get("/api/spawns")
-async def list_spawns() -> dict:
-    """Elenca gli spawn attualmente materializzati sotto clodia-data/spawns/."""
+async def list_spawns(request: Request) -> dict:
+    """Elenca gli spawn attualmente materializzati sotto clodia-data/spawns/.
+
+    Persons and the paired gateway only: the spawn directories are where each
+    agent's private files live (#706 review)."""
+    from . import admin, caller_auth
+    if not caller_auth.is_paired_gateway(request) and \
+            not admin.is_human(caller_auth.caller_principal(request)):
+        raise HTTPException(403, "riservato alle persone (o al gateway)")
     out: list[dict] = []
     if SPAWNS_ROOT.is_dir():
         for d in sorted(SPAWNS_ROOT.iterdir()):

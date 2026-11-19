@@ -1782,6 +1782,15 @@ def _cli_stderr_sink(kind: str, chat_id: str, tail):
     return sink
 
 
+#: The installed claude-agent-sdk knows `{"type": "file", "path": …}` for the
+#: system prompt (`--system-prompt-file`).
+try:
+    from claude_agent_sdk.types import SystemPromptFile as _SystemPromptFile  # noqa: F401
+    _SDK_SYSTEM_PROMPT_FILE = True
+except ImportError:  # pragma: no cover — older SDK
+    _SDK_SYSTEM_PROMPT_FILE = False
+
+
 class ChatSession:
     """Una singola chat con un agente (Clodia o Ada): subprocess claude
     + history dedicata sotto la cartella sessions/ del kind."""
@@ -1843,6 +1852,15 @@ class ChatSession:
         # principal "cotto" nel token MCP del client attualmente avviato (per
         # capire quando ri-coniare se l'utente connesso cambia).
         self._token_principal: Optional[str] = None
+        #: The MCP servers this client talks to, token included (#706). Kept
+        #: here, in memory, and handed to the CLI as a 0600 FILE owned by the
+        #: spawn uid (`_mcp_config_path`): never as `--mcp-config '<json>'`,
+        #: which any process in the container reads from /proc/<pid>/cmdline.
+        self._mcp_servers: Optional[dict] = None
+        self._mcp_config_path: Optional[Path] = None
+        #: Private dir for that file when the kind has no spawn dir (root-only,
+        #: removed at stop).
+        self._mcp_config_tmpdir: Optional[str] = None
         #: A consent asked for a gated native tool may wait for a person (#570).
         self._native_consent_timeout = float(
             os.environ.get("CLODIA_NATIVE_CONSENT_TIMEOUT", "7300"))
@@ -1934,7 +1952,15 @@ class ChatSession:
         if spawn_dir is not None:
             sp = spawn_dir / "system-prompt.md"
             if sp.is_file():
-                opts_kwargs["system_prompt"] = sp.read_text(encoding="utf-8")
+                # As a FILE (--system-prompt-file), not as argv text that every
+                # process in the container reads from /proc (#706 review). The
+                # file is in the spawn dir, chowned to the spawn uid with it.
+                # An SDK without the file form would silently drop a dict it
+                # does not know, so the text form stays the fallback.
+                if _SDK_SYSTEM_PROMPT_FILE:
+                    opts_kwargs["system_prompt"] = {"type": "file", "path": str(sp)}
+                else:
+                    opts_kwargs["system_prompt"] = sp.read_text(encoding="utf-8")
         else:
             # Fallback (kind senza seed, es. ada/looper): governance dal seed se
             # disponibile + niente auto-load della CLAUDE.md del bundle.
@@ -2008,7 +2034,7 @@ class ChatSession:
             # principal "cotto" nel token MCP di questo client: se cambia (l'utente
             # connesso cambia, o la sessione era partita anonima) va ri-coniato.
             self._token_principal = self.principal
-            opts_kwargs["mcp_servers"] = {
+            self._mcp_servers = {
                 "clodia-tools": {
                     "type": "http",
                     "url": CLODIA_TOOLS_MCP_URL,
@@ -2028,6 +2054,10 @@ class ChatSession:
             self._sandbox_uid = uid
             opts_kwargs["cli_path"] = prefix[0]
             child_env.update(sb_env)
+        # The token goes to the CLI as a path (#706). Written AFTER the sandbox
+        # chown so the file is created 0600 for the spawn uid directly.
+        if self._mcp_servers:
+            opts_kwargs["mcp_servers"] = str(self._write_mcp_config(spawn_dir))
         self._opts_kwargs = opts_kwargs
         await self._open_client()
         # Auto-intro fire-and-forget: se il kind ne ha uno definito, lo
@@ -2130,7 +2160,7 @@ class ChatSession:
         contesto vuoto, nessuna perdita. Chiude il gap descritto a `_open_client`."""
         if self._opts_kwargs is None or self.principal == self._token_principal:
             return False
-        mcp = (self._opts_kwargs.get("mcp_servers") or {}).get("clodia-tools")
+        mcp = (getattr(self, "_mcp_servers", None) or {}).get("clodia-tools")
         if not isinstance(mcp, dict) or "headers" not in mcp:
             return False  # kind senza MCP clodia-tools
         try:
@@ -2147,8 +2177,35 @@ class ChatSession:
             LOG.warning("re-mint token MCP (principal) fallito per kind=%s: %s", self.kind, e)
             return False
         mcp["headers"]["Authorization"] = f"Bearer {ct_token}"
+        try:
+            old = getattr(self, "_mcp_config_path", None)
+            self._opts_kwargs["mcp_servers"] = str(self._write_mcp_config(
+                old.parent if old else None))
+        except OSError as e:  # the old file still holds a valid (older) token
+            LOG.warning("re-mint token MCP: config non riscritta per kind=%s: %s",
+                        self.kind, e)
+            return False
         self._token_principal = self.principal
         return True
+
+    def _write_mcp_config(self, directory: Optional[Path]) -> Path:
+        """Write `self._mcp_servers` where only this spawn's uid can read it
+        (#706) and return the path for `--mcp-config`.
+
+        In the spawn dir when there is one (0700 to the spawn uid under the
+        sandbox); otherwise in a private temp dir of the agent-server, which
+        is root-only — a kind without a spawn never runs sandboxed."""
+        from .private_config import write_mcp_config
+        if directory is None:
+            if getattr(self, "_mcp_config_tmpdir", None) is None:
+                import tempfile as _tempfile
+                self._mcp_config_tmpdir = _tempfile.mkdtemp(prefix="clodia-mcp-")
+            directory = Path(self._mcp_config_tmpdir)
+        uid = getattr(self, "_sandbox_uid", None)
+        gid = _seed_gid(self.kind) if uid is not None else None
+        self._mcp_config_path = write_mcp_config(
+            Path(directory), self._mcp_servers or {}, uid=uid, gid=gid)
+        return self._mcp_config_path
 
     async def _recover_session(self) -> bool:
         """Dopo un fallimento del turno (errore, timeout o subprocess wedged)
@@ -2235,7 +2292,25 @@ class ChatSession:
             _kill_uid_processes(self._sandbox_uid)
             _free_uid(self._sandbox_uid)
             self._sandbox_uid = None
+        # The MCP config (token) dies with the session (#706): the spawn dir
+        # went with `cleanup()` above; a private temp dir goes here.
+        self._drop_mcp_config()
         await self._set_status(ClodiaStatus.STOPPED)
+
+    def _drop_mcp_config(self) -> None:
+        import shutil as _shutil
+        # getattr: sessions built with `__new__` (tests, recovery) skip __init__.
+        path = getattr(self, "_mcp_config_path", None)
+        self._mcp_config_path = None
+        if path is not None:
+            try:
+                path.unlink()
+            except OSError:
+                pass
+        tmp = getattr(self, "_mcp_config_tmpdir", None)
+        self._mcp_config_tmpdir = None
+        if tmp:
+            _shutil.rmtree(tmp, ignore_errors=True)
 
     async def send_user_message(self, content: str) -> str:
         # «Mai avviata» si legge sulle opzioni, non sul client: `_recover_session()`
@@ -3812,6 +3887,19 @@ def _opencode_reasoning_effort(kind: str, model: str | None) -> str | None:
     return None
 
 
+#: User of the HTTP basic auth that `opencode serve` (>= 1.17) enforces when
+#: `OPENCODE_SERVER_PASSWORD` is set; `opencode` is also its default.
+OPENCODE_SERVER_USERNAME = "opencode"
+
+#: mcp-remote version pinned for the opencode bridge: the one whose `--header`
+#: `${VAR}` expansion from its own environment was verified (#706).
+MCP_REMOTE_VERSION = "0.16.7"
+
+#: Environment variable of the `mcp-remote` bridge that carries the opencode
+#: spawn's `Authorization` value; the bridge's argv only names it (#706).
+OPENCODE_MCP_AUTH_ENV = "CLODIA_TOOLS_AUTHORIZATION"
+
+
 class OpenCodeChatSession:
     """Chat servita dal runtime **OpenCode** (agent multi-provider, es. Messaggero
     su gpt-oss-120b/scaleway). Stessa interfaccia di ChatSession/CodexChatSession
@@ -3973,6 +4061,13 @@ class OpenCodeChatSession:
         # del gateway; `mcp-remote` (stdio↔HTTP) invece funziona. Serve --allow-http
         # perché l'endpoint interno è http:// (rete docker, non esposto). Il token
         # (col principal + clearance) va nell'header del bridge.
+        #
+        # Never on the bridge's argv (#706): `--header "Authorization: Bearer …"`
+        # put the token in /proc/<pid>/cmdline of a process every spawn can list.
+        # The argv carries a `${…}` placeholder that mcp-remote expands from its
+        # OWN environment (`substituteEnvVars`); opencode sets that environment
+        # from `environment` below, i.e. from this 0600 file of the spawn uid. An
+        # environ is readable only by the same uid (or root).
         try:
             tok = pki.mint_session_token(self.kind, _execution_id(self._spawn),
                                               ttl_seconds=_runtime_token_ttl(
@@ -3985,9 +4080,10 @@ class OpenCodeChatSession:
                                          unattended=getattr(self, "unattended", False))
             cfg["mcp"]["clodia-tools"] = {
                 "type": "local",
-                "command": ["npx", "-y", "mcp-remote", CLODIA_TOOLS_MCP_URL,
-                            "--header", f"Authorization: Bearer {tok}",
+                "command": ["npx", "-y", f"mcp-remote@{MCP_REMOTE_VERSION}", CLODIA_TOOLS_MCP_URL,
+                            "--header", "Authorization:${" + OPENCODE_MCP_AUTH_ENV + "}",
                             "--transport", "http-only", "--allow-http"],
+                "environment": {OPENCODE_MCP_AUTH_ENV: f"Bearer {tok}"},
                 "enabled": True}
         except Exception as e:  # noqa: BLE001
             LOG.warning("opencode: MCP clodia-tools non cablato per %s: %s", self.kind, e)
@@ -4008,7 +4104,10 @@ class OpenCodeChatSession:
             LOG.info("opencode: %s — permessi negati: %s", self.kind,
                      ", ".join(sorted(perm)))
         cwd.mkdir(parents=True, exist_ok=True)
-        (cwd / "opencode.json").write_text(json.dumps(cfg, ensure_ascii=False), encoding="utf-8")
+        # 0600 (#706): it holds the MCP token. `start()` chowns the spawn to its
+        # uid right after, which keeps the mode owner-only.
+        from .private_config import write_private
+        write_private(cwd / "opencode.json", json.dumps(cfg, ensure_ascii=False))
         return env
 
     def _turn_timeout_s(self) -> float:
@@ -4032,9 +4131,24 @@ class OpenCodeChatSession:
             secondi = 0.0
         return secondi if secondi > 0 else _OPENCODE_TURN_TIMEOUT
 
+    def _oc_http(self, **kw):
+        """httpx client toward THIS session's `opencode serve` (#706 review).
+
+        The server listens on 127.0.0.1 and its port is on its argv, so any
+        spawn could reach it and drive another agent's session or read its
+        config. It now requires HTTP basic auth (`OPENCODE_SERVER_PASSWORD`,
+        opencode >= 1.17, user `opencode`): a random password per session,
+        kept in this process and in the serve process's environment — which
+        only the spawn's own uid can read."""
+        import httpx
+        pw = getattr(self, "_oc_password", None)
+        if pw:
+            kw.setdefault("auth", httpx.BasicAuth(OPENCODE_SERVER_USERNAME, pw))
+        return httpx.AsyncClient(**kw)
+
     async def _http(self):
         import httpx
-        return httpx.AsyncClient(base_url=self._base_url,
+        return self._oc_http(base_url=self._base_url,
                                  timeout=httpx.Timeout(self._turn_timeout_s()))
 
     @staticmethod
@@ -4057,7 +4171,7 @@ class OpenCodeChatSession:
             return
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=10.0) as c:
+            async with self._oc_http(timeout=10.0) as c:
                 await c.post(f"{self._base_url}/session/{self._oc_session}/abort")
         except Exception:  # noqa: BLE001
             pass
@@ -4254,7 +4368,7 @@ class OpenCodeChatSession:
         import httpx
         while self._proc is not None and self._proc.returncode is None:
             try:
-                async with httpx.AsyncClient(base_url=self._base_url,
+                async with self._oc_http(base_url=self._base_url,
                                              timeout=httpx.Timeout(10.0, read=None)) as c:
                     async with c.stream("GET", "/event") as r:
                         # A new connection is a new generation: whatever was
@@ -4315,7 +4429,7 @@ class OpenCodeChatSession:
         import httpx
         for _ in range(60):  # ~30s
             try:
-                async with httpx.AsyncClient(timeout=2.0) as c:
+                async with self._oc_http(timeout=2.0) as c:
                     r = await c.get(f"{self._base_url}/doc")
                     if r.status_code == 200:
                         return
@@ -4331,6 +4445,11 @@ class OpenCodeChatSession:
         if self._spawn_dir is None:
             run_cwd.mkdir(parents=True, exist_ok=True)
         env = self._write_config(run_cwd)
+        # Basic auth on `opencode serve` (see `_oc_http`).
+        import secrets as _secrets
+        self._oc_password = _secrets.token_urlsafe(32)
+        env["OPENCODE_SERVER_USERNAME"] = OPENCODE_SERVER_USERNAME
+        env["OPENCODE_SERVER_PASSWORD"] = self._oc_password
         self._port = self._free_port()
         self._base_url = f"http://127.0.0.1:{self._port}"
         # As root, `opencode serve` and the bash it runs could read
@@ -4342,6 +4461,9 @@ class OpenCodeChatSession:
         if self._sandbox_uid is not None:
             env.update(sb_env)
             try:
+                # `chmod -R 700` of the spawn made it 0700; the token file
+                # wants no execute bit, only its owner (#706).
+                os.chmod(run_cwd / "opencode.json", 0o600)
                 # opencode keeps its sessions under XDG_DATA_HOME; with HOME in
                 # the spawn they'd vanish at every stop and the chat could not
                 # resume. One persistent dir per SEED, shared via the seed gid.
@@ -4382,7 +4504,7 @@ class OpenCodeChatSession:
             self._oc_session = self._ocsession_file.read_text().strip() or None
         if not self._oc_session:
             import httpx
-            async with httpx.AsyncClient(timeout=30.0) as c:
+            async with self._oc_http(timeout=30.0) as c:
                 r = await c.post(f"{self._base_url}/session", json={})
                 self._oc_session = (r.json() or {}).get("id")
             if self._oc_session:
@@ -4495,7 +4617,7 @@ class OpenCodeChatSession:
             return False
         try:
             import httpx
-            async with httpx.AsyncClient(timeout=10.0) as c:
+            async with self._oc_http(timeout=10.0) as c:
                 await c.post(f"{self._base_url}/session/{self._oc_session}/abort")
         except Exception:  # noqa: BLE001
             pass

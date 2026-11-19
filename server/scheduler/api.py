@@ -381,8 +381,47 @@ def _with_freshness(job: dict) -> dict:
     return {**job, "stale": motivo is not None, "stale_reason": motivo}
 
 
+def _job_reader(request: Request):
+    """Who reads the jobs (clodia-platform#705). `None` = everything (paired
+    gateway, or a person who is an admin); otherwise the caller's principal,
+    whose view `_job_visible` narrows. A job carries its `prompt` and `plan`:
+    until #705 these two routes handed them to any process in the container."""
+    from ..api import caller_auth
+    from ..api.admin import is_admin, is_human
+    if caller_auth.is_paired_gateway(request):
+        return None
+    who = caller_auth.caller_principal(request)
+    if not who:
+        raise HTTPException(401, "autenticazione richiesta")
+    if is_admin(who) and is_human(who):
+        return None
+    return who
+
+
+def _job_visible(request: Request, who: str, job: dict) -> bool:
+    """A non-admin caller sees the jobs it owns, the jobs it runs (it gets the
+    prompt at every run anyway), and the triggers of the rooms it may read
+    (participant + clearance — the mail trigger's prompt is already a
+    participant's read, `_require_topic_reader`)."""
+    if who == (job.get("owner") or None) or who == (job.get("agent") or None):
+        return True
+    if job.get("mode") == "topic_trigger" and job.get("topic_tier") and job.get("topic_name"):
+        from ..api import caller_auth
+        try:
+            topic = topics_client.open_topic(job["topic_tier"], job["topic_name"])
+        except topics_client.TopicsClientError:
+            return False
+        meta = (topic or {}).get("meta") or {}
+        return bool(topic) and caller_auth.can_read_topic(request, job["topic_tier"], meta)
+    return False
+
+
+def _visible_jobs(request: Request, who: str, jobs: list[dict]) -> list[dict]:
+    return [j for j in jobs if _job_visible(request, who, j)]
+
+
 @router.get("/clodia/jobs")
-async def api_list_jobs(include_topic_triggers: bool = False):
+async def api_list_jobs(request: Request, include_topic_triggers: bool = False):
     """I job dell'istanza. `include_topic_triggers=true` li elenca TUTTI.
 
     Il default esclude i `topic_trigger` perché questa è la lista del pannello
@@ -391,15 +430,23 @@ async def api_list_jobs(include_topic_triggers: bool = False):
     parametro, questa rotta ha risposto «non esiste» su un trigger che c'era, e
     chi leggeva ha concluso in buona fede che il job fosse stato rimosso
     (clodia-platform#399). Chi vuole vedere tutto ora ha come chiederlo."""
+    who = _job_reader(request)
     jobs = db.list_jobs()
     if not include_topic_triggers:
         jobs = [job for job in jobs if job.get("mode") != "topic_trigger"]
+    if who is not None:
+        jobs = await asyncio.to_thread(_visible_jobs, request, who, jobs)
     return [_with_freshness(job) for job in jobs]
 
 
 @router.get("/clodia/jobs/{job_id}")
-async def api_get_job(job_id: int):
-    return _with_freshness(_require_job(job_id))
+async def api_get_job(job_id: int, request: Request):
+    who = _job_reader(request)
+    job = _require_job(job_id)
+    # 404 and not 403: a job the caller may not read is one it is not told of.
+    if who is not None and not await asyncio.to_thread(_job_visible, request, who, job):
+        raise HTTPException(status_code=404, detail=f"job {job_id} not found")
+    return _with_freshness(job)
 
 
 @router.post("/clodia/jobs", status_code=201)
@@ -622,8 +669,18 @@ async def api_run_job(job_id: int, request: Request):
     return {"job_id": job_id, **result}
 
 
+def _paired_gateway_only(request: Request) -> None:
+    """The `*/internal` job routes act for a gateway verb whose authorisation
+    (human confirmation, signed `chat` claim) happened in the gateway. Their
+    barrier used to be «the internal network» — which every spawn is on. Now it
+    is the secret shared with the paired gateway, never in a spawn's
+    environment (clodia-platform#705, #471)."""
+    from ..api import caller_auth
+    caller_auth.require_gateway(request)
+
+
 @router.post("/clodia/jobs/{job_id}/set-enabled/internal")
-async def api_set_job_enabled(job_id: int, req: JobSetEnabled):
+async def api_set_job_enabled(job_id: int, req: JobSetEnabled, request: Request):
     """Accende/SPEGNE un job, trigger di topic compresi.
 
     Chiamata dal gateway per conto del verbo `jobs.set_enabled`, che è **gated**:
@@ -641,6 +698,7 @@ async def api_set_job_enabled(job_id: int, req: JobSetEnabled):
     senza, ripartirebbe già oltre il limite e si rispegnerebbe al primo fire —
     la stessa scelta già presa in `api_put_topic_cron_trigger`. È nella risposta
     (`rearmed`) perché è un effetto che chi riaccende deve poter riferire."""
+    _paired_gateway_only(request)
     job = db.get_job(job_id)
     if job is None:
         raise HTTPException(status_code=404, detail=f"job {job_id} not found")
@@ -692,6 +750,7 @@ async def api_report_run_status(request: Request):
     constata l'infrastruttura quando il turno muore, e un agente che è morto non
     dichiara nulla.
     """
+    _paired_gateway_only(request)
     body = await request.json()
     chat_id = str(body.get("chat_id") or "").strip()
     status = str(body.get("status") or "").strip()
@@ -733,6 +792,7 @@ async def api_note_run_refusal(request: Request):
     completamento lo consuma, il registro lo azzera all'inizio del run
     successivo, e `refusals.pending_count` lo rende visibile.
     """
+    _paired_gateway_only(request)
     body = await request.json()
     chat_id = str(body.get("chat_id") or "").strip()
     verb = str(body.get("verb") or "").strip()

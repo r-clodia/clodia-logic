@@ -27,7 +27,8 @@ TTL_SECONDS = int(os.environ.get("CLODIA_TRANSFER_TTL_SECONDS", "900"))
 def _authorize(request: Request) -> None:
     expected = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
     got = (request.headers.get("x-orchestrator-secret") or "").strip()
-    if not expected or not got or not hmac.compare_digest(expected, got):
+    from .caller_auth import secret_matches
+    if not expected or not got or not secret_matches(expected, got):
         raise HTTPException(401, "internal transfer authentication required")
 
 
