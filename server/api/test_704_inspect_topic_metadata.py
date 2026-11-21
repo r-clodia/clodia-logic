@@ -46,6 +46,7 @@ class InspectTopicTests(unittest.IsolatedAsyncioTestCase):
         from . import caller_auth
         spec = SimpleNamespace(name="sysadmin", type="bot")
         with patch.object(caller_auth, "caller_principal", return_value=signed), \
+                patch.object(caller_auth, "caller_claims", return_value=None), \
                 patch.object(caller_auth, "is_paired_gateway", return_value=gateway), \
                 patch.object(ch.registry, "get_by_name",
                              side_effect=lambda n: spec if n in ("sysadmin", "clodia") else None), \

@@ -66,6 +66,9 @@ class DueDispatcherPrenotanoTests(unittest.TestCase):
                   patch.object(channels.registry, "get_by_name",
                                lambda nome: _Spec(nome)),
                   patch.object(channels, "_chat_busy", lambda chat_id: False),
+                  # The forced responder is gated on its room provider
+                  # (clodia-platform#580): here it is adequate.
+                  patch.object(channels, "_provider_seal_ok", lambda s, t: True),
                   patch.object(channels.manager, "reserve", _reserve)):
             p.start()
             self.addCleanup(p.stop)

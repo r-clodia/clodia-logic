@@ -174,6 +174,30 @@ def caller_clearance(request: Request, principal: str) -> str:
     return registered
 
 
+def signed_agent_clearance(request: Request, agent: str) -> Optional[str]:
+    """The `clearance` claim of `agent`'s OWN session token, or None.
+
+    That claim is the effective clearance of the very spawn that is calling:
+    the session mints it with `session._effective_clearance(kind, override)`,
+    i.e. from the provider THIS spawn runs on, room/spawn override included.
+    Recomputing it here from the seed's default provider is how the two
+    diverged (clodia-platform#580): a spawn running on a SEAL-2 provider was
+    told its own SEAL-2 room was above its clearance, and the converse — a
+    spawn moved to a weaker provider — would have been a false grant.
+
+    None when there is no verified token, when it is minted on someone's
+    behalf (a person acting, not the agent), when it belongs to another agent,
+    or when it carries no clearance: the caller then decides how to fall back.
+    """
+    claims = caller_claims(request) or {}
+    if not claims or claims.get("on_behalf"):
+        return None
+    if not agent or str(claims.get("agent") or "").strip() != agent:
+        return None
+    signed = str(claims.get("clearance") or "").strip()
+    return signed or None
+
+
 def require_signed_caller(request: Request) -> None:
     """Global dependency of the agent-server (clodia-platform#705)."""
     if is_public(request):
