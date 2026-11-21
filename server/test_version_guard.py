@@ -464,7 +464,7 @@ class TheOpenPrCheckIsWiredIntoCi(unittest.TestCase):
         self.assertIn("--open-prs", recipe.group(1))
 
     def test_the_workflow_grants_read_access_and_passes_the_token(self):
-        workflow = (self.ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        workflow = (self.ROOT / ".github/workflows/tests.yml").read_text(encoding="utf-8")
         self.assertRegex(workflow, r"(?m)^\s+pull-requests:\s*read\s*$")
         self.assertIn("GITHUB_TOKEN: ${{ github.token }}", workflow)
         self.assertNotRegex(workflow, r"(?m)^\s+pull-requests:\s*write")
