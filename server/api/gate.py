@@ -83,7 +83,11 @@ def _gw_base() -> str:
 
 
 def _gw(method: str, path: str, principal: str, json: dict | None = None):
-    token = pki.mint_session_token("clodia", ttl_seconds=_TOKEN_TTL, principal=principal)
+    # The agent-server's OWN call: the gateway requires the signed service role
+    # on its internal routes (clodia-platform#584) — an agent's runtime token,
+    # which carries `agent: clodia` too, no longer passes.
+    token = pki.mint_session_token("clodia", ttl_seconds=_TOKEN_TTL, principal=principal,
+                                   role=pki.ROLE_AGENT_SERVER)
     r = requests.request(method, f"{_gw_base()}{path}",
                          headers={"Authorization": f"Bearer {token}"},
                          json=json, timeout=_HTTP_TIMEOUT)

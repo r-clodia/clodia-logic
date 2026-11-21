@@ -59,7 +59,11 @@ def _base_url() -> str:
 
 
 def _headers() -> dict[str, str]:
-    token = pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL)
+    # The agent-server's OWN call: the gateway requires the signed service role
+    # on its internal routes (clodia-platform#584) — an agent's runtime token,
+    # which carries `agent: clodia` too, no longer passes.
+    token = pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL,
+                                   role=pki.ROLE_AGENT_SERVER)
     return {"Authorization": f"Bearer {token}"}
 
 

@@ -36,9 +36,13 @@ def _base_url() -> str:
 _SERVICE = os.environ.get("CLODIA_PROFILE_SERVICE", "clodia")
 
 
+# The agent-server's OWN call: the gateway requires the signed service role
+# on its internal routes (clodia-platform#584) — an agent's runtime token,
+# which carries `agent: clodia` too, no longer passes.
 def _headers(principal: str) -> dict[str, str]:
     return {
-        "Authorization": f"Bearer {pki.mint_session_token(_SERVICE, ttl_seconds=300)}",
+        "Authorization": "Bearer " + pki.mint_session_token(
+            _SERVICE, ttl_seconds=300, role=pki.ROLE_AGENT_SERVER),
         "X-Clodia-Principal": principal,
     }
 
