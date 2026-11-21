@@ -3905,6 +3905,196 @@ def _oc_provider_limit_message(*, motivo: str, model: str | None,
             f"subito il messaggio non cambia l'esito")
 
 
+def _env_int(name: str, default: int) -> int:
+    """A non-negative integer from the environment; a bad value is the default."""
+    try:
+        return max(0, int(os.environ.get(name, str(default))))
+    except (TypeError, ValueError):
+        return default
+
+
+# Tool-loop guard of an opencode turn (clodia-platform#692). 17 Nov 2026: a
+# glm-5.2 officer read the same tool-output file 345 times and edited it 166
+# times in one turn, until the 1200 s ceiling — 20 minutes of quota and a
+# timeout that blamed the model. The idle watchdog (#674) cannot see it: a loop
+# is busy, not silent. Two rules, counted per turn, 0 disables either:
+#   - REPEATS: the same call (tool + normalised arguments) returning the same
+#     result, this many times with no progress in between (no new call, no
+#     changed result, no text for the room). A short cycle A,B,A,B… trips it
+#     too, because each of its calls repeats unchanged.
+#   - TARGET_REPEATS: the same tool on the same target (a path, a URL) this
+#     many times in the turn, whatever the arguments: a read/edit cycle on one
+#     file changes the edit every time, so only the target gives it away.
+_OPENCODE_LOOP_REPEATS = _env_int("OPENCODE_LOOP_REPEATS", 6)
+_OPENCODE_LOOP_TARGET_REPEATS = _env_int("OPENCODE_LOOP_TARGET_REPEATS", 60)
+#: Input keys that name what a tool acts on, in order of preference.
+_OC_TARGET_KEYS = ("filePath", "file_path", "path", "url", "uri")
+#: Tool part statuses at which a call is over and its result is known.
+_OC_TOOL_DONE = ("completed", "error")
+
+
+def _oc_norm(value):
+    """Arguments in a canonical form: the same call must hash the same however
+    the model spaced or ordered it."""
+    if isinstance(value, dict):
+        return {str(k): _oc_norm(v) for k, v in sorted(value.items(), key=lambda kv: str(kv[0]))}
+    if isinstance(value, (list, tuple)):
+        return [_oc_norm(v) for v in value]
+    if isinstance(value, str):
+        return " ".join(value.split())
+    return value
+
+
+def _oc_hash(value) -> str:
+    import hashlib
+    raw = json.dumps(_oc_norm(value), sort_keys=True, ensure_ascii=False, default=str)
+    return hashlib.sha256(raw.encode("utf-8", "replace")).hexdigest()[:16]
+
+
+def _oc_target(inp) -> "str | None":
+    """What the call acts on — a path or a URL — or None (a bash command, an
+    MCP verb: only the identical-call rule applies to those)."""
+    if not isinstance(inp, dict):
+        return None
+    for key in _OC_TARGET_KEYS:
+        val = inp.get(key)
+        if isinstance(val, str) and val.strip():
+            val = val.strip()
+            if "://" in val:
+                # A query string can carry a token: never in the room or the log.
+                return val.split("?", 1)[0].split("#", 1)[0]
+            return os.path.normpath(val)
+    return None
+
+
+class _ToolLoopDetector:
+    """Watches the tool calls of ONE opencode turn and says when they loop.
+
+    Fed with the `tool` parts of `message.part.updated` events; a call is
+    counted once, when it is over (`completed`/`error`), because only then its
+    result is known — and a result that changes is progress, not a loop (a
+    status polled until it flips, a file re-read after an edit).
+    """
+
+    __slots__ = ("repeats", "target_repeats", "_seen_calls", "_seen_sigs",
+                 "_seen_texts", "_since_progress", "_targets", "calls", "verdict")
+
+    def __init__(self, *, repeats: int = 0, target_repeats: int = 0) -> None:
+        self.repeats = int(repeats or 0)
+        self.target_repeats = int(target_repeats or 0)
+        self._seen_calls: set = set()
+        self._seen_sigs: set = set()
+        self._seen_texts: set = set()
+        self._since_progress: dict = {}
+        self._targets: dict = {}
+        #: Tool calls counted in this turn.
+        self.calls = 0
+        #: The first loop found, as a dict, or None. Sticky: one is enough.
+        self.verdict: "dict | None" = None
+
+    @property
+    def enabled(self) -> bool:
+        return bool(self.repeats or self.target_repeats)
+
+    def progress(self) -> None:
+        """Something new happened (text for the room): repeats start over."""
+        self._since_progress.clear()
+
+    def feed_part(self, part) -> "dict | None":
+        """Feed one opencode part; returns the loop verdict when there is one."""
+        if self.verdict is not None or not isinstance(part, dict):
+            return self.verdict
+        tipo = part.get("type")
+        if tipo == "text":
+            # New text for the room is progress; the same sentence said again
+            # between two identical calls («let me read it again») is not.
+            testo = str(part.get("text") or "").strip()
+            if testo and not part.get("synthetic"):
+                h = _oc_hash(testo)
+                if h not in self._seen_texts:
+                    self._seen_texts.add(h)
+                    self.progress()
+            return None
+        if tipo != "tool":
+            return None
+        st = part.get("state") if isinstance(part.get("state"), dict) else {}
+        if st.get("status") not in _OC_TOOL_DONE:
+            return None
+        call_id = part.get("callID") or part.get("id")
+        if call_id is not None:
+            if call_id in self._seen_calls:
+                return None      # the same call updated again, not a new one
+            self._seen_calls.add(call_id)
+        return self.feed_call(str(part.get("tool") or "tool"), st.get("input"),
+                              st.get("output") if st.get("status") == "completed"
+                              else st.get("error"))
+
+    def feed_call(self, tool: str, inp, result) -> "dict | None":
+        """Count one finished call: (tool, arguments, result)."""
+        if self.verdict is not None:
+            return self.verdict
+        self.calls += 1
+        target = _oc_target(inp)
+        if self.target_repeats and target is not None:
+            key = (tool, target)
+            n = self._targets.get(key, 0) + 1
+            self._targets[key] = n
+            if n >= self.target_repeats:
+                self.verdict = {"rule": "target", "tool": tool, "target": target,
+                                "count": n, "calls": self.calls}
+                return self.verdict
+        if self.repeats:
+            sig = (tool, _oc_hash(inp), _oc_hash(result))
+            if sig not in self._seen_sigs:
+                # A call never seen in this turn, or a known one whose result
+                # changed: the turn is moving.
+                self._seen_sigs.add(sig)
+                self._since_progress.clear()
+                self._since_progress[sig] = 1
+                return None
+            n = self._since_progress.get(sig, 0) + 1
+            self._since_progress[sig] = n
+            if n >= self.repeats:
+                self.verdict = {"rule": "repeat", "tool": tool, "target": target,
+                                "count": n, "calls": self.calls}
+                return self.verdict
+        return None
+
+
+class OpenCodeToolLoop(RuntimeError):
+    """The opencode turn was stopped because its tool calls loop (#692).
+
+    Not an `OpenCodeTurnTimeout`: re-sending the message would most likely
+    walk into the same loop and spend the same quota, so
+    `_turno_ritentabile` must not buy a retry with it."""
+
+    audit_cause = "tool_loop"
+
+    def __init__(self, *args, eventi: "int | None" = None,
+                 loop: "dict | None" = None) -> None:
+        super().__init__(*args)
+        self.eventi = eventi
+        self.loop = dict(loop or {})
+        self.nota_utente = f"⛔ {args[0]}" if args else ""
+
+
+def _oc_tool_loop_message(*, loop: dict, model: str | None, atteso: float) -> str:
+    """What the room reads: which tool loops, on what, how many times."""
+    tool = str(loop.get("tool") or "tool")[:80]
+    target = loop.get("target")
+    su = f" su «{str(target)[:160]}»" if target else ""
+    n = int(loop.get("count") or 0)
+    if loop.get("rule") == "target":
+        come = "nello stesso turno"
+    else:
+        come = "con gli stessi argomenti e lo stesso risultato, senza progressi"
+    return (f"turno fermato: ciclo — `{tool}`{su} ripetuto {n} volte {come} "
+            f"({int(loop.get('calls') or 0)} tool call in {atteso:.0f}s, modello "
+            f"{model or '?'}). Turno interrotto per non consumare altra quota: "
+            f"rimandare lo stesso messaggio rischia lo stesso ciclo, meglio "
+            f"restringere o riformulare la richiesta")
+
+
 async def _audit_turn_acquired(chat) -> None:
     """Start the dispatcher's audit Turn, if any (never raises into the turn)."""
     try:
@@ -4069,6 +4259,11 @@ class OpenCodeChatSession:
         #: WHOLE turn (see `_stream_continuo`, clodia-platform#514).
         self._eventi_connesso: bool = False
         self._eventi_generazione: int = 0
+        #: Tool-loop guard of the running turn and its verdict (#692); both are
+        #: reset by `_run_turn`.
+        self._tool_loop: Optional[_ToolLoopDetector] = None
+        self._tool_loop_block: Optional[dict] = None
+        self._tool_loop_evt: Optional[asyncio.Event] = None
         self._provider: Optional[str] = None
         self._model: Optional[str] = None
         self._last_usage: dict[str, int] = {}
@@ -4351,6 +4546,8 @@ class OpenCodeChatSession:
             return False
         if tipo == "session.status":
             self._note_retry_status((ev or {}).get("properties") or {})
+        elif tipo == "message.part.updated":
+            self._note_tool_part((ev or {}).get("properties") or {})
         self.last_activity = datetime.now(timezone.utc)
         bud = getattr(self, "_turn_budget", None)
         if bud is not None:
@@ -4377,6 +4574,52 @@ class OpenCodeChatSession:
         if evt is not None:
             evt.set()
 
+    def _note_tool_part(self, props: dict) -> None:
+        """A tool call of THIS turn, watched for loops (clodia-platform#692).
+
+        Never raises: a diagnostic must not break the stream that feeds it."""
+        det = getattr(self, "_tool_loop", None)
+        if det is None or not isinstance(props, dict):
+            return
+        part = props.get("part")
+        if not isinstance(part, dict):
+            return
+        sid = part.get("sessionID") or props.get("sessionID")
+        if sid and getattr(self, "_oc_session", None) and sid != self._oc_session:
+            return
+        try:
+            verdetto = det.feed_part(part)
+        except Exception as e:  # noqa: BLE001
+            LOG.debug("opencode[%s]: tool-loop guard skipped a part: %r", self.kind, e)
+            return
+        if verdetto and getattr(self, "_tool_loop_block", None) is None:
+            self._tool_loop_block = verdetto
+            evt = getattr(self, "_tool_loop_evt", None)
+            if evt is not None:
+                evt.set()
+
+    async def _stop_for_tool_loop(self, budget: "_TurnBudget") -> None:
+        """Abort the looping turn on opencode, record it, raise (#692)."""
+        loop = dict(getattr(self, "_tool_loop_block", None) or {})
+        # The same authenticated client of every other call to this serve
+        # (`_oc_http`, per-session basic auth since #706).
+        await self._abort_oc()
+        activity_log.append(self.kind, "error",
+                            {"error": "opencode tool loop", "chat_id": self.chat_id,
+                             "rule": loop.get("rule"), "tool": loop.get("tool"),
+                             "target": (str(loop.get("target"))[:300]
+                                        if loop.get("target") else None),
+                             "count": loop.get("count"), "calls": loop.get("calls"),
+                             "atteso_s": round(budget.elapsed(), 1)})
+        LOG.warning("opencode %s: turno fermato, ciclo di tool call (%s): %s su %s "
+                    "×%s (%.0fs)", self.kind, loop.get("rule"), loop.get("tool"),
+                    str(loop.get("target") or "-")[:200], loop.get("count"),
+                    budget.elapsed())
+        raise OpenCodeToolLoop(
+            _oc_tool_loop_message(loop=loop, model=self._model,
+                                  atteso=budget.elapsed()),
+            eventi=getattr(self, "_eventi_turno", None), loop=loop)
+
     async def _post_turn(self, c, body: dict, budget: "_TurnBudget"):
         """POST the turn message, unless the provider refuses it first (#552).
 
@@ -4389,8 +4632,16 @@ class OpenCodeChatSession:
         post = asyncio.ensure_future(
             c.post(url, json=body, timeout=self._budget_timeout(budget)))
         attesa = asyncio.ensure_future(evt.wait()) if evt is not None else None
+        levt = getattr(self, "_tool_loop_evt", None)
+        ciclo = asyncio.ensure_future(levt.wait()) if levt is not None else None
         guardia = asyncio.ensure_future(self._watchdog(budget))
-        gare = {post, guardia} | ({attesa} if attesa is not None else set())
+        gare = ({post, guardia} | ({attesa} if attesa is not None else set())
+                | ({ciclo} if ciclo is not None else set()))
+
+        def _cancel_others(*keep):
+            for t in gare:
+                if t not in keep:
+                    t.cancel()
         try:
             done, _ = await asyncio.wait(gare, return_when=asyncio.FIRST_COMPLETED)
         except BaseException:
@@ -4398,21 +4649,20 @@ class OpenCodeChatSession:
                 t.cancel()
             raise
         if post in done:
-            guardia.cancel()
-            if attesa is not None:
-                attesa.cancel()
+            _cancel_others(post)
             return post.result()
+        if ciclo is not None and ciclo in done:
+            # The tool calls loop (#692): stop now, not at the ceiling.
+            _cancel_others(ciclo)
+            await self._stop_for_tool_loop(budget)
         if guardia in done:
             # No progress for too long, or the ceiling: the turn stops here and
             # `_run_turn` reports it as a timeout, with the reason (12 Nov 2026).
-            post.cancel()
-            if attesa is not None:
-                attesa.cancel()
+            _cancel_others(guardia)
             import httpx
             self._oc_stop_reason = guardia.result()
             raise httpx.ReadTimeout(f"opencode turn stopped: {self._oc_stop_reason}")
-        guardia.cancel()
-        post.cancel()
+        _cancel_others(attesa)
         await self._abort_oc()
         motivo = getattr(self, "_provider_block", None) or "limite del provider"
         activity_log.append(self.kind, "error",
@@ -4766,6 +5016,12 @@ class OpenCodeChatSession:
         # the previous turn must not.
         self._provider_block = None
         self._provider_block_evt = asyncio.Event()
+        # Tool loops are counted per turn (#692): a fresh guard each time.
+        self._tool_loop = _ToolLoopDetector(
+            repeats=_OPENCODE_LOOP_REPEATS,
+            target_repeats=_OPENCODE_LOOP_TARGET_REPEATS)
+        self._tool_loop_block = None
+        self._tool_loop_evt = asyncio.Event()
         try:
             async with await self._http() as c:
                 r = await self._post_turn(c, body, budget)
