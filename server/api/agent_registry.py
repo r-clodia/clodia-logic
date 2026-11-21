@@ -120,8 +120,9 @@ def _sandbox_info(spec: AgentSpec) -> dict:
 
     Gemello di `_native_tools_info`, per lo strato sotto: quello dice quali
     strumenti il seed concede, questo come si stringe la shell che ha già.
-    `allow_shell_cmds` e compagni sono tradotti solo in
-    `.claude/settings.local.json`; su codex e opencode restano parole nel file,
+    Quale campo conta e dove lo dice `native_tools.SANDBOX_ENFORCED` (#665:
+    il vecchio `.claude/settings.local.json` non veniva caricato); dove un
+    campo non è applicato resta una parola nel file,
     mentre la scheda li mostrava come se contassero — una restrizione raccontata
     e inesistente è peggio di un campo assente (clodia-platform#296).
     """

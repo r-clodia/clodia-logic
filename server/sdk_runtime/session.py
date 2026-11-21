@@ -63,6 +63,7 @@ def _reply_text(text: str, n: int = _REPLY_MAX) -> str:
 from ..core import loop_lag, trace, turn_timing
 from .. import otel_export
 from .child_env import spawn_env
+from . import file_guard as _file_guard
 from ..core.events import bus
 from ..core.models import Event, ClodiaStatus
 from ..observability import langfuse_attributes, langfuse_observation, trace_io
@@ -585,7 +586,8 @@ def _bash_rule_hits(rule: str, command: str) -> bool:
 
 
 def _permission_gate(disallowed: list[str] | None, chat_id: str = "",
-                     gated: set[str] | None = None, consent=None):
+                     gated: set[str] | None = None, consent=None,
+                     cwd: str | None = None):
     """`can_use_tool` che approva tutto TRANNE ciò che è nella blocklist.
 
     Il confronto è sul nome del tool e sulla sua base (`Bash(rm:*)` → `Bash`):
@@ -613,6 +615,12 @@ def _permission_gate(disallowed: list[str] | None, chat_id: str = "",
     async def _gate(tool_name: str, tool_input: dict,
                     ctx: ToolPermissionContext):
         nome = str(tool_name or "")
+        # The platform's deny list (#665): before anything a seed or a person
+        # may grant, because nothing grants it.
+        protetto = _file_guard.refused(nome, tool_input or {}, cwd)
+        if protetto:
+            return PermissionResultDeny(
+                message=f"'{nome}' negato: {protetto} (clodia-platform#665).")
         if nome in su_consenso:
             # #570: a person decides, through the gateway's gate. Any failure
             # to ask is a no.
@@ -1300,6 +1308,22 @@ def _resolve_native_gated_declared(kind: str) -> list[str]:
                     kind, type(e).__name__)
         dichiarati = None
     return [t for t in (dichiarati or []) if t in GATEABLE_NATIVE_TOOLS]
+
+
+def _resolve_shell_denied(kind: str, scratch=None) -> list[str]:
+    """The seed's `sandbox.deny_shell_patterns` as `Bash(<pattern>)` rules
+    (clodia-platform#665).
+
+    They used to go only into `.claude/settings.local.json`, which the SDK
+    never loads (no `setting_sources`): on claude they were inert. Here they
+    join the blocklist the permission gate applies to every command
+    (`_bash_rule_hits`)."""
+    from . import native_tools as _nt
+    try:
+        return _nt.claude_shell_rules(getattr(_kind_spec(kind), "sandbox", None), scratch)
+    except Exception as e:  # noqa: BLE001 — an unreadable seed adds nothing
+        LOG.warning("sandbox di %s non leggibile (%s)", kind, type(e).__name__)
+        return []
 
 
 def _resolve_disallowed_tools(kind: str) -> list[str]:
@@ -2007,7 +2031,8 @@ class ChatSession:
         # Calcolata PRIMA del ramo root, perché su root è il callback a decidere
         # e deve conoscerla: passarla solo a `disallowed_tools` la rendeva inerte.
         disallowed = list(_resolve_disallowed_tools(self.kind))
-        for t in _resolve_native_denied(self.kind):
+        for t in (_resolve_native_denied(self.kind)
+                  + _resolve_shell_denied(self.kind, getattr(self._spawn, "scratch", None))):
             if t not in disallowed:
                 disallowed.append(t)
         for t in _UNATTENDED_DENIED if getattr(self, "unattended", False) else ():
@@ -2038,7 +2063,8 @@ class ChatSession:
                     opts_kwargs.pop("disallowed_tools", None)
             opts_kwargs["can_use_tool"] = _permission_gate(
                 disallowed, self.chat_id, gated=set(gated),
-                consent=self._native_consent if gated else None)
+                consent=self._native_consent if gated else None,
+                cwd=str(opts_kwargs["cwd"]) if opts_kwargs.get("cwd") else None)
         elif permission_mode_override:
             opts_kwargs["permission_mode"] = permission_mode_override
         # clodia-tools via MCP HTTP (microservizio segregato): conio un token
