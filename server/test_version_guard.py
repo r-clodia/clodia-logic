@@ -259,5 +259,216 @@ class IlRepositoryPassaIlProprioControllo(unittest.TestCase):
         self.assertTrue(version_guard.is_newer(versione, "0.0.0"))
 
 
+# ---------------------------------------------------------------------------
+# clodia-platform#355, point 2: versions claimed by other open PRs. The GitHub
+# API is never contacted: every test passes a fake `fetch(url, accept)`.
+# ---------------------------------------------------------------------------
+
+import json
+import urllib.error
+from unittest import mock
+
+API = "https://api.example"
+REPO = "r-clodia/repo"
+
+
+class FakeGitHub:
+    """Answers `/pulls` pages and `/contents/...?ref=<sha>` from a dict of
+    `{number: version}`; `None` as a version means "file unreadable"."""
+
+    def __init__(self, prs, page_size=100, broken_listing=False):
+        self.prs = prs
+        self.page_size = page_size
+        self.broken_listing = broken_listing
+        self.calls = []
+
+    def __call__(self, url, accept):
+        self.calls.append(url)
+        if "/pulls?" in url:
+            if self.broken_listing:
+                raise version_guard.ApiError("HTTP 502 from " + url)
+            self.base = re.search(r"base=([^&]+)", url).group(1)
+            page = int(re.search(r"[?&]page=(\d+)", url).group(1))
+            items = sorted(self.prs, reverse=True)
+            chunk = items[(page - 1) * self.page_size : page * self.page_size]
+            return json.dumps([{"number": n, "head": {"sha": f"sha{n}"}} for n in chunk])
+        number = int(re.search(r"ref=sha(\d+)", url).group(1))
+        version = self.prs[number]
+        if version is None:
+            raise version_guard.ApiError("HTTP 404 from " + url)
+        return f'__version__ = "{version}"\nPLATFORM_VERSION = "8.0"\n'
+
+
+def _quiet(fn, *args, **kwargs):
+    out = io.StringIO()
+    with redirect_stdout(out), redirect_stderr(out):
+        result = fn(*args, **kwargs)
+    return result, out.getvalue()
+
+
+class ReadsTheOpenPullRequests(unittest.TestCase):
+    def test_lists_only_prs_towards_the_same_base(self):
+        gh = FakeGitHub({11: "1.2.0"})
+        version_guard.open_pull_requests(REPO, "main", gh, API)
+        self.assertEqual(gh.base, "main")
+        self.assertIn("state=open", gh.calls[0])
+        self.assertIn("per_page=100", gh.calls[0])
+
+    def test_follows_pagination_until_a_short_page(self):
+        gh = FakeGitHub({n: "1.0.0" for n in range(1, 251)})
+        prs = version_guard.open_pull_requests(REPO, "main", gh, API)
+        self.assertEqual(len(prs), 250)
+        self.assertEqual(sum("/pulls?" in c for c in gh.calls), 3)
+
+    def test_reads_each_version_at_the_pr_head_and_skips_its_own(self):
+        gh = FakeGitHub({10: "1.3.0", 11: "1.4.0", 12: "1.5.0"})
+        claims, _ = _quiet(version_guard.claimed_versions, REPO, "main", 11, gh, API)
+        self.assertEqual(claims, {10: "1.3.0", 12: "1.5.0"})
+        self.assertFalse(any("ref=sha11" in c for c in gh.calls))
+        self.assertTrue(any(c.endswith("contents/server/__init__.py?ref=sha10") for c in gh.calls))
+
+    def test_an_unreadable_pr_is_a_warning_not_a_failure(self):
+        """Somebody else's malformed branch must not block this PR."""
+        gh = FakeGitHub({10: None, 12: "not-a-version", 13: "1.5.0"})
+        claims, out = _quiet(version_guard.claimed_versions, REPO, "main", 11, gh, API)
+        self.assertEqual(claims, {13: "1.5.0"})
+        self.assertIn("::warning::", out)
+        self.assertIn("#10", out)
+        self.assertIn("#12", out)
+
+    def test_a_listing_failure_raises(self):
+        with self.assertRaises(version_guard.ApiError):
+            version_guard.claimed_versions(REPO, "main", 1, FakeGitHub({}, broken_listing=True), API)
+
+
+class DecidesWhoKeepsTheVersion(unittest.TestCase):
+    def test_lower_pr_number_keeps_the_version(self):
+        older, newer = version_guard.collisions(626, "6.367.1", {625: "6.367.1", 627: "6.367.1", 628: "6.368.0"})
+        self.assertEqual((older, newer), ([625], [627]))
+
+    def test_missing_components_count_as_zero(self):
+        older, _ = version_guard.collisions(9, "1.2", {3: "1.2.0"})
+        self.assertEqual(older, [3])
+
+    def test_different_versions_do_not_collide(self):
+        self.assertEqual(version_guard.collisions(9, "1.2.1", {3: "1.2.0"}), ([], []))
+
+    def test_suggestion_bumps_the_same_component_above_every_claim(self):
+        claimed = ["6.367.1", "6.368.0", "6.368.1"]
+        self.assertEqual(version_guard.suggest_free("6.367.1", "6.367.0", claimed), "6.368.2")
+        self.assertEqual(version_guard.suggest_free("6.368.0", "6.367.0", claimed), "6.369.0")
+        self.assertEqual(version_guard.suggest_free("7.0.0", "6.367.0", claimed), "8.0.0")
+
+
+class TheOpenPrCheck(unittest.TestCase):
+    def _env(self, number=626, token="t"):
+        fd, path = tempfile.mkstemp(suffix=".json")
+        with os.fdopen(fd, "w") as f:
+            json.dump({"pull_request": {"number": number}}, f)
+        self.addCleanup(os.unlink, path)
+        env = {"GITHUB_REPOSITORY": REPO, "GITHUB_EVENT_PATH": path, "GITHUB_API_URL": API}
+        if token:
+            env["GITHUB_TOKEN"] = token
+        return env
+
+    def test_collision_with_an_older_pr_fails_and_names_it(self):
+        """The real case of 21 Nov 2026: logic#625 and #626 both on 6.367.1."""
+        gh = FakeGitHub({625: "6.367.1", 624: "6.368.0", 627: "6.368.1"})
+        code, out = _quiet(version_guard.check_open_prs, "6.367.1", "6.367.0", "main", self._env(626), gh)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::", out)
+        self.assertIn("#625", out)
+        self.assertIn("6.368.2", out)
+
+    def test_the_older_pr_stays_green_and_warns_about_the_newer(self):
+        gh = FakeGitHub({626: "6.367.1"})
+        code, out = _quiet(version_guard.check_open_prs, "6.367.1", "6.367.0", "main", self._env(625), gh)
+        self.assertEqual(code, 0)
+        self.assertIn("::warning::#626", out)
+
+    def test_free_version_passes(self):
+        gh = FakeGitHub({625: "6.367.1", 624: "6.368.0"})
+        code, out = _quiet(version_guard.check_open_prs, "6.369.0", "6.367.0", "main", self._env(630), gh)
+        self.assertEqual(code, 0)
+        self.assertIn("ok", out)
+
+    def test_api_failure_is_red_not_green(self):
+        gh = FakeGitHub({}, broken_listing=True)
+        code, out = _quiet(version_guard.check_open_prs, "6.369.0", "6.367.0", "main", self._env(630), gh)
+        self.assertEqual(code, 1)
+        self.assertIn("::error::", out)
+
+    def test_without_a_token_it_says_how_to_wire_it(self):
+        code, out = _quiet(version_guard.check_open_prs, "6.369.0", "6.367.0", "main", self._env(630, token=None))
+        self.assertEqual(code, 1)
+        self.assertIn("GITHUB_TOKEN", out)
+
+    def test_outside_a_pull_request_it_fails(self):
+        code, out = _quiet(version_guard.check_open_prs, "6.369.0", "6.367.0", "main", {"GITHUB_TOKEN": "t"})
+        self.assertEqual(code, 1)
+
+    def test_pr_number_falls_back_to_the_merge_ref(self):
+        self.assertEqual(version_guard.pull_request_number(None, "refs/pull/42/merge"), 42)
+        self.assertIsNone(version_guard.pull_request_number(None, "refs/heads/main"))
+
+    def test_open_prs_requires_base_ref(self):
+        with self.assertRaises(SystemExit):
+            _quiet(version_guard.main, ["--base", "x", "--open-prs"])
+
+
+class TheHttpLayer(unittest.TestCase):
+    def _http_error(self, code, remaining):
+        headers = {"x-ratelimit-remaining": remaining}
+        return urllib.error.HTTPError("https://api.example/x", code, "no", headers, None)
+
+    def test_rate_limit_is_reported_as_such(self):
+        with mock.patch("urllib.request.urlopen", side_effect=self._http_error(403, "0")):
+            with self.assertRaisesRegex(version_guard.ApiError, "rate limit"):
+                version_guard._fetch("https://api.example/x", "t", "application/json")
+
+    def test_other_http_errors_carry_the_status(self):
+        with mock.patch("urllib.request.urlopen", side_effect=self._http_error(404, "999")):
+            with self.assertRaisesRegex(version_guard.ApiError, "404"):
+                version_guard._fetch("https://api.example/x", "t", "application/json")
+
+    def test_sends_the_token_and_the_accept_header(self):
+        seen = {}
+
+        class Response(io.BytesIO):
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *exc):
+                return False
+
+        def fake_urlopen(request, timeout):
+            seen["auth"] = request.get_header("Authorization")
+            seen["accept"] = request.get_header("Accept")
+            return Response(b"body")
+
+        with mock.patch("urllib.request.urlopen", side_effect=fake_urlopen):
+            self.assertEqual(version_guard._fetch("https://api.example/x", "tok", "raw"), "body")
+        self.assertEqual(seen, {"auth": "Bearer tok", "accept": "raw"})
+
+
+class TheOpenPrCheckIsWiredIntoCi(unittest.TestCase):
+    """Static on purpose, like `IlGuardEAgganciatoAllaCI`: what must stay true
+    is the wiring, and an unwired check is code that no machine runs."""
+
+    ROOT = pathlib.Path(__file__).resolve().parent.parent
+
+    def test_version_check_asks_for_the_open_pr_check(self):
+        recipe = re.search(r"^version-check:[^\n]*\n((?:\t[^\n]*\n?)*)",
+                           (self.ROOT / "Makefile").read_text(encoding="utf-8"), re.MULTILINE)
+        self.assertIsNotNone(recipe)
+        self.assertIn("--open-prs", recipe.group(1))
+
+    def test_the_workflow_grants_read_access_and_passes_the_token(self):
+        workflow = (self.ROOT / ".github" / "workflows" / "tests.yml").read_text(encoding="utf-8")
+        self.assertRegex(workflow, r"(?m)^\s+pull-requests:\s*read\s*$")
+        self.assertIn("GITHUB_TOKEN: ${{ github.token }}", workflow)
+        self.assertNotRegex(workflow, r"(?m)^\s+pull-requests:\s*write")
+
+
 if __name__ == "__main__":
     unittest.main()
