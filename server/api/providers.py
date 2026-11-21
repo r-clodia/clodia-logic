@@ -949,7 +949,12 @@ CODEX_HOME_DIR = data_path("data/codex-home")
 def codex_home() -> "os.PathLike | None":
     """Path di un CODEX_HOME pronto all'uso se l'abbonamento OpenAI è connesso,
     altrimenti None. Scrive auth.json (0600) la prima volta; se esiste già lo
-    lascia a codex, che vi rinnova il token in autonomia."""
+    lascia a codex, che vi rinnova il token in autonomia.
+
+    This is the ChatGPT-subscription home ONLY (provider `codex`). A turn that
+    a seed explicitly routes to an API-key provider never uses it: it runs in a
+    dedicated per-session home with that provider's key and
+    `forced_login_method = "api"` (`codex_api_key`, clodia-platform#491)."""
     d = _read("codex")
     if not d or d.get("method") != "subscription":
         return None
@@ -959,6 +964,31 @@ def codex_home() -> "os.PathLike | None":
         auth_path.write_text(json.dumps(openai_oauth.auth_json_from_stored(d)))
         os.chmod(auth_path, 0o600)
     return CODEX_HOME_DIR
+
+
+def normalize_provider_id(pid: str | None) -> str | None:
+    """Public form of `_normalize`: legacy alias → current provider id."""
+    return _normalize(pid)
+
+
+def provider_mechanism(pid: str | None) -> str | None:
+    """`apikey` | `subscription` for a known provider, None otherwise."""
+    return (_CATALOG.get(_normalize(pid) or "") or {}).get("mechanism")
+
+
+def codex_api_key(pid: str | None) -> str | None:
+    """The API key with which the codex CLI authenticates on provider `pid`, or
+    None when `pid` is not a codex-SDK API-key provider or has no key.
+
+    Read through `provider_env` (the vault of the gateway), the same path every
+    other runtime takes for its credential: the key never transits the model
+    and the caller must never log it (clodia-platform#491)."""
+    pid = _normalize(pid)
+    meta = _CATALOG.get(pid or "")
+    if (not meta or meta.get("sdk") != "codex" or meta.get("mechanism") != "apikey"
+            or not meta.get("apikey_env")):
+        return None
+    return provider_env(pid).get(meta["apikey_env"]) or None
 
 
 def provider_env(pid: str | None = None) -> dict[str, str]:
