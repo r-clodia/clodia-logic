@@ -53,6 +53,11 @@ can change `recent_messages`, `threshold`, or `margin` without rebuilding or
 restarting by writing `CLODIA_DATA/routing/router.yaml`; partial overrides are
 merged over the versioned defaults and picked up on the next routing decision.
 
+The same file's `acknowledgements` section controls which bare acknowledgements
+(«ok», «ricevuto», «grazie», 👍, `@agent ok`) are stored without starting an
+agent turn (clodia-platform#551): `enabled`, `max_chars`, and the `phrases`,
+`patterns` and `emoji` lists (an instance list replaces the default one).
+
 The bundled seeds are `archseed` (abstract, the ancestor that holds the base
 verbs and cannot be spawned), `clodia`, `ophelia`, `segretario`,
 `sysadmin`. The retired `messaggero` (clodia-platform#531) is replaced by the

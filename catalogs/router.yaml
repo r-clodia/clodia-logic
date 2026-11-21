@@ -7,3 +7,19 @@ recent_messages: 3
 # multilingual-e5-small cosine floor and minimum lead over the runner-up.
 threshold: 0.80
 margin: 0.015
+
+# Bare acknowledgements start no agent turn (clodia-platform#551): «ok»,
+# «ricevuto», «grazie», «👍», «@clodia ok». The message is stored and shown;
+# only the turn is skipped. A message is an acknowledgement when it has no
+# attachment and no «?», is at most `max_chars` long once the @mentions are
+# removed, and EVERY clause (split on , . ; : ! / - and newlines) is one of
+# `phrases`, fully matches one of `patterns`, or is only `emoji`.
+# Affirmative answers («sì», «yes», «procedi», «fatto») are left out on purpose:
+# after «Procedo?» they are the go-ahead.
+# `phrases`, `patterns` and `emoji` default to the lists in
+# server/api/acknowledgement.py; a list set here or in the instance file
+# REPLACES the default one (it does not extend it). `enabled: false` turns the
+# filter off.
+acknowledgements:
+  enabled: true
+  max_chars: 60

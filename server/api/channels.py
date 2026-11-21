@@ -41,7 +41,8 @@ from ..sdk_runtime.session import (take_reasoning, manager, ProviderNotConnected
                                    spawn_dirs_of, topic_runtime_override,
                                    session_provider, SessioneTerminata,
                                    OpenCodeTurnTimeout)
-from . import (access_log, admin, mentions, presence, responder_routing,
+from . import (access_log, acknowledgement, admin, mentions, presence,
+               responder_routing,
                router_config, routing_feedback, topics_client)
 from .gateway_pdp import require_authz, require_authz_async
 from .agents import _principal_from_request, _signed_actor
@@ -998,6 +999,8 @@ async def _report_back(tier: str, name: str, responder: str, chat,
         # non ha svegliato nessuno, e il ritorno deve partire lo stesso.
         if caller in {_seed_name(x) for x in hard}:
             return                      # l'ha già chiamato lui: un evento, un turno
+        if acknowledgement.is_bare_acknowledgement(esito):
+            return                      # «ok, ricevuto» non è un esito (#551)
         spec = registry.get_by_name(caller)
         if spec is None or getattr(spec, "type", "") != "bot":
             return
@@ -1235,6 +1238,14 @@ async def _maybe_delegate(tier: str, name: str, from_agent: str, reply_text: str
     tier_real = meta.get("tier", tier)
     participants = meta.get("participants", [])
     hard = _tags(reply_text or "")
+    # «@clodia Ok / Ricevuto / resto disponibile» non è una delega: è il loop di
+    # clodia-platform#551, che bruciava i 15 hop della catena a colpi di
+    # conferme e chiudeva con l'anomalia `delegation_limit`. Una sola conferma
+    # non convoca nessuno, e non arriva nemmeno al controllo del limite.
+    if hard and acknowledgement.is_bare_acknowledgement(reply_text):
+        LOG.info("delega %s/%s da %s: sola conferma, nessun turno (#551)",
+                 tier, name, from_agent)
+        return
     # Confronti per SEED: 'fullstack-dev#2' che tagga @fullstack-dev non deve
     # auto-delegarsi; il tag con ordinale (@nome#N) resta valido se il SEED è
     # partecipante (issue#94).
@@ -4747,8 +4758,14 @@ async def post_channel_message(
     kind: str = "human",
     trusted_internal: bool = False,
     skip_if_busy: bool = False,
+    attachments: list[str] | None = None,
 ) -> dict:
     """Persist a channel message and enqueue responders through normal routing.
+
+    A bare acknowledgement («ok», «grazie», «👍», «@clodia ricevuto») is stored
+    and shown like any other message but starts no turn (clodia-platform#551,
+    see `acknowledgement`). `attachments` are forwarded to the store; a
+    message that carries one is never an acknowledgement.
 
     HTTP posts use the membership check. Trusted internal producers such as the
     topic scheduler may bypass that check, but still run with an unprivileged
@@ -4785,7 +4802,11 @@ async def post_channel_message(
             prior_messages, participants, tier_real)
 
     # 1. registra il messaggio nel canale
-    msg = await topics_client.async_post_message(tier, name, principal, content, kind=kind)
+    if attachments:
+        msg = await topics_client.async_post_message(
+            tier, name, principal, content, kind=kind, attachments=list(attachments))
+    else:
+        msg = await topics_client.async_post_message(tier, name, principal, content, kind=kind)
     # The message is the event the turns below exist for (#465).
     audit_events.message_posted((msg or {}).get("id") if isinstance(msg, dict) else None)
     await _channel_message(tier, name, principal, kind,
@@ -4797,6 +4818,30 @@ async def post_channel_message(
                          "text": " ".join((content or "").split())[:160]})
     if not respond:
         return {"posted": True, "responder": None}
+
+    # 1b. SOLA CONFERMA → nessun turno (clodia-platform#551). «ok», «grazie»,
+    #     «@clodia ricevuto» non chiedono nulla: il messaggio resta nel canale,
+    #     ma nessun agente si sveglia per rispondere «prego». Restano fuori dal
+    #     filtro i trigger interni fidati (scheduler, posta), la risposta a un
+    #     dialogo di routing e la prima risposta dell'owner al benvenuto, che
+    #     consuma il ruolo del coordinatore introduttivo.
+    if (not trusted_internal and pending_routing_request is None
+            and bootstrap_responder is None
+            and acknowledgement.is_bare_acknowledgement(content, attachments)):
+        LOG.info("canale %s/%s: sola conferma da %s → nessun turno (#551)",
+                 tier, name, principal)
+        try:
+            payload = {"tier": tier, "name": name, "mode": "acknowledgement",
+                       "reason": "sola conferma, nessuna richiesta: nessun turno",
+                       "chosen": None, "candidates": [], "eligible": []}
+            # Solo la barra 🧭: nessuna decisione di routing è stata presa, e
+            # contarla in `routing_feedback` la farebbe finire nel secchio `rank`.
+            await bus.publish(Event(type="routing_decision", payload=payload,
+                                    timestamp=datetime.now(timezone.utc)))
+        except Exception as e:  # noqa: BLE001 — un segnale non rompe il post
+            LOG.debug("routing_decision conferma non pubblicato: %s", e)
+        return {"posted": True, "responder": None, "acknowledgement": True,
+                "note": "sola conferma: nessun turno avviato"}
 
     # 2. DESTINATARI. @tag = richiesta diretta e unica convocazione; `@` è
     #    l'unico sigillo di menzione (#391, il `$` è degli alias del composer).
