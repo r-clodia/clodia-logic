@@ -247,6 +247,9 @@ QUERY_TIMEOUT         = 90         # invio prompt al subprocess: oltre = client 
 # Abbassarlo avrebbe però ucciso turni lenti legittimi — una perdita certa in
 # cambio di un guadagno inesistente. Chi lo blocca lo misura: `core.loop_lag`.
 WATCHDOG_SILENCE = int(os.environ.get("CLODIA_TURN_WATCHDOG_SILENCE", "180"))
+#: How long a user interrupt may take to stop the subprocess and drain the
+#: cancelled query's answer before the client is recreated instead (#502).
+INTERRUPT_DRAIN_S = float(os.environ.get("CLODIA_INTERRUPT_DRAIN_S", "15"))
 WATCHDOG_TICK    = 15
 
 #: RITIRATA il 7 ago 2026. Era la chat creata al boot, `topic: null`, protetta
@@ -2447,6 +2450,12 @@ class ChatSession:
                         generation.update(output=trace_io(note),
                                           metadata={"status": "watchdog" if wd else "interrupted"})
                         await self._set_status(ClodiaStatus.CANCELLING)
+                        if not wd:
+                            # #502: the subprocess is still answering the
+                            # cancelled query into the stream every turn
+                            # reads. Stop it and drain its answer, or the next
+                            # turn would read it as its own (Q_n gets A_n-1).
+                            await self._settle_after_interrupt()
                         await self._record({"role": "system", "content": note})
                         await bus.publish(Event(
                             type="interrupted",
@@ -2542,6 +2551,42 @@ class ChatSession:
         task.cancel()
         return True
 
+    async def _settle_after_interrupt(self) -> None:
+        """After a user interrupt (⏹ or the router's override, R9), leave the
+        client with NOTHING of the cancelled query in its stream (#502).
+
+        The `ClaudeSDKClient` is long-lived and its messages are one buffered
+        stream shared by every turn; `receive_response()` reads from its head
+        up to the first `ResultMessage`. Cancelling the reading task does not
+        stop the subprocess: it keeps answering the old query, and the next
+        turn used to read that answer as its own — a persistent one-turn shift.
+
+        First choice: `client.interrupt()` and drain up to the interrupted
+        query's `ResultMessage`, within `INTERRUPT_DRAIN_S`; the conversation
+        (the subprocess's memory) survives. If that does not complete, the
+        client is recreated (`_recover_session`), as the timeout and error
+        branches already do: the context is lost, the shift cannot happen."""
+        client = self._client
+        if client is None:
+            return
+        try:
+            await asyncio.wait_for(client.interrupt(), timeout=INTERRUPT_DRAIN_S)
+            async with asyncio.timeout(INTERRUPT_DRAIN_S):
+                async for message in client.receive_response():
+                    if isinstance(message, ResultMessage):
+                        LOG.info("sessione %s: turno interrotto, stream svuotato",
+                                 self.chat_id)
+                        return
+            # The stream ended without the interrupted query's result: its
+            # state is unknown, so it is not trusted for the next turn.
+            raise RuntimeError("stream chiuso senza il risultato del turno interrotto")
+        except Exception as e:  # noqa: BLE001 — any failure falls back to a new client
+            LOG.warning("sessione %s: svuotamento dopo l'interruzione non riuscito "
+                        "(%s), ricreo il client", self.chat_id, type(e).__name__)
+        self._recover_cause = "user_interrupt"
+        if not await self._recover_session():
+            await self._set_status(ClodiaStatus.ERROR)
+
     def _silence_diagnosis(self, silence: float) -> str:
         """Il silenzio, e **di chi** è la colpa (clodia-platform#358).
 
@@ -2621,6 +2666,10 @@ class ChatSession:
 
         start = asyncio.get_event_loop().time()
         iterator = self._client.receive_response().__aiter__()
+        # #502: a `ResultMessage` before ANY event of this query closes an
+        # earlier query (left in the shared stream). It is discarded and
+        # logged, never taken as this turn's answer: a shift is never silent.
+        seen_any = False
         while True:
             elapsed = asyncio.get_event_loop().time() - start
             if elapsed >= COLLECT_MAX_SECONDS:
@@ -2657,6 +2706,14 @@ class ChatSession:
                 raise asyncio.TimeoutError(
                     self._silence_diagnosis(chunk_timeout)) from None
 
+            if isinstance(message, ResultMessage) and not seen_any:
+                LOG.warning("sessione %s: risultato di un turno precedente nello "
+                            "stream, scartato (#502)", self.chat_id)
+                # `receive_response()` ends at the first result: a fresh one
+                # reads this query's messages, still under the chunk timeout.
+                iterator = self._client.receive_response().__aiter__()
+                continue
+            seen_any = True
             self._last_event_at = asyncio.get_event_loop().time()  # progresso → watchdog quieto
             # `getattr` e non `+=`: un contatore diagnostico non deve poter
             # uccidere il turno su cui gira. Una sessione costruita senza
