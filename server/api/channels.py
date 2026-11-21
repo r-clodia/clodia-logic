@@ -5921,8 +5921,22 @@ async def channel_reasoning_read(tier: str, name: str, message_id: str,
     topic = await topics_client.async_open_topic(tier, name)
     if not topic:
         raise HTTPException(404, "channel not found")
-    _require_member(request, topic.get("meta", {}))
+    # Who read what, or was refused it, on the trail (#485, parity with #444).
+    from .. import audit_events
+
+    def _audit(outcome: str) -> None:
+        ev = audit_events.reasoning_read(tier, name, message_id,
+                                         _principal_from_request(request), outcome)
+        if ev:
+            audit_events._bg(ev)
+
+    try:
+        _require_member(request, topic.get("meta", {}))
+    except HTTPException:
+        _audit("denied")
+        raise
     entry = await asyncio.to_thread(reasoning_log.read, tier, name, message_id)
+    _audit("read" if entry else "not_found")
     if not entry:
         raise HTTPException(404, "no reasoning stored for this message")
     return {"message_id": entry.get("message_id"), "spawn": entry.get("spawn"),

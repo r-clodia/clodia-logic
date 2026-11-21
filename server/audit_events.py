@@ -629,6 +629,38 @@ def override(tier: str, name: str, who: str | None, misrouted, chosen, outcome) 
             "decision": {"misrouted": misrouted or None, "chosen": chosen}}
 
 
+#: Reads below this tier are not recorded, as on the gateway (#444): the same
+#: variable, so the two sides of the trail cannot diverge.
+READS_MIN_TIER = os.environ.get("CLODIA_AUDIT_READS_MIN_TIER", "SEAL-2")
+
+
+def _seal(tier: str | None) -> int:
+    u = str(tier or "").strip().upper()
+    if u.startswith("P") and u[1:].isdigit():
+        u = f"SEAL-{u[1:]}"
+    try:
+        return int(u.replace("SEAL-", ""))
+    except ValueError:
+        return 0
+
+
+def reasoning_read(tier: str, name: str, message_id: str, who: str | None,
+                   outcome: str) -> dict | None:
+    """A person opening the stored reasoning of one bubble (#485), or being
+    refused it. Reasoning quotes the channel, so it is read evidence like the
+    gateway's `human.view` of the topic itself (#444); unlike a view it is not
+    windowed: each 💭 opened is one deliberate read, as a download is.
+
+    `outcome`: `read` | `denied` | `not_found`. None below `READS_MIN_TIER`."""
+    if _seal(tier) < _seal(READS_MIN_TIER):
+        return None
+    return {"type": "human.view", "action": "open",
+            "resource": f"reasoning:{tier}/{name}/{message_id}",
+            "scope": _scope(tier, name),
+            "actor": {"type": "human", "id": who} if who else {"type": "anonymous"},
+            "result": {"what": "reasoning", "message_id": message_id, "outcome": outcome}}
+
+
 def recover(chat_id: str | None, seed: str | None, spawn: str | None, cause: str,
             ok: bool) -> dict:
     parts = str(chat_id or "").split(":")
