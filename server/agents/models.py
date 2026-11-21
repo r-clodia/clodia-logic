@@ -40,9 +40,15 @@ def normalize_agent_type(value: object) -> str:
 _RETIRED_SANDBOX_KEYS = ("allow_read", "deny_read", "allow_write")
 
 #: Seed keys that no longer do anything, dropped on load for the same reason:
-#: `tool_permissions` (#626/#656), the RAG grants (#669) and the `telegram`
-#: contact (Telegram removed, #683).
-_RETIRED_AGENT_KEYS = ("tool_permissions", "rag_read", "rag_write", "telegram")
+#: `tool_permissions` (#626/#656), the RAG grants (#669), the `telegram`
+#: contact (Telegram removed, #683) and the per-agent verb lists
+#: `allowed_tools`, `profile_tools`, `gated_tools` (#644: the room decides the
+#: verbs, with no per-agent exceptions).
+_RETIRED_AGENT_KEYS = ("tool_permissions", "rag_read", "rag_write", "telegram",
+                       "allowed_tools", "profile_tools", "gated_tools")
+#: The per-agent verb lists retired by #644: a seed that still carries them is
+#: told so in its warnings (`loader`), not only in a debug line.
+RETIRED_VERB_KEYS = ("allowed_tools", "profile_tools", "gated_tools")
 
 
 def _drop_retired(raw: object, keys: tuple[str, ...], where: str) -> object:
@@ -573,23 +579,6 @@ class AgentSpec(BaseModel):
     #:
     #: Forma: `["leads-mcp.update_lead", "leads-mcp.add_contact_log"]`.
     auto_approved_tools: Optional[list[str]] = None
-    #: Verbi che, per QUESTO agent, richiedono un consenso umano a ogni uso.
-    #:
-    #: Dichiarati qui perché è il posto in cui si sa quali dei propri verbi sono
-    #: pericolosi: chi scrive il seed di un agente GitHub sa che `push_files` va
-    #: chiesto e `list_branches` no. Prima esistevano SOLO nella config del
-    #: gateway, messi a mano: `fullstack-dev` (15 mutazioni GitHub), `sysadmin`
-    #: (creare/cancellare agenti, restart, backup) e `messaggero` avevano i gate
-    #: perché qualcuno aveva eseguito uno script una volta — e un'istanza nuova
-    #: dai pack nasceva senza. Un controllo che non viaggia col seed non esiste
-    #: per il primo clone.
-    #:
-    #: Questa lista è una DICHIARAZIONE, non l'autorità. L'enforcement legge la
-    #: copia nella config del gateway, dove l'agente non scrive: questo file vive
-    #: sulla datadir insieme al codice degli agenti, e un agente capace di
-    #: riscriverlo cancellerebbe i propri gate — cioè si auto-escalerebbe al
-    #: silenzio. La copia avviene alla registrazione (register_agent), come per
-    #: le dichiarazioni di flusso dei pack.
     #: Topic che l'agente PORTA CON SÉ: raggiungibili da qualunque stanza, senza
     #: gate. È lo «scope proprio dell'agente» — l'archivio aziendale che
     #: `impiegato-tomato` consulta ovunque lavori senza copiarlo in ogni topic.
@@ -609,9 +598,7 @@ class AgentSpec(BaseModel):
     #: perché una RIMOZIONE va dichiarata: col default a lista vuota,
     #: «assente» e «vuoto» collassavano e togliere una voce da un seed non
     #: arrivava mai a destinazione — verificato il 7 ago 2026 su messaggero.
-    gated_tools: Optional[list[str]] = None
-    #: Verbi gated SOLO dentro un canale di topic. Stessa custodia di
-    #: `gated_tools` e stessa ragione. Serve dove il verbo È il mestiere
+    #: Verbi gated SOLO dentro un canale di topic, custoditi dal gateway. Serve dove il verbo È il mestiere
     #: dell'agente — un postino che spedisce — e ciò che cambia dentro un canale
     #: non è la pericolosità del verbo ma CHI può chiederlo: i partecipanti non
     #: sono l'owner, e il contenuto che possono far uscire è tutta la stanza.
@@ -623,16 +610,13 @@ class AgentSpec(BaseModel):
     #: «assente» e «vuoto» collassavano e togliere una voce da un seed non
     #: arrivava mai a destinazione — verificato il 7 ago 2026 su messaggero.
     gated_in_channel: Optional[list[str]] = None
-    #: Il MESTIERE dichiarato: i verbi che l'agente usa senza chiedere. Ciò che
-    #: raggiunge e NON dichiara resta raggiungibile ma passa da un consenso —
-    #: least authority per supervisione invece che per rimozione. Stessa custodia
-    #: di `gated_tools`: dichiarato qui, enforced dal gateway.
-    #: `None` = il seed NON si pronuncia (il gateway tiene ciò che ha);
-    #: `[]` = dichiarato vuoto (il gateway azzera). La distinzione esiste
-    #: perché una RIMOZIONE va dichiarata: col default a lista vuota,
-    #: «assente» e «vuoto» collassavano e togliere una voce da un seed non
-    #: arrivava mai a destinazione — verificato il 7 ago 2026 su messaggero.
-    profile_tools: Optional[list[str]] = None
+    #: Verbs that do NOT come from a room (clodia-platform#644). Since
+    #: #617/#620/#626 the room decides an agent's verbs (A·V·R·Q tuples, MCPs
+    #: authorised per room, tools switched off per instance), with no
+    #: per-agent exceptions: `allowed_tools`, `profile_tools` and `gated_tools`
+    #: are retired. This list is reserved for the verbs a room cannot give, to
+    #: be defined; empty by default and empty everywhere for now.
+    special_verbs: list[str] = Field(default_factory=list)
     # Volume montabili dichiarati (id da CLODIA_DATA/volumes.yaml, spec §3.4).
     # Tradotti in regole sandbox alla creazione del workspace effimero.
     volumes: list[str] = Field(default_factory=list)

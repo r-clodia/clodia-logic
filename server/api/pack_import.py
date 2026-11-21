@@ -304,15 +304,13 @@ def _install_seed(sdir: Path, *, force: bool = False,
     avviso: str | None = None
     try:
         from . import gateway_admin
-        # NIENTE `or None` su questi tre: `[]` significa «dichiarato vuoto» e
+        # NIENTE `or None` su questi: `[]` significa «dichiarato vuoto» e
         # deve arrivare al gateway per azzerare, mentre `None` significa «il
         # seed non si pronuncia». Collassarli rendeva impossibile RIMUOVERE una
         # voce: si toglieva dal seed e restava viva nella config del gateway.
         gateway_admin.register_agent(
             name,
-            gated_tools=spec.gated_tools,
             gated_in_channel=spec.gated_in_channel,
-            profile_tools=spec.profile_tools,
             carries=spec.carries,
             denied_tools=spec.denied_tools)
     except Exception as e:  # noqa: BLE001

@@ -59,11 +59,15 @@ LOG = logging.getLogger("agent-server.agents.gateway_drift")
 #: della stessa famiglia di questa issue. Non si tratta qui.)
 CAMPI: tuple[tuple[str, str], ...] = (
     # Verbs are not compared (#626/#656): the seeds carry no verbs, the
-    # gateway's tuples decide.
-    ("gated_tools", "gated_tools"),
+    # gateway's tuples decide. `gated_tools` and `profile_tools` are retired
+    # (#644): every registration sends them empty.
     ("denied_tools", "denied_tools"),
-    ("profile_tools", "profile_tools"),
 )
+
+
+#: Per-agent verb lists retired from the seeds (#644) that a gateway may
+#: still hold from before: a registration sends them empty.
+RITIRATE = ("gated_tools", "profile_tools")
 
 
 def _lista(v) -> list[str]:
@@ -115,8 +119,17 @@ def confronta(spec, registrazione: dict | None) -> dict:
                            _lista(registrazione.get(gw_key)))
         if diff:
             campi.append({"field": seed_key, **diff})
-    return {"agent": nome, "status": "diverged" if campi else "clean",
-            "fields": campi}
+    # #644: lists retired from the seeds but still held by the gateway, which
+    # still applies them. Nothing to protect — the owner retired them — so
+    # `check_all` clears them with a registration.
+    ritirate = [k for k in RITIRATE if _lista(registrazione.get(k))]
+    for k in ritirate:
+        campi.append({"field": k, "status": "retired",
+                      "declared_only": [], "registered_only": _lista(registrazione.get(k))})
+    riga = {"agent": nome, "status": "diverged" if campi else "clean", "fields": campi}
+    if ritirate:
+        riga["retired"] = ritirate
+    return riga
 
 
 def _e_agente(spec) -> bool:
@@ -135,9 +148,7 @@ def _ripara(spec) -> bool:
     from ..api import gateway_admin
     gateway_admin.register_agent(
         spec.name,
-        gated_tools=getattr(spec, "gated_tools", None),
         gated_in_channel=getattr(spec, "gated_in_channel", None),
-        profile_tools=getattr(spec, "profile_tools", None),
         carries=getattr(spec, "carries", None),
         denied_tools=getattr(spec, "denied_tools", None))
     return True
@@ -160,7 +171,17 @@ def check_all(repair: bool = True) -> dict:
                         spec.name, str(e)[:120])
             reg = None
         riga = confronta(spec, reg)
-        if riga["status"] == "unregistered" and repair:
+        if riga.get("retired") and repair:
+            # #644: the owner's decision, not a choice to protect: clear them.
+            try:
+                _ripara(spec)
+                riga["repaired"] = True
+                LOG.info("seed '%s': liste per-agente ritirate (%s) tolte dal gateway",
+                         spec.name, ", ".join(riga["retired"]))
+            except Exception as e:  # noqa: BLE001
+                riga["repaired"] = False
+                riga["error"] = str(e)[:160]
+        elif riga["status"] == "unregistered" and repair:
             # Non c'è nessuna decisione da proteggere: l'entry manca per una
             # registrazione fallita, non per una scelta.
             try:

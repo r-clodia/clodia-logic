@@ -115,6 +115,20 @@ _CAMPO_COMMENTATO = re.compile(r"^\s*#\s*(?P<key>[A-Za-z_][A-Za-z0-9_]*)\s*:\s*\
 _MAX_RIGHE_MOSTRATE = 8
 
 
+def _liste_di_verbi_ritirate(raw: object) -> list[str]:
+    """The per-agent verb lists a seed still carries (clodia-platform#644).
+
+    They load and are ignored: the room decides the verbs. Said in the
+    warnings, because a field that is read by nobody and shown nowhere looks
+    like a restriction that still holds."""
+    from .models import RETIRED_VERB_KEYS
+    if not isinstance(raw, dict):
+        return []
+    return [f"`{k}` non fa più niente (clodia-platform#644): i verbi li decide la "
+            f"stanza, senza eccezioni per agente. Il campo è ignorato; toglilo dal seed."
+            for k in RETIRED_VERB_KEYS if k in raw]
+
+
 def _dichiarazioni_inerti(testo: str, raw: object) -> list[str]:
     """Campi che il seed scrive e nessuno applica, perché sono commentati.
 
@@ -269,7 +283,8 @@ class AgentRegistry:
                 # runtime; `_dichiarazioni_inerti` legge il FILE, perché ciò che
                 # è commentato non arriva mai allo spec, e un campo spento è
                 # muto su qualunque tipo, umani e proxy compresi.
-                avvisi = _incoerenze(spec) + _dichiarazioni_inerti(testo, raw)
+                avvisi = (_incoerenze(spec) + _dichiarazioni_inerti(testo, raw)
+                          + _liste_di_verbi_ritirate(raw))
                 for avviso in avvisi:
                     LOG.warning("agent '%s': %s", spec.name, avviso)
                 if avvisi:

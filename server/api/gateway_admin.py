@@ -56,36 +56,27 @@ def _headers() -> dict[str, str]:
 
 
 def register_agent(agent: str,
-                   gated_tools: list | None = None,
                    gated_in_channel: list | None = None,
                    carries: list | None = None,
-                   profile_tools: list | None = None,
                    denied_tools: list | None = None) -> dict:
     """Registra/aggiorna l'agent nella whitelist del gateway (config.yaml).
 
-    `gated_tools` viaggia con la registrazione perché è dichiarato nel seed e
-    custodito dal gateway: la dichiarazione sta dove si sa quali verbi sono
-    pericolosi, l'autorità dove l'agente non può riscriverla.
-
     No `allowed_tools` is sent (clodia-platform#656): the seed grants no verb,
     the gateway ignores the key and reachability reads the A·V·R·Q tuples.
+
+    `gated_tools` and `profile_tools` are sent EMPTY, always
+    (clodia-platform#644, owner's decision of 31 Oct 2026): the room decides
+    the verbs, with no per-agent exceptions, and the gateway still applies
+    whatever its copy holds. Omitting them would leave the old lists alive
+    there; `[]` clears them on the next registration of every agent.
     """
-    # `gated_tools` si OMETTE quando non c'è, non si manda `[]`: il gateway tratta
-    # l'assenza come «non mi pronuncio» e la lista vuota come «azzerale». Mandare
-    # sempre `[]` sconfiggeva quella guardia dal lato client — e ha azzerato i gate
-    # di clodia al primo update del base-pack, cioè ha ALLARGATO l'autorità di un
-    # agente immutabile con un aggiornamento che doveva solo cambiargli il prompt.
-    payload: dict = {"agent": agent}
-    if gated_tools is not None:
-        payload["gated_tools"] = list(gated_tools)
-    # Stessa regola dell'omissione: mandare `[]` sempre toglierebbe il gate del
-    # canale a ogni registrazione, che è come sono spariti i gate di clodia.
+    payload: dict = {"agent": agent, "gated_tools": [], "profile_tools": []}
+    # Omessa quando non c'è, non `[]`: il gateway tratta l'assenza come «non mi
+    # pronuncio» e la lista vuota come «azzerale».
     if gated_in_channel is not None:
         payload["gated_in_channel"] = list(gated_in_channel)
     if carries is not None:
         payload["carries"] = list(carries)
-    if profile_tools is not None:
-        payload["profile_tools"] = list(profile_tools)
     if denied_tools is not None:
         payload["denied_tools"] = list(denied_tools)
     r = requests.post(f"{_base_url()}/whitelist", headers=_headers(),
@@ -168,7 +159,7 @@ def agent_verbs(agent: str) -> dict:
     """Verbi EFFETTIVI dell'agent col flag gated, dal gateway.
 
     Non si costruisce qui: il gateway è l'unico che conosce insieme il catalogo
-    dei verbi nativi, la lista gated globale, i `gated_tools` per-agente e i
+    dei verbi nativi, la lista gated globale e i
     `denied_tools`. Una risposta assemblata da questo lato sarebbe una seconda
     verità, e divergerebbe come è già divergiuto lo specchio dei denied.
     """
@@ -179,18 +170,14 @@ def agent_verbs(agent: str) -> dict:
 
 
 async def register_agent_async(agent: str,
-                               gated_tools: list | None = None,
                                gated_in_channel: list | None = None,
                                carries: list | None = None,
-                               profile_tools: list | None = None,
                                denied_tools: list | None = None) -> dict:
     return await asyncio.to_thread(
         register_agent,
         agent,
-        gated_tools,
         gated_in_channel,
         carries,
-        profile_tools,
         denied_tools,
     )
 
