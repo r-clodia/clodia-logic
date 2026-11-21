@@ -24,7 +24,10 @@ from . import router_config
 
 LOG = logging.getLogger("agent-server.responder_routing")
 
-EMBED_URL = os.environ.get("EU_RAG_SEARCH_URL", "http://192.168.1.45:7900").rstrip("/")
+# The rag-search container of this instance, on the internal network (#603).
+# The text of every channel message goes there: the default must never be a
+# host outside the stack.
+EMBED_URL = os.environ.get("EU_RAG_SEARCH_URL", "http://rag-search:7900").rstrip("/")
 
 # Rapporto della soglia soft rispetto a quella hard: deve stare in (0, 1], altrimenti
 # soft_threshold >= threshold e il multi-fallback diventa codice morto senza avviso.
