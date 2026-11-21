@@ -296,8 +296,34 @@ _PROCESSO_MORTO_RE = re.compile(
 #: reaper (#478) si salvava per CASO, perché il runtime lo riveste in
 #: «Cannot write to terminated process (exit code: 143)»: era la frase, non il
 #: codice, a essere riconosciuta.
-_USCITE_PER_SEGNALE = {-9: 9, 137: 9, -15: 15, 143: 15}
-_NOME_SEGNALE = {9: "SIGKILL", 15: "SIGTERM"}
+#:
+#: A RULE, not a table (clodia-platform#536): the table knew only 9 and 15, so
+#: a SIGABRT (-6/134) or a SIGSEGV (-11/139) went back to the bare `repr`.
+#: Negative -1…-31, or 128+N with N in 1…31; anything else (0, 1, 2, 126,
+#: 127, 255…) is an ordinary exit code.
+_SEGNALE_MAX = 31
+#: Signals that come from OUTSIDE the process: the OOM killer, the idle
+#: reaper, a platform restart. The others are usually the process's own crash.
+_SEGNALI_ESTERNI = frozenset({9, 15})
+
+
+def _segnale_da_uscita(code) -> "int | None":
+    """The signal an exit code stands for, or None."""
+    if not isinstance(code, int) or isinstance(code, bool):
+        return None
+    if -_SEGNALE_MAX <= code <= -1:
+        return -code
+    if 128 < code <= 128 + _SEGNALE_MAX:
+        return code - 128
+    return None
+
+
+def _nome_segnale(n: int) -> str:
+    import signal as _signal
+    try:
+        return _signal.Signals(n).name
+    except ValueError:
+        return f"segnale {n}"
 
 #: Il codice d'uscita quando l'eccezione non è una `ProcessError` ma lo dice nel
 #: testo (succede quando un runtime riveste l'errore di un altro).
@@ -315,7 +341,7 @@ def _segnale_di_kill(err: BaseException) -> "int | None":
     if not isinstance(code, int) or isinstance(code, bool):
         m = _EXIT_CODE_RE.search(str(err))
         code = int(m.group(1)) if m else None
-    return _USCITE_PER_SEGNALE.get(code)
+    return _segnale_da_uscita(code)
 
 
 class SessioneTerminata(RuntimeError):
@@ -359,13 +385,24 @@ class SessioneTerminata(RuntimeError):
             # rifiuto. Un turno ucciso a metà letto come «il provider non ha
             # risposto» manda a cercare dalla parte sbagliata, ed è la ragione
             # per cui questo testo è diverso da quello del timeout.
-            apertura = (
-                f"Il processo dell'agente è stato **terminato dall'esterno** "
-                f"({_NOME_SEGNALE.get(segnale, f'segnale {segnale}')}), quindi il "
-                f"messaggio non è stato elaborato: il turno è stato interrotto a "
-                f"metà, non è un timeout del modello né un rifiuto. Lo mandano "
-                f"l'OOM killer dell'host, il reaper delle sessioni inattive o un "
-                f"riavvio della piattaforma.")
+            if segnale in _SEGNALI_ESTERNI:
+                apertura = (
+                    f"Il processo dell'agente è stato **terminato dall'esterno** "
+                    f"({_nome_segnale(segnale)}), quindi il "
+                    f"messaggio non è stato elaborato: il turno è stato interrotto a "
+                    f"metà, non è un timeout del modello né un rifiuto. Lo mandano "
+                    f"l'OOM killer dell'host, il reaper delle sessioni inattive o un "
+                    f"riavvio della piattaforma.")
+            else:
+                # #536: any other signal is usually the process's own crash
+                # (SIGSEGV, SIGABRT): «from outside» would point the search
+                # at the wrong place again.
+                apertura = (
+                    f"Il processo dell'agente è **terminato per il segnale "
+                    f"{_nome_segnale(segnale)}**, di solito un crash del processo "
+                    f"stesso, quindi il messaggio non è stato elaborato: il turno "
+                    f"è stato interrotto a metà, non è un timeout del modello né "
+                    f"un rifiuto.")
         coda = f"\n\n{blocco_loop.capitalize()}." if blocco_loop else ""
         self.nota_utente = (
             f"{apertura} {esito}{coda}\n\n"
