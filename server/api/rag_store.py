@@ -93,6 +93,36 @@ def list_collections() -> list[dict]:
     return coll if isinstance(coll, list) else []
 
 
+def collection_tier(collection: str) -> str | None:
+    """The tier of ONE collection as the service declares it, or None if it
+    does not exist (clodia-platform#707: the documents listing checks it
+    against the person's clearance before reading).
+
+    Strict, unlike `list_collections`: a 502 here is «could not know», never
+    «no such collection», so it raises `RagStoreError` and the caller says 503.
+    A collection without a declared tier is `SEAL-0`, as the gateway reads it
+    (`rag.collections`)."""
+    try:
+        r = requests.get(_base_url(), headers=_headers(), timeout=_HTTP_TIMEOUT)
+    except requests.RequestException as e:
+        raise RagStoreError(f"gateway irraggiungibile per GET collections: {e}") from e
+    if r.status_code != 200:
+        raise RagStoreError(f"gateway GET collections → HTTP {r.status_code}")
+    try:
+        data = r.json()
+    except ValueError as e:
+        raise RagStoreError("gateway GET collections: risposta non JSON") from e
+    coll = data.get("collections") if isinstance(data, dict) else None
+    for c in coll if isinstance(coll, list) else []:
+        if isinstance(c, dict) and c.get("collection") == collection:
+            return str(c.get("tier") or "SEAL-0")
+    return None
+
+
+async def collection_tier_async(collection: str) -> str | None:
+    return await asyncio.to_thread(collection_tier, collection)
+
+
 def list_documents(collection: str) -> list[dict]:
     """I documenti iniettati in UNA collection (nome, versione, status, chunk).
 

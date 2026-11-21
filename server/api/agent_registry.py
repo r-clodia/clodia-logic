@@ -284,8 +284,71 @@ def _effective_caps(spec) -> list[str]:
         return list(getattr(spec, "capabilities", None) or [])
 
 
+#: What a PERSON who is not an admin reads of each record in `GET /api/agents`
+#: (clodia-platform#707): what the WebUI renders for everyone — the agents
+#: table, the job form's agent picker, the topic pages (participants, seeds,
+#: multi-spawn badge), the ancestors of a new seed. A WHITELIST: a field added
+#: to the spec tomorrow is not handed to every signed-in principal by default.
+#: Not here: `email`/`contact_channels` (other people's addresses), the system
+#: prompt, paths, memory, sandbox, credentials, rules, outputs, warnings.
+PERSON_FIELDS = frozenset({
+    "name", "display_name", "description", "expertise", "type", "role",
+    "clearance", "avatar_color", "agent_sdk", "model", "effective_model",
+    "model_by_tier", "provider", "providers", "provider_seal",
+    "provider_connected", "provider_by_tier", "provider_override",
+    "provider_options", "stacks", "paused", "multi_spawn", "max_spawns",
+    "abstract", "parents", "staff", "deputy", "all_tier", "immutable",
+    "skills", "capabilities", "effective_capabilities", "rank_tier",
+    "rank_label", "constitution",
+})
+
+#: What an AGENT's own token reads: who exists and how to address it. An agent
+#: that needs more goes through the gateway (`runtime.agents`, which reads this
+#: route as the paired gateway and picks its own fields).
+AGENT_FIELDS = frozenset({"name", "display_name", "type", "description",
+                          "expertise", "avatar_color"})
+
+
+def _agents_view(request: Request) -> tuple[str, Optional[str]]:
+    """`(view, person)` for `GET /api/agents`: `full` for the paired gateway
+    and a person who is an admin, `person` for any other person with their own
+    session, `agent` for everything else (an agent's token, or one it carries
+    on a person's behalf)."""
+    from . import caller_auth
+    if caller_auth.is_paired_gateway(request):
+        return "full", None
+    who = caller_auth.signed_person(request)
+    if who and admin.is_admin(who):
+        return "full", who
+    if who:
+        return "person", who
+    return "agent", None
+
+
+def _filter_record(d: dict, view: str, person: Optional[str]) -> dict:
+    if view == "full":
+        return d
+    if view == "agent":
+        return {k: v for k, v in d.items() if k in AGENT_FIELDS}
+    out = {k: v for k, v in d.items() if k in PERSON_FIELDS}
+    if person and d.get("name") == person:
+        # One's own record keeps one's own address.
+        for k in ("email", "contact_channels"):
+            if k in d:
+                out[k] = d[k]
+    return out
+
+
 @router.get("")
-async def list_agents() -> dict:
+async def list_agents(request: Request) -> dict:
+    """The registry, filtered by WHO reads it (clodia-platform#707): full
+    records to the paired gateway and to an admin; to any other person the
+    fields the WebUI renders, without other people's emails (`PERSON_FIELDS`);
+    to an agent's token a minimal public view (`AGENT_FIELDS`)."""
+    view, person = _agents_view(request)
+    if view == "agent":
+        return {"agents": [_filter_record(a.model_dump(), view, None)
+                           for a in registry.list()]}
     paused = set(pause_mod.list_paused())
     connected = _connected_safe()
     avvisi = registry.warnings()
@@ -304,7 +367,9 @@ async def list_agents() -> dict:
         d["contact_channels"] = contacts.channels(a)
         d["effective_capabilities"] = _effective_caps(a)
         d.update(_provider_fields(a, connected))
-        agents.append(d)
+        agents.append(_filter_record(d, view, person))
+    if view != "full":
+        return {"agents": agents}
     return {
         "agents": agents,
         "errors": registry.errors(),

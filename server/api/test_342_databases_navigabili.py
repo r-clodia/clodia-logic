@@ -140,6 +140,14 @@ class RagDocumentsTests(unittest.TestCase):
         self._old_docs = rag_store.list_documents
         gateway_pdp.require_authz = lambda *a, **k: "davide"
         self.addCleanup(self._restore)
+        # A person with their own session, within the collection's tier
+        # (clodia-platform#707: checked before the service read).
+        from . import caller_auth
+        for p in (mock.patch.object(caller_auth, "signed_person", return_value="davide"),
+                  mock.patch.object(rag_store, "collection_tier", return_value="SEAL-1"),
+                  mock.patch.object(gateway_pdp, "human_clearance", return_value="SEAL-3")):
+            p.start()
+            self.addCleanup(p.stop)
 
     def _restore(self) -> None:
         gateway_pdp.require_authz = self._old_authz
