@@ -3,6 +3,11 @@ on:
   pull_request:
   push:
     branches: [main]
+# Read-only token. `pull-requests: read` lets `make version-check` list the
+# other open PRs and read the version each one declares (clodia-platform#355).
+permissions:
+  contents: read
+  pull-requests: read
 jobs:
   suite:
     runs-on: ubuntu-latest
@@ -39,6 +44,12 @@ jobs:
       # proprio exit code e una suite ROSSA passerebbe: la pipe che maschera
       # l'esito è esattamente ciò che la issue chiama decorazione.
       - name: suite, esito e numero di test eseguiti
+        # For `version-check --open-prs` (a prerequisite of `make test`). Not a
+        # new exposure: actions/checkout already persists this same read-only
+        # token in .git/config. On fork PRs GitHub hands out a read-only token
+        # too, which is all the check needs.
+        env:
+          GITHUB_TOKEN: ${{ github.token }}
         run: |
           set -eo pipefail
           make test 2>&1 | tee "$RUNNER_TEMP/suite.log"
