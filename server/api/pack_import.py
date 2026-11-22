@@ -431,22 +431,64 @@ def _copy_pack_docs(pack_root: Path, meta_dir: Path) -> None:
             shutil.copy2(src, meta_dir / name)
 
 
+def plugin_owners(plugin: str, *, except_pack: str = "") -> list[str]:
+    """The installed packs, other than `except_pack`, whose manifest lists
+    `plugin` among its `plugins:` (#567). A plugin belongs to the pack that
+    installed it; an unreadable manifest counts as no claim."""
+    owners: list[str] = []
+    for f in sorted(PACKS_META_DIR.glob("*/pack.yaml")):
+        name = f.parent.name
+        if name == except_pack:
+            continue
+        try:
+            m = yaml.safe_load(f.read_text(encoding="utf-8")) or {}
+        except Exception:  # noqa: BLE001
+            continue
+        listed = m.get("plugins") if isinstance(m, dict) else None
+        if isinstance(listed, list) and plugin in {str(x) for x in listed}:
+            owners.append(name)
+    return owners
+
+
+def _refuse_foreign_plugins(names: list[str], *, pack: str, trusted: bool) -> None:
+    """Refuse, before anything is written, a pack that would overwrite a plugin
+    another installed pack owns (#567): its manifest, skills and `mcp/` code —
+    a mounted MCP server would run the new code at its next restart. The owner
+    itself may, and so may a first-party Update (`trusted`)."""
+    if trusted:
+        return
+    for name in names:
+        if not name or not (plugin_import.PLUGINS_META_DIR / name).exists():
+            continue
+        others = plugin_owners(name, except_pack=pack)
+        if others:
+            raise PackImportError(
+                f"il plugin '{name}' appartiene al pack '{others[0]}': il pack "
+                f"'{pack}' non può sovrascriverlo. Rinomina il plugin nel pack, "
+                f"oppure rimuovi prima '{others[0]}'.")
+
+
 def install_pack_from_root(root: Path, *, source: str,
                            allow_reserved: bool = False,
                            force: bool = False,
-                           force_only: set[str] | None = None) -> dict[str, Any]:
+                           force_only: set[str] | None = None,
+                           trusted: bool = False) -> dict[str, Any]:
     """Installa un archivio come PACK (o delega a plugin_import se non lo è).
 
     `allow_reserved`: consente di (re)installare un pack dal nome RISERVATO
     (base-pack…) — usato SOLO dal path trusted di update dal bundle first-party.
-    `force`: SOVRASCRIVE i seed esistenti (update first-party: replace)."""
+    `force`: SOVRASCRIVE i seed esistenti (update first-party: replace).
+    `trusted`: the code comes from a first-party repository; it may replace a
+    plugin another pack owns (#567). `allow_reserved` implies it."""
+    trusted = trusted or allow_reserved
     marketplace = None
     found = find_pack_root(root)
     if found is None:
         # directory di pack (repo clodia-packs): ogni packs/<n>/ è un pack a sé
         pack_dirs = find_packs_directory(root)
         if pack_dirs:
-            results = [install_pack_from_root(p, source=source, allow_reserved=allow_reserved, force=force) for p in pack_dirs]
+            results = [install_pack_from_root(p, source=source, allow_reserved=allow_reserved,
+                                              force=force, trusted=trusted) for p in pack_dirs]
             return {"kind": "packs",
                     "packs": results,
                     "imported": [r.get("pack") or r.get("plugin") for r in results]}
@@ -456,6 +498,9 @@ def install_pack_from_root(root: Path, *, source: str,
     if found is None:
         # Niente plugin sciolti (spec v0.3 §4b.3): l'import di un plugin nudo
         # genera un pack WRAPPER omonimo — il pack è sempre il contenitore.
+        bare = plugin_import.plugin_name_for(root)
+        if bare:
+            _refuse_foreign_plugins([bare], pack=bare, trusted=trusted)
         result = plugin_import.install_plugin_from_root(root, source=source)
         wrapper = result["plugin"]
         meta_dir = PACKS_META_DIR / wrapper
@@ -508,6 +553,15 @@ def install_pack_from_root(root: Path, *, source: str,
         raise PackImportError(
             "pack vuoto: nessun agent seed (agents/<n>/agent.yaml) "
             "né plugin (plugins/<n>/)")
+
+    try:
+        _refuse_foreign_plugins(
+            [plugin_import.plugin_name_for(d, default_name=d.name,
+                                           allow_reserved=allow_reserved)
+             for d in plugin_dirs],
+            pack=pack, trusted=trusted)
+    except PluginImportError as e:
+        raise PackImportError(str(e))
 
     plugins: list[dict[str, Any]] = []
     for pdir in plugin_dirs:

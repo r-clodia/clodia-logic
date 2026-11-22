@@ -1067,7 +1067,10 @@ async def _perform_update(name: str, principal: str, *, up: dict | None = None,
                 force=not fresh,
                 # From a third party, replace only the seeds this pack already
                 # owned: never a native, never another pack's (#564).
-                force_only=None if (first_party or fresh) else _owned_seeds(name))
+                force_only=None if (first_party or fresh) else _owned_seeds(name),
+                # Another pack's plugin is replaced only from a first-party
+                # repository (#567).
+                trusted=first_party)
     except UpstreamPackGone as e:
         raise ValueError(str(e)[:200]) from e
     except _PIE as e:

@@ -476,6 +476,21 @@ def _write_plugin_manifest(
     )
 
 
+def plugin_name_for(root: Path, *, default_name: str | None = None,
+                    allow_reserved: bool = False) -> str | None:
+    """The name `install_plugin_from_root` would install `root` under, without
+    installing anything; None for bare skills (they go to user-pack). Lets the
+    pack importer check who owns that plugin BEFORE touching it (#567)."""
+    found = _find_manifest(root)
+    if found is None:
+        if default_name is None:
+            return None
+        return _sanitize_plugin_name(default_name, allow_reserved=allow_reserved)
+    plugin_root, manifest, _kind = found
+    return _sanitize_plugin_name(manifest.get("name") or plugin_root.name,
+                                 allow_reserved=allow_reserved)
+
+
 def install_plugin_from_root(
     root: Path,
     *,
