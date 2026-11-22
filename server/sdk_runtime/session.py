@@ -4246,6 +4246,40 @@ class OpenCodeProviderLimit(RuntimeError):
         self.nota_utente = f"⛔ {args[0]}" if args else ""
 
 
+class OpenCodeModelNotFound(RuntimeError):
+    """opencode does not know the turn's model (clodia-platform#659).
+
+    `ProviderModelNotFoundError` at session start: sometimes opencode recovers
+    on its own, sometimes the turn sat silent until the whole budget ran out
+    (6 Nov, 11 Nov), reported as a timeout. Seen on the event stream, it stops
+    the POST at once; the turn recreates the session ONE time, as for an
+    unusable session, and a second miss fails in seconds with the cause."""
+
+    audit_cause = "model_not_found"
+
+    def __init__(self, *args, eventi: "int | None" = None) -> None:
+        super().__init__(*args)
+        self.eventi = eventi
+        self.nota_utente = f"⛔ {args[0]}" if args else ""
+
+
+def _oc_model_missing(props: dict) -> "str | None":
+    """The description of a model-not-found error in a `session.error`
+    event's properties, or None. opencode sends a named error as
+    `{name: "ProviderModelNotFoundError", data: {providerID, modelID, …}}`,
+    an unnamed one as `{name: "UnknownError", data: {message}}`: both forms."""
+    err = props.get("error") if isinstance(props, dict) else None
+    if not isinstance(err, dict):
+        return None
+    name = str(err.get("name") or "")
+    data = err.get("data") if isinstance(err.get("data"), dict) else {}
+    testo = " ".join(str(x) for x in (name, data.get("message")) if x)
+    if "ModelNotFound" not in testo:
+        return None
+    chi = "/".join(str(data[k]) for k in ("providerID", "modelID") if data.get(k))
+    return f"ProviderModelNotFoundError{f' ({chi})' if chi else ''}"
+
+
 #: Messages that mean the provider's quota is gone: no retry within a turn
 #: will help, so the first one stops the turn.
 _OC_QUOTA_RE = re.compile(
@@ -4935,6 +4969,8 @@ class OpenCodeChatSession:
             self._note_retry_status((ev or {}).get("properties") or {})
         elif tipo == "message.part.updated":
             self._note_tool_part((ev or {}).get("properties") or {})
+        elif tipo == "session.error":
+            self._note_session_error((ev or {}).get("properties") or {})
         self.last_activity = datetime.now(timezone.utc)
         bud = getattr(self, "_turn_budget", None)
         if bud is not None:
@@ -5007,6 +5043,49 @@ class OpenCodeChatSession:
                                   atteso=budget.elapsed()),
             eventi=getattr(self, "_eventi_turno", None), loop=loop)
 
+    async def _log_model_catalog(self) -> None:
+        """Log whether this `opencode serve` has the turn's model in its
+        provider catalog, and how long asking took (clodia-platform#659).
+
+        The hypothesis behind `ProviderModelNotFoundError` at session start is
+        a provider models list fetched late or not at all. This line is the
+        evidence either way, one per process; it never raises."""
+        t0 = time.monotonic()
+        try:
+            async with self._oc_http(timeout=15.0) as c:
+                r = await c.get(f"{self._base_url}/config/providers")
+            ms = (time.monotonic() - t0) * 1000
+            if r.status_code != 200:
+                LOG.warning("opencode %s: catalogo dei provider HTTP %s in %.0fms",
+                            self.kind, r.status_code, ms)
+                return
+            provider = next((p for p in (r.json() or {}).get("providers") or []
+                             if isinstance(p, dict) and p.get("id") == self._provider), None)
+            modelli = (provider or {}).get("models") or {}
+            presente = self._model in modelli
+            (LOG.info if presente else LOG.warning)(
+                "opencode %s: catalogo di %s in %.0fms, %d modelli, %s %s",
+                self.kind, self._provider, ms, len(modelli), self._model,
+                "presente" if presente else "ASSENTE")
+        except Exception as e:  # noqa: BLE001 — a diagnostic never breaks the start
+            LOG.warning("opencode %s: catalogo dei provider non letto (%s)",
+                        self.kind, type(e).__name__)
+
+    def _note_session_error(self, props: dict) -> None:
+        """A model-not-found error on THIS session stops the POST (#659)."""
+        if not isinstance(props, dict):
+            return
+        sid = props.get("sessionID")
+        if sid and getattr(self, "_oc_session", None) and sid != self._oc_session:
+            return
+        motivo = _oc_model_missing(props)
+        if not motivo:
+            return
+        self._model_missing = motivo
+        evt = getattr(self, "_provider_block_evt", None)
+        if evt is not None:
+            evt.set()
+
     async def _post_turn(self, c, body: dict, budget: "_TurnBudget"):
         """POST the turn message, unless the provider refuses it first (#552).
 
@@ -5051,6 +5130,16 @@ class OpenCodeChatSession:
             raise httpx.ReadTimeout(f"opencode turn stopped: {self._oc_stop_reason}")
         _cancel_others(attesa)
         await self._abort_oc()
+        mancante = getattr(self, "_model_missing", None)
+        if mancante:
+            LOG.warning("opencode %s: il provider non conosce il modello %s/%s (%s) "
+                        "dopo %.1fs: turno fermato subito", self.kind, self._provider,
+                        self._model, mancante, budget.elapsed())
+            raise OpenCodeModelNotFound(
+                f"opencode non trova il modello {self._provider}/{self._model} "
+                f"({mancante}) dopo {budget.elapsed():.0f}s: il catalogo dei modelli "
+                f"del provider non è stato caricato. Turno fermato invece di "
+                f"attendere il budget.", eventi=getattr(self, "_eventi_turno", None))
         motivo = getattr(self, "_provider_block", None) or "limite del provider"
         activity_log.append(self.kind, "error",
                             {"error": "opencode provider limit", "chat_id": self.chat_id,
@@ -5250,6 +5339,8 @@ class OpenCodeChatSession:
         # Da qui il server risponde: apro lo stream eventi. È il solo punto in cui
         # questo runtime vede il progresso di un turno lungo mentre accade (#216).
         self._events_task = asyncio.create_task(self._drain_events())
+        # What this process knows of the provider's models (#659), in the log.
+        self._catalog_task = asyncio.create_task(self._log_model_catalog())
         # resume sessione OpenCode se la chat è ripresa da disco, altrimenti creane una
         if self._ocsession_file.is_file():
             self._oc_session = self._ocsession_file.read_text().strip() or None
@@ -5402,6 +5493,7 @@ class OpenCodeChatSession:
         # A provider limit seen during THIS turn stops it (#552); one seen in
         # the previous turn must not.
         self._provider_block = None
+        self._model_missing = None
         self._provider_block_evt = asyncio.Event()
         # Tool loops are counted per turn (#692): a fresh guard each time.
         self._tool_loop = _ToolLoopDetector(
@@ -5411,8 +5503,15 @@ class OpenCodeChatSession:
         self._tool_loop_evt = asyncio.Event()
         try:
             async with await self._http() as c:
-                r = await self._post_turn(c, body, budget)
-                if self._session_unusable(r):
+                try:
+                    r = await self._post_turn(c, body, budget)
+                except OpenCodeModelNotFound:
+                    # #659: the same cure as an unusable session — a new
+                    # session, once. A second miss propagates, in seconds.
+                    r = None
+                    self._model_missing = None
+                    self._provider_block_evt = asyncio.Event()
+                if r is None or self._session_unusable(r):
                     # La sessione OpenCode vive solo dentro il suo processo `opencode
                     # serve`: dopo un restart dell'agent-server l'id .ocsession di un
                     # processo precedente è invalido. Ne creo una nuova e riprovo
@@ -5424,9 +5523,10 @@ class OpenCodeChatSession:
                     # sessione opencode invalida è la firma di un riavvio, e il
                     # blocco poco prima è l'indizio che dice quale riavvio.
                     correlazione = loop_lag.nota_blocco()
-                    LOG.warning("opencode %s: sessione %s inutilizzabile (HTTP %s) → ricreo "
+                    stato = "modello non trovato" if r is None else f"HTTP {r.status_code}"
+                    LOG.warning("opencode %s: sessione %s inutilizzabile (%s) → ricreo "
                                 "(%.0fs consumati, %.0fs di budget residuo)%s",
-                                self.kind, self._oc_session, r.status_code,
+                                self.kind, self._oc_session, stato,
                                 budget.elapsed(), residuo,
                                 f" — {correlazione}" if correlazione else "")
                     if residuo < _OPENCODE_MIN_RETRY_BUDGET:
@@ -5437,7 +5537,7 @@ class OpenCodeChatSession:
                                              "chat_id": self.chat_id,
                                              "residuo_s": round(residuo, 1)})
                         raise RuntimeError(
-                            f"sessione opencode inutilizzabile (HTTP {r.status_code}) e "
+                            f"sessione opencode inutilizzabile ({stato}) e "
                             f"restano {residuo:.0f}s del budget di "
                             f"{int(budget.total)}s, sotto il minimo di "
                             f"{int(_OPENCODE_MIN_RETRY_BUDGET)}s per riprovare — "
@@ -5460,6 +5560,12 @@ class OpenCodeChatSession:
                         LOG.info("opencode %s: tentativo %s sulla sessione %s → HTTP %s "
                                  "(%.0fs del turno consumati)",
                                  self.kind, tentativo, nid, r.status_code, budget.elapsed())
+                if r is None:
+                    # The model was missing and no new session could be made.
+                    raise OpenCodeModelNotFound(
+                        f"opencode non trova il modello {self._provider}/{self._model} "
+                        f"e non è riuscito a creare una sessione nuova (HTTP "
+                        f"{sr.status_code})", eventi=getattr(self, "_eventi_turno", None))
                 if r.status_code >= 400:
                     activity_log.append(self.kind, "error",
                                         {"error": f"opencode {r.status_code}",
