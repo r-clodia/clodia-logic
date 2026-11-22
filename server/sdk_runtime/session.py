@@ -2611,12 +2611,27 @@ class ChatSession:
         forzatamente il client (uccide il subprocess claude): la lettura appesa
         erra → il turno termina e il chiamante recupera. Risolve gli hang in cui
         il timeout async non scatta (la __anext__ non cede mai all'event loop)."""
+        loop = asyncio.get_event_loop()
+        prev = loop.time()
         try:
             while not turn_task.done():
                 await asyncio.sleep(WATCHDOG_TICK)
                 if turn_task.done():
                     return
-                silence = asyncio.get_event_loop().time() - self._last_event_at
+                # #529: a tick that came late by more than a loop stall is
+                # time in which nobody could listen (a blocked loop, a
+                # suspended host). It is not the subprocess's silence, so it
+                # is not counted: on waking the turn goes on, and only real
+                # silence afterwards can kill it.
+                now = loop.time()
+                lost = now - prev - WATCHDOG_TICK
+                prev = now
+                if lost >= loop_lag.LAG_THRESHOLD:
+                    self._last_event_at += lost
+                    LOG.warning("watchdog %s: il loop è rimasto fermo %.0fs, non è "
+                                "silenzio del subprocess: il turno prosegue",
+                                self.chat_id, lost)
+                silence = now - self._last_event_at
                 if silence >= WATCHDOG_SILENCE:
                     self._watchdog_reason = self._silence_diagnosis(silence)
                     LOG.error("watchdog %s: %s → chiudo il subprocess",
@@ -2636,6 +2651,42 @@ class ChatSession:
                     return
         except asyncio.CancelledError:
             pass
+
+    async def _next_sdk_message(self, iterator, limit: float):
+        """The next SDK message, or `asyncio.TimeoutError` after `limit`
+        seconds of silence that the loop could have HEARD (#529).
+
+        An `asyncio.timeout` around `__anext__` measures wall time: after a
+        blocked loop or a suspended host (hours, overnight) its deadline has
+        passed, it fires on waking and kills a turn that did nothing wrong,
+        cancelling the read as well. Here the read is one future awaited in
+        slices: a slice that came back late by more than a loop stall counts
+        only for its own length, and the read is never cancelled on a
+        timeout that has not really elapsed."""
+        loop = asyncio.get_event_loop()
+        pending = asyncio.ensure_future(iterator.__anext__())
+        heard = 0.0
+        try:
+            while True:
+                step = max(min(float(WATCHDOG_TICK), limit - heard), 0.0)
+                t0 = loop.time()
+                done, _ = await asyncio.wait({pending}, timeout=step)
+                if done:
+                    return pending.result()
+                took = loop.time() - t0
+                if took - step >= loop_lag.LAG_THRESHOLD:
+                    heard += step
+                    # Not the turn's time either: the 4h cap skips it too.
+                    self._turn_stalled = getattr(self, "_turn_stalled", 0.0) + took - step
+                    LOG.warning("turno %s: il loop è rimasto fermo %.0fs durante l'attesa "
+                                "dell'SDK, non conta come silenzio", self.chat_id, took - step)
+                else:
+                    heard += took
+                if heard >= limit:
+                    raise asyncio.TimeoutError()
+        finally:
+            if not pending.done():
+                pending.cancel()
 
     async def _collect_response(self) -> str:
         parts: list[str] = []
@@ -2665,13 +2716,14 @@ class ChatSession:
                                 self.chat_id, e)
 
         start = asyncio.get_event_loop().time()
+        self._turn_stalled = 0.0      # loop stalls while waiting (#529)
         iterator = self._client.receive_response().__aiter__()
         # #502: a `ResultMessage` before ANY event of this query closes an
         # earlier query (left in the shared stream). It is discarded and
         # logged, never taken as this turn's answer: a shift is never silent.
         seen_any = False
         while True:
-            elapsed = asyncio.get_event_loop().time() - start
+            elapsed = asyncio.get_event_loop().time() - start - self._turn_stalled
             if elapsed >= COLLECT_MAX_SECONDS:
                 # Il messaggio non è decorazione: `_announce_failure` pubblica
                 # `repr(err)` nel canale, e di un'eccezione senza argomenti il
@@ -2682,8 +2734,7 @@ class ChatSession:
                     f"(massimo {COLLECT_MAX_SECONDS // 3600}h)")
             chunk_timeout = min(COLLECT_CHUNK_TIMEOUT, COLLECT_MAX_SECONDS - elapsed)
             try:
-                async with asyncio.timeout(chunk_timeout):
-                    message = await iterator.__anext__()
+                message = await self._next_sdk_message(iterator, chunk_timeout)
             except StopAsyncIteration:
                 # Coda del turno: un blocco può chiudersi con la fine dello
                 # stream invece che con un `content_block_stop`. Prima quel
