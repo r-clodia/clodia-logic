@@ -179,7 +179,10 @@ class ChiamataDaiDueDispatcherTests(unittest.TestCase):
                   patch.object(channels, "_provider_della_stanza_ancora_valido",
                                _provider_ko),
                   patch.object(channels.registry, "get_by_name", _get_by_name),
-                  patch.object(channels, "_chat_busy", lambda chat_id: False)):
+                  patch.object(channels, "_chat_busy", lambda chat_id: False),
+                  # The forced responder is gated on its room provider
+                  # (clodia-platform#580): here it is adequate.
+                  patch.object(channels, "_provider_seal_ok", lambda s, t: True)):
             p.start()
             self.addCleanup(p.stop)
 

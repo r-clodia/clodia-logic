@@ -5558,7 +5558,12 @@ async def run_topic_turn(tier: str, name: str, meta: dict,
     participants = meta.get("participants", [])
     if responder_hint:
         forced = registry.get_by_name(responder_hint)
-        responder = forced if (forced and _can_access(_effective_clearance(forced), tier_real)) else None
+        # The provider the forced agent will run on IN THIS ROOM (the
+        # session below starts it with `topic_runtime_override`), the same
+        # gate as the auto-picker — not the seed's default provider, which
+        # denied a SEAL-2 room to an agent whose room provider is SEAL-2
+        # (clodia-platform#580).
+        responder = forced if (forced and _provider_seal_ok(forced, tier_real)) else None
     else:
         # trace del routing → barra "🧭 Routing" anche per i path non-POST
         # (trigger/telegram): così la barra riflette CHI parte davvero.
@@ -6975,6 +6980,19 @@ def _inspect_counts(raw: list[dict]) -> tuple[dict, dict]:
     return counts, last
 
 
+def _caller_spawn_clearance(request: Request, by: str, by_spec) -> str:
+    """The clearance `by` acts with on THIS call (clodia-platform#580).
+
+    The signed `clearance` claim of `by`'s own token when there is one: it is
+    the effective clearance of the calling spawn, computed by the session
+    from the provider that spawn actually runs on (override included). Only
+    without it — the paired gateway declaring `by` with no token forwarded,
+    or an on-behalf token — the seed's effective clearance, as before."""
+    from . import caller_auth
+    return (caller_auth.signed_agent_clearance(request, by)
+            or _effective_clearance(by_spec))
+
+
 @router.post("/clodia/runtime/inspect-topic")
 async def runtime_inspect_topic(request: Request) -> dict:
     """Introspection of ONE topic for a steward agent (sysadmin) that calls it
@@ -6988,7 +7006,9 @@ async def runtime_inspect_topic(request: Request) -> dict:
     returned the latest 40 messages to a non-participant.
 
     Bypasses the PARTICIPANT axis (the steward is not one) but not CLEARANCE:
-    above the caller's effective SEAL the topic is INVISIBLE (403).
+    above the caller's effective SEAL the topic is INVISIBLE (403). That SEAL
+    is the calling SPAWN's, as signed in its token — not the seed's default
+    provider's (#580, `_caller_spawn_clearance`).
 
     The caller is the SIGNED one: `by` must match the token's agent. Before
     #704 the route trusted `by` from the body and had no authentication, so
@@ -7010,7 +7030,7 @@ async def runtime_inspect_topic(request: Request) -> dict:
     by_spec = registry.get_by_name(by)
     if by_spec is None:
         raise HTTPException(404, f"agente '{by}' non registrato")
-    if not _can_access(_effective_clearance(by_spec), tier):
+    if not _can_access(_caller_spawn_clearance(request, by, by_spec), tier):
         # invisibile per costruzione: non confermare nemmeno l'esistenza/il titolo
         raise HTTPException(403, "topic oltre la tua clearance: non accessibile")
     topic = await topics_client.async_open_topic(tier, name)
