@@ -16,6 +16,7 @@ import time
 import uuid
 from datetime import datetime, timezone
 from pathlib import Path
+from dataclasses import dataclass
 from typing import Optional
 
 from claude_agent_sdk import (
@@ -3214,6 +3215,180 @@ def _inherited_spawn_env() -> dict[str, str]:
     return env
 
 
+# ── Which credential a codex turn uses (clodia-platform#491) ─────────────────
+# `CodexChatSession` used to run every turn on the ChatGPT login
+# (`providers.codex_home()`), whatever provider resolution had picked: an
+# API-key provider was only logged, and a model the subscription rejects came
+# back as an upstream 400. Owner's policy (2 Oct 2026): codex agents stay on
+# the subscription; no pay-per-use unless the seed asks for it. So:
+#
+#   - resolved provider `codex` (or none) → the subscription, as before;
+#   - resolved API-key provider that the SEED DECLARES (`providers`/`provider`)
+#     → that provider's key, in a dedicated CODEX_HOME with no ChatGPT
+#     `auth.json` and `forced_login_method = "api"`;
+#   - resolved API-key provider the seed does not declare (it came from the
+#     SDK defaults, e.g. the topic's min-cost pick) → the subscription when it
+#     can serve the turn (connected, active, accepts the model, meets the
+#     room's tier: what happened before, minus the silence), otherwise the turn
+#     is refused with a message naming model, provider and what to change.
+
+CODEX_AUTH_SUBSCRIPTION = "chatgpt-subscription"
+CODEX_AUTH_API_KEY = "api-key"
+CODEX_AUTH_REFUSED = "refused"
+
+#: The dedicated CODEX_HOME of an API-key turn, inside the spawn dir (0700 to
+#: the spawn uid under the sandbox). Never the shared subscription home.
+CODEX_API_HOME_NAME = ".codex-home-api"
+
+
+class CodexProviderRefused(RuntimeError):
+    """A codex turn refused before starting: its provider would bill per use
+    without the seed asking, and the subscription cannot serve it."""
+
+    audit_cause = "provider_refused"
+
+    def __init__(self, message: str) -> None:
+        super().__init__(message)
+        # Read by `api/channels._diagnosi`: the cause and the cure are known,
+        # a repr would only hide them.
+        self.nota_utente = f"⛔ {message}"
+
+
+@dataclass(frozen=True)
+class CodexAuthPlan:
+    #: The provider whose credential authenticates the turn (`codex` for the
+    #: subscription), or the resolved one when refused.
+    provider: Optional[str]
+    #: `CODEX_AUTH_SUBSCRIPTION` | `CODEX_AUTH_API_KEY` | `CODEX_AUTH_REFUSED`.
+    auth: str
+    #: What provider resolution answered, for the log.
+    resolved: Optional[str] = None
+    #: The room-facing reason when `auth == CODEX_AUTH_REFUSED`.
+    refusal: str = ""
+
+
+def _seed_declared_providers(kind: str) -> set[str]:
+    """Providers the SEED names (`providers:` list, or legacy `provider:`),
+    aliases normalised. The SDK defaults are not a declaration."""
+    spec = _kind_spec(kind)
+    if spec is None:
+        return set()
+    declared = list(getattr(spec, "providers", None) or [])
+    if not declared and getattr(spec, "provider", None):
+        declared = [spec.provider]
+    from ..api.providers import normalize_provider_id
+    return {normalize_provider_id(str(p)) for p in declared if p}
+
+
+def _codex_subscription_unusable(model: Optional[str], tier: Optional[str]) -> str:
+    """Why the ChatGPT subscription cannot serve this turn ('' if it can)."""
+    from ..api import providers as P
+    try:
+        connected = P.connected_provider_ids()
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("codex: connected providers not readable: %s", e)
+        return "non risulta collegato (vault del gateway non raggiungibile)"
+    if "codex" not in connected:
+        return "non è collegato"
+    if P.provider_paused("codex"):
+        return "è in pausa"
+    if model and not P.provider_supports_model("codex", model):
+        return f"non accetta il modello `{model}`"
+    if tier and not P.provider_meets_tier("codex", tier):
+        return f"non soddisfa il tier {tier} della stanza"
+    return ""
+
+
+def _codex_refusal_text(kind: str, model: Optional[str], provider: str, why: str) -> str:
+    fix = {
+        "non è collegato": "collegare l'abbonamento Codex/ChatGPT dalla sezione Providers",
+        "è in pausa": "riattivare il provider `codex` dalla sezione Providers",
+    }.get(why)
+    if fix is None and why.startswith("non accetta"):
+        fix = "dichiarare nel seed un modello che l'abbonamento ChatGPT accetta"
+    if fix is None:
+        fix = "rendere utilizzabile l'abbonamento `codex`"
+    return (f"turno di **{kind}** non eseguito. Il runtime codex usa l'abbonamento "
+            f"ChatGPT; per il modello `{model or 'predefinito'}` la selezione ha scelto "
+            f"il provider `{provider}` (API a consumo), che il seed non dichiara, e "
+            f"l'abbonamento `codex` {why}. Senza una richiesta esplicita del seed gli "
+            f"agenti codex non pagano a consumo. Cosa cambiare: {fix}; oppure, per "
+            f"usare l'API a consumo, dichiarare `providers: [{provider}]` nel seed.")
+
+
+def _codex_auth_plan(kind: str, override: Optional[dict]) -> CodexAuthPlan:
+    """Which credential THIS codex turn uses. See the block comment above."""
+    override = override or {}
+    from ..api import providers as P
+    try:
+        resolved = P.normalize_provider_id(_runtime_provider(kind, override))
+    except Exception as e:  # noqa: BLE001 — unresolvable = the path of before
+        LOG.warning("codex: provider of %s not resolved (%s): subscription", kind, e)
+        resolved = None
+    # Only a codex-SDK API-key provider (openai-api) can bill a codex turn per
+    # use. Anything else — `codex`, nothing, or the fail-open answer of a
+    # resolution that could not read the vault — is the path of before.
+    if (resolved in (None, "codex") or P.provider_sdk(resolved) != "codex"
+            or P.provider_mechanism(resolved) != "apikey"):
+        return CodexAuthPlan("codex", CODEX_AUTH_SUBSCRIPTION, resolved)
+    if resolved in _seed_declared_providers(kind):
+        return CodexAuthPlan(resolved, CODEX_AUTH_API_KEY, resolved)
+    model = _runtime_model(kind, override)
+    codex_model = _runtime_model(kind, {**override, "provider": "codex"})
+    why = _codex_subscription_unusable(codex_model, override.get("topic_tier"))
+    if not why:
+        return CodexAuthPlan("codex", CODEX_AUTH_SUBSCRIPTION, resolved)
+    return CodexAuthPlan(resolved, CODEX_AUTH_REFUSED, resolved,
+                         refusal=_codex_refusal_text(kind, model, resolved, why))
+
+
+def _codex_config_toml(*, api_login: bool) -> str:
+    """codex's `config.toml`: the clodia-tools MCP server (token from the env of
+    each turn), history off, optional OTel. An API-key home also pins
+    `forced_login_method = "api"`, a top-level key, so it precedes the tables:
+    codex then never falls back to a ChatGPT login (#491)."""
+    head = 'forced_login_method = "api"\n\n' if api_login else ""
+    return (head
+            + "[mcp_servers.clodia-tools]\n"
+            f'url = "{CLODIA_TOOLS_MCP_URL}"\n'
+            'bearer_token_env_var = "CLODIA_TOOLS_TOKEN"\n'
+            # codex forces history.jsonl to 0600: under per-spawn uids the
+            # next spawn couldn't append. The platform keeps its own
+            # transcripts; codex's global history isn't needed (#471).
+            "\n[history]\npersistence = \"none\"\n"
+            # Optional OTel trace export (#463), empty when off.
+            + otel_export.codex_config_toml())
+
+
+def _write_codex_api_home(home: Path, api_key: str, *, uid: Optional[int],
+                          gid: Optional[int]) -> bool:
+    """Materialise the dedicated CODEX_HOME of an API-key turn. Returns True if
+    the directory was just created (a codex thread of another home cannot be
+    resumed in it).
+
+    The directory is 0700 and, under the sandbox, owned by the spawn uid (codex
+    writes its session rollouts there). `auth.json` carries ONLY the API key and
+    `config.toml` forces the API login; both 0600, owned by the spawn uid,
+    written with `private_config.write_private` (O_EXCL|O_NOFOLLOW temp file,
+    fchown/fchmod on the descriptor, atomic replace), as for the MCP token of
+    #706. Rewritten every turn, so a rotated key reaches the next turn."""
+    from .private_config import write_private
+    fresh = not home.is_dir()
+    if home.is_symlink():
+        home.unlink()
+        fresh = True
+    home.mkdir(mode=0o700, parents=False, exist_ok=True)
+    os.chmod(home, 0o700)
+    if uid is not None:
+        os.chown(home, int(uid), int(gid) if gid is not None else -1,
+                 follow_symlinks=False)
+    write_private(home / "auth.json",
+                  json.dumps({"auth_mode": "apikey", "OPENAI_API_KEY": api_key}),
+                  uid=uid, gid=gid)
+    write_private(home / "config.toml", _codex_config_toml(api_login=True),
+                  uid=uid, gid=gid)
+    return fresh
+
 
 class CodexChatSession:
     """Chat servita dal runtime **codex** (ophelia = clodia-su-codex).
@@ -3254,6 +3429,16 @@ class CodexChatSession:
         self._sandbox_uid: Optional[int] = None
         self._sandbox_argv: list[str] = []
         self._sandbox_env: dict[str, str] = {}
+        #: Supplementary groups the sandbox was prepared with: the shared
+        #: subscription home's group only for subscription turns (#491).
+        self._sandbox_groups: tuple[int, ...] = ()
+        #: The credential of the CURRENT turn (`_codex_auth_plan`, #491).
+        self._auth_plan: Optional[CodexAuthPlan] = None
+        #: Private dir of an API-key home when the kind has no spawn dir.
+        self._api_home_tmpdir: Optional[str] = None
+        #: The CODEX_HOME the current `_thread_id` lives in: a thread is not
+        #: resumable from another home.
+        self._thread_home: Optional[Path] = None
         self._thread_id: Optional[str] = None   # session id codex per il resume
         # Stitching and accumulation of the reasoning live in `_TurnReasoning`,
         # opened at every turn by `_start_reasoning`: a `reasoning` item is a
@@ -3290,31 +3475,16 @@ class CodexChatSession:
         return self.sessions_dir / f"chat-{self.chat_id}.thread"
 
     async def start(self) -> None:
-        from ..api.providers import codex_home
-        home = codex_home()
-        if home is None:
-            raise RuntimeError(
-                "OpenAI (codex) non connesso: collega l'abbonamento nella sezione Providers")
-        self._codex_home = Path(home)
-        if _sandbox_enabled(self.kind):
-            _share_codex_home(self._codex_home)
-        # Cabla il gateway clodia-tools come MCP HTTP per codex: config.toml con
-        # url + bearer_token_env_var. Il token (col principal) è messo nell'env
-        # ad ogni turno (vedi run) → ophelia ha gli stessi runtime.* di clodia.
-        try:
-            (self._codex_home / "config.toml").write_text(
-                "[mcp_servers.clodia-tools]\n"
-                f'url = "{CLODIA_TOOLS_MCP_URL}"\n'
-                'bearer_token_env_var = "CLODIA_TOOLS_TOKEN"\n'
-                # codex forces history.jsonl to 0600: under per-spawn uids the
-                # next spawn couldn't append. The platform keeps its own
-                # transcripts; codex's global history isn't needed (#471).
-                "\n[history]\npersistence = \"none\"\n"
-                # Optional OTel trace export (#463), empty when off.
-                + otel_export.codex_config_toml(),
-                encoding="utf-8")
-        except Exception as e:  # noqa: BLE001
-            LOG.warning("config.toml MCP per codex non scritto: %s", e)
+        # Which credential the turns will use (#491). Only the subscription
+        # needs the shared home now: an API-key session gets its own home at
+        # each turn, and a session whose turns would be refused still starts —
+        # the refusal is said in the room, turn by turn, with the cure.
+        plan = await asyncio.to_thread(_codex_auth_plan, self.kind, self._runtime_override)
+        if plan.auth == CODEX_AUTH_SUBSCRIPTION:
+            self._prepare_subscription_home()
+        else:
+            LOG.info("codex: %s starts on provider=%s auth=%s", self.kind,
+                     plan.provider, plan.auth)
         # Il residuo: cosa il seed nega e codex non toglie. Detto una volta per
         # sessione, perché una dichiarazione inapplicata che non compare da
         # nessuna parte è peggio di una dichiarazione assente.
@@ -3344,11 +3514,69 @@ class CodexChatSession:
         # riprendi il thread_id codex se la chat è ripresa da disco
         if self._thread_file.is_file():
             self._thread_id = self._thread_file.read_text().strip() or None
+            # A thread on disk was made by a subscription turn (before #491
+            # every turn was one); an API-key home drops it on first use.
+            self._thread_home = self._codex_home
         self._client = object()        # marca avviata (auto-restart check in agents.py)
         await self._set_status(ClodiaStatus.IDLE)
         intro = KIND_AUTO_INTRO.get(self.kind)
         if intro:
             asyncio.create_task(self._do_send_bg(intro))
+
+    def _prepare_subscription_home(self) -> Path:
+        """The shared ChatGPT-subscription CODEX_HOME, ready for a turn. Raises
+        when the subscription is not connected."""
+        from ..api.providers import codex_home
+        home = codex_home()
+        if home is None:
+            raise RuntimeError(
+                "OpenAI (codex) non connesso: collega l'abbonamento nella sezione Providers")
+        first = getattr(self, "_codex_home", None) != Path(home)
+        self._codex_home = Path(home)
+        if not first:
+            return self._codex_home
+        if _sandbox_enabled(self.kind):
+            _share_codex_home(self._codex_home)
+        # Cabla il gateway clodia-tools come MCP HTTP per codex: config.toml con
+        # url + bearer_token_env_var. Il token (col principal) è messo nell'env
+        # ad ogni turno (vedi run) → ophelia ha gli stessi runtime.* di clodia.
+        try:
+            (self._codex_home / "config.toml").write_text(
+                _codex_config_toml(api_login=False), encoding="utf-8")
+        except Exception as e:  # noqa: BLE001
+            LOG.warning("config.toml MCP per codex non scritto: %s", e)
+        return self._codex_home
+
+    def _api_home_path(self) -> Path:
+        """Where this session's API-key CODEX_HOME lives: in the spawn dir, or
+        in a root-only private temp dir for a kind without a spawn."""
+        spawn_dir = getattr(self, "_spawn_dir", None)
+        if spawn_dir is not None:
+            return Path(spawn_dir) / CODEX_API_HOME_NAME
+        if getattr(self, "_api_home_tmpdir", None) is None:
+            import tempfile as _tempfile
+            self._api_home_tmpdir = _tempfile.mkdtemp(prefix="clodia-codex-api-")
+        return Path(self._api_home_tmpdir) / CODEX_API_HOME_NAME
+
+    def _prepare_api_home(self, provider: str) -> Path:
+        """The dedicated CODEX_HOME of an API-key turn on `provider`, with the
+        key read from the provider env now. Called AFTER the sandbox is
+        prepared, so files are created for the spawn uid directly."""
+        from ..api.providers import codex_api_key
+        key = codex_api_key(provider)
+        if not key:
+            raise CodexProviderRefused(
+                f"turno di **{self.kind}** non eseguito: il seed dichiara il provider "
+                f"`{provider}`, ma nel vault non c'è una chiave API utilizzabile. "
+                f"Cosa cambiare: collegare la chiave di `{provider}` dalla sezione "
+                f"Providers.")
+        home = self._api_home_path()
+        uid = getattr(self, "_sandbox_uid", None)
+        gid = _seed_gid(self.kind) if uid is not None else None
+        if _write_codex_api_home(home, key, uid=uid, gid=gid):
+            self._thread_home = None
+        self._codex_home = home
+        return home
 
     def _write_seed_governance(self) -> None:
         """Scrive in <cwd>/AGENTS.md la governance presa dal SEED dell'agent:
@@ -3379,6 +3607,13 @@ class CodexChatSession:
             _kill_uid_processes(self._sandbox_uid)
             _free_uid(self._sandbox_uid)
             self._sandbox_uid = None
+        # The API key's home dies with the session (#491): in the spawn dir it
+        # goes with `cleanup()` below, a private temp dir goes here.
+        tmpdir = getattr(self, "_api_home_tmpdir", None)
+        if tmpdir is not None:
+            import shutil as _shutil
+            _shutil.rmtree(tmpdir, ignore_errors=True)
+            self._api_home_tmpdir = None
         if self._spawn is not None:
             # Lo spawn finisce: i verbi presi in prestito con `copybrain` finiscono
             # con lui (clodia-platform#393). Prima della pulizia, perché dopo lo
@@ -3466,11 +3701,27 @@ class CodexChatSession:
         return True
 
     async def _run_turn(self, content: str) -> str:
+        # The credential of THIS turn, decided and said before anything runs
+        # (#491): the sysadmin could not tell which one a turn had used.
+        plan = await asyncio.to_thread(_codex_auth_plan, self.kind, self._runtime_override)
+        self._auth_plan = plan
+        LOG.info("codex turn kind=%s chat=%s provider=%s auth=%s resolved=%s",
+                 self.kind, self.chat_id, plan.provider, plan.auth, plan.resolved)
         activity_log.append(self.kind, "run_started",
                             {"prompt": _snippet(content), "principal": self.principal,
-                             "chat_id": self.chat_id, "trace": trace.current()})
-        runtime_model = _runtime_model(self.kind, self._runtime_override)
+                             "chat_id": self.chat_id, "trace": trace.current(),
+                             "provider": plan.provider, "auth": plan.auth})
+        if plan.auth == CODEX_AUTH_REFUSED:
+            activity_log.append(self.kind, "error",
+                                {"error": "provider_refused", "provider": plan.provider,
+                                 "chat_id": self.chat_id})
+            raise CodexProviderRefused(plan.refusal)
+        # The model the provider that authenticates the turn will see: on the
+        # subscription fallback that is the seed's model for `codex`.
+        runtime_model = _runtime_model(self.kind,
+                                       {**self._runtime_override, "provider": plan.provider})
         original_thread_id = self._thread_id
+        self._attempt_thread_id = original_thread_id
         parts, errors, returncode, stderr = await self._run_codex_once(content, runtime_model)
         failure = self._codex_failure(parts, errors, returncode, stderr)
         explicit_model = bool(self._runtime_override.get("model"))
@@ -3484,9 +3735,9 @@ class CodexChatSession:
                 "fallback_model": "codex-default",
                 "reason": _snippet(failure),
                 "chat_id": self.chat_id,
-                "provider": _runtime_provider(self.kind, self._runtime_override),
+                "provider": plan.provider,
             })
-            self._restore_codex_thread(original_thread_id)
+            self._restore_codex_thread(getattr(self, "_attempt_thread_id", original_thread_id))
             parts, errors, returncode, stderr = await self._run_codex_once(content, None)
             failure = self._codex_failure(parts, errors, returncode, stderr)
         if failure:
@@ -3515,7 +3766,7 @@ class CodexChatSession:
         activity_log.append(self.kind, "run_done",
                             {"reply": _reply_text(full), "chat_id": self.chat_id,
                              **(usage_payload or {}),
-                             "provider": _runtime_provider(self.kind, self._runtime_override)})
+                             "provider": plan.provider, "auth": plan.auth})
         return full
 
     def _codex_cmd(self, runtime_model: Optional[str]) -> list[str]:
@@ -3564,6 +3815,47 @@ class CodexChatSession:
         # goes through stdin, never through `cmd`. Taken before the sandbox
         # wrapper replaces argv[0], so it records codex's own arguments.
         self._last_codex_cmd = list(cmd)
+        plan = (getattr(self, "_auth_plan", None)
+                or CodexAuthPlan("codex", CODEX_AUTH_SUBSCRIPTION))
+        api_turn = plan.auth == CODEX_AUTH_API_KEY
+        # As root, codex's shell could read /proc/1/environ (#471): run it under
+        # the spawn's uid. The shared subscription home's group goes only to a
+        # subscription turn: an API-key turn has no business reading the
+        # ChatGPT login (#491). A session whose credential changed kind gets a
+        # fresh uid with the right groups.
+        groups = () if api_turn else (_CODEX_HOME_GID,)
+        if (self._sandbox_uid is not None
+                and getattr(self, "_sandbox_groups", groups) != groups):
+            _kill_uid_processes(self._sandbox_uid)
+            _free_uid(self._sandbox_uid)
+            self._sandbox_uid, self._sandbox_argv, self._sandbox_env = None, [], {}
+        if self._sandbox_uid is None and _sandbox_enabled(self.kind):
+            self._sandbox_uid, self._sandbox_argv, self._sandbox_env = _sandbox_prepare(
+                self.kind, self._spawn_dir, cmd[0],
+                groups=groups, umask="007")
+            self._sandbox_groups = groups
+        if api_turn:
+            # Dedicated home, key from the provider env, written for the spawn
+            # uid after the sandbox chown (consistent with #706).
+            home = self._prepare_api_home(plan.provider)
+        else:
+            if self._codex_home is None or self._codex_home.name == CODEX_API_HOME_NAME:
+                self._prepare_subscription_home()
+            home = self._codex_home
+        # A codex thread lives in the home that created it: resuming it from
+        # another one fails upstream. Start a new thread instead, and say so.
+        thread_home = getattr(self, "_thread_home", None)
+        if (getattr(self, "_thread_id", None) and thread_home != home
+                and (api_turn or thread_home is not None)):
+            LOG.info("codex: %s thread not resumable from the %s home: new thread",
+                     self.kind, plan.auth)
+            self._restore_codex_thread(None)
+            cmd = self._codex_cmd(runtime_model)
+            self._last_codex_cmd = list(cmd)
+        self._thread_home = home
+        # What a retry of this same user turn restores (`_run_turn`): the thread
+        # as it stands in THIS home, not one this home cannot resume.
+        self._attempt_thread_id = getattr(self, "_thread_id", None)
         # Same env rule as every runtime (#471, #463): the inherited env without
         # orchestrator secrets or provider keys, proxy labelled with the spawn,
         # plus — when OTel export is on — the TURN's traceparent: `codex exec`
@@ -3586,14 +3878,9 @@ class CodexChatSession:
         except Exception as e:  # noqa: BLE001
             LOG.warning("token clodia-tools (codex) non coniato per %s: %s", self.kind, e)
         run_cwd = str(self._spawn_dir or self.cwd)
-        # As root, codex's shell could read /proc/1/environ (#471): run it under
-        # the spawn's uid, with the CODEX_HOME group so the shared login works.
-        if self._sandbox_uid is None and _sandbox_enabled(self.kind):
-            self._sandbox_uid, self._sandbox_argv, self._sandbox_env = _sandbox_prepare(
-                self.kind, self._spawn_dir, cmd[0],
-                groups=(_CODEX_HOME_GID,), umask="007")
         if self._sandbox_uid is not None:
-            _share_codex_home(self._codex_home)   # a reconnect rewrites auth.json 0600 root
+            if not api_turn:
+                _share_codex_home(self._codex_home)   # a reconnect rewrites auth.json 0600 root
             env.update(self._sandbox_env)
             cmd = [*self._sandbox_argv, *cmd[1:]]
         proc = await asyncio.create_subprocess_exec(

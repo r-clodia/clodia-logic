@@ -1,6 +1,11 @@
 # Provider OpenAI via API (pay-per-token) — pezzo di sistema CLONABILE.
 # Solo DEFINIZIONE (catalogo), MAI credenziali (→ vault del gateway).
 # DPA commerciale: adatto ai dati confidenziali.
+# Codex agents (clodia-platform#491): a codex turn bills this provider ONLY when
+# the seed declares it (`providers: [openai-api, ...]`); it then runs in a
+# dedicated CODEX_HOME with this key and `forced_login_method = "api"`. Picked
+# only by the SDK defaults, the turn stays on the ChatGPT subscription (`codex`)
+# or is refused with the reason, never billed per use by surprise.
 name: OpenAI API
 mechanism: apikey
 apikey_env: OPENAI_API_KEY
