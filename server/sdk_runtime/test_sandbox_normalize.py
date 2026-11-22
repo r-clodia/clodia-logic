@@ -25,7 +25,6 @@ from __future__ import annotations
 import unittest
 from pathlib import Path
 
-from ..agents import workspace as ws
 from ..agents.models import Sandbox
 from . import native_tools as nt
 
@@ -94,37 +93,28 @@ class NormalizeSandboxTests(unittest.TestCase):
 
 class ClaudeUsesTheSameNormalizationTests(unittest.TestCase):
     """Il traduttore di claude consuma la forma normalizzata, non il seed grezzo:
-    è la prova che il punto solo è davvero uno."""
+    è la prova che il punto solo è davvero uno. Since #665 it emits only the
+    gate's `Bash(...)` deny rules."""
 
-    def _settings(self, sandbox: Sandbox) -> dict:
-        spec = type("SpecFinta", (), {"sandbox": sandbox})()
-        return ws._build_settings_json(spec, SCRATCH)["permissions"]
-
-    def test_claude_translation_inherits_dedup_and_strip(self):
-        perms = self._settings(Sandbox(
-            allow_shell_cmds=["  git ", "git", ""],
-        ))
-        self.assertEqual(["Bash(git *)"], perms["allow"])
+    def test_claude_rules_inherit_dedup_and_strip(self):
+        self.assertEqual(["Bash(sudo *)"], nt.claude_shell_rules(Sandbox(
+            deny_shell_patterns=["  sudo * ", "sudo *", ""])))
 
     def test_claude_deny_patterns_get_the_scratch_resolved(self):
-        perms = self._settings(Sandbox(deny_shell_patterns=["rm -rf {scratch}/*"]))
-        self.assertEqual([f"Bash(rm -rf {SCRATCH}/*)"], perms["deny"])
+        self.assertEqual([f"Bash(rm -rf {SCRATCH}/*)"], nt.claude_shell_rules(
+            Sandbox(deny_shell_patterns=["rm -rf {scratch}/*"]), SCRATCH))
 
     def test_a_legacy_seed_emits_no_read_or_write_rule(self):
-        """#656: a seed that still declares the path keys (older seeds, external
-        packs) loads, and the workspace emits only the shell rules — no
-        `Read(...)`, `Write(...)` or `Edit(...)` from the sandbox."""
-        perms = self._settings(Sandbox.model_validate({
+        """#656: a seed that still declares the path keys loads, and only the
+        shell deny patterns come out — no `Read(...)`, `Write(...)`, `Edit(...)`."""
+        rules = nt.claude_shell_rules(Sandbox.model_validate({
             "allow_read": ["{scratch}/**"],
             "deny_read": ["/clodia/secrets/**", "/datadir/secrets/**"],
             "allow_write": ["{scratch}/**"],
             "allow_shell_cmds": ["git", "pytest"],
             "deny_shell_patterns": ["rm -rf *", "curl *"],
         }))
-        self.assertEqual(["Bash(git *)", "Bash(pytest *)"], perms["allow"])
-        self.assertEqual(["Bash(rm -rf *)", "Bash(curl *)"], perms["deny"])
-        for rule in perms["allow"] + perms["deny"]:
-            self.assertFalse(rule.startswith(("Read(", "Write(", "Edit(")), rule)
+        self.assertEqual(["Bash(rm -rf *)", "Bash(curl *)"], rules)
 
 
 if __name__ == "__main__":

@@ -82,8 +82,9 @@ def _sandbox_applicato(spec, campo: str) -> bool:
 def _sandbox_inerte(spec, sandbox) -> list[str]:
     """I campi `sandbox` dichiarati che il runtime NON applica.
 
-    `workspace.py` li traduce in `.claude/settings.local.json` e solo lì: su
-    codex e opencode restano parole nel file. La lettura però esiste — la scheda
+    Quale runtime applica quale campo lo dice `native_tools.SANDBOX_ENFORCED`
+    (su claude i pattern negati vanno al gate dei permessi, #665): su codex
+    restano parole nel file. La lettura però esiste — la scheda
     dell'agente li mostra, `trifecta` li interroga — quindi oggi la piattaforma
     *racconta* una restrizione che non c'è, ed è peggio di un campo assente
     (clodia-platform#296). Stesso pattern di `native_tools_info.unenforced`: non

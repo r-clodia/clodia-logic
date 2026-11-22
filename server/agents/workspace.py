@@ -19,7 +19,6 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import data_path
-from ..sdk_runtime import native_tools as _nt
 from .inheritance import effective_capabilities_of
 from .models import AgentSpec
 
@@ -156,41 +155,6 @@ def _floor_from_dirs(name: str) -> int:
         if d.is_dir() and suffix.isdigit():
             mx = max(mx, int(suffix))
     return mx
-
-
-def _build_settings_json(spec: AgentSpec, scratch_dir: Path) -> dict:
-    """Costruisce il `.claude/settings.json` per il workspace effimero.
-
-    permissions.deny ha precedenza su permissions.allow (default Claude Code).
-
-    Only the shell guards of the seed's `sandbox` are translated here
-    (`Bash(...)` rules). No `Read(...)`/`Write(...)`/`Edit(...)` rule is emitted
-    any more (clodia-platform#656): the path keys were removed from the seed
-    schema, and the file boundary is the spawn's uid and the root-only
-    directories, not a rule a shell can walk around.
-
-    La lettura del seed (segnaposto `{scratch}` risolto, voci vuote e doppioni
-    via) sta in `native_tools.normalize_sandbox`, non qui: opencode traduce gli
-    stessi campi in un'altra forma (clodia-platform#296 punto 2), e due pulizie
-    separate divergono. Qui resta solo la traduzione nella sintassi di claude.
-    """
-    sb = _nt.normalize_sandbox(spec.sandbox, scratch_dir)
-    allow: list[str] = []
-    deny: list[str] = []
-
-    for c in sb.allow_shell_cmds:
-        # Sintassi Bash documentata: 'Bash(<cmd> *)' con spazio, non ':' .
-        allow.append(f"Bash({c} *)")
-    for pattern in sb.deny_shell_patterns:
-        deny.append(f"Bash({pattern})")
-
-    return {
-        "permissions": {
-            "allow": allow,
-            "deny": deny,
-        },
-        "hooks": {},
-    }
 
 
 def _rmtree_force(path) -> None:
@@ -409,9 +373,10 @@ class EphemeralWorkspace:
                 mem_claude_link.unlink()
             os.symlink(str(mem_src.resolve()), str(mem_claude_link))
 
-        settings = _build_settings_json(self.spec, self.scratch)
-        settings_path = claude_root / "settings.local.json"
-        settings_path.write_text(json.dumps(settings, indent=2))
+        # No `.claude/settings.local.json` (clodia-platform#665): the SDK never
+        # loads it, so the shell rules it carried were inert. The seed's
+        # `deny_shell_patterns` reach the permission gate instead
+        # (`native_tools.claude_shell_rules`).
 
     def _codex_agents_md(self, agent_root: Path) -> str:
         """AGENTS.md per codex: costituzione + identità (dal system-prompt.md

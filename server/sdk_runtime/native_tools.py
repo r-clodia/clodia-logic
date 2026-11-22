@@ -221,9 +221,15 @@ SANDBOX_FIELDS: tuple[str, ...] = (
 #: strumenti* il seed concede, questa *come si stringe la shell che il seed ha
 #: già*. Stanno nello stesso file perché divergono se stanno in due.
 #:
-#: - **claude**: tutti, via `.claude/settings.local.json` — è l'unico posto dove
-#:   qualcuno li traduce (`agents/workspace._build_settings_json`, chiamato solo
-#:   dal layout claude; un test AST tiene ferma la premessa).
+#: - **claude**: `deny_shell_patterns` as `Bash(<pattern>)` rules the
+#:   permission gate applies to every command (`claude_shell_rules`,
+#:   clodia-platform#665). Until then both fields went into
+#:   `.claude/settings.local.json`, which the SDK never loads (no
+#:   `setting_sources`), so neither applied. ⚠️ `allow_shell_cmds` is still
+#:   NOT applied on claude — under the gate's «allow all but the blocklist» an
+#:   allow list restricts nothing. Enforcing it (and taking commands away from
+#:   the seeds that declare it) or declaring it inert is the owner's decision,
+#:   open on #665; until then this entry keeps the old claim for that field.
 #: - **codex**: nessuno. La sezione `[permissions.<profile>]` di codex 0.149
 #:   sarebbe il canale giusto, ma i campi ignoti dentro un profilo non danno
 #:   errore con `--strict-config`: lo schema non è stabilibile dall'interno del
@@ -245,6 +251,12 @@ SANDBOX_ENFORCED: dict[str, frozenset[str] | None] = {
     "opencode": frozenset({"deny_shell_patterns"}),
     "codex": frozenset(),
 }
+
+
+def claude_shell_rules(sandbox, scratch: str | Path | None = None) -> list[str]:
+    """The seed's `deny_shell_patterns` as `Bash(<pattern>)` rules for the
+    claude permission gate (clodia-platform#665), `{scratch}` resolved."""
+    return [f"Bash({p})" for p in normalize_sandbox(sandbox, scratch).deny_shell_patterns]
 
 
 def sandbox_applies(sdk: str | None, campo: str) -> bool:

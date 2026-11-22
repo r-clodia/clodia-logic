@@ -1,7 +1,9 @@
 """Chi porta quali campi `sandbox`, e il seed non lo diceva.
 
-`workspace._build_settings_json` traduce `allow_shell_cmds`/`deny_shell_patterns`
-in `.claude/settings.local.json`, ed è chiamato solo dal layout claude. Su codex
+On claude `deny_shell_patterns` reaches the permission gate as `Bash(...)`
+rules (`native_tools.claude_shell_rules`, clodia-platform#665; the settings
+file that carried both fields before was never loaded). `allow_shell_cmds` on
+claude is an open question on #665. Su codex
 nessuno li porta; su opencode, dal punto 2 della #296, ne arriva **uno** —
 `deny_shell_patterns`, in `permission.bash` via `native_tools.opencode_permission`.
 L'altro resta una dichiarazione inerte su quel runtime, e le ragioni stanno
@@ -401,13 +403,14 @@ class TheShellFlagTellsTheTruth(unittest.TestCase):
 
 
 class TheTablePremiseStaysTrue(unittest.TestCase):
-    """La tabella dice «solo claude» perché una sola funzione applica quei campi
-    e la chiama un solo layout. Se domani l'enforcement arriva su opencode, è
-    QUESTO test a diventare rosso: senza, la tabella mentirebbe al contrario e
-    la scheda dichiarerebbe inerte una restrizione reale."""
+    """The table says claude applies `deny_shell_patterns` because the session
+    hands them to the permission gate's blocklist (#665: the settings file
+    that carried them before was never loaded). If that call goes, THIS test
+    turns red instead of the table lying again."""
 
-    def test_build_settings_json_is_called_only_by_the_claude_layout(self):
-        src = (Path(__file__).resolve().parent / "workspace.py").read_text(encoding="utf-8")
+    def test_the_claude_session_hands_the_patterns_to_the_gate(self):
+        src = (Path(__file__).resolve().parents[1] / "sdk_runtime" / "session.py"
+               ).read_text(encoding="utf-8")
         albero = ast.parse(src)
         chiamanti: set[str] = set()
         for nodo in ast.walk(albero):
@@ -416,11 +419,15 @@ class TheTablePremiseStaysTrue(unittest.TestCase):
             for interno in ast.walk(nodo):
                 if (isinstance(interno, ast.Call)
                         and isinstance(interno.func, ast.Name)
-                        and interno.func.id == "_build_settings_json"):
+                        and interno.func.id == "_resolve_shell_denied"):
                     chiamanti.add(nodo.name)
-        self.assertEqual(chiamanti, {"_materialize_claude_layout"},
-                         "il sandbox è applicato da un layout nuovo: aggiorna "
-                         "SANDBOX_ENFORCED in sdk_runtime/native_tools.py")
+        self.assertIn("start", chiamanti,
+                      "the claude session no longer applies the seed's shell "
+                      "patterns: update SANDBOX_ENFORCED in sdk_runtime/native_tools.py")
+
+    def test_no_layout_writes_the_inert_settings_file(self):
+        src = (Path(__file__).resolve().parent / "workspace.py").read_text(encoding="utf-8")
+        self.assertNotIn('"settings.local.json"', src)
 
 
 if __name__ == "__main__":

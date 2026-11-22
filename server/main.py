@@ -395,6 +395,12 @@ async def _lifespan(app: FastAPI):
     # deve cogliere è raro, quindi non ci si accorgerebbe che è spento fino alla
     # notte in cui serviva.
     lag_task = asyncio.create_task(loop_lag.heartbeat())
+    # The file boundary that holds is the spawn's uid (clodia-platform#665):
+    # once at startup, as that uid, try the protected paths. Off the loop: it
+    # starts a process. A readable one is logged as an error.
+    from .sdk_runtime import file_guard, session as _sess
+    asyncio.get_running_loop().run_in_executor(
+        None, file_guard.self_test, _sess._SANDBOX_UID_BASE)
     # Transcripts and stored turn reasoning under the retention of their tier
     # (clodia-platform#446, #484).
     from .agents import transcript_retention

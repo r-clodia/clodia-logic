@@ -62,10 +62,11 @@ def _drop_retired(raw: object, keys: tuple[str, ...], where: str) -> object:
 class Sandbox(BaseModel):
     """Shell guards applied to the agent's process.
 
-    Only the two shell keys remain (clodia-platform#656). `allow_shell_cmds`
-    goes to `.claude/settings.local.json` on the claude runtime;
-    `deny_shell_patterns` goes there too and, on opencode, to
-    `permission.bash` — the only shell guard both runtimes enforce. The
+    Only the two shell keys remain (clodia-platform#656).
+    `deny_shell_patterns` goes to the claude permission gate as `Bash(...)`
+    rules (#665) and, on opencode, to `permission.bash` — the only shell guard
+    both runtimes enforce. `allow_shell_cmds` is not applied by the gate
+    (open question on #665). The
     placeholder `{scratch}` is resolved at spawn time by
     `sdk_runtime.native_tools.normalize_sandbox`. Which runtime enforces which
     key is `native_tools.SANDBOX_ENFORCED`; what a runtime does not enforce is
