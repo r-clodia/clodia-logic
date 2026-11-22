@@ -31,9 +31,13 @@ def _base_url() -> str:
 def read_credential(name: str) -> str | None:
     """Valore della credenziale `name` dal vault del gateway (o None)."""
     try:
+        # The agent-server's OWN call: the gateway requires the signed service role
+        # on its internal routes (clodia-platform#584) — an agent's runtime token,
+        # which carries `agent: clodia` too, no longer passes.
         r = requests.get(
             f"{_base_url()}/{name}",
-            headers={"Authorization": f"Bearer {pki.mint_session_token(_PRINCIPAL, ttl_seconds=_TOKEN_TTL)}"},
+            headers={"Authorization": "Bearer " + pki.mint_session_token(
+                _PRINCIPAL, ttl_seconds=_TOKEN_TTL, role=pki.ROLE_AGENT_SERVER)},
             timeout=_HTTP_TIMEOUT)
     except requests.RequestException:
         return None
