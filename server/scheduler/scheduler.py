@@ -12,11 +12,14 @@ Architettura:
   prompt nel topic associato, secondo il mode del record.
 """
 import asyncio
+import contextvars
 import logging
+import threading
 from datetime import datetime, timedelta, timezone
 from typing import Optional
 
 from apscheduler.events import EVENT_JOB_MISSED, EVENT_JOB_SUBMITTED
+from apscheduler.executors.pool import ThreadPoolExecutor
 from apscheduler.schedulers.background import BackgroundScheduler
 from apscheduler.triggers.cron import CronTrigger
 from apscheduler.triggers.interval import IntervalTrigger
@@ -30,6 +33,7 @@ except Exception:  # pragma: no cover
     _SCHED_TZ = pytz.timezone("Europe/Rome")
 
 from . import db, refusals, run_status
+from .catch_up import CatchUpEntry, CatchUpPacer, CatchUpSettings, WakeDetector
 from ..core.events import bus
 from ..core.models import Event
 from ..sdk_runtime.session import known_kind, manager
@@ -42,12 +46,21 @@ _scheduler: Optional[BackgroundScheduler] = None
 _loop: Optional[asyncio.AbstractEventLoop] = None
 _RUN_TASKS: set[asyncio.Task] = set()
 
+#: Set while a catch-up runs (#711): the background turns it spawns are
+#: collected here, so the catch-up keeps its slot until its turn ends instead
+#: of only until the dispatch returned.
+_CATCH_UP_TASKS: contextvars.ContextVar[Optional[list]] = contextvars.ContextVar(
+    "clodia_catch_up_tasks", default=None)
+
 
 def _spawn_run(coro) -> None:
     """Mantiene una reference forte al lifecycle asincrono di un job."""
     task = asyncio.create_task(coro)
     _RUN_TASKS.add(task)
     task.add_done_callback(_RUN_TASKS.discard)
+    held = _CATCH_UP_TASKS.get()
+    if held is not None:
+        held.append(task)
 
 
 def _con_i_rifiuti(stato: str, dettaglio: Optional[str],
@@ -693,8 +706,12 @@ def _start_wakeup_ticker(sched: BackgroundScheduler) -> None:
     clock stops, so after the wake the scheduler keeps waiting for hours that
     already passed on the wall clock — the 09:00 digest fired in the evening,
     or never if a restart came first. A wakeup recomputes from the wall clock:
-    after a suspension the due fire runs within a minute, within its grace."""
-    import threading
+    after a suspension the due fire runs within a minute, within its grace.
+
+    Each tick also samples the wall and monotonic clocks (#711): a gap between
+    the two is the time the host slept, and past a threshold the scheduler
+    enters catch-up mode BEFORE waking APScheduler, so the burst of due fires
+    that follows goes through the staggered queue."""
     import time as _time
 
     def _loop() -> None:
@@ -703,11 +720,139 @@ def _start_wakeup_ticker(sched: BackgroundScheduler) -> None:
             try:
                 if not sched.running:
                     return
+                _note_possible_wake()
                 sched.wakeup()
             except Exception:  # noqa: BLE001 — a tick never kills the ticker
                 pass
 
     threading.Thread(target=_loop, name="scheduler-wakeup", daemon=True).start()
+
+
+# ---------------------------------------------------------------------------
+# Staggered catch-up after a wake (clodia-platform#711)
+# ---------------------------------------------------------------------------
+#
+# The decision «is this fire a catch-up?» needs the time the fire was DUE, and
+# APScheduler only hands the callback its args. The executor sees `run_times`
+# right before it submits the callback to its pool, so it stamps the due time
+# here and `_fire_job_threadsafe` reads it back: written before the submit,
+# read inside the submitted call — no race.
+
+_DUE_LOCK = threading.Lock()
+_DUE: dict[str, datetime] = {}
+
+#: Jobs whose next fire was moved to «now + 30s» at boot to recover a fire
+#: missed while the process was down (#530): id → the fire being recovered.
+#: Their fire is punctual for APScheduler but is a catch-up for us.
+_BOOT_CATCH_UP: dict[int, datetime] = {}
+
+_catch_up_settings: Optional[CatchUpSettings] = None
+_wake: Optional[WakeDetector] = None
+_pacer: Optional[CatchUpPacer] = None
+
+
+class _DueStampingExecutor(ThreadPoolExecutor):
+    """The default thread-pool executor, plus the due-time stamp (#711)."""
+
+    def _do_submit_job(self, job, run_times):
+        if run_times:
+            with _DUE_LOCK:
+                _DUE[job.id] = run_times[-1]
+        return super()._do_submit_job(job, run_times)
+
+
+def _take_due(job_id: int) -> Optional[datetime]:
+    with _DUE_LOCK:
+        return _DUE.pop(_job_key(job_id), None)
+
+
+def _settings() -> CatchUpSettings:
+    global _catch_up_settings
+    if _catch_up_settings is None:
+        _catch_up_settings = CatchUpSettings.from_env()
+    return _catch_up_settings
+
+
+def _wake_detector() -> WakeDetector:
+    global _wake
+    if _wake is None:
+        import time as _time
+        _wake = WakeDetector(_settings(), wall=_time.time, mono=_time.monotonic)
+    return _wake
+
+
+def _note_possible_wake() -> None:
+    """Called by the ticker: a wall-clock jump starts catch-up mode."""
+    slept = _wake_detector().tick()
+    if slept is not None:
+        LOG.warning("Host wake detected: the wall clock moved %.0f s more than "
+                    "the monotonic one; catch-up mode for %.0f s — missed fires "
+                    "are recovered one at a time (#711)",
+                    slept, _settings().window_s)
+
+
+def _get_pacer() -> CatchUpPacer:
+    """The pacer, created on first use ON the loop (its Event belongs there)."""
+    global _pacer
+    if _pacer is None:
+        _pacer = CatchUpPacer(_run_catch_up, settings=_settings(),
+                              on_drop=_record_catch_up_drop)
+    return _pacer
+
+
+async def _run_catch_up(job_id: int) -> None:
+    """Run one catch-up and hold its slot until its turn ends (bounded)."""
+    held: list = []
+    token = _CATCH_UP_TASKS.set(held)
+    try:
+        await fire_job(job_id)
+    finally:
+        _CATCH_UP_TASKS.reset(token)
+    if held:
+        _done, pending = await asyncio.wait(held, timeout=_settings().hold_s)
+        if pending:
+            LOG.warning("Catch-up of job id=%s: turn still running after %.0f s, "
+                        "slot released anyway", job_id, _settings().hold_s)
+
+
+def _record_catch_up_drop(entry: CatchUpEntry, why: str) -> None:
+    """A catch-up that will not run leaves a `missed` row, like any lost fire."""
+    detail = f"fire due {entry.scheduled.isoformat()} not run: {why} (#711)"
+    db.mark_run(entry.job_id, status=f"missed ({detail})", chat_id=None,
+                note=detail)
+
+
+def _catch_up_entry(job_id: int, due: Optional[datetime]) -> Optional[CatchUpEntry]:
+    """The entry for this fire if it must be staggered; `None` to fire now.
+
+    A fire is a catch-up when it was moved at boot to recover a missed one, when
+    it is late beyond the scheduler's own jitter (the same 60 s floor that
+    `_on_job_submitted` uses to call a fire RECUPERATO), or when it lands in the
+    catch-up window opened by a detected wake. Anything else is the normal
+    cadence and fires exactly as before."""
+    boot = _BOOT_CATCH_UP.pop(job_id, None)
+    now = datetime.now(timezone.utc)
+    late = (now - _utc(due)).total_seconds() if due is not None else 0.0
+    if boot is not None:
+        reason, scheduled = "missed while the process was down", boot
+    elif late > _MISFIRE_GRACE_FLOOR_S:
+        reason, scheduled = f"{late / 60.0:.0f} min late", due
+    elif _wake is not None and _wake.active():
+        reason, scheduled = "due inside the post-wake window", due or now
+    else:
+        return None
+    job = db.get_job(job_id) or {"id": job_id}
+    grace = misfire_grace_for(job)
+    if boot is not None:
+        # The boot catch-up was decided within the grace, then delayed 30 s on
+        # purpose: the 30 s are not the job's fault.
+        grace += 30
+    scheduled = _utc(scheduled)
+    return CatchUpEntry(
+        job_id=job_id, scheduled=scheduled,
+        deadline=scheduled + timedelta(seconds=grace),
+        programmatic=(job.get("mode") or "agentic") == "logic",
+        reason=reason)
 
 
 def start_scheduler(loop: asyncio.AbstractEventLoop) -> BackgroundScheduler:
@@ -719,13 +864,17 @@ def start_scheduler(loop: asyncio.AbstractEventLoop) -> BackgroundScheduler:
     _loop = loop
     # Jobstore in-memory: la fonte di verità sono i file jobs/<id>.yaml (db.py),
     # da cui sync_jobs_from_db ricostruisce lo schedule al boot e on-change.
-    _scheduler = BackgroundScheduler(timezone=_SCHED_TZ)
+    # The executor is APScheduler's default (a 10-thread pool) that also stamps
+    # each fire's due time, read back to stagger catch-ups (#711).
+    _scheduler = BackgroundScheduler(timezone=_SCHED_TZ,
+                                     executors={"default": _DueStampingExecutor()})
     # Un fire che non avviene non ha nulla da dichiarare e fino a #273 non
     # lasciava traccia: questi due listener sono l'unico posto da cui quel fatto
     # può essere raccontato, perché la callback del job non viene mai chiamata.
     _scheduler.add_listener(_on_job_missed, EVENT_JOB_MISSED)
     _scheduler.add_listener(_on_job_submitted, EVENT_JOB_SUBMITTED)
     _scheduler.start()
+    _wake_detector().tick()  # first sample: the reference for the next tick
     _start_wakeup_ticker(_scheduler)
     LOG.info("Scheduler avviato (timezone=Europe/Rome, jobs da %s)", db.JOBS_DIR)
     return _scheduler
@@ -822,7 +971,10 @@ def _on_job_submitted(event) -> None:
 
 def shutdown_scheduler() -> None:
     """Stop dello scheduler senza attendere il completamento dei job in volo."""
-    global _scheduler
+    global _scheduler, _pacer
+    # The catch-up queue lives on the loop that is going away (#711).
+    _pacer = None
+    _BOOT_CATCH_UP.clear()
     if _scheduler is None:
         return
     try:
@@ -964,6 +1116,9 @@ def reload_all_enabled_jobs() -> int:
                 _scheduler.modify_job(
                     _job_key(job["id"]),
                     next_run_time=datetime.now(_SCHED_TZ) + timedelta(seconds=30))
+                # The fire goes through the staggered queue (#711): a boot
+                # after a long stop recovers N jobs, not N jobs at once.
+                _BOOT_CATCH_UP[int(job["id"])] = recupero
                 LOG.warning("Job id=%s name=%s: fire del %s perso a processo "
                             "fermo, entro la tolleranza → eseguito ora (#530)",
                             job.get("id"), job.get("name"), recupero.isoformat())
@@ -998,6 +1153,15 @@ def _fire_job_threadsafe(job_id: int) -> None:
         return
     if _loop.is_closed():
         LOG.error("FastAPI loop is closed; cannot fire job %s", job_id)
+        return
+    try:
+        entry = _catch_up_entry(job_id, _take_due(job_id))
+    except Exception as e:  # noqa: BLE001 — a pacing doubt never eats a fire
+        LOG.error("job %s: catch-up not evaluated, firing now (%s: %s)",
+                  job_id, type(e).__name__, e)
+        entry = None
+    if entry is not None:
+        _loop.call_soon_threadsafe(lambda: _get_pacer().offer(entry))
         return
     asyncio.run_coroutine_threadsafe(fire_job(job_id), _loop)
 
