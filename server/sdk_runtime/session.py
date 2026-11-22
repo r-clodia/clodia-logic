@@ -942,6 +942,27 @@ def _release_spawn_loans(kind: str, spawn) -> None:
         LOG.warning("copybrain: revoca a fine spawn non riuscita per %s: %s", kind, e)
 
 
+#: What a live Claude session can call is fixed when its client opens: the
+#: CLI reads the gateway's `tools/list` once, and the gateway does not emit
+#: `tools/list_changed` (#543). Every change of what agents may reach bumps an
+#: epoch here — per room (`<tier>/<name>`) or global (`*`) — and a session
+#: whose client opened under an older epoch reopens it before its next turn.
+_TOOLS_EPOCH: dict[str, int] = {}
+
+
+def bump_tools_epoch(scope: str | None = None) -> None:
+    """The reachable tools changed in this room (`<tier>/<name>`) or, with no
+    scope, everywhere (verbs outside rooms, global rules)."""
+    key = scope or "*"
+    _TOOLS_EPOCH[key] = _TOOLS_EPOCH.get(key, 0) + 1
+
+
+def _tools_epoch(chat_id: str | None) -> tuple[int, int]:
+    parts = str(chat_id or "").split(":")
+    scope = f"{parts[1]}/{parts[2]}" if len(parts) >= 3 and parts[0] == "chan" else None
+    return _TOOLS_EPOCH.get("*", 0), (_TOOLS_EPOCH.get(scope, 0) if scope else 0)
+
+
 def _execution_id(spawn) -> str:
     """Identità dello SPAWN per il token firmato: `clodia-1`, o `""` se non
     ancora materializzato.
@@ -2123,9 +2144,18 @@ class ChatSession:
         Usato sia all'avvio sia dal recovery: crea il subprocess claude e
         riporta la sessione a IDLE (pronta)."""
         options = ClaudeAgentOptions(**self._opts_kwargs)
+        # Read BEFORE opening: a grant that lands while the CLI starts is then
+        # newer than this epoch and reopens the client on the next turn.
+        epoch = _tools_epoch(self.chat_id)
         self._client_ctx = ClaudeSDKClient(options=options)
         self._client = await self._client_ctx.__aenter__()
+        self._opened_tools_epoch = epoch
         await self._set_status(ClodiaStatus.IDLE)
+
+    def _tools_changed(self) -> bool:
+        """The reachable tools changed since this client opened (#543)."""
+        opened = getattr(self, "_opened_tools_epoch", None)
+        return opened is not None and opened != _tools_epoch(self.chat_id)
 
     def _refresh_provider_env(self) -> bool:
         """Aggiorna in-place l'env del provider effettivo nelle opzioni del
@@ -2345,6 +2375,13 @@ class ChatSession:
             if self._refresh_provider_env() | self._refresh_mcp_principal():
                 LOG.info("token rinnovato (provider/principal) → riapro il client per %s", self.chat_id)
                 self._recover_cause = "credential_refresh"
+                await self._recover_session()
+            elif self._client is not None and self._tools_changed():
+                # #543: a grant made while this session was alive. The new
+                # client reads `tools/list` again, so the turn sees it.
+                LOG.info("strumenti raggiungibili cambiati → riapro il client per %s",
+                         self.chat_id)
+                self._recover_cause = "tools_changed"
                 await self._recover_session()
             # Il lock è nostro: ogni recovery concorrente è finita. Se il client
             # manca ancora è perché quella recovery è fallita — ritenta, e solo

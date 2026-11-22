@@ -49,6 +49,13 @@ def _actor(who: str) -> dict:
             "by_clearance": _principal_clearance(who)}
 
 
+def _tools_changed(scope: str | None) -> None:
+    """Live sessions reopen their client on their next turn, so the CLI reads
+    the tools again (#543): `None` = every room."""
+    from ..sdk_runtime.session import bump_tools_epoch
+    bump_tools_epoch(scope)
+
+
 def _gw(e: topics_client.TopicsClientError) -> HTTPException:
     if getattr(e, "is_client_error", False):
         return HTTPException(e.status, e.detail)
@@ -185,6 +192,7 @@ async def channel_rule_remove(tier: str, name: str, rule_id: str, request: Reque
         raise _gw(e)
     if not removed:
         raise HTTPException(404, "regola non trovata")
+    _tools_changed(f"{tier}/{name}")
     return {"removed": True}
 
 
@@ -211,6 +219,7 @@ async def global_rule_remove(rule_id: str, request: Request) -> dict:
         raise _gw(e)
     if not removed:
         raise HTTPException(404, "regola non trovata")
+    _tools_changed(None)
     return {"removed": True}
 
 
@@ -238,10 +247,12 @@ async def post_channel_tools(tier: str, name: str, request: Request) -> dict:
     if (body or {}).get("action") not in _ROOM_TOOL_ACTIONS:
         raise HTTPException(400, "azione: " + " | ".join(_ROOM_TOOL_ACTIONS))
     try:
-        return await asyncio.to_thread(topics_client.topic_tools, tier, name,
-                                       {**body, **_actor(who)})
+        out = await asyncio.to_thread(topics_client.topic_tools, tier, name,
+                                      {**body, **_actor(who)})
     except topics_client.TopicsClientError as e:
         raise _gw(e)
+    _tools_changed(f"{tier}/{name}")
+    return out
 
 
 @router.get("/clodia/dm-tools")
@@ -262,6 +273,8 @@ async def post_dm_tools(request: Request) -> dict:
     if (body or {}).get("action") not in ("enable", "disable"):
         raise HTTPException(400, "azione: enable | disable")
     try:
-        return await asyncio.to_thread(topics_client.dm_tools, {**body, **_actor(who)})
+        out = await asyncio.to_thread(topics_client.dm_tools, {**body, **_actor(who)})
     except topics_client.TopicsClientError as e:
         raise _gw(e)
+    _tools_changed(None)
+    return out
