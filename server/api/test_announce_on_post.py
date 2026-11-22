@@ -68,8 +68,8 @@ class AnnounceOnPostTests(unittest.IsolatedAsyncioTestCase):
         # l'ordine dei test a decidere l'esito.
         ch._ANNOUNCED_IDS.clear()
 
-    async def _announce(self, body: dict, *, server_secret: str | None = None,
-                        header: str | None = None, title: str = "Software House"):
+    async def _announce(self, body: dict, *, server_secret: str | None = "s3cr3t",
+                        header: str | None = "s3cr3t", title: str = "Software House"):
         publish = AsyncMock()
         with _env(server_secret), patch.object(ch.bus, "publish", publish), \
                 patch.object(ch.topics_client, "open_topic",
@@ -133,11 +133,11 @@ class AnnounceOnPostTests(unittest.IsolatedAsyncioTestCase):
 
     async def test_an_unknown_topic_is_not_announced(self) -> None:
         publish = AsyncMock()
-        with _env(None), patch.object(ch.bus, "publish", publish), \
+        with _env("s3cr3t"), patch.object(ch.bus, "publish", publish), \
                 patch.object(ch.topics_client, "open_topic", return_value=None):
             with self.assertRaises(ch.HTTPException) as e:
                 await ch.channel_announce_internal(
-                    "SEAL-1", "non-esiste", _request(dict(MSG)))
+                    "SEAL-1", "non-esiste", _request(dict(MSG), secret="s3cr3t"))
 
         self.assertEqual(e.exception.status_code, 404)
         self.assertEqual(publish.await_count, 0)
@@ -154,14 +154,16 @@ class AnnounceOnPostTests(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(out["announced"])
         self.assertEqual(publish.await_count, 1)
 
-    async def test_without_a_configured_secret_the_announcement_passes(self) -> None:
-        """Fail-OPEN, non fail-closed: `docker-compose.yml` passa il secret come
-        `${...:-}`, quindi può essere vuoto — e un fail-closed spegnerebbe
-        l'annuncio *in silenzio*, cioè rimetterebbe il difetto di questa issue."""
-        out, publish = await self._announce(dict(MSG), server_secret=None)
-
-        self.assertTrue(out["announced"])
-        self.assertEqual(publish.await_count, 1)
+    async def test_without_a_configured_secret_the_announcement_is_refused(self) -> None:
+        """Fail-CLOSED (clodia-platform#707). Since #705 every route takes any
+        signed caller, an agent's token included: with no secret configured, a
+        fail-open check let a spawn paint on the bus a message the store never
+        held. No secret, no paired gateway, no announcement — whatever header
+        the caller sends."""
+        for header in (None, "", "anything"):
+            with self.assertRaises(ch.HTTPException) as e:
+                await self._announce(dict(MSG), server_secret=None, header=header)
+            self.assertEqual(e.exception.status_code, 403)
 
 
 if __name__ == "__main__":

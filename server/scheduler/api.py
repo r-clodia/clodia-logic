@@ -52,7 +52,9 @@ class JobPropose(BaseModel):
     prompt: str = Field(..., min_length=1)
     agent: str = Field("clodia", min_length=1, max_length=100)
     enabled: bool = True
-    # chi propone (impostato dal gateway dall'identità dell'agente chiamante)
+    # chi propone: creduto solo dal gateway accoppiato, che lo imposta
+    # dall'identità firmata dell'agente; da chiunque altro vale il chiamante
+    # firmato (`_proposer`, clodia-platform#707)
     requested_by: str = Field("", max_length=100)
 
 
@@ -449,9 +451,29 @@ async def api_get_job(job_id: int, request: Request):
     return _with_freshness(job)
 
 
+#: Why `POST /clodia/jobs` refuses anyone but a person (clodia-platform#707).
+JOB_CREATE_PERSONS_ONLY = (
+    "a job is created by a person; an agent proposes one with jobs.propose and "
+    "the owner approves it")
+
+
+def _job_creator(request: Request) -> str:
+    """Who may create a job DIRECTLY: a person, with their own session
+    (clodia-platform#707). A job is recurring autonomous execution, so an
+    agent goes through `jobs.propose` and the owner's approval — and that
+    holds for an agent's own token and for a token it carries on a person's
+    behalf alike (`caller_auth.signed_person`). The paired gateway has no
+    principal to own the job and never creates one: its path is `propose`."""
+    from ..api import caller_auth
+    who = caller_auth.signed_person(request)
+    if not who:
+        raise HTTPException(403, JOB_CREATE_PERSONS_ONLY)
+    return who
+
+
 @router.post("/clodia/jobs", status_code=201)
 async def api_create_job(req: JobCreate, request: Request):
-    owner = _caller(request)  # chi crea diventa owner (dev'essere autenticato)
+    owner = _job_creator(request)  # chi crea diventa owner: una persona
     cron = _resolve_cron(req.cron_expr, req.schedule_text)
     _require_valid_agent(req.agent)
     try:
@@ -478,8 +500,26 @@ async def api_create_job(req: JobCreate, request: Request):
     return job
 
 
+def _proposer(request: Request, declared: str) -> str:
+    """`requested_by` of a proposal (clodia-platform#707): from the paired
+    gateway, which fills it from the signed identity of the calling agent
+    (clodia-tools `jobs.propose`), the body is believed; from anyone else it
+    is the signed caller, and a body naming someone else is refused — the
+    same rule as `by` on the internal channel routes (#705)."""
+    from ..api import caller_auth
+    declared = (declared or "").strip()
+    if caller_auth.is_paired_gateway(request):
+        return declared or "agente"
+    who = caller_auth.caller_principal(request)
+    if not who:
+        raise HTTPException(401, "autenticazione richiesta")
+    if declared and declared != who:
+        raise HTTPException(403, f"'requested_by' ({declared}) non è il chiamante firmato")
+    return who
+
+
 @router.post("/clodia/jobs/propose", status_code=201)
-async def api_propose_job(req: JobPropose):
+async def api_propose_job(req: JobPropose, request: Request):
     """Un AGENTE propone un job: NON lo crea. Registra una proposta pendente; il
     job nasce solo all'approvazione dell'owner. Gate SINCRONO: la conferma avviene
     con un popup in chat (l'owner è presente) via POST /clodia/jobs/proposals/{id}/
@@ -487,13 +527,14 @@ async def api_propose_job(req: JobPropose):
     dall'owner (Prima Legge)."""
     from . import proposals
     from ..api import gate_sign
+    requested_by = _proposer(request, req.requested_by)
     cron = _resolve_cron(req.cron_expr, req.schedule_text)
     _require_valid_agent(req.agent)
     if db.get_job_by_name(req.name) is not None:
         raise HTTPException(status_code=409, detail=f"job name '{req.name}' already exists")
     prop = proposals.create(
         name=req.name, cron_expr=cron, prompt=req.prompt, agent=req.agent,
-        enabled=req.enabled, requested_by=(req.requested_by or "agente"),
+        enabled=req.enabled, requested_by=requested_by,
         nonce=gate_sign.new_nonce())
     return {
         "proposal_id": prop["id"],

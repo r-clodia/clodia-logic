@@ -6804,32 +6804,28 @@ def _paired_gateway(request: Request) -> None:
     """Il chiamante è il gateway con cui questo server è accoppiato?
 
     Il secret orchestrator condiviso (`CLODIA_ORCHESTRATOR_SECRET`, header
-    `X-Orchestrator-Secret`) è già il modo in cui i due servizi si riconoscono
+    `X-Orchestrator-Secret`) è il modo in cui i due servizi si riconoscono
     server-to-server — lo usano `logic_api`, `egress_api` e `mint_api` nella
-    direzione opposta. Qui distingue il gateway accoppiato da un client TERZO
-    che raggiunga la rete interna.
+    direzione opposta. Non è nell'ambiente degli spawn
+    (`sdk_runtime.child_env.ORCHESTRATOR_ONLY`, #471).
 
-    Quello che NON fa, e va scritto perché il nome «secret» promette di più:
-    misurato il 7 set 2026, quella variabile è presente anche nell'ambiente
-    degli **spawn** degli agenti, quindi non separa il gateway da un processo
-    della colonia. Contro quello la barriera resta la rete, come per
-    `trigger/internal` — che ha potere strettamente maggiore (fa partire un
-    turno) e non controlla nemmeno questo. Alzarla davvero significa restringere
-    e autenticare lo stream SSE, che è un altro lavoro, non questo diff.
-
-    **Fail-open se il server non ha un secret configurato**, e non il fail-closed
-    di `logic_api`: `docker-compose.yml` lo passa come `${...:-}`, quindi un
-    deployment può non averlo, e un fail-closed spegnerebbe l'annuncio *in
-    silenzio* — cioè rimetterebbe esattamente il difetto che questo diff chiude.
-    Con un secret configurato la verifica c'è ed è vincolante.
+    **Fail-closed** (clodia-platform#707). Fino alla #707 un server senza
+    secret configurato lasciava passare chiunque, con l'argomento che un
+    fail-closed avrebbe spento l'annuncio in silenzio. Dalla #705 però ogni
+    rotta accetta qualunque chiamante firmato, token di un agente compreso:
+    senza secret, uno spawn poteva dipingere sul bus una bolla mai scritta
+    nello store (`announce/internal`) o leggere i fatti di runtime di qualunque
+    agente in qualunque stanza (`runtime-facts/internal`). Nessun secret → 403,
+    e il log dice perché: un deployment senza secret non ha un gateway
+    accoppiato, e queste due rotte non hanno un altro chiamante legittimo.
     """
-    atteso = (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip()
-    if not atteso:
+    from .caller_auth import is_paired_gateway
+    if is_paired_gateway(request):
         return
-    ricevuto = (request.headers.get("x-orchestrator-secret") or "").strip()
-    from .caller_auth import secret_matches
-    if not (ricevuto and secret_matches(atteso, ricevuto)):
-        raise HTTPException(403, "annuncio: chiamante non accoppiato a questo server")
+    if not (os.environ.get("CLODIA_ORCHESTRATOR_SECRET") or "").strip():
+        LOG.warning("rotta interna rifiutata: CLODIA_ORCHESTRATOR_SECRET non "
+                    "configurato, nessun gateway accoppiato")
+    raise HTTPException(403, "annuncio: chiamante non accoppiato a questo server")
 
 
 def _paired_gateway_ok(request: Request) -> bool:

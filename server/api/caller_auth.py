@@ -159,6 +159,21 @@ def caller_principal(request: Request) -> Optional[str]:
     return str(claims.get("agent") or "").strip() or None
 
 
+def signed_person(request: Request) -> Optional[str]:
+    """The PERSON calling with their own session (clodia-platform#707), or None.
+
+    A person's WebUI session is a token whose `agent` claim is a registered
+    human and that is not on-behalf. Everything else is not a person acting:
+    an agent's own token, a token an agent carries on a person's behalf (the
+    carrier is the one making the call), the paired gateway (no principal)."""
+    claims = caller_claims(request)
+    if not claims or claims.get("on_behalf"):
+        return None
+    who = str(claims.get("agent") or "").strip()
+    from . import admin
+    return who if who and admin.is_human(who) else None
+
+
 def caller_clearance(request: Request, principal: str) -> str:
     """The clearance the caller acts with: the signed `clearance` claim of an
     agent token (the spawn's effective clearance) capped by the principal's

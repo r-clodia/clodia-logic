@@ -56,15 +56,24 @@ class WarningsReachTheApiTests(unittest.TestCase):
         dice «ho guardato»: la scheda non deve dedurre il silenzio da un buco."""
         self.assertEqual([], self._detail("seed_pulito")["warnings"])
 
+    def _list(self) -> dict:
+        """The list as an admin reads it (the paired gateway): since
+        clodia-platform#707 warnings and errors are an admin's view."""
+        import os
+        from . import caller_auth
+        with patch.dict(os.environ, {"CLODIA_ORCHESTRATOR_SECRET":
+                                     caller_auth.GatewayRequestForTests.SECRET_FOR_TESTS}):
+            return asyncio.run(AR.list_agents(caller_auth.GatewayRequestForTests()))
+
     def test_the_list_endpoint_carries_the_map(self) -> None:
-        r = asyncio.run(AR.list_agents())
+        r = self._list()
         self.assertIn("seed_incoerente", r["warnings"])
         self.assertNotIn("seed_pulito", r["warnings"])
 
     def test_the_list_endpoint_also_marks_each_agent(self) -> None:
         """Per agente, non solo nella mappa in coda: l'elenco può marcare la riga
         senza incrociare due strutture (ed è dove si vede il primo giorno)."""
-        r = asyncio.run(AR.list_agents())
+        r = self._list()
         per_nome = {a["name"]: a for a in r["agents"]}
         self.assertEqual([AVVISO], per_nome["seed_incoerente"]["warnings"])
         self.assertEqual([], per_nome["seed_pulito"]["warnings"])
@@ -72,7 +81,7 @@ class WarningsReachTheApiTests(unittest.TestCase):
     def test_warnings_are_not_errors(self) -> None:
         """Un seed contraddittorio resta un agente sano agli occhi di `errors`,
         o la webui lo mostrerebbe come non caricato."""
-        r = asyncio.run(AR.list_agents())
+        r = self._list()
         self.assertNotIn("seed_incoerente", r["errors"])
 
 

@@ -243,18 +243,66 @@ async def datastore_rows(pack: str, name: str, request: Request, table: str,
             "truncated": bool((res or {}).get("truncated"))}
 
 
+#: Why the documents listing refuses an agent (clodia-platform#707).
+RAG_DOCUMENTS_PERSONS_ONLY = (
+    "the documents of a collection are listed here for a person (the Databases "
+    "page); an agent lists them with the rag.list verb, in the scope that "
+    "imports the collection")
+
+
+async def _require_rag_documents_reader(request: Request, collection: str) -> str:
+    """Who may list a collection's documents through this route
+    (clodia-platform#707), or the HTTPException that says no.
+
+    The read below goes to the gateway with the agent-server's SERVICE
+    identity, which sees every collection, topic indexes included. Until #707
+    the only check in front of it was the `rag.list` PDP decision — and an
+    agent's token was forwarded to that decision as is, so a spawn granted
+    `rag.list` read the documents of ANY collection, outside the scopes that
+    import it, at any tier. Now, before that service read:
+
+    * a PERSON with their own session (`caller_auth.signed_person`) — no agent
+      token, no token carried on a person's behalf, no gateway (it has the
+      verb);
+    * `rag.list` allowed to that person by the PDP, as before;
+    * a topic's index (`topic-*`, #599) only for an admin — the gateway's own
+      rule for its listing (`rag_api._sees_topic_indexes`);
+    * the collection's tier within the person's clearance.
+    """
+    from . import admin, caller_auth
+    from .channels import _can_access
+    who = caller_auth.signed_person(request)
+    if not who:
+        raise HTTPException(403, RAG_DOCUMENTS_PERSONS_ONLY)
+    await gateway_pdp.require_authz_async(request, "rag.list")
+    if collection.startswith("topic-") and not admin.is_admin(who):
+        raise HTTPException(403, "indice di un topic: riservato agli admin")
+    try:
+        tier = await rag_store.collection_tier_async(collection)
+    except rag_store.RagStoreError as e:
+        LOG.warning("datastores: tier di '%s' non disponibile (%s)", collection, e)
+        raise HTTPException(
+            503, f"collection '{collection}' non verificabile: {e}. "
+                 "Non è un problema di permessi — riprova fra qualche secondo.") from e
+    if tier is None:
+        raise HTTPException(404, f"collection '{collection}' non trovata")
+    if not _can_access(gateway_pdp.human_clearance(who), tier):
+        raise HTTPException(403, f"la collection '{collection}' è {tier}: supera "
+                                 "la tua clearance")
+    return who
+
+
 @router.get("/clodia/datastores/rag/{collection}/documents")
 async def rag_collection_documents(collection: str, request: Request) -> dict[str, Any]:
     """I documenti INIETTATI in una collection: l'inventario ne dava il
     conteggio, non i nomi — «12 documenti» non si amministra.
 
-    `require_authz` e non `forward`: la lettura non è un verbo eseguibile dal
-    gateway per conto di questa persona (`rag.list` passa dai grant dell'AGENTE
-    chiamante), ed è lo stesso motivo per cui l'inventario delle collection
-    vive su una rotta interna privilegiata. La decisione resta del PDP, la
-    lettura la fa il runner — come già fa `_orphaned_rag_collections`.
+    The read is the runner's (`rag_store`, service identity): `rag.list` as a
+    verb authorises an AGENT in a scope, and a person on the Databases page has
+    no scope. So the decision is taken here, for a person only, before the read
+    (`_require_rag_documents_reader`, clodia-platform#707).
     """
-    await gateway_pdp.require_authz_async(request, "rag.list")
+    await _require_rag_documents_reader(request, collection)
     try:
         documenti = await rag_store.list_documents_async(collection)
     except rag_store.RagStoreError as e:

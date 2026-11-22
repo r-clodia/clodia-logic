@@ -46,7 +46,8 @@ _UNSET = object()
 
 class RuntimeFactsInternalTests(unittest.IsolatedAsyncioTestCase):
     async def _call(self, body: dict, *, spec=None, runtime: dict | None = None,
-                    seal: str | None = "SEAL-2", topic=_UNSET, server_secret=None):
+                    seal: str | None = "SEAL-2", topic=_UNSET, server_secret="s3cr3t",
+                    header: str | None = "s3cr3t"):
         with _env(server_secret), \
                 patch.object(ch.registry, "get_by_name", return_value=spec), \
                 patch.object(ch.topics_client, "async_open_topic",
@@ -55,7 +56,7 @@ class RuntimeFactsInternalTests(unittest.IsolatedAsyncioTestCase):
                 patch.object(ch, "_topic_runtime",
                             return_value=runtime if runtime is not None else {}), \
                 patch("server.api.providers.provider_seal", return_value=seal):
-            return await ch.channel_runtime_facts_internal(_request(body))
+            return await ch.channel_runtime_facts_internal(_request(body, secret=header))
 
     async def test_a_bot_with_an_eligible_provider_gets_the_facts(self) -> None:
         out = await self._call(
@@ -120,9 +121,23 @@ class RuntimeFactsInternalTests(unittest.IsolatedAsyncioTestCase):
             await self._call(
                 {"tier": "SEAL-1", "name": "ops", "agent": "content-creator"},
                 spec=_spec("content-creator"), runtime={"provider": "x", "model": "y"},
-                server_secret="s3cr3t",
+                server_secret="s3cr3t", header="sbagliato",
             )
         self.assertEqual(e.exception.status_code, 403)
+
+    async def test_without_a_configured_secret_it_fails_closed(self) -> None:
+        """clodia-platform#707: no secret configured means no paired gateway,
+        and this route has no other legitimate caller. Until #707 it answered
+        anyone then — since #705 that includes any agent's own token."""
+        for header in (None, "anything"):
+            with self.assertRaises(ch.HTTPException) as e:
+                await self._call(
+                    {"tier": "SEAL-1", "name": "ops", "agent": "content-creator"},
+                    spec=_spec("content-creator"),
+                    runtime={"provider": "x", "model": "y"},
+                    server_secret=None, header=header,
+                )
+            self.assertEqual(e.exception.status_code, 403)
 
 
 if __name__ == "__main__":
