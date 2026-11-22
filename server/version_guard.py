@@ -36,10 +36,14 @@ non c'è nulla contro cui confrontarsi e sui push a `main` il confronto sarebbe
 from __future__ import annotations
 
 import argparse
+import json
 import os
 import re
 import subprocess
 import sys
+import urllib.error
+import urllib.parse
+import urllib.request
 
 #: Il file che tiene la versione di QUESTO componente. Assoluto e derivato da
 #: `__file__`: la CI lo invoca dalla radice del repo, i test da dove capita.
@@ -115,6 +119,191 @@ def sorgente_dal_ref(ref: str, repo: str = ".") -> str:
     return _git("show", f"FETCH_HEAD:{PATH_NEL_REPO}")
 
 
+# ---------------------------------------------------------------------------
+# Versions claimed by OTHER open pull requests (clodia-platform#355, point 2).
+#
+# Being above the target branch is not enough: two open PRs that both declare
+# `X` are both above `main` and both green, until one merges and the other
+# ships a release with a number already used. Nothing re-runs the second PR's
+# check when `main` moves, so the collision has to be caught while both are
+# still open: every PR reads the version each other open PR (towards the same
+# base) declares at its head, and fails if its own is already taken.
+#
+# Precedence: the LOWER PR number keeps the version. If both PRs failed, both
+# would re-bump and could collide again; with a deterministic owner exactly one
+# of them has to move, and the message tells it which number is free.
+#
+# Cost: one paginated `GET /pulls?base=…` (100 PRs per page) plus one
+# `GET /contents/<file>?ref=<head sha>` per other open PR, with the workflow's
+# read-only GITHUB_TOKEN (1000 requests/hour per repository). No extra secret.
+# Fork PRs work the same way: their head commit is readable through the base
+# repository, and the token the workflow gets for a fork PR is read-only, which
+# is all this needs.
+# ---------------------------------------------------------------------------
+
+GITHUB_API = "https://api.github.com"
+
+
+class ApiError(RuntimeError):
+    """The GitHub API could not be read: the check cannot answer."""
+
+
+def _fetch(url: str, token: str, accept: str) -> str:
+    request = urllib.request.Request(
+        url,
+        headers={
+            "Accept": accept,
+            "Authorization": f"Bearer {token}",
+            "X-GitHub-Api-Version": "2022-11-28",
+            "User-Agent": "clodia-version-guard",
+        },
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=20) as response:
+            return response.read().decode("utf-8")
+    except urllib.error.HTTPError as error:
+        remaining = error.headers.get("x-ratelimit-remaining") if error.headers else None
+        if error.code in (403, 429) and remaining == "0":
+            raise ApiError(
+                f"GitHub API rate limit exhausted ({url}); re-run the job later"
+            ) from error
+        raise ApiError(f"HTTP {error.code} from {url}") from error
+    except (urllib.error.URLError, TimeoutError) as error:
+        raise ApiError(f"cannot reach {url}: {error}") from error
+
+
+def open_pull_requests(repo, base, fetch, api=GITHUB_API):
+    """Open PRs of `repo` targeting `base`, as `(number, head_sha)`.
+
+    `fetch(url, accept) -> str` is the only I/O, so tests pass a fake one.
+    """
+    found = []
+    page = 1
+    while True:
+        query = urllib.parse.urlencode(
+            {"state": "open", "base": base, "per_page": 100, "page": page}
+        )
+        body = fetch(f"{api}/repos/{repo}/pulls?{query}", "application/vnd.github+json")
+        try:
+            batch = json.loads(body)
+            found.extend((int(pr["number"]), pr["head"]["sha"]) for pr in batch)
+        except (ValueError, KeyError, TypeError) as error:
+            raise ApiError(f"unexpected answer listing open PRs: {error}") from error
+        if len(batch) < 100:
+            return found
+        page += 1
+
+
+def claimed_versions(repo, base, own_number, fetch, api=GITHUB_API, path=PATH_NEL_REPO):
+    """`{pr_number: version}` declared by every OTHER open PR towards `base`.
+
+    Listing the PRs is fail-closed (raises `ApiError`). A single PR whose file
+    cannot be read or parsed is skipped with a warning instead: that input comes
+    from somebody else's branch, and a malformed `__version__` there must not
+    make an unrelated PR unmergeable.
+    """
+    claims = {}
+    for number, sha in open_pull_requests(repo, base, fetch, api):
+        if number == own_number:
+            continue
+        url = f"{api}/repos/{repo}/contents/{path}?ref={sha}"
+        try:
+            version = read_version(fetch(url, "application/vnd.github.raw+json"))
+            parse_version(version)
+        except (ApiError, ValueError) as error:
+            print(f"::warning::cannot read the version declared by #{number}: {error}")
+            continue
+        claims[number] = version
+    return claims
+
+
+def _same(a: str, b: str) -> bool:
+    return not is_newer(a, b) and not is_newer(b, a)
+
+
+def collisions(own_number, own_version, claims):
+    """Split the PRs declaring `own_version` into `(older, newer)` numbers.
+
+    `older` own the version (the current PR must re-bump); `newer` are the ones
+    that will have to move.
+    """
+    same = sorted(n for n, v in claims.items() if _same(v, own_version))
+    return [n for n in same if n < own_number], [n for n in same if n > own_number]
+
+
+def suggest_free(head: str, base: str, claimed) -> str:
+    """The next version above everything already claimed, bumping the same
+    component this PR bumped against `base` (patch stays patch, minor stays
+    minor). Above the maximum and not just "the first gap", so the suggestion
+    does not turn stale as soon as the PRs below it merge."""
+    h, b = parse_version(head), parse_version(base)
+    width = max([len(h), len(b)] + [len(parse_version(v)) for v in claimed])
+    pad = lambda v: v + (0,) * (width - len(v))  # noqa: E731
+    h, b = pad(h), pad(b)
+    position = next((i for i in range(width) if h[i] != b[i]), width - 1)
+    top = max([h, b] + [pad(parse_version(v)) for v in claimed])
+    bumped = top[:position] + (top[position] + 1,) + (0,) * (width - position - 1)
+    return ".".join(str(n) for n in bumped)
+
+
+def pull_request_number(event_path: str | None, ref: str | None) -> int | None:
+    """The PR number from the event payload, or from `refs/pull/<n>/merge`."""
+    if event_path:
+        try:
+            with open(event_path, encoding="utf-8") as f:
+                number = json.load(f).get("pull_request", {}).get("number")
+            if number:
+                return int(number)
+        except (OSError, ValueError):
+            pass
+    match = re.match(r"^refs/pull/(\d+)/", ref or "")
+    return int(match.group(1)) if match else None
+
+
+def check_open_prs(head, base_version, base_ref, env, fetch=None) -> int:
+    """Exit code of the open-PR check. `env` is `os.environ` in CI."""
+    repo = env.get("GITHUB_REPOSITORY")
+    number = pull_request_number(env.get("GITHUB_EVENT_PATH"), env.get("GITHUB_REF"))
+    token = env.get("GITHUB_TOKEN")
+    if not (repo and number):
+        print("::error::open-PR check: not running on a pull_request event "
+              "(GITHUB_REPOSITORY / PR number missing)")
+        return 1
+    if fetch is None:
+        if not token:
+            print("::error::open-PR check: GITHUB_TOKEN is not set; the workflow "
+                  "must pass `GITHUB_TOKEN: ${{ github.token }}` to this step")
+            return 1
+        fetch = lambda url, accept: _fetch(url, token, accept)  # noqa: E731
+    api = env.get("GITHUB_API_URL") or GITHUB_API
+    try:
+        claims = claimed_versions(repo, base_ref, number, fetch, api)
+    except ApiError as error:
+        print(f"::error::open-PR check: {error}")
+        return 1
+
+    older, newer = collisions(number, head, claims)
+    if older:
+        owners = ", ".join(f"#{n}" for n in older)
+        free = suggest_free(head, base_version, list(claims.values()))
+        print(
+            f"::error::__version__ {head} is already declared by open PR {owners} "
+            f"towards {base_ref}. The lower PR number keeps it: re-bump this PR "
+            f"(first free: {free})."
+        )
+        return 1
+    for n in newer:
+        print(f"::warning::#{n} also declares {head}; it is newer than #{number} "
+              f"and its own check asks it to re-bump")
+    if newer:
+        print(f"__version__ {head}: #{number} is the oldest open PR declaring it "
+              f"towards {base_ref}, so it keeps it: ok")
+    else:
+        print(f"__version__ {head} not claimed by the other {len(claims)} open "
+              f"PR(s) towards {base_ref}: ok")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(description=__doc__)
     da_dove = parser.add_mutually_exclusive_group(required=True)
@@ -134,7 +323,16 @@ def main(argv: list[str] | None = None) -> int:
     parser.add_argument(
         "--head", default=VERSION_FILE, help="il file di versione del branch"
     )
+    parser.add_argument(
+        "--open-prs",
+        action="store_true",
+        help="also fail if another open PR towards --base-ref already declares "
+        "this version (needs GITHUB_TOKEN, GITHUB_REPOSITORY and the "
+        "pull_request event, i.e. a CI run)",
+    )
     args = parser.parse_args(argv)
+    if args.open_prs and not args.base_ref:
+        parser.error("--open-prs needs --base-ref")
 
     # Fail-closed: se il confronto non si può fare (file assente, versione
     # illeggibile o fuori formato) l'esito è rosso. Un guard che non sa
@@ -172,6 +370,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1
 
     print(f"__version__ {head} > {base} su {dove}: ok")
+    if args.open_prs:
+        return check_open_prs(head, base, args.base_ref, os.environ)
     return 0
 
 
