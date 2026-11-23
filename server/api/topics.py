@@ -1616,6 +1616,11 @@ async def list_topics(request: Request) -> list[dict]:
         "last_commit": r.get("updated_at"),
         # ultimo accesso dalla UI (apertura/scrittura del canale): ordina la lista.
         "last_accessed": access.get(f"{r.get('tier')}/{r.get('name')}"),
+        # The room's message box address, for the 📧 of the card
+        # (clodia-platform#726; gateway ≥ 2.194.0). Every row here is the
+        # reader's own room (`_visible_to`), the same people the room's
+        # «In ascolto» panel already shows it to. None = no inbox.
+        "inbox": r.get("inbox") or None,
     } for r in rows if _visible_to(me, r)]
     # Ordina dal più recentemente consultato al più vecchio: usa last_accessed se
     # presente, altrimenti l'ultimo aggiornamento del contenuto. I topic mai
