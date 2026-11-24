@@ -81,6 +81,7 @@ async def _run_cycle(only: Optional[tuple] = None) -> dict:
         except Exception as e:  # noqa: BLE001 — one transport never stops the others
             LOG.warning("courier: %s reception failed (%s)", t.scheme, type(e).__name__)
             counters[f"{t.scheme}_errors"] = counters.get(f"{t.scheme}_errors", 0) + 1
+            counters["errors"] = counters.get("errors", 0) + 1
             continue
         total += int(res.delivered or 0)
         for k, v in (res.counters or {}).items():

@@ -71,6 +71,7 @@ class Reception(_Base):
         out = asyncio.run(core.run_cycle())
         self.assertEqual(out["delivered"], 1)
         self.assertEqual(out["mem_errors"], 1)
+        self.assertEqual(out["errors"], 1)
         self.assertEqual(len(self.fired), 1)
 
     def test_check_now_reaches_only_the_room(self):
@@ -79,6 +80,15 @@ class Reception(_Base):
         asyncio.run(core.run_cycle(only=ROOM))
         self.assertEqual([r for r, _ in self.fired], [ROOM])
         self.assertIn(("SEAL-1", "x"), t.inbox)
+
+    def test_a_gateway_down_is_an_email_error_not_a_silent_zero(self):
+        from ..api import mail_courier as MC
+
+        def down():
+            raise ConnectionError("gateway")
+        with patch.object(MC, "rooms", down):
+            out = asyncio.run(core.run_cycle())
+        self.assertEqual((out["delivered"], out["mailto_errors"], out["errors"]), (0, 1, 1))
 
     def test_email_is_the_default_transport(self):
         self.assertEqual([t.scheme for t in core.transports()], ["mailto"])

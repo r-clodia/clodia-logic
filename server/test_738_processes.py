@@ -66,6 +66,17 @@ class RunRecords(_Base):
         text = next(self.dir.glob("courier/*.jsonl")).read_text()
         self.assertNotIn("mario@example.com", text)
 
+    def test_a_pass_with_errors_inside_is_failed_with_its_counters(self):
+        P.register("courier", "Corriere", 120)
+
+        async def partial():
+            return {"delivered": 2, "errors": 1, "mailto_errors": 1}
+        asyncio.run(P.run("courier", partial))
+        p = P.get("courier").public()
+        self.assertEqual(p["status"], "failed")
+        self.assertEqual(p["last_error"], "1 errori nel giro")
+        self.assertEqual(p["last_counters"]["delivered"], 2)
+
     def test_one_good_pass_clears_failed(self):
         P.register("courier", "Corriere", 120)
 

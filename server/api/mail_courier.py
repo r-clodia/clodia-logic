@@ -557,11 +557,9 @@ async def receive(only: "tuple[str, str] | None" = None) -> "tuple[int, dict]":
     and, per room, what the room's trigger lists. The trigger itself is the
     courier's (`courier.core.fire_triggers`), once per room per pass."""
     total = 0
-    try:
-        stanze = await asyncio.to_thread(rooms)
-    except Exception as e:  # noqa: BLE001
-        LOG.warning("mail courier: rooms unavailable (%s)", type(e).__name__)
-        return 0, {}
+    # A gateway that does not answer is the transport's failure, raised: the
+    # courier counts it and the process view shows the pass as failed (#738).
+    stanze = await asyncio.to_thread(rooms)
     if only is not None:
         stanze = [r for r in stanze if (str(r.get("tier")), str(r.get("name"))) == only]
     indice = None
