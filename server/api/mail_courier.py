@@ -17,6 +17,10 @@ Moves inbound mail into the topics whose room has a mailbox in its OWN
 
 The first pass over a mailbox only records what is there (no flood of old
 mail into the topic): delivery starts with what arrives afterwards.
+
+Since #737 this module is the courier's EMAIL TRANSPORT (`EmailTransport`):
+the pass over every transport, the lock and the room's trigger are
+`server/courier/core.py`, which knows no medium.
 """
 from __future__ import annotations
 
@@ -539,33 +543,25 @@ async def run_box_room(room: dict, keys: list[str], delivered: list | None = Non
     return await run_room(room, only=nuove, delivered=delivered, box=True)
 
 
-#: One courier pass at a time: the periodic loop and an agent's «check now»
-#: (`topic.mail_check`, owner 14 Nov 2026) must not read the same mailbox
-#: concurrently, or a message would be delivered twice.
-_CYCLE_LOCK: "asyncio.Lock | None" = None
-
-
-def _lock() -> asyncio.Lock:
-    global _CYCLE_LOCK
-    if _CYCLE_LOCK is None:
-        _CYCLE_LOCK = asyncio.Lock()
-    return _CYCLE_LOCK
-
-
 async def run_cycle(only: "tuple[str, str] | None" = None) -> int:
-    """One courier pass over every room — or over ONE room (`only`), when an
-    agent asks the courier to check now. Serialised with every other pass."""
-    async with _lock():
-        return await _run_cycle(only)
+    """One courier pass (every transport, email included) — or over ONE room
+    (`only`). Kept for its callers: the courier itself is `courier.core`
+    since #737, and this returns its `delivered` count."""
+    from ..courier import core
+    return int((await core.run_cycle(only)).get("delivered") or 0)
 
 
-async def _run_cycle(only: "tuple[str, str] | None" = None) -> int:
+async def receive(only: "tuple[str, str] | None" = None) -> "tuple[int, dict]":
+    """The email transport's reception pass: every mail row the gateway
+    offers (or the one room `only`). Returns how many envelopes were delivered
+    and, per room, what the room's trigger lists. The trigger itself is the
+    courier's (`courier.core.fire_triggers`), once per room per pass."""
     total = 0
     try:
         stanze = await asyncio.to_thread(rooms)
     except Exception as e:  # noqa: BLE001
         LOG.warning("mail courier: rooms unavailable (%s)", type(e).__name__)
-        return 0
+        return 0, {}
     if only is not None:
         stanze = [r for r in stanze if (str(r.get("tier")), str(r.get("name"))) == only]
     indice = None
@@ -594,15 +590,24 @@ async def _run_cycle(only: "tuple[str, str] | None" = None) -> int:
         except Exception as e:  # noqa: BLE001 — one room never stops the others
             LOG.warning("mail courier: %s/%s failed (%s)", room.get("tier"),
                         room.get("name"), type(e).__name__)
-    # ONE turn per room per cycle, whatever the number of its mailboxes (#628).
-    for (tier, name), items in consegnate.items():
-        if items:
-            try:
-                # The courier never starts a turn itself (no model on its path):
-                # the trigger's owner side does, like the scheduler's topic
-                # trigger (#628).
-                from ..scheduler import mail_triggers
-                await mail_triggers.fire(tier, name, items)
-            except Exception as e:  # noqa: BLE001 — a trigger never stops the courier
-                LOG.warning("mail trigger %s/%s: %s", tier, name, type(e).__name__)
-    return total
+    return total, consegnate
+
+
+class EmailTransport:
+    """Email as a courier transport (clodia-platform#737). Reception is this
+    module, through the gateway's courier routes; transmission arrives with
+    the send gate (#736) and until then is refused here, so nothing can mail
+    out through the courier before the gate exists."""
+
+    scheme = "mailto"
+    label = "Email"
+
+    async def receive(self, only=None):
+        from ..courier.transport import ReceiveResult
+        n, per_room = await receive(only)
+        return ReceiveResult(delivered=n, by_room=per_room)
+
+    async def send(self, message):
+        from ..courier.transport import TransmissionUnsupported
+        raise TransmissionUnsupported(
+            "il corriere non trasmette ancora email (clodia-platform#736)")
