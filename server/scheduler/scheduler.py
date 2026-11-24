@@ -1059,6 +1059,20 @@ def unregister_job(job_id: int) -> bool:
         return False
 
 
+def next_fire(job_id: int) -> Optional[str]:
+    """When APScheduler will fire this job next, as ISO 8601; `None` when the
+    scheduler is not running or the job is not registered (disabled). Read by
+    the processes view (clodia-platform#738)."""
+    if _scheduler is None:
+        return None
+    try:
+        j = _scheduler.get_job(_job_key(job_id))
+    except Exception:  # noqa: BLE001
+        return None
+    t = getattr(j, "next_run_time", None) if j is not None else None
+    return t.isoformat() if t is not None else None
+
+
 def reload_all_enabled_jobs() -> int:
     """Riconcilia APScheduler con lo stato del DB.
 

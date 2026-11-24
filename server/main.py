@@ -15,7 +15,8 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from . import __version__, instance_profile
 from .api import admin, agent_registry, agents, auth, catalog, channel_aliases, channels, databases, datastores, files, gate, health, human_auth, observe, packs, plugins, profile, providers, spawns, topic_data, topics, transfers
-from .api import courier_api
+from .api import courier_api, processes_api
+from . import processes
 from .config import HOST, PORT
 from .core import loop_lag
 from .scheduler import api as jobs_api
@@ -275,39 +276,42 @@ async def _lifespan(app: FastAPI):
     # caselle che la stanza ha nella propria lista `inbox:`, e ne salva gli
     # allegati nei file del topic. Stesso gate del relay; spento con
     # CLODIA_MAIL_COURIER=off.
+    # Each pass is a process run (clodia-platform#738): visible in Jobs and
+    # Activity, with its outcome, also when it fails.
+    intervallo_corriere = int(os.environ.get("CLODIA_MAIL_COURIER_INTERVAL", "120"))
+    corriere_acceso = profile.features.channels and \
+        os.environ.get("CLODIA_MAIL_COURIER", "on").lower() not in ("off", "0", "false")
+    processes.register("courier", "Corriere", intervallo_corriere, enabled=corriere_acceso)
+
     async def _mail_courier_loop():
         from .api import mail_courier
-        intervallo = int(os.environ.get("CLODIA_MAIL_COURIER_INTERVAL", "120"))
-        LOG.info("corriere posta attivo: un giro ogni %ds", intervallo)
+        LOG.info("corriere posta attivo: un giro ogni %ds", intervallo_corriere)
         while True:
-            try:
-                n = await mail_courier.run_cycle()
-                if n:
-                    LOG.info("corriere posta: %d mail consegnate", n)
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("corriere posta: %s", type(e).__name__)
-            await asyncio.sleep(intervallo)
-    if profile.features.channels and \
-            os.environ.get("CLODIA_MAIL_COURIER", "on").lower() not in ("off", "0", "false"):
+            n = await processes.run("courier", lambda: mail_courier.run_cycle())
+            if n:
+                LOG.info("corriere posta: %d mail consegnate", n)
+            await processes.sleep("courier", intervallo_corriere)
+    if corriere_acceso:
         mail_courier_task = asyncio.create_task(_mail_courier_loop())
     else:
         mail_courier_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
 
     # Topic indexer (clodia-platform#601): every topic in its own RAG
     # collection. The gateway does the work; this loop sets the pace.
+    intervallo_indice = int(os.environ.get("CLODIA_TOPIC_INDEX_INTERVAL", "300"))
+    indice_acceso = profile.features.channels and \
+        os.environ.get("CLODIA_TOPIC_INDEX", "on").lower() not in ("off", "0", "false")
+    processes.register("topic-indexer", "Indicizzatore topic", intervallo_indice,
+                       enabled=indice_acceso)
+
     async def _topic_indexer_loop():
         from .api import topic_indexer
-        intervallo = int(os.environ.get("CLODIA_TOPIC_INDEX_INTERVAL", "300"))
-        LOG.info("indicizzatore topic attivo: un giro ogni %ds", intervallo)
-        await asyncio.sleep(60)          # let the boot settle first
+        LOG.info("indicizzatore topic attivo: un giro ogni %ds", intervallo_indice)
+        await processes.sleep("topic-indexer", 60)   # let the boot settle first
         while True:
-            try:
-                await topic_indexer.run_cycle()
-            except Exception as e:  # noqa: BLE001
-                LOG.warning("indicizzatore topic: %s", type(e).__name__)
-            await asyncio.sleep(intervallo)
-    if profile.features.channels and \
-            os.environ.get("CLODIA_TOPIC_INDEX", "on").lower() not in ("off", "0", "false"):
+            await processes.run("topic-indexer", lambda: topic_indexer.run_cycle())
+            await processes.sleep("topic-indexer", intervallo_indice)
+    if indice_acceso:
         topic_indexer_task = asyncio.create_task(_topic_indexer_loop())
     else:
         topic_indexer_task = asyncio.create_task(asyncio.sleep(0))  # no-op cancellabile
@@ -546,6 +550,7 @@ def create_app() -> FastAPI:
     app.include_router(spawns.router)
     app.include_router(transfers.router)
     app.include_router(courier_api.router)
+    app.include_router(processes_api.router)
     if prof.features.jobs:
         app.include_router(jobs_api.router)
 
