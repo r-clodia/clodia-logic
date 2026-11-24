@@ -294,3 +294,94 @@ def provider_summary(agent_names: list[str] | None = None) -> list[dict]:
                             r["tokens_in"] + r["tokens_out"], r["runs"]),
              reverse=True)
     return out
+
+
+# ── Usage per topic (clodia-platform#732) ────────────────────────────────────
+#: The windows of the Activity page's «Consumo per topic», in seconds.
+TOPIC_WINDOWS = {"24h": 86400, "7d": 7 * 86400, "4w": 28 * 86400}
+#: The page polls every few seconds; a scan of four weeks of logs is not
+#: something to repeat that often.
+TOPIC_USAGE_TTL_S = 60.0
+_topic_usage_cache: dict = {}
+
+
+def _room_of(chat_id) -> "tuple[str, str] | None":
+    """`chan:SEAL-1:moneyviz-2026:clodia` → `("SEAL-1", "moneyviz-2026")`.
+    Job and pack-operation chats have no room: None."""
+    parts = str(chat_id or "").split(":")
+    if len(parts) >= 3 and parts[0] == "chan" and parts[1] and parts[2]:
+        return parts[1], parts[2]
+    return None
+
+
+def _ts(raw) -> "float | None":
+    try:
+        return datetime.fromisoformat(str(raw)).timestamp()
+    except (TypeError, ValueError):
+        return None
+
+
+def topic_usage(now: "float | None" = None) -> dict:
+    """Per room, for each window of `TOPIC_WINDOWS`: turns, seconds, tokens in
+    and tokens out. `{(tier, name): {"24h": {...}, "7d": {...}, "4w": {...}}}`.
+
+    A turn is a `run_started` closed by the next `run_done`/`run_error` of the
+    same agent in the same chat; its time is the distance between the two and
+    it belongs to the window of its END. Tokens come from `run_done`, with the
+    leaderboard's normalisation and its de-duplication of double writes. Only
+    the files of the last four weeks are read (the name is the date)."""
+    import time as _time
+    clock = now if now is not None else _time.time()
+    hit = _topic_usage_cache.get("v")
+    if now is None and hit and clock - hit[0] < TOPIC_USAGE_TTL_S:
+        return hit[1]
+    horizon = clock - max(TOPIC_WINDOWS.values())
+    first_day = datetime.fromtimestamp(horizon - 86400, tz=timezone.utc).strftime("%Y-%m-%d")
+    out: dict = {}
+    agents = [c.name for c in ACTIVITY_DIR.iterdir() if c.is_dir()] if ACTIVITY_DIR.is_dir() else []
+    for agent in agents:
+        open_turns: dict = {}
+        seen: set[str] = set()
+        for f in _agent_log_files(agent):
+            if f.stem < first_day:
+                continue
+            for e in _read_jsonl(f):
+                typ = e.get("type")
+                if typ not in ("run_started", "run_done", "run_error"):
+                    continue
+                payload = e.get("payload") or {}
+                room = _room_of(payload.get("chat_id"))
+                if room is None:
+                    continue
+                t = _ts(e.get("ts"))
+                if t is None:
+                    continue
+                key = payload.get("chat_id")
+                if typ == "run_started":
+                    open_turns[key] = t
+                    continue
+                if typ == "run_done":
+                    fp = _run_done_fingerprint(agent, e)
+                    if fp in seen:
+                        continue
+                    seen.add(fp)
+                started = open_turns.pop(key, None)
+                if t < horizon:
+                    continue
+                secs = max(0.0, t - started) if started is not None else 0.0
+                tin, tout = _usage_totals(payload.get("usage")) if typ == "run_done" else (0, 0)
+                per = out.setdefault(room, {w: {"runs": 0, "seconds": 0.0, "tokens_in": 0,
+                                                "tokens_out": 0} for w in TOPIC_WINDOWS})
+                for w, span in TOPIC_WINDOWS.items():
+                    if t >= clock - span:
+                        b = per[w]
+                        b["runs"] += 1
+                        b["seconds"] += secs
+                        b["tokens_in"] += tin
+                        b["tokens_out"] += tout
+    for per in out.values():
+        for b in per.values():
+            b["seconds"] = round(b["seconds"])
+    if now is None:
+        _topic_usage_cache["v"] = (clock, out)
+    return out
