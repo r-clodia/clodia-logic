@@ -587,6 +587,34 @@ async def activity_summary() -> dict:
     }
 
 
+@router.get("/activity/topics")
+async def activity_topics(request: Request) -> dict:
+    """Time and tokens spent per topic over 24h, 7d and 4w (clodia-platform#732),
+    for the Activity page. An admin sees every topic; anyone else only the
+    topics they own or take part in — the same rule as the topics list."""
+    me = _principal_from_request(request)
+    if not me:
+        raise HTTPException(401, "login richiesto")
+    usage = await asyncio.to_thread(activity_log.topic_usage)
+    from . import topics_client
+    try:
+        rows = await topics_client.async_list_topics(include_archived=True)
+    except topics_client.TopicsClientError as e:
+        raise HTTPException(502, f"gateway topics non disponibile: {str(e)[:160]}")
+    is_admin = admin.is_admin(me)
+    meta = {(r.get("tier"), r.get("name")): r for r in rows}
+    out = []
+    for (tier, name), windows in usage.items():
+        r = meta.get((tier, name))
+        if r is None:
+            continue    # a topic that no longer exists
+        if not is_admin and me != r.get("owner") and me not in (r.get("participants") or []):
+            continue
+        out.append({"tier": tier, "name": name, "title": r.get("title") or "",
+                    "kind": r.get("kind"), "status": r.get("status"), "windows": windows})
+    return {"windows": list(activity_log.TOPIC_WINDOWS), "topics": out}
+
+
 @router.get("/{name}/activity")
 async def agent_activity(name: str, request: Request, limit: int = 200, date: Optional[str] = None) -> dict:
     """Eventi cronologici di un agente per la data (default oggi)."""
