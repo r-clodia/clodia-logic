@@ -284,10 +284,13 @@ async def _lifespan(app: FastAPI):
     processes.register("courier", "Corriere", intervallo_corriere, enabled=corriere_acceso)
 
     async def _mail_courier_loop():
-        from .api import mail_courier
+        from .courier import core as courier
         LOG.info("corriere posta attivo: un giro ogni %ds", intervallo_corriere)
         while True:
-            n = await processes.run("courier", lambda: mail_courier.run_cycle())
+            # The courier over every transport (#737); its counters are the
+            # pass's in the process view (#738).
+            esito = await processes.run("courier", lambda: courier.run_cycle())
+            n = int((esito or {}).get("delivered") or 0)
             if n:
                 LOG.info("corriere posta: %d mail consegnate", n)
             await processes.sleep("courier", intervallo_corriere)

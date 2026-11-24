@@ -158,6 +158,10 @@ async def run(name: str, fn: Callable[[], Awaitable]) -> object:
         LOG.warning("process %s: %s", name, error)
     t1 = time.time()
     counters = _counters_of(result)
+    if error is None and counters.get("errors"):
+        # A pass that went on past a failing part (a transport of the
+        # courier, #737) still failed at something: say so, by count.
+        error = f"{int(counters['errors'])} errori nel giro"
     p.last_finished_at = _iso(t1)
     p.last_duration_s = round(t1 - t0, 3)
     p.last_ok = error is None

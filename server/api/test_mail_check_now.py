@@ -42,7 +42,8 @@ class OnlyOneRoomTests(unittest.TestCase):
             return 0
 
         async def due():
-            MC._CYCLE_LOCK = None
+            from ..courier import core
+            core._CYCLE_LOCK = None
             await asyncio.gather(MC.run_cycle(), MC.run_cycle(only=("SEAL-1", "acme")))
         with patch.object(MC, "rooms", lambda: list(ROWS)), \
                 patch.object(MC, "run_room", run_room):
