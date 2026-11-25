@@ -13,7 +13,7 @@ from unittest.mock import patch
 
 from . import core
 from .transport import (Outbound, ReceiveResult, SendResult, Transport,
-                        TransmissionUnsupported, UnsupportedScheme, split_address)
+                        UnsupportedScheme, split_address)
 
 ROOM = ("SEAL-1", "acme")
 
@@ -109,9 +109,11 @@ class Transmission(_Base):
         with self.assertRaises(UnsupportedScheme):
             asyncio.run(core.send(Outbound(to="wa:39333", body="x")))
 
-    def test_email_does_not_transmit_before_the_gate(self):
-        # #736 brings the gate; until then the courier mails nothing out.
-        with self.assertRaises(TransmissionUnsupported):
+    def test_email_transmits_only_from_a_room(self):
+        # #736: email transmits; a message with no room has no mailbox and no
+        # decision behind it, so it is refused before the gateway is asked.
+        from .transport import TransportError
+        with self.assertRaises(TransportError):
             asyncio.run(core.send(Outbound(to="mario@example.com", body="x")))
 
     def test_addresses(self):

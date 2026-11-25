@@ -380,6 +380,30 @@ def _correction_confirmed(r, modified: dict) -> bool:
     return isinstance(fields, list) and sorted(fields) == sorted(modified)
 
 
+#: The gate key of a courier send (#736): the egress PDP's own for mail.
+_COURIER_KEY = "egress:email:mailto:"
+
+
+async def _courier_decided(instance: str, verb: str, approved: bool) -> None:
+    """The room decided on a recipient of the courier's queue (#736): its
+    waiting mail is `queued` or `denied`. The instance of a courier request
+    is the room (`tier/name`). Never raises: the gate decision stands."""
+    if not verb.startswith(_COURIER_KEY) or "/" not in instance:
+        return
+    tier, _, name = instance.partition("/")
+    try:
+        from ..courier import outbox
+        moved = await asyncio.to_thread(outbox.decided, tier, name, verb, approved)
+    except Exception as e:  # noqa: BLE001
+        LOG.warning("courier: decision on %s not applied (%s)", verb, type(e).__name__)
+        return
+    if moved and not approved:
+        from ..courier import core
+        for item in moved:
+            await core._post(tier, name, f"⛔ Non spedita: {core._what(item)} — "
+                                         "destinatario negato.")
+
+
 @router.post("/api/gate/approve")
 async def approve(request: Request):
     """Approva un gate: consente a (agent, instance) l'uso di `verb`."""
@@ -593,6 +617,11 @@ async def approve(request: Request):
             quanto = f"per stavolta (non ricordato: {memoria.get('error', '?')})"
         await asyncio.to_thread(_post_outcome, body.get("chat"), principal,
                       f"🔓 @{agent}: approvato l'uso di {verb} — {quanto}")
+        # A courier send waiting on this recipient (#736) leaves the gate only
+        # when the recipient was really added to a list: an approval that was
+        # not remembered would be refused again at sending time.
+        if not memoria or memoria.get("remembered"):
+            await _courier_decided(instance, verb, True)
     corpo = r.json() if r.status_code == 200 else {"error": r.text[:200]}
     if memoria is not None:
         corpo["memory"] = memoria
@@ -623,4 +652,5 @@ async def deny(request: Request):
     if r.status_code == 200:
         await asyncio.to_thread(_post_outcome, body.get("chat"), principal,
                                 f"⛔ @{agent}: negato l'uso di {verb}")
+        await _courier_decided(instance, verb, False)
     return JSONResponse(r.json(), status_code=r.status_code)

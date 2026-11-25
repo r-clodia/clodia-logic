@@ -13,6 +13,25 @@ from .transfers import _authorize
 router = APIRouter(tags=["internal-courier"])
 
 
+@router.post("/internal/courier/enqueue")
+async def courier_enqueue(request: Request) -> dict:
+    """The gateway queues one mail on the courier (#736), with the orchestrator
+    secret. The gateway has decided the state (`queued` for a known
+    recipient, `pending_gate` for a new one) and opened the gate."""
+    _authorize(request)
+    try:
+        body = await request.json()
+    except Exception:  # noqa: BLE001
+        raise HTTPException(400, "bad_json")
+    from ..courier import outbox
+    import asyncio
+    try:
+        item = await asyncio.to_thread(outbox.enqueue, dict(body or {}))
+    except ValueError as e:
+        raise HTTPException(400, str(e))
+    return {"id": item["id"], "state": item["state"]}
+
+
 @router.post("/internal/courier/check")
 async def courier_check(request: Request) -> dict:
     """An agent asked the courier to check the room's mail NOW

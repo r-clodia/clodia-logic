@@ -90,7 +90,70 @@ async def _run_cycle(only: Optional[tuple] = None) -> dict:
         for room, items in (res.by_room or {}).items():
             per_room.setdefault(tuple(room), []).extend(items or [])
     await fire_triggers(per_room)
+    # Transmission (#736): what the rooms authorised goes out now.
+    if only is None:
+        sent = await transmit()
+        for k, v in sent.items():
+            counters[k] = counters.get(k, 0) + v
     return {"delivered": total, **counters}
+
+
+#: The courier's posts in a room, like the mail it delivers.
+AUTHOR = "posta"
+
+
+async def _post(tier: str, name: str, text: str) -> None:
+    try:
+        from ..api import topics_client
+        await topics_client.async_post_message(tier, name, AUTHOR, text, kind="proxy")
+    except Exception as e:  # noqa: BLE001 — the outcome stays in the outbox
+        LOG.warning("courier: outcome not posted in %s/%s (%s)", tier, name, type(e).__name__)
+
+
+def _what(item: dict) -> str:
+    oggetto = str(item.get("subject") or "").replace("\n", " ")[:120]
+    return f"mail a **{item.get('to')}** «{oggetto}» (pratica {item.get('id')})"
+
+
+async def transmit(now: "float | None" = None) -> dict:
+    """Send every `queued` message, expire undecided ones (24 h). Each
+    outcome is posted in its room. Returns counters for the process view."""
+    from . import outbox
+    from .transport import Outbound, TransportError
+    send, expire = await asyncio.to_thread(outbox.due, now)
+    counters = {"sent": 0, "send_failed": 0, "expired": 0}
+    for item in expire:
+        if outbox.mark(item, "expired", "nessuna decisione entro 24 ore"):
+            counters["expired"] += 1
+            await _post(item["tier"], item["name"],
+                        f"⌛ Non spedita: {_what(item)} — nessuno ha deciso entro 24 ore.")
+    for item in send:
+        msg = Outbound(to=f"mailto:{item['to']}", body=item["body"],
+                       subject=item.get("subject") or "", sender=item.get("account") or "",
+                       attachments=list(item.get("attachments") or []),
+                       room=(item["tier"], item["name"]))
+        try:
+            res = await transport_for(msg.to).send(msg)
+            ok, detail = bool(res.ok), str(res.error or "")
+        except TransportError as e:
+            ok, detail = False, str(e)
+        except Exception as e:  # noqa: BLE001 — retried at the next pass
+            ok, detail = False, type(e).__name__
+        if ok:
+            outbox.mark(item, "sent", "", attempt=True)
+            counters["sent"] += 1
+            await _post(item["tier"], item["name"], f"📤 Inviata: {_what(item)}.")
+            continue
+        tentativi = int(item.get("attempts") or 0) + 1
+        if tentativi >= outbox.MAX_ATTEMPTS:
+            outbox.mark(item, "failed", detail, attempt=True)
+            counters["send_failed"] += 1
+            await _post(item["tier"], item["name"],
+                        f"⚠️ Non spedita: {_what(item)} — {detail or 'errore'} "
+                        f"(dopo {tentativi} tentativi).")
+        else:
+            outbox.mark(item, "queued", detail, attempt=True)
+    return counters
 
 
 async def fire_triggers(per_room: dict) -> None:
