@@ -113,6 +113,19 @@ def box() -> dict | None:
     return {str(k).upper(): [str(x) for x in (v or [])] for k, v in tags.items()}
 
 
+def send_mail(body: dict) -> dict:
+    """`/internal/mail/courier/send` (#736): `{ok, detail}`."""
+    r = requests.post(f"{_base_url()}/send", headers=_headers(), timeout=_HTTP_TIMEOUT,
+                      json=body)
+    if r.status_code != 200:
+        try:
+            detail = str((r.json() or {}).get("error") or "")
+        except ValueError:
+            detail = ""
+        return {"ok": False, "detail": detail or f"gateway {r.status_code}"}
+    return r.json()
+
+
 def attachment(room: dict, email_id: str, filename: str) -> dict:
     r = requests.post(f"{_base_url()}/attachment", headers=_headers(), timeout=_HTTP_TIMEOUT,
                       json={"tier": room["tier"], "name": room["name"],
@@ -606,6 +619,15 @@ class EmailTransport:
         return ReceiveResult(delivered=n, by_room=per_room)
 
     async def send(self, message):
-        from ..courier.transport import TransmissionUnsupported
-        raise TransmissionUnsupported(
-            "il corriere non trasmette ancora email (clodia-platform#736)")
+        """One AUTHORISED mail (#736), through the gateway, which checks the
+        room's mailbox and the recipient again and sends with the mail code."""
+        from ..courier.transport import SendResult, TransportError, split_address
+        _, addr = split_address(message.to)
+        if not message.room:
+            raise TransportError("una mail del corriere parte da una stanza")
+        tier, name = message.room
+        out = await asyncio.to_thread(send_mail, {
+            "tier": tier, "name": name, "account": message.sender, "to": addr,
+            "subject": message.subject, "body": message.body,
+            "attachments": list(message.attachments or [])})
+        return SendResult(ok=bool(out.get("ok")), error=str(out.get("detail") or ""))
